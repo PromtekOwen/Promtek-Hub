@@ -1,0 +1,48 @@
+{
+  // Promtek Hub: one Worker serves the web app (public/) and the API (src/).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "promtek-hub",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "promtek-hub",
+      "database_id": "PASTE_YOUR_D1_DATABASE_ID_HERE"
+    }
+  ],
+
+  // Every 2 minutes: pull new/edited Tempo worklogs, re-check one recent day
+  // for deletions, and (on the hour) refresh ELO/baseline from Jira profiles.
+  "triggers": { "crons": ["*/2 * * * *"] },
+
+  "observability": { "enabled": true },
+
+  // Non-secret settings. The Jira and Tempo tokens are added as Secrets in
+  // the Cloudflare dashboard (see SETUP.md), not here.
+  "vars": {
+    "JIRA_BASE_URL": "https://promtek.atlassian.net",
+    "JIRA_EMAIL": "owen.hume@promtek.com",
+    "ALLOWED_EMAIL_DOMAIN": "promtek.com",
+    "ADMIN_EMAILS": "owen.hume@promtek.com",
+
+    "ACCESS_TEAM_DOMAIN": "https://YOUR-TEAM-NAME.cloudflareaccess.com",
+    "ACCESS_AUD": "PASTE_YOUR_ACCESS_AUD_TAG_HERE",
+
+    "PROFILE_PROJECT": "DNM",
+    "PROFILE_ISSUETYPE": "Employee",
+    "USERID_FIELD_NAME": "UserID",
+    "FIELD_ELO": "customfield_15378",
+    "FIELD_BASELINE": "customfield_16566",
+    "FIELD_XP_OVERRIDE": "customfield_16566",
+    "FIELD_TOTAL_XP": "customfield_16499"
+  }
+}
