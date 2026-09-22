@@ -34,8 +34,8 @@
     "ALLOWED_EMAIL_DOMAIN": "promtek.com",
     "ADMIN_EMAILS": "owen.hume@promtek.com",
 
-    "ACCESS_TEAM_DOMAIN": "https://YOUR-TEAM-NAME.cloudflareaccess.com",
-    "ACCESS_AUD": "PASTE_YOUR_ACCESS_AUD_TAG_HERE",
+    "ACCESS_TEAM_DOMAIN": "https://promtek-hub.cloudflareaccess.com",
+    "ACCESS_AUD": "96dedb5ede8c5c733e3d66d48b7340a39b5d7b3bbb603ca3fa63a57f6a5af3ea",
 
     "PROFILE_PROJECT": "DNM",
     "PROFILE_ISSUETYPE": "Employee",
