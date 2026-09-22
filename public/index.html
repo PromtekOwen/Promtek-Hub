@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Promtek Hub</title>
+  <meta name="description" content="Promtek's app for XP, time and engineering tools.">
+  <meta name="theme-color" content="#0E6293">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Promtek Hub">
+  <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+  <link rel="icon" href="/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+
+  <div class="top">
+    <header class="appbar">
+      <a class="back" id="back" href="#/" aria-label="Back to dashboard" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </a>
+      <a class="brand" href="#/" aria-label="Promtek Hub home">
+        <img src="/logo-white.png" alt="" width="34" height="34">
+        <span>Hub</span>
+      </a>
+      <button class="avatar-btn" id="account-btn" type="button" aria-haspopup="dialog" aria-label="Account and settings">
+        <span class="avatar" id="avatar">…</span>
+      </button>
+    </header>
+    <div class="band" id="band"></div>
+  </div>
+
+  <main id="view" tabindex="-1">
+    <div class="skeleton" aria-label="Loading"></div>
+  </main>
+
+  <dialog id="account" aria-label="Account and settings"></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
