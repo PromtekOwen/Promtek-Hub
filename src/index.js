@@ -5,6 +5,9 @@ import { findAccountIdByEmail } from './jira.js';
 import { progressFor, rankFor } from './progression.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
+import * as Pow from './pow.js';
+import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
+import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
 const TEAMS = ['Projecting', 'Service', 'Condor'];
@@ -69,6 +72,49 @@ async function route(request, env, url, user) {
     }
   }
 
+  if (pathname.startsWith('/api/log/')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/log/browse') return json(await browse(env, url.searchParams.get('node') || 'root'));
+    if (method === 'GET' && pathname === '/api/log/shortcuts') {
+      return json(user.accountId ? await shortcuts(env, user.accountId) : { recent: [], assigned: [] });
+    }
+    if (method === 'GET' && pathname === '/api/log/search') return json(await search(env, url.searchParams.get('q')));
+    if (method === 'GET' && pathname === '/api/log/hint') return json(await stageHint(env, url.searchParams.get('issueKey')) || {});
+    if (method === 'POST' && pathname === '/api/log/worklog') {
+      const result = await createWorklog(env, user, body);
+      try { await pollRecent(env, { force: true }); } catch (err) { console.warn('Post-log sync failed:', err.message); }
+      return json(result);
+    }
+    if (method === 'POST' && pathname === '/api/log/psc') return json(await createPsc(env, user, body));
+    if (method === 'POST' && pathname === '/api/log/flag-stage') return json(await flagMissingStage(env, user, body));
+  }
+
+  if (pathname.startsWith('/api/pow/')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/pow/schema') {
+      return json({ ...Pow.formSchema(), ras: (await Pow.raLibrary(env)).map((r) => r.title) });
+    }
+    if (method === 'GET' && pathname === '/api/pow/browse') return json(await Pow.browseVisits(env, url.searchParams.get('node') || 'root'));
+    if (method === 'GET' && pathname === '/api/pow/visit') return json(await Pow.visitDetails(env, url.searchParams.get('issueKey')));
+    if (method === 'GET' && pathname === '/api/pow/forms') {
+      return json(await Pow.listForms(env, user, { all: url.searchParams.get('all') === '1' && user.isLead }));
+    }
+    if (method === 'GET' && pathname === '/api/pow/form') return json(await Pow.getForm(env, user, url.searchParams.get('id')));
+    if (method === 'GET' && pathname === '/api/pow/pdf') {
+      const { bytes, filename } = await Pow.renderPdf(env, user, url.searchParams.get('id'));
+      return new Response(bytes, {
+        headers: {
+          'content-type': 'application/pdf',
+          'content-disposition': `inline; filename="${filename}"`,
+          'cache-control': 'no-store',
+        },
+      });
+    }
+    if (method === 'POST' && pathname === '/api/pow/draft') return json(await Pow.saveDraft(env, user, body));
+    if (method === 'POST' && pathname === '/api/pow/submit') return json(await Pow.submitForm(env, user, body));
+    if (method === 'POST' && pathname === '/api/pow/delete') return json(await Pow.deleteDraft(env, user, body.id));
+  }
+
   if (method === 'GET' && pathname === '/api/leaderboard') {
     return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', accountId: user.accountId }));
   }
@@ -86,6 +132,20 @@ async function route(request, env, url, user) {
         weeks: Math.min(26, Number(url.searchParams.get('weeks')) || 8),
         team: url.searchParams.get('team') || null,
       }));
+    }
+    if (method === 'GET' && pathname === '/api/reports/quoting') {
+      return json(await quotingSummary(env, {
+        discipline: url.searchParams.get('discipline') || null,
+        minConfidence: url.searchParams.get('all') === '1' ? 'any' : 'good',
+      }));
+    }
+    if (method === 'GET' && pathname === '/api/reports/stages') {
+      const discipline = url.searchParams.get('discipline') || null;
+      const [stages, difficulty] = await Promise.all([
+        stageLibrary(env, { discipline, minJobs: Number(url.searchParams.get('minJobs')) || 2 }),
+        difficultyAnalysis(env, { discipline }),
+      ]);
+      return json({ ...stages, difficulty });
     }
     if (method === 'GET' && pathname === '/api/reports/engineer') {
       const report = await engineerReport(env, url.searchParams.get('accountId'), { weeks: 12 });
@@ -120,6 +180,12 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/admin/refresh-profiles') return json(await refreshProfiles(env));
     if (method === 'POST' && pathname === '/api/admin/snapshot') return json(await snapshotWeek(env, body.week || null));
+    if (method === 'POST' && pathname === '/api/admin/scan-jobs') return json(await scanCompleted(env));
+    if (method === 'POST' && pathname === '/api/admin/backfill-start') return json(await startBackfill(env, Number(body.months) || 24));
+    if (method === 'POST' && pathname === '/api/admin/backfill-step') return json(await backfillStep(env));
+    if (method === 'POST' && pathname === '/api/admin/recompute-stages') return json(await recomputeStages(env));
+    if (method === 'GET' && pathname === '/api/admin/ra-library') return json({ items: await Pow.raLibrary(env, { includeInactive: true }) });
+    if (method === 'POST' && pathname === '/api/admin/ra-save') return json(await Pow.saveRa(env, body));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/set-role') {
@@ -213,6 +279,7 @@ async function getMe(env, user) {
       profileKey: emp.profile_key,
       team: emp.team,
       elo: emp.elo,
+      baseline: emp.baseline,
       rank: rankFor(emp.elo),
       progress: progressFor(xp),
       week: { xp: week.xp, seconds: week.seconds, from: monday },
@@ -240,7 +307,7 @@ async function getTime(env, user, url) {
 // ---------- Admin ----------
 
 async function adminOverview(env) {
-  const [employees, unmatched, state, alerts] = await Promise.all([
+  const [employees, unmatched, state, alerts, jobs] = await Promise.all([
     env.DB.prepare(
       `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team,
               COALESCE(SUM(l.xp), 0) AS ledger_xp, COUNT(l.worklog_id) AS worklogs
@@ -253,6 +320,7 @@ async function adminOverview(env) {
     ).all(),
     env.DB.prepare('SELECT key, value FROM sync_state').all(),
     env.DB.prepare('SELECT id, kind, subject, body, created_at, sent_at FROM alerts ORDER BY id DESC LIMIT 20').all(),
+    backfillStatus(env),
   ]);
 
   return {
@@ -263,6 +331,7 @@ async function adminOverview(env) {
     })),
     unmatched: unmatched.results,
     alerts: alerts.results,
+    jobs,
     mailRelay: Boolean(env.ALERT_WEBHOOK_URL),
     state: Object.fromEntries(state.results.map((r) => [r.key, r.value])),
   };

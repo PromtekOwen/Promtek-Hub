@@ -336,9 +336,13 @@ export async function runScheduled(env) {
   };
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
   await attempt('Deletion check', () => reconcileNextDay(env));
+  const { backfillStep } = await import('./jobs.js');
+  await attempt('Job backfill', () => backfillStep(env));
   if (new Date().getUTCMinutes() < 2) {
     await attempt('Profile refresh', () => refreshProfiles(env));
     await attempt('Weekly snapshot', () => snapshotWeek(env));
+    const { scanCompleted } = await import('./jobs.js');
+    await attempt('Completed jobs', () => scanCompleted(env));
     await attempt('Alert email', () => sendAlerts(env));
   }
 

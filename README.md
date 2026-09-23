@@ -14,17 +14,31 @@ Setup instructions are in [SETUP.md](SETUP.md).
 
 ```
 public/            The web app (plain HTML, CSS and JavaScript, no build step)
-  app.js           Pages: Home, Profile, Admin
-  modules.js       The list of app tiles shown on the home page
+  app.js           Pages: dashboard, XP & rank, My time, Admin, account panel
+  modules.js       The dashboard tiles
+  sw.js            Service worker (installable app, offline shell)
+  manifest.webmanifest, *.png   App name, icons and Promtek logo
   apps/<name>/     Each tool lives in its own folder
 src/               The Worker (API and background sync)
   index.js         API routes
   auth.js          Google sign-in check (Cloudflare Access)
   sync.js          Tempo polling, XP ledger, profile refresh
   progression.js   XP rate, level, title and rank rules
+  reports.js       Team and engineer reports, leaderboard, CSV export
+  jobs.js          Finished job tracking and quoting data
+  logging.js       Finding a job and writing worklogs to Tempo
+  pow.js           Point of work assessments, Jira attachment, Drive upload
+  pow-data.js      The questions, PPE and hazard lists
+  pow-pdf.js       The assessment PDF layout
+  pdf.js           A small dependency-free PDF writer
   jira.js          Jira REST client
   tempo.js         Tempo REST client
 schema.sql         Database tables
+schema-002.sql     Roles, weekly snapshots and alerts
+schema-003.sql     Completed job tracking
+schema-004.sql     Stage names and shares
+schema-005.sql     Point of work assessments and the RA library
+mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```
 

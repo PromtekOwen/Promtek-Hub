@@ -31,6 +31,13 @@ export const MODULES = [
     detail: (me) => me.linked ? `<b>${hours(me.employee.week.seconds)}</b> logged this week` : 'Your Tempo time logs',
   },
   {
+    id: 'log',
+    name: 'Log time',
+    route: '#/log',
+    icon: icon('<path d="M12 6.5v11M6.5 12h11"/><circle cx="12" cy="12" r="9"/>'),
+    detail: () => 'Find the job and log it in seconds',
+  },
+  {
     id: 'obsolescence',
     name: 'Obsolescence reports',
     href: '/apps/obsolescence/',
@@ -38,11 +45,11 @@ export const MODULES = [
     detail: () => 'Check parts for end-of-life risk',
   },
   {
-    id: 'point-of-work',
-    name: 'Point of work reports',
-    construction: true,
+    id: 'pow',
+    name: 'Point of work',
+    route: '#/pow',
     icon: icon('<path d="M12 3l7.5 3.5v5c0 4.4-3.2 8.2-7.5 9.2-4.3-1-7.5-4.8-7.5-9.2v-5z"/><path d="M9 12l2 2 4-4"/>'),
-    detail: () => 'On-site risk checks',
+    detail: () => 'Risk assessment before you start on site',
   },
   {
     id: 'shop',

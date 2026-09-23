@@ -187,6 +187,49 @@ export async function exportCsv(env, { type, from, to, accountId }) {
     };
   }
 
+  if (type === 'jobs') {
+    const { results } = await env.DB.prepare(
+      `SELECT done_date, project_name, team, epic_key, issue_key, kind, discipline, summary, status,
+              story_points, score_scope, score_tech, score_dep, score_risk, weighted_score, job_elo,
+              estimate_seconds, actual_seconds, child_count, legacy, confidence
+         FROM completed_jobs ORDER BY done_date DESC, epic_key, kind`
+    ).all();
+    return {
+      filename: 'promtek-hub-completed-jobs.csv',
+      csv: toCsv(
+        ['Finished', 'Customer', 'Team', 'Epic', 'Item', 'Level', 'Discipline', 'Summary', 'Status',
+          'Story points', 'Scope/size', 'Technical complexity', 'Dependency', 'Risk', 'Weighted score', 'Job ELO',
+          'Estimate hours', 'Actual hours', 'Actual vs estimate', 'Children', 'Legacy structure', 'Confidence'],
+        results.map((r) => [r.done_date, r.project_name, r.team, r.epic_key, r.issue_key, r.kind, r.discipline,
+          r.summary, r.status, r.story_points, r.score_scope, r.score_tech, r.score_dep, r.score_risk,
+          r.weighted_score?.toFixed(2), r.job_elo,
+          r.estimate_seconds ? (r.estimate_seconds / 3600).toFixed(2) : '',
+          r.actual_seconds ? (r.actual_seconds / 3600).toFixed(2) : '',
+          r.estimate_seconds && r.actual_seconds ? (r.actual_seconds / r.estimate_seconds).toFixed(2) : '',
+          r.child_count, r.legacy ? 'yes' : 'no', r.confidence])
+      ),
+    };
+  }
+
+  if (type === 'stages') {
+    const { results } = await env.DB.prepare(
+      `SELECT discipline, stage_name, COUNT(*) AS times,
+              AVG(actual_seconds) / 3600.0 AS mean_hours, MIN(actual_seconds) / 3600.0 AS low_hours,
+              MAX(actual_seconds) / 3600.0 AS high_hours, AVG(stage_share) AS mean_share, MAX(done_date) AS last_seen
+         FROM completed_jobs
+        WHERE kind = 'stage' AND actual_seconds > 0 AND stage_name IS NOT NULL
+        GROUP BY discipline, stage_name ORDER BY discipline, times DESC`
+    ).all();
+    return {
+      filename: 'promtek-hub-stage-library.csv',
+      csv: toCsv(
+        ['Discipline', 'Stage', 'Times done', 'Average hours', 'Shortest', 'Longest', 'Average share of category', 'Last seen'],
+        results.map((r) => [r.discipline, r.stage_name, r.times, r.mean_hours?.toFixed(2), r.low_hours?.toFixed(2),
+          r.high_hours?.toFixed(2), r.mean_share == null ? '' : (r.mean_share * 100).toFixed(1) + '%', r.last_seen])
+      ),
+    };
+  }
+
   if (type === 'snapshots') {
     const { results } = await env.DB.prepare(
       `SELECT s.week_start, e.name, e.team, s.xp, s.level, s.elo, s.seconds, s.worklogs, s.days_logged, s.avg_lag_days

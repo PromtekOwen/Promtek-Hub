@@ -48,11 +48,11 @@ This lets people log in with the same Google account they use for Atlassian and 
 12. In the Cloudflare dashboard, go to **Storage & databases → D1 SQL database → Create database**. Name it `promtek-hub` and create it.
 13. On the database's page, copy the **Database ID** (a long string of letters and numbers).
 14. In your GitHub repository, open `wrangler.jsonc`, select the pencil icon to edit, and replace `PASTE_YOUR_D1_DATABASE_ID_HERE` with the Database ID. Commit the change.
-15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with `schema-002.sql`, which adds roles, weekly snapshots and alerts. Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots` and `alerts`.
+15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with each of `schema-002.sql` (roles, snapshots and alerts), `schema-003.sql` (completed job tracking), `schema-004.sql` (stage-level data) and `schema-005.sql` (point of work assessments). Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots`, `alerts`, `completed_jobs`, `pow_forms` and `ra_library`.
 
     If the console rejects the file because of the comment lines, delete the lines starting with `--` and run it again, or run one statement at a time.
 
-    **Already set the database up before?** Run just `schema-002.sql`; it only adds the new pieces and leaves your data alone.
+    **Already set the database up before?** Run just the newer files; they only add the new pieces and leave your data alone.
 
 ## Part 5: Deploy the hub
 
@@ -141,6 +141,33 @@ Selecting a name opens that engineer: weekly hours, level and ELO history, what 
 
 Every Monday morning the hub records a snapshot of everyone's XP, level, ELO and effort for the week just gone, so the history survives even as the numbers move. There's a button on the Admin page if you ever need to record one by hand.
 
+### Quoting data
+
+The **Quoting** tab on the Reports page compares finished customer work with what it was estimated to take:
+
+- **How long each story point band really takes**, per discipline. Where the median actual and the median estimate differ consistently, that band's sprint value is the number to change.
+- **By customer** and **by team**, showing where work routinely runs over or under.
+- The recently finished list, and a CSV of everything recorded.
+
+Every hour the hub records customer orders that have reached a Done status, along with their Category items and stages. Stage time rolls up into its category, since that's the level each is estimated at. Legacy epics with no Category items are still recorded but marked, so they don't distort the bands.
+
+Items are rated **good** when they have an estimate, a story point band and believable hours; anything else is excluded from the medians unless you tick "Include patchy data". None of this changes XP or ELO.
+
+To build a starting set, open **Admin → Completed job tracking**, choose how far back to go and select **Start backfill**. It works backwards a batch at a time in the background, so it takes a while on a few years of history, and the Admin page shows how far it has reached.
+
+### Stage-level estimating
+
+Stages almost never carry an estimate of their own, so the **Stages** tab builds one from what actually happened. It records every finished stage, tidies its summary into a common name (so "HMI graphics stage 2" and "HMI Graphics" count together), and shows how long that kind of stage usually takes and what share of its category it used.
+
+That gives two ways to quote a job:
+
+- Estimate the category as now, then split it across stages using the share column.
+- Or add up the typical hours of the stages the job needs, and use that as the category estimate.
+
+The same tab answers whether the difficulty scores are earning their place. The weighted score should produce steadily rising hours, and the "tracks hours" column shows which of the four scores actually moves with real time. A score sitting near zero isn't telling you much, and its 40/30/20/10 weighting is worth revisiting once there's a year of data behind it.
+
+If you recorded jobs before this was added, select **Rebuild stage names** on the Admin page to fill in the names and shares without re-reading Jira.
+
 ### Alert emails (optional but recommended)
 
 The hub raises an alert when someone logs time in Tempo with no Employee issue in DNM, since they'd be earning no XP. Alerts always appear on the Admin page. To have them emailed too:
@@ -156,7 +183,35 @@ The hub raises an alert when someone logs time in Tempo with no Employee issue i
 
 The hub then sends any waiting alerts once an hour.
 
-## Part 11: Move the obsolescence app in
+## Part 11: Point of work risk assessments
+
+Engineers fill the assessment in on site, one part per screen, and the hub makes the PDF, attaches it to the Jira visit and files it in the shared drive. It replaces the Google Form, the Zapier step and the Apps Script that highlighted the PPE table.
+
+**Picking the visit:** customer, then Service or Projecting, then the open site visits for that team. If the visit isn't there, "My visit isn't listed" tells the team lead the job hasn't been progressed in Jira, and the assessment carries on as a draft so the job number can be added later.
+
+**Off signal:** everything is kept on the phone as it's filled in. A finished assessment with no connection is queued and sends itself when signal returns.
+
+**The RA and SSOW list** starts as the fourteen from the paper form and is edited under Admin.
+
+### Setting up the Google Drive upload
+
+The hub uploads as a service account, so nobody signs in and queued assessments still file themselves hours later.
+
+1. In https://console.cloud.google.com, with the `Promtek Hub Login` project selected, go to **APIs & Services → Library**, find **Google Drive API** and select **Enable**.
+2. Go to **IAM & Admin → Service Accounts → Create service account**. Name it `promtek-hub-drive`. Skip the optional role steps and create it.
+3. Copy its email address, which looks like `promtek-hub-drive@your-project.iam.gserviceaccount.com`.
+4. Open the account, go to **Keys → Add key → Create new key → JSON**, and keep the file that downloads. It's the only copy, so treat it as a password.
+5. In Google Drive, share the assessments folder with that email address as **Content manager**. If the shared drive won't allow sharing a folder outside the drive, add the service account as a member of the shared drive instead.
+6. In the Worker's **Settings → Variables and secrets**, add two **Secrets**:
+    - `GOOGLE_SERVICE_ACCOUNT`: the entire contents of the JSON file
+    - `DRIVE_FOLDER_ID`: `14T2Tk1YjLt0yEiO9m_Q-zWkP__n3X578`
+7. Delete the downloaded JSON file from your computer.
+
+If step 4 is refused, your Workspace policy blocks service account keys. That's a setting you can change as Workspace admin under service account key creation.
+
+**If either delivery fails**, the assessment is still saved and downloadable from the hub, and the team lead is told so it can be filed by hand. Nothing is ever lost because Jira or Drive was unavailable.
+
+## Part 12: Move the obsolescence app in
 
 28. Copy the files from your obsolescence app's GitHub repository into `public/apps/obsolescence/` in this repository, replacing the placeholder `index.html`. Commit.
 29. It now opens from the tile on the home page, behind the same Google sign-in.

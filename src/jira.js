@@ -24,19 +24,23 @@ export async function jira(env, path, init = {}) {
   return res.json();
 }
 
-export async function searchJql(env, jql, fields) {
+export async function searchJql(env, jql, fields, { limit = Infinity, pageSize = 100 } = {}) {
   const issues = [];
   let token = null;
   let pages = 0;
   do {
-    const params = new URLSearchParams({ jql, fields: fields.join(','), maxResults: '100' });
+    const params = new URLSearchParams({
+      jql,
+      fields: fields.join(','),
+      maxResults: String(Math.min(pageSize, limit - issues.length)),
+    });
     if (token) params.set('nextPageToken', token);
     const data = await jira(env, `/rest/api/3/search/jql?${params}`);
     issues.push(...(data.issues || []));
     token = data.nextPageToken || null;
     pages++;
-  } while (token && pages < 50);
-  return issues;
+  } while (token && pages < 50 && issues.length < limit);
+  return issues.slice(0, limit === Infinity ? undefined : limit);
 }
 
 export async function getIssue(env, idOrKey, fields) {
