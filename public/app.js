@@ -129,17 +129,36 @@ const pages = {
       return `<h1>${greeting()}${first ? `, ${esc(first)}` : ''}</h1><p>${longDate(todayIso())}</p>${summary}`;
     },
     render() {
-      const tiles = MODULES.filter((m) => (!m.adminOnly || me.user.isAdmin) && (!m.leadOnly || me.user.isLead)).map((m) => {
+      const visible = orderedTiles();
+      const hidden = MODULES.filter((m) => allowedTile(m) && tilePrefs.hidden.includes(m.id));
+      const tiles = visible.map((m, i) => {
         const detail = m.detail ? `<span class="detail">${m.detail(me)}</span>` : '';
         const inner = `<span class="tile-icon">${m.icon}</span><strong>${esc(m.name)}</strong>${detail}`;
+        if (arrangeMode) {
+          return `<div class="tile arranging">${inner}<span class="arrange">
+              <button class="icon-btn" data-tile="up" data-value="${esc(m.id)}" aria-label="Move ${esc(m.name)} earlier"${i === 0 ? ' disabled' : ''}>${svgIcon('<path d="M5 15l7-7 7 7"/>')}</button>
+              <button class="icon-btn" data-tile="down" data-value="${esc(m.id)}" aria-label="Move ${esc(m.name)} later"${i === visible.length - 1 ? ' disabled' : ''}>${svgIcon('<path d="M19 9l-7 7-7-7"/>')}</button>
+              <button class="icon-btn" data-tile="hide" data-value="${esc(m.id)}" aria-label="Hide ${esc(m.name)}">${svgIcon('<path d="M4 4l16 16"/><path d="M12 6c5 0 9 6 9 6a15 15 0 01-3 3.4M7.5 7.6A15 15 0 003 12s4 6 9 6a8 8 0 003.7-.9"/>')}</button>
+            </span></div>`;
+        }
         if (m.construction) return `<div class="tile construction" aria-disabled="true">${inner}<span class="badge">Under construction</span></div>`;
         return `<a class="tile" href="${esc(m.route || m.href)}">${inner}</a>`;
       }).join('');
+
+      const hiddenBlock = arrangeMode && hidden.length ? `<h2>Hidden</h2>
+        <div class="options">${hidden.map((m) => `<div class="option">
+            <span class="option-main"><strong>${esc(m.name)}</strong></span>
+            <button class="btn secondary" data-tile="show" data-value="${esc(m.id)}">Show</button>
+          </div>`).join('')}</div>` : '';
       const setup = me.user.isAdmin && !me.ledgerStart
         ? `<div class="card notice" style="margin-bottom:1rem"><p><strong>XP tracking hasn't started yet.</strong> Open <a href="#/admin">Admin</a> to start the ledger.</p></div>`
         : '';
-      return `${setup}${me.linked ? '' : notLinkedCard()}<div class="tiles">${tiles}</div>
-        ${me.linked ? `<h2>Latest XP</h2>${xpList(me.recent.slice(0, 4), 'Log time in Tempo and your XP appears here within a couple of minutes.')}` : ''}`;
+      return `${setup}${me.linked ? '' : notLinkedCard()}
+        <div class="row" style="justify-content:flex-end;margin-bottom:.75rem">
+          <button class="btn secondary" data-tile="${arrangeMode ? 'done' : 'arrange'}">${arrangeMode ? 'Done arranging' : 'Arrange tiles'}</button>
+        </div>
+        <div class="tiles">${tiles}</div>${hiddenBlock}
+        ${me.linked && !arrangeMode ? `<h2>Latest XP</h2>${xpList(me.recent.slice(0, 4), 'Log time in Tempo and your XP appears here within a couple of minutes.')}` : ''}`;
     },
   },
 
@@ -259,12 +278,41 @@ const pages = {
     },
   },
 
+  '#/it': {
+    band: () => `<h1>IT support</h1><p>Report a problem or ask for what you need.</p>`,
+    async render() {
+      if (!me.linked) return notLinkedCard();
+      if (!itOptions) itOptions = await api('/api/it/options');
+      return itForm ? itFormHtml() : itHomeHtml(await api('/api/it/requests'));
+    },
+  },
+
+  '#/vehicles': {
+    band: () => `<h1>Vehicles</h1><p>Book one, check it over before you drive, report anything wrong.</p>`,
+    async render() {
+      if (!me.linked) return notLinkedCard();
+      if (!checkSchema) checkSchema = await api('/api/vehicles/check-schema');
+      if (vehicleView === 'check') return vehicleCheckHtml();
+      const [fleet, mine] = await Promise.all([api('/api/vehicles'), api('/api/vehicles/mine')]);
+      fleetCache = fleet.vehicles;
+      if (vehicleView === 'book') return vehicleBookHtml(fleet.vehicles, await api(`/api/vehicles/week?week=${vehicleWeek()}`));
+      if (vehicleView === 'defects') return vehicleDefectsHtml(await api('/api/vehicles/defects'));
+      return vehicleHomeHtml(fleet.vehicles, mine.bookings);
+    },
+  },
+
   '#/admin': {
     band: () => `<h1>Admin</h1><p>Sync status, shadow-mode checks and account links.</p>`,
     async render() {
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const data = await api('/api/admin/overview');
+      const [data, itTypes, adminVehicles, raList] = await Promise.all([
+        api('/api/admin/overview'),
+        api('/api/admin/it-types').catch((err) => ({ categories: [], types: [], error: err.message })),
+        api('/api/admin/vehicles').catch(() => ({ vehicles: [] })),
+        api('/api/admin/ra-library').catch(() => ({ items: [] })),
+      ]);
       const s = data.state;
+      itServiceDeskId = itTypes.serviceDeskId || itServiceDeskId;
       const options = data.employees.map((e) => `<option value="${esc(e.account_id)}">${esc(e.name)}${e.email ? ` (${esc(e.email)})` : ''}</option>`).join('');
       const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
       return `
@@ -367,6 +415,59 @@ const pages = {
         <p class="muted">Give these people an Employee issue in DNM with their account ID in the UserID field, then refresh profiles. Any of their time from the last two weeks is picked up within about 30 minutes.</p>`
         : '<div class="card"><p class="muted">None. Every worklog belongs to someone with a profile.</p></div>'}
 
+        <h2>Vehicles</h2>
+        <div class="card">
+          <div class="table-wrap"><table>
+            <thead><tr><th>Registration</th><th>Vehicle</th><th>Status</th><th>MOT</th><th>Insurance</th><th>Tax</th><th>Service</th><th class="num">Miles</th></tr></thead>
+            <tbody>${adminVehicles.vehicles.map((v) => `<tr>
+              <td><button class="linklike" data-admin-vehicle="${esc(v.id)}">${esc(v.registration)}</button></td>
+              <td>${esc([v.make, v.model, v.kind].filter(Boolean).join(' '))}</td>
+              <td>${v.active ? (v.offRoad ? '<span class="bad">Off the road</span>' : 'Available') : '<span class="muted">Retired</span>'}</td>
+              <td>${esc(v.mot_due || '—')}</td><td>${esc(v.insurance_due || '—')}</td>
+              <td>${esc(v.tax_due || '—')}</td><td>${esc(v.service_due || '—')}</td>
+              <td class="num">${v.mileage ? n(v.mileage) : '—'}</td>
+            </tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}</tbody>
+          </table></div>
+          <div class="row" style="margin-top:1rem">
+            <button class="btn" data-admin-vehicle="">Add a vehicle</button>
+            <button class="btn secondary" data-action="vehicle-expiries">Check expiry dates now</button>
+          </div>
+          <div id="vehicle-form"></div>
+          <div class="result" id="vehicle-result" role="status"></div>
+        </div>
+
+        <h2>IT request types</h2>
+        <div class="card">
+          <p style="margin-top:0">What the hub offers engineers, and the Jira request type each one raises.</p>
+          ${itTypes.error ? `<p class="bad">${esc(itTypes.error)}</p>` : `
+            <div class="table-wrap"><table>
+              <thead><tr><th>In the hub</th><th>Raises in Jira</th></tr></thead>
+              <tbody>${itTypes.categories.map((c) => `<tr>
+                <td>${esc(c.label)}</td>
+                <td><select data-it-map="${esc(c.id)}">
+                  <option value="">Not set up</option>
+                  ${itTypes.types.map((t) => `<option value="${esc(t.id)}"${t.id === c.mapped ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}
+                </select></td>
+              </tr>`).join('')}</tbody>
+            </table></div>`}
+          <div class="result" id="it-map-result" role="status"></div>
+        </div>
+
+        <h2>Risk assessments and safe systems of work</h2>
+        <div class="card">
+          <p style="margin-top:0">What engineers can pick from on a point of work assessment.</p>
+          <ul class="list" style="box-shadow:none">${raList.items.map((r) => `<li>
+              <span class="title">${esc(r.title)}</span>
+              <span class="sub">${r.active ? 'In the list' : 'Hidden'}</span>
+              <span class="xp"><button class="linklike" data-ra-toggle="${esc(r.id)}" data-ra-active="${r.active ? 0 : 1}" data-ra-title="${esc(r.title)}">${r.active ? 'Hide' : 'Show'}</button></span>
+            </li>`).join('') || '<li><span class="muted">Nothing yet.</span></li>'}</ul>
+          <div class="row" style="margin-top:1rem">
+            <label style="flex:1">Add one <input id="ra-title" placeholder="RA - 1021 - Working at Height" autocomplete="off"></label>
+            <button class="btn" data-action="ra-add">Add</button>
+          </div>
+          <div class="result" id="ra-result" role="status"></div>
+        </div>
+
         <h2>Link a Google account</h2>
         <div class="card">
           <p>People are linked automatically the first time they sign in. Use this if someone's account didn't match.</p>
@@ -382,6 +483,378 @@ const pages = {
 };
 
 // ---------- account panel ----------
+
+// ---------- arranging tiles ----------
+
+let tilePrefs = { order: null, hidden: [] };
+let arrangeMode = false;
+
+const allowedTile = (m) => (!m.adminOnly || me.user.isAdmin) && (!m.leadOnly || me.user.isLead);
+
+function orderedTiles() {
+  const allowed = MODULES.filter((m) => allowedTile(m) && !tilePrefs.hidden.includes(m.id));
+  if (!tilePrefs.order?.length) return allowed;
+  const position = new Map(tilePrefs.order.map((id, i) => [id, i]));
+  // Anything new since they last arranged goes to the end.
+  return allowed.sort((a, b) => (position.get(a.id) ?? 999) - (position.get(b.id) ?? 999));
+}
+
+async function saveTilePrefs() {
+  tilePrefs.order = orderedTiles().map((m) => m.id);
+  try {
+    await api('/api/prefs/tiles', { method: 'POST', body: JSON.stringify(tilePrefs) });
+  } catch {
+    toast('Saved on this device only, just now');
+  }
+}
+
+async function tileControl(action, id) {
+  if (action === 'arrange') { arrangeMode = true; return render(); }
+  if (action === 'done') { arrangeMode = false; await saveTilePrefs(); return render(); }
+
+  const order = orderedTiles().map((m) => m.id);
+  const index = order.indexOf(id);
+  if (action === 'up' && index > 0) order.splice(index - 1, 0, ...order.splice(index, 1));
+  if (action === 'down' && index < order.length - 1) order.splice(index + 1, 0, ...order.splice(index, 1));
+  if (action === 'hide') tilePrefs.hidden = [...tilePrefs.hidden, id];
+  if (action === 'show') tilePrefs.hidden = tilePrefs.hidden.filter((h) => h !== id);
+  tilePrefs.order = order;
+  await saveTilePrefs();
+  return render();
+}
+
+// ---------- IT support ----------
+
+let itOptions = null;
+let itServiceDeskId = null;
+let itForm = null;
+let itAssets = [];
+
+function itHomeHtml(data) {
+  const row = (r) => `<li>
+      <span class="title"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.key)}</a> ${esc(r.summary)}</span>
+      <span class="sub">${esc(r.status)}${r.priority ? `, ${esc(r.priority)}` : ''}, with ${esc(r.assignee)}</span>
+      <span class="xp">${r.done ? '<span class="good">Done</span>' : ''}</span>
+    </li>`;
+  const open = data.requests.filter((r) => !r.done);
+  const closed = data.requests.filter((r) => r.done).slice(0, 5);
+  return `
+    <div class="card">
+      <p style="margin-top:0">Anything from a broken laptop to a licence you need. It goes straight to IT with your name on it.</p>
+      <button class="btn" data-it="new">Raise a request</button>
+    </div>
+    <h2>Open</h2>
+    ${open.length ? `<ul class="list">${open.map(row).join('')}</ul>`
+      : `<div class="card"><p class="muted">${data.error ? esc(data.error) : 'Nothing open.'}</p></div>`}
+    ${closed.length ? `<h2>Recently closed</h2><ul class="list">${closed.map(row).join('')}</ul>` : ''}`;
+}
+
+function itFormHtml() {
+  const f = itForm;
+  if (!f.category) {
+    return `<div class="card">
+        <h2 style="margin-top:0">What do you need?</h2>
+      </div>
+      <div style="height:1rem"></div>
+      <div class="options">${itOptions.categories.map((c) => `<button class="option" data-it-cat="${esc(c.id)}">
+          <span class="option-main"><strong>${esc(c.label)}</strong><span class="muted">${esc(c.hint)}</span></span>
+          <span class="chev">›</span>
+        </button>`).join('')}</div>`;
+  }
+  const category = itOptions.categories.find((c) => c.id === f.category);
+  const assets = itAssets.length ? `<div class="options" style="margin-top:.5rem">${itAssets.map((a) => `
+      <button class="option${f.assetKey === a.key ? ' on' : ''}" data-it-asset="${esc(a.key)}">
+        <span class="option-main"><strong>${esc(a.label)} ${esc(a.title)}</strong><span class="muted">${esc(a.sublabel)}</span></span>
+      </button>`).join('')}</div>` : '<p class="muted" style="margin:.5rem 0 0">Nothing assigned to you. Search above if it relates to a particular piece of kit.</p>';
+
+  return `<div class="card">
+      <p class="muted" style="margin:0">${esc(category.label)}</p>
+      <h2 style="margin:.2rem 0 1rem">Tell IT what's happening</h2>
+      <label>Summary <input id="it-summary" value="${esc(f.summary || '')}" placeholder="Laptop won't charge" autocomplete="off"></label>
+      <label style="margin-top:.75rem">Detail <input id="it-detail" value="${esc(f.description || '')}" placeholder="What happens, and when it started" autocomplete="off"></label>
+
+      <p class="muted" style="margin:1.25rem 0 .4rem">How much is it holding you up?</p>
+      <div class="chips stack">${itOptions.urgencies.map((u) =>
+        `<button class="chip${f.urgency === u.id ? ' on' : ''}" data-it-urgency="${esc(u.id)}">${esc(u.label)}</button>`).join('')}</div>
+
+      <p class="muted" style="margin:1.25rem 0 .4rem">Which piece of kit? Optional.</p>
+      <input id="it-asset-search" type="search" placeholder="Search assets by name" autocomplete="off">
+      ${assets}
+
+      <p class="muted" style="margin:1.25rem 0 .4rem">Photos, if they help. Optional.</p>
+      <input id="it-photos" type="file" accept="image/*" multiple>
+      ${f.attachments?.length ? `<p class="muted">${f.attachments.length} photo${f.attachments.length > 1 ? 's' : ''} attached.</p>` : ''}
+
+      <div class="row" style="margin-top:1.25rem">
+        <button class="btn" data-it="send">Send to IT</button>
+        <button class="btn secondary" data-it="cancel">Cancel</button>
+      </div>
+      <div class="result" id="it-result" role="status"></div>
+    </div>`;
+}
+
+async function itControl(action, value) {
+  const collect = () => {
+    itForm.summary = document.getElementById('it-summary')?.value.trim() ?? itForm.summary;
+    itForm.description = document.getElementById('it-detail')?.value.trim() ?? itForm.description;
+  };
+  if (action === 'new') { itForm = { attachments: [] }; itAssets = []; return render(); }
+  if (action === 'cancel') { itForm = null; return render(); }
+  if (action === 'category') {
+    itForm.category = value;
+    itAssets = (await api('/api/it/assets').catch(() => ({ assets: [] }))).assets;
+    return render();
+  }
+  if (action === 'urgency') { collect(); itForm.urgency = value; return render(); }
+  if (action === 'asset') { collect(); itForm.assetKey = itForm.assetKey === value ? null : value; return render(); }
+  if (action === 'send') {
+    collect();
+    const out = document.getElementById('it-result');
+    if (!itForm.summary) { out.textContent = 'A short summary is needed.'; out.className = 'result bad'; return; }
+    if (!itForm.urgency) { out.textContent = 'Say how much it is holding you up.'; out.className = 'result bad'; return; }
+    out.textContent = 'Sending…';
+    out.className = 'result';
+    try {
+      const created = await api('/api/it/raise', { method: 'POST', body: JSON.stringify(itForm) });
+      itForm = null;
+      toast(`${created.key} raised with IT`);
+      if (created.notes?.length) toast(created.notes.join(' '));
+      return render();
+    } catch (err) {
+      out.textContent = err.message;
+      out.className = 'result bad';
+    }
+  }
+}
+
+// Photos are read in the browser and sent with the request.
+async function readPhotos(files) {
+  const out = [];
+  for (const file of [...files].slice(0, 5)) {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+    out.push({ name: file.name, type: file.type, base64 });
+  }
+  return out;
+}
+
+// ---------- vehicles ----------
+
+let vehicleView = 'home';
+let checkSchema = null;
+let fleetCache = [];
+let checkForm = null;
+let weekOffsetVehicles = 0;
+
+const vehicleWeek = () => {
+  const monday = mondayOf(todayIso());
+  return addDays(monday, weekOffsetVehicles * 7);
+};
+
+const expiryChip = (expiry) => {
+  if (!expiry) return '';
+  const tone = expiry.days < 0 ? 'bad' : expiry.days <= 30 ? 'low' : 'muted';
+  const when = expiry.days < 0 ? `${expiry.label} overdue` : `${expiry.label} in ${expiry.days} days`;
+  return `<span class="${tone}">${esc(when)}</span>`;
+};
+
+function vehicleTabs(current) {
+  const tabs = [['home', 'Fleet'], ['book', 'Book'], ['check', 'Check'], ...(me.user.isLead ? [['defects', 'Defects']] : [])];
+  return `<div class="tabs" style="margin-bottom:1rem">${tabs.map(([id, label]) =>
+    `<button class="tab${id === current ? ' on' : ''}" data-veh-view="${id}">${label}</button>`).join('')}</div>`;
+}
+
+function vehicleHomeHtml(vehicles, bookings) {
+  const mine = bookings.map((b) => `<li>
+      <span class="title">${esc(b.registration)} ${esc([b.make, b.model].filter(Boolean).join(' '))}</span>
+      <span class="sub">${esc(b.starts_at.replace('T', ' '))} to ${esc(b.ends_at.replace('T', ' '))}${b.issue_key ? `, ${esc(b.issue_key)}` : ''}</span>
+      <span class="xp"><button class="linklike" data-veh-cancel="${esc(b.id)}">Cancel</button></span>
+    </li>`).join('');
+
+  const fleet = vehicles.map((v) => `<li>
+      <span class="title">${esc(v.registration)} ${esc([v.make, v.model].filter(Boolean).join(' '))}</span>
+      <span class="sub">${v.offRoad ? '<span class="bad">Off the road</span>' : 'Available'}${v.openDefects ? `, ${v.openDefects} open defect${v.openDefects > 1 ? 's' : ''}` : ''}${v.mileage ? `, ${n(v.mileage)} miles` : ''}. ${expiryChip(v.soonest)}</span>
+      <span class="xp"><button class="linklike" data-veh-check="${esc(v.id)}">Check</button></span>
+    </li>`).join('');
+
+  return `${vehicleTabs('home')}
+    ${bookings.length ? `<h2 style="margin-top:0">Your bookings</h2><ul class="list">${mine}</ul>` : ''}
+    <h2${bookings.length ? '' : ' style="margin-top:0"'}>The fleet</h2>
+    ${vehicles.length ? `<ul class="list">${fleet}</ul>`
+      : '<div class="card"><p class="muted">No vehicles yet. An admin can add them on the Admin page.</p></div>'}`;
+}
+
+function vehicleBookHtml(vehicles, week) {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(week.weekStart, i));
+  const byVehicle = new Map(vehicles.map((v) => [v.id, []]));
+  week.bookings.forEach((b) => byVehicle.get(b.vehicle_id)?.push(b));
+
+  const grid = vehicles.map((v) => `<tr>
+      <td>${esc(v.registration)}${v.offRoad ? '<br><span class="bad">Off road</span>' : ''}</td>
+      ${days.map((day) => {
+        const on = (byVehicle.get(v.id) || []).filter((b) => b.starts_at.slice(0, 10) === day);
+        return `<td class="num">${on.length
+          ? on.map((b) => `<span class="slot">${esc(b.starts_at.slice(11, 16))}–${esc(b.ends_at.slice(11, 16))}<br><small>${esc((b.engineer || '').split(' ')[0])}</small></span>`).join('')
+          : '<span class="muted">—</span>'}</td>`;
+      }).join('')}
+    </tr>`).join('');
+
+  const hours = Array.from({ length: 13 }, (_, i) => `${String(i + 6).padStart(2, '0')}:00`);
+  return `${vehicleTabs('book')}
+    <div class="card">
+      <div class="week-nav">
+        <button class="icon-btn" data-veh-week="-1" aria-label="Previous week">${svgIcon('<path d="M15 5l-7 7 7 7"/>')}</button>
+        <strong>Week of ${shortDate(week.weekStart)}</strong>
+        <button class="icon-btn" data-veh-week="1" aria-label="Next week">${svgIcon('<path d="M9 5l7 7-7 7"/>')}</button>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Vehicle</th>${days.map((d) => `<th class="num">${shortDate(d)}</th>`).join('')}</tr></thead>
+        <tbody>${grid || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}</tbody>
+      </table></div>
+    </div>
+
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Book a vehicle</h2>
+      <div class="row">
+        <label>Vehicle <select id="veh-id">${vehicles.filter((v) => !v.offRoad).map((v) =>
+          `<option value="${esc(v.id)}">${esc(v.registration)} ${esc([v.make, v.model].filter(Boolean).join(' '))}</option>`).join('')}</select></label>
+        <label>Date <input id="veh-date" type="date" value="${todayIso()}"></label>
+      </div>
+      <div class="row" style="margin-top:.75rem">
+        <label>From <select id="veh-from">${hours.map((h) => `<option${h === '08:00' ? ' selected' : ''}>${h}</option>`).join('')}</select></label>
+        <label>Until <select id="veh-to">${hours.map((h) => `<option${h === '17:00' ? ' selected' : ''}>${h}</option>`).join('')}</select></label>
+      </div>
+      <label style="margin-top:.75rem">Job it's for, optional <input id="veh-job" placeholder="WYNNL-712" autocomplete="off"></label>
+      <label style="margin-top:.75rem">What for, optional <input id="veh-purpose" placeholder="Commissioning visit" autocomplete="off"></label>
+      <div class="row" style="margin-top:1rem"><button class="btn" data-veh="book">Book it</button></div>
+      <div class="result" id="veh-result" role="status"></div>
+    </div>`;
+}
+
+function vehicleCheckHtml() {
+  if (!checkForm) {
+    return `${vehicleTabs('check')}
+      <div class="card">
+        <h2 style="margin-top:0">Which vehicle are you taking?</h2>
+        <p class="muted">Do this before you drive. It takes a minute and covers you.</p>
+      </div>
+      <div style="height:1rem"></div>
+      <div class="options">${fleetCache.map((v) => `<button class="option" data-veh-check="${esc(v.id)}">
+          <span class="option-main"><strong>${esc(v.registration)} ${esc([v.make, v.model].filter(Boolean).join(' '))}</strong>
+          <span class="muted">${v.offRoad ? 'Off the road, defects outstanding' : 'Available'}</span></span>
+          <span class="chev">›</span>
+        </button>`).join('') || '<div class="card"><p class="muted">No vehicles yet.</p></div>'}</div>`;
+  }
+
+  const vehicle = fleetCache.find((v) => v.id === checkForm.vehicleId);
+  const rows = checkSchema.items.map((item) => {
+    const entry = checkForm.results[item.id] || {};
+    return `<div class="qrow">
+        <span><strong>${esc(item.label)}</strong><br><span class="muted">${esc(item.hint)}</span></span>
+        ${segment(`check.${item.id}`, entry.result, [['pass', 'Pass'], ['fail', 'Fail']])}
+        ${entry.result === 'fail' ? `<input class="wide" data-check-note="${esc(item.id)}" value="${esc(entry.note || '')}" placeholder="What's wrong with it?" autocomplete="off">` : ''}
+      </div>`;
+  }).join('');
+
+  const fails = Object.values(checkForm.results).filter((r) => r.result === 'fail').length;
+  return `${vehicleTabs('check')}
+    <div class="card">
+      <h2 style="margin-top:0">${esc(vehicle?.registration || 'Vehicle')} check</h2>
+      <p class="muted">Anything failed goes to management with your note. If it isn't safe, say so and it comes off the road straight away.</p>
+      ${rows}
+      <label style="margin-top:1rem">Current mileage <input id="check-mileage" type="number" inputmode="numeric" value="${checkForm.mileage || vehicle?.mileage || ''}"></label>
+      <label style="margin-top:.75rem">Job you're driving to, optional <input id="check-job" value="${esc(checkForm.issueKey || '')}" placeholder="WYNNL-712" autocomplete="off"></label>
+      <p class="muted" style="margin:1.25rem 0 .4rem">Is it fit to drive?</p>
+      ${segment('fit.drive', checkForm.fitToDrive === false ? 'no' : 'yes', [['yes', 'Yes, safe to drive'], ['no', 'No, not fit to drive']])}
+      ${fails ? `<p class="muted" style="margin-top:.75rem">${fails} item${fails > 1 ? 's' : ''} failed.</p>` : ''}
+      <div class="row" style="margin-top:1.25rem">
+        <button class="btn" data-veh="submit-check">Finish the check</button>
+        <button class="btn secondary" data-veh="cancel-check">Back</button>
+      </div>
+      <div class="result" id="check-result" role="status"></div>
+    </div>`;
+}
+
+function vehicleDefectsHtml(data) {
+  const rows = data.defects.map((d) => `<li>
+      <span class="title">${esc(d.registration)} ${esc(d.item)}${d.severity === 'not-fit' ? ' <span class="bad">not fit to drive</span>' : ''}</span>
+      <span class="sub">${esc(d.note || 'No detail given')}. Reported by ${esc(d.reporter || 'someone')} on ${shortDate((d.created_at || '').slice(0, 10))}</span>
+      <span class="xp"><button class="linklike" data-veh-resolve="${esc(d.id)}">Clear</button></span>
+    </li>`).join('');
+  return `${vehicleTabs('defects')}
+    ${data.defects.length ? `<ul class="list">${rows}</ul>`
+      : '<div class="card"><p class="muted">Nothing outstanding.</p></div>'}`;
+}
+
+async function vehicleControl(action, value) {
+  const out = (id, text, bad) => {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = text; el.className = `result ${bad ? 'bad' : 'good'}`; }
+  };
+  try {
+    if (action === 'view') { vehicleView = value; checkForm = value === 'check' ? null : checkForm; return render(); }
+    if (action === 'week') { weekOffsetVehicles += Number(value); return render(); }
+    if (action === 'start-check') {
+      checkForm = { vehicleId: value, results: {}, fitToDrive: true };
+      vehicleView = 'check';
+      return render();
+    }
+    if (action === 'cancel-check') { checkForm = null; vehicleView = 'home'; return render(); }
+    if (action === 'cancel-booking') {
+      await api('/api/vehicles/cancel', { method: 'POST', body: JSON.stringify({ id: value }) });
+      toast('Booking cancelled');
+      return render();
+    }
+    if (action === 'resolve') {
+      await api('/api/vehicles/resolve-defect', { method: 'POST', body: JSON.stringify({ id: value }) });
+      toast('Defect cleared');
+      return render();
+    }
+    if (action === 'book') {
+      const date = document.getElementById('veh-date').value;
+      await api('/api/vehicles/book', {
+        method: 'POST',
+        body: JSON.stringify({
+          vehicleId: document.getElementById('veh-id').value,
+          startsAt: `${date}T${document.getElementById('veh-from').value}:00`,
+          endsAt: `${date}T${document.getElementById('veh-to').value}:00`,
+          issueKey: document.getElementById('veh-job').value.trim() || null,
+          purpose: document.getElementById('veh-purpose').value.trim() || null,
+        }),
+      });
+      toast('Vehicle booked');
+      vehicleView = 'home';
+      return render();
+    }
+    if (action === 'submit-check') {
+      document.querySelectorAll('[data-check-note]').forEach((input) => {
+        const entry = checkForm.results[input.dataset.checkNote];
+        if (entry) entry.note = input.value.trim();
+      });
+      const result = await api('/api/vehicles/check', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...checkForm,
+          mileage: document.getElementById('check-mileage').value,
+          issueKey: document.getElementById('check-job').value.trim() || null,
+        }),
+      });
+      checkForm = null;
+      vehicleView = 'home';
+      toast(result.defects
+        ? `Check done, ${result.defects} fault${result.defects > 1 ? 's' : ''} reported`
+        : 'Check done, have a good trip');
+      if (result.transitionNote) toast(`The job wasn't moved on: ${result.transitionNote}`);
+      return render();
+    }
+  } catch (err) {
+    out(action === 'book' ? 'veh-result' : 'check-result', err.message, true);
+  }
+}
 
 // ---------- point of work ----------
 
@@ -688,6 +1161,14 @@ function powToggle(set, value) {
 
 function powSet(name, value) {
   const [group, key] = name.split('.');
+  if (group === 'check') {
+    checkForm.results[key] = { ...(checkForm.results[key] || {}), result: value };
+    return render();
+  }
+  if (group === 'fit') {
+    checkForm.fitToDrive = value === 'yes';
+    return render();
+  }
   if (group === 'before') powForm.before[key] = value;
   if (group === 'review') powForm.review[key] = value;
   if (group === 'sig') {
@@ -1384,7 +1865,8 @@ async function adminAction(action, button) {
   };
   const target = { 'sync-now': 'sync-result', 'refresh-profiles': 'sync-result', snapshot: 'sync-result',
     'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
-    'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result' }[action];
+    'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
+    'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result' }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
@@ -1408,6 +1890,28 @@ async function adminAction(action, button) {
       const months = document.getElementById('backfill-months').value;
       const r = await api('/api/admin/backfill-start', { method: 'POST', body: JSON.stringify({ months }) });
       out(target, `Backfill started, working back to ${r.until}. It runs in the background, a batch every couple of minutes.`);
+    } else if (action === 'vehicle-expiries') {
+      const r = await api('/api/admin/vehicle-expiries', { method: 'POST', body: JSON.stringify({}) });
+      out('vehicle-result', `Checked ${r.vehicles} vehicles, raised ${r.raised} reminder${r.raised === 1 ? '' : 's'}.`);
+    } else if (action === 'save-vehicle') {
+      const value = (id) => document.getElementById(id).value.trim();
+      await api('/api/admin/vehicle', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: value('veh-form-id') || null,
+          registration: value('veh-form-reg'), make: value('veh-form-make'), model: value('veh-form-model'),
+          kind: value('veh-form-kind'), motDue: value('veh-form-mot'), insuranceDue: value('veh-form-ins'),
+          taxDue: value('veh-form-tax'), serviceDue: value('veh-form-service'),
+          mileage: value('veh-form-miles'), responsibleEmail: value('veh-form-email'),
+          active: document.getElementById('veh-form-active').value === '1',
+        }),
+      });
+      out('vehicle-result', 'Saved.');
+    } else if (action === 'ra-add') {
+      const title = document.getElementById('ra-title').value.trim();
+      if (!title) return out('ra-result', 'Type the name first.', true);
+      await api('/api/admin/ra-save', { method: 'POST', body: JSON.stringify({ title }) });
+      out('ra-result', 'Added.');
     } else if (action === 'recompute-stages') {
       const r = await api('/api/admin/recompute-stages', { method: 'POST', body: JSON.stringify({}) });
       out(target, `Rebuilt names and shares for ${r.stages} stages.`);
@@ -1428,7 +1932,9 @@ async function adminAction(action, button) {
       });
       out(target, 'Linked.');
     }
-    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages'].includes(action)) setTimeout(render, 1200);
+    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries'].includes(action)) {
+      setTimeout(render, 1200);
+    }
   } catch (err) {
     out(target, err.message, true);
   } finally {
@@ -1479,6 +1985,66 @@ view.addEventListener('click', async (event) => {
     document.getElementById('flag-box').hidden = false;
     return;
   }
+
+  const itBtn = event.target.closest('[data-it]');
+  if (itBtn) return itControl(itBtn.dataset.it);
+  const itCat = event.target.closest('[data-it-cat]');
+  if (itCat) return itControl('category', itCat.dataset.itCat);
+  const itUrg = event.target.closest('[data-it-urgency]');
+  if (itUrg) return itControl('urgency', itUrg.dataset.itUrgency);
+  const itAsset = event.target.closest('[data-it-asset]');
+  if (itAsset) return itControl('asset', itAsset.dataset.itAsset);
+
+  const vehView = event.target.closest('[data-veh-view]');
+  if (vehView) return vehicleControl('view', vehView.dataset.vehView);
+  const vehWeek = event.target.closest('[data-veh-week]');
+  if (vehWeek) return vehicleControl('week', vehWeek.dataset.vehWeek);
+  const vehCheck = event.target.closest('[data-veh-check]');
+  if (vehCheck) return vehicleControl('start-check', vehCheck.dataset.vehCheck);
+  const vehCancel = event.target.closest('[data-veh-cancel]');
+  if (vehCancel) return vehicleControl('cancel-booking', vehCancel.dataset.vehCancel);
+  const vehResolve = event.target.closest('[data-veh-resolve]');
+  if (vehResolve) return vehicleControl('resolve', vehResolve.dataset.vehResolve);
+  const vehBtn = event.target.closest('[data-veh]');
+  if (vehBtn) return vehicleControl(vehBtn.dataset.veh);
+
+  const adminVeh = event.target.closest('[data-admin-vehicle]');
+  if (adminVeh) {
+    const vehicles = (await api('/api/admin/vehicles')).vehicles;
+    const v = vehicles.find((x) => x.id === adminVeh.dataset.adminVehicle) || {};
+    document.getElementById('vehicle-form').innerHTML = `
+      <input type="hidden" id="veh-form-id" value="${esc(v.id || '')}">
+      <div class="row" style="margin-top:1rem">
+        <label>Registration <input id="veh-form-reg" value="${esc(v.registration || '')}" autocomplete="off"></label>
+        <label>Make <input id="veh-form-make" value="${esc(v.make || '')}" autocomplete="off"></label>
+        <label>Model <input id="veh-form-model" value="${esc(v.model || '')}" autocomplete="off"></label>
+        <label>Type <input id="veh-form-kind" value="${esc(v.kind || 'Van')}" autocomplete="off"></label>
+      </div>
+      <div class="row" style="margin-top:.75rem">
+        <label>MOT due <input id="veh-form-mot" type="date" value="${esc(v.mot_due || '')}"></label>
+        <label>Insurance due <input id="veh-form-ins" type="date" value="${esc(v.insurance_due || '')}"></label>
+        <label>Tax due <input id="veh-form-tax" type="date" value="${esc(v.tax_due || '')}"></label>
+        <label>Service due <input id="veh-form-service" type="date" value="${esc(v.service_due || '')}"></label>
+      </div>
+      <div class="row" style="margin-top:.75rem">
+        <label>Mileage <input id="veh-form-miles" type="number" value="${v.mileage || ''}"></label>
+        <label style="flex:1">Who looks after repairs <input id="veh-form-email" type="email" value="${esc(v.responsible_email || '')}" placeholder="name@promtek.com"></label>
+        <label>In service <select id="veh-form-active"><option value="1"${v.active === 0 ? '' : ' selected'}>Yes</option><option value="0"${v.active === 0 ? ' selected' : ''}>Retired</option></select></label>
+      </div>
+      <div class="row" style="margin-top:1rem"><button class="btn" data-action="save-vehicle">Save vehicle</button></div>`;
+    return;
+  }
+  const raToggle = event.target.closest('[data-ra-toggle]');
+  if (raToggle) {
+    await api('/api/admin/ra-save', {
+      method: 'POST',
+      body: JSON.stringify({ id: raToggle.dataset.raToggle, title: raToggle.dataset.raTitle, active: raToggle.dataset.raActive === '1' }),
+    });
+    return render();
+  }
+
+  const tileBtn = event.target.closest('[data-tile]');
+  if (tileBtn) return tileControl(tileBtn.dataset.tile, tileBtn.dataset.value);
 
   const powBtn = event.target.closest('[data-pow]');
   if (powBtn) return powControl(powBtn.dataset.pow);
@@ -1540,6 +2106,17 @@ async function render() {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (event.target.id === 'it-asset-search') {
+    clearTimeout(searchTimer);
+    const query = event.target.value;
+    searchTimer = setTimeout(async () => {
+      itAssets = (await api(`/api/it/assets?q=${encodeURIComponent(query)}`).catch(() => ({ assets: [] }))).assets;
+      await render();
+      const box = document.getElementById('it-asset-search');
+      if (box) { box.value = query; box.focus(); }
+    }, 400);
+    return;
+  }
   if (['log-hours', 'log-minutes'].includes(event.target.id)) return updateXpPreview();
   if (event.target.id === 'log-search') {
     logSearch = event.target.value;
@@ -1554,7 +2131,25 @@ view.addEventListener('input', (event) => {
   }
 });
 
-view.addEventListener('change', (event) => {
+view.addEventListener('change', async (event) => {
+  if (event.target.dataset?.itMap !== undefined) {
+    const select = event.target;
+    const option = select.options[select.selectedIndex];
+    try {
+      await api('/api/admin/it-types', {
+        method: 'POST',
+        body: JSON.stringify({ hubKey: select.dataset.itMap, requestTypeId: select.value, serviceDeskId: itServiceDeskId, label: option.textContent }),
+      });
+      document.getElementById('it-map-result').textContent = 'Saved.';
+    } catch (err) {
+      document.getElementById('it-map-result').textContent = err.message;
+    }
+    return;
+  }
+  if (event.target.id === 'it-photos') {
+    itForm.attachments = await readPhotos(event.target.files);
+    return render();
+  }
   if (event.target.id === 'quoting-discipline') { quotingDiscipline = event.target.value; render(); }
   if (event.target.id === 'quoting-all') { quotingAll = event.target.checked; render(); }
 });
@@ -1562,6 +2157,9 @@ view.addEventListener('change', (event) => {
 window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
+  if (currentRoute() !== '#/') arrangeMode = false;
+  if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
+  if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }
   if (accountDialog.open) accountDialog.close();
@@ -1594,6 +2192,7 @@ async function start() {
     view.innerHTML = `<div class="card notice error"><p><strong>Couldn't load the hub.</strong></p><p>${esc(err.message)}</p></div>`;
     return;
   }
+  try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   await render();
   syncAndRefresh();
   powFlushQueue();

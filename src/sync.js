@@ -343,6 +343,10 @@ export async function runScheduled(env) {
     await attempt('Weekly snapshot', () => snapshotWeek(env));
     const { scanCompleted } = await import('./jobs.js');
     await attempt('Completed jobs', () => scanCompleted(env));
+    if (new Date().getUTCHours() === 7) {
+      const { checkExpiries } = await import('./vehicles.js');
+      await attempt('Vehicle expiries', () => checkExpiries(env));
+    }
     await attempt('Alert email', () => sendAlerts(env));
   }
 

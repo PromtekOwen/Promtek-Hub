@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS vehicles (id TEXT PRIMARY KEY, registration TEXT NOT NULL, make TEXT, model TEXT, kind TEXT, mot_due TEXT, insurance_due TEXT, tax_due TEXT, service_due TEXT, mileage INTEGER, status TEXT NOT NULL DEFAULT 'available', responsible_email TEXT, notes TEXT, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS vehicle_bookings (id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL, account_id TEXT NOT NULL, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, issue_key TEXT, issue_id TEXT, purpose TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_bookings_vehicle ON vehicle_bookings(vehicle_id, starts_at);
+CREATE INDEX IF NOT EXISTS idx_bookings_account ON vehicle_bookings(account_id, starts_at);
+CREATE TABLE IF NOT EXISTS vehicle_checks (id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL, account_id TEXT NOT NULL, booking_id TEXT, issue_key TEXT, mileage INTEGER, fit_to_drive INTEGER NOT NULL DEFAULT 1, results TEXT NOT NULL, transition_note TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_checks_vehicle ON vehicle_checks(vehicle_id, created_at);
+CREATE TABLE IF NOT EXISTS vehicle_defects (id TEXT PRIMARY KEY, vehicle_id TEXT NOT NULL, check_id TEXT, account_id TEXT, item TEXT NOT NULL, note TEXT, severity TEXT NOT NULL DEFAULT 'defect', status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT);
+CREATE INDEX IF NOT EXISTS idx_defects_vehicle ON vehicle_defects(vehicle_id, status);
+CREATE TABLE IF NOT EXISTS it_request_types (hub_key TEXT PRIMARY KEY, request_type_id TEXT, service_desk_id TEXT, label TEXT);
+CREATE TABLE IF NOT EXISTS user_prefs (account_id TEXT PRIMARY KEY, tile_order TEXT, hidden_tiles TEXT, updated_at TEXT);

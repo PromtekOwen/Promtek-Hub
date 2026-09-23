@@ -48,7 +48,7 @@ This lets people log in with the same Google account they use for Atlassian and 
 12. In the Cloudflare dashboard, go to **Storage & databases → D1 SQL database → Create database**. Name it `promtek-hub` and create it.
 13. On the database's page, copy the **Database ID** (a long string of letters and numbers).
 14. In your GitHub repository, open `wrangler.jsonc`, select the pencil icon to edit, and replace `PASTE_YOUR_D1_DATABASE_ID_HERE` with the Database ID. Commit the change.
-15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with each of `schema-002.sql` (roles, snapshots and alerts), `schema-003.sql` (completed job tracking), `schema-004.sql` (stage-level data) and `schema-005.sql` (point of work assessments). Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots`, `alerts`, `completed_jobs`, `pow_forms` and `ra_library`.
+15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with each of `schema-002.sql` (roles, snapshots and alerts), `schema-003.sql` (completed job tracking), `schema-004.sql` (stage-level data), `schema-005.sql` (point of work assessments) and `schema-006.sql` (vehicles, IT support and tile layouts). Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots`, `alerts`, `completed_jobs`, `pow_forms`, `ra_library`, `vehicles`, `vehicle_bookings`, `vehicle_checks`, `vehicle_defects`, `it_request_types` and `user_prefs`.
 
     If the console rejects the file because of the comment lines, delete the lines starting with `--` and run it again, or run one statement at a time.
 
@@ -187,7 +187,7 @@ The hub then sends any waiting alerts once an hour.
 
 Engineers fill the assessment in on site, one part per screen, and the hub makes the PDF, attaches it to the Jira visit and files it in the shared drive. It replaces the Google Form, the Zapier step and the Apps Script that highlighted the PPE table.
 
-**Picking the visit:** customer, then Service or Projecting, then the open site visits for that team. If the visit isn't there, "My visit isn't listed" tells the team lead the job hasn't been progressed in Jira, and the assessment carries on as a draft so the job number can be added later.
+**Picking the visit:** customer, then Service or Projecting, then the open site visits for that team. A visit belongs to Service if its order has Promtek Team set to Service, or if it sits under a service contract; to Projecting if its order is marked Projecting. Anything whose order has no team set, or that has no order at all, appears under both and is flagged, so it can still be used while the gap is visible. If the visit isn't there, "My visit isn't listed" tells the team lead the job hasn't been progressed in Jira, and the assessment carries on as a draft so the job number can be added later.
 
 **Off signal:** everything is kept on the phone as it's filled in. A finished assessment with no connection is queued and sends itself when signal returns.
 
@@ -211,7 +211,39 @@ If step 4 is refused, your Workspace policy blocks service account keys. That's 
 
 **If either delivery fails**, the assessment is still saved and downloadable from the hub, and the team lead is told so it can be filed by hand. Nothing is ever lost because Jira or Drive was unavailable.
 
-## Part 12: Move the obsolescence app in
+## Part 12: IT support
+
+IT requests go to your `PROMTEKIT` service desk. Engineers pick what they need in plain words, say how much it's holding them up, optionally attach the asset and photos, and the hub raises the request in their name so replies reach them.
+
+What the hub offers maps to your Jira request types like this, and the mapping is a dropdown on the Admin page rather than anything in the code:
+
+| In the hub | Raises in Jira |
+| --- | --- |
+| Broken or faulty hardware | Report broken hardware |
+| Software or system problem | Report a system problem |
+| Account or access request | Request a new account |
+| Admin access request | Request admin access |
+| New hardware | Request new hardware |
+| New software | Request new software |
+| Something else | Get IT help |
+
+Urgency sets the priority: blocked becomes Highest, slowed down becomes High, needs sorting becomes Medium, and nice to have becomes Low. If Priority isn't on those request forms the ticket is still raised, with the urgency written into the description.
+
+Two things to set in Jira: make Peter the project lead with the default assignee set to **Project lead**, and under **Project settings → Customer permissions** allow anyone with a Jira account to raise requests.
+
+## Part 13: Vehicles
+
+- **The fleet** is managed on the Admin page: registration, make, model, MOT, insurance, tax and service dates, mileage, and who looks after repairs.
+- **Booking** is by hour, with clashes refused and off-road vehicles unbookable.
+- **The walkaround check** covers the same thirteen items as the paper form. A fail asks what's wrong and goes to admins and the maintenance contact. "Not fit to drive" takes the vehicle off the road until a lead clears the defect.
+- **The linked job moves on** when the check is done: New Order and Commissioning Site Visits to Commissioning, Service, Calibration and Service Contract Site Visits to Visit In-Progress. If that transition isn't available, the check still saves and the team lead is told.
+- **Expiry dates** are checked every morning, with reminders at 30, 14 and 7 days and again once a date has passed.
+
+## Part 14: Arranging tiles
+
+Everyone can order their own home screen. **Arrange tiles** on the dashboard turns on the controls: move a tile up or down, or hide the ones you never use. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
+
+## Part 15: Move the obsolescence app in
 
 28. Copy the files from your obsolescence app's GitHub repository into `public/apps/obsolescence/` in this repository, replacing the placeholder `index.html`. Commit.
 29. It now opens from the tile on the home page, behind the same Google sign-in.

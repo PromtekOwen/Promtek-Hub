@@ -52,6 +52,20 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'it',
+    name: 'IT support',
+    route: '#/it',
+    icon: icon('<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 20h8M12 17v3"/>'),
+    detail: () => 'Report a problem or ask for kit',
+  },
+  {
+    id: 'vehicles',
+    name: 'Vehicles',
+    route: '#/vehicles',
+    icon: icon('<path d="M4 16.5v-4l2-5h12l2 5v4"/><path d="M4 16.5h16M7 16.5v2H4v-2M20 16.5v2h-3v-2"/><path d="M7.5 12.5h9"/>'),
+    detail: () => 'Book one, check it over, report faults',
+  },
+  {
     id: 'shop',
     name: 'XP shop',
     construction: true,

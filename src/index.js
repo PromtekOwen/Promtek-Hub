@@ -6,6 +6,8 @@ import { progressFor, rankFor } from './progression.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
+import * as It from './itsupport.js';
+import * as Vehicles from './vehicles.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -87,6 +89,50 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/log/psc') return json(await createPsc(env, user, body));
     if (method === 'POST' && pathname === '/api/log/flag-stage') return json(await flagMissingStage(env, user, body));
+  }
+
+  if (method === 'GET' && pathname === '/api/prefs/tiles') {
+    const row = await env.DB.prepare('SELECT tile_order, hidden_tiles FROM user_prefs WHERE account_id = ?')
+      .bind(user.accountId || user.email).first();
+    return json({
+      order: row?.tile_order ? JSON.parse(row.tile_order) : null,
+      hidden: row?.hidden_tiles ? JSON.parse(row.hidden_tiles) : [],
+    });
+  }
+  if (method === 'POST' && pathname === '/api/prefs/tiles') {
+    const body = await request.json().catch(() => ({}));
+    await env.DB.prepare(
+      `INSERT INTO user_prefs (account_id, tile_order, hidden_tiles, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET tile_order = excluded.tile_order,
+         hidden_tiles = excluded.hidden_tiles, updated_at = excluded.updated_at`
+    ).bind(user.accountId || user.email, JSON.stringify(body.order || []), JSON.stringify(body.hidden || []),
+      new Date().toISOString()).run();
+    return json({ ok: true });
+  }
+
+  if (pathname.startsWith('/api/it/')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/it/options') return json(await It.options(env));
+    if (method === 'GET' && pathname === '/api/it/assets') return json({ assets: await It.myAssets(env, user.accountId, url.searchParams.get('q')) });
+    if (method === 'GET' && pathname === '/api/it/requests') return json(await It.myRequests(env, user, { all: url.searchParams.get('all') === '1' }));
+    if (method === 'POST' && pathname === '/api/it/raise') return json(await It.raise(env, user, body));
+    if (method === 'POST' && pathname === '/api/it/comment') return json(await It.comment(env, user, body));
+  }
+
+  if (pathname.startsWith('/api/vehicles')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/vehicles') return json(await Vehicles.listVehicles(env));
+    if (method === 'GET' && pathname === '/api/vehicles/week') return json(await Vehicles.weekBookings(env, url.searchParams.get('week') || londonDate()));
+    if (method === 'GET' && pathname === '/api/vehicles/mine') return json(await Vehicles.myBookings(env, user));
+    if (method === 'GET' && pathname === '/api/vehicles/check-schema') return json(Vehicles.checkSchema());
+    if (method === 'GET' && pathname === '/api/vehicles/defects') return json(await Vehicles.listDefects(env, { status: url.searchParams.get('status') || 'open' }));
+    if (method === 'POST' && pathname === '/api/vehicles/book') return json(await Vehicles.book(env, user, body));
+    if (method === 'POST' && pathname === '/api/vehicles/cancel') return json(await Vehicles.cancelBooking(env, user, body.id));
+    if (method === 'POST' && pathname === '/api/vehicles/check') return json(await Vehicles.submitCheck(env, user, body));
+    if (method === 'POST' && pathname === '/api/vehicles/resolve-defect') {
+      if (!user.isLead) return json({ error: 'Only team leads and admins can clear defects.' }, 403);
+      return json(await Vehicles.resolveDefect(env, user, body));
+    }
   }
 
   if (pathname.startsWith('/api/pow/')) {
@@ -186,6 +232,19 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/recompute-stages') return json(await recomputeStages(env));
     if (method === 'GET' && pathname === '/api/admin/ra-library') return json({ items: await Pow.raLibrary(env, { includeInactive: true }) });
     if (method === 'POST' && pathname === '/api/admin/ra-save') return json(await Pow.saveRa(env, body));
+    if (method === 'GET' && pathname === '/api/admin/it-types') {
+      const map = await It.requestTypeMap(env);
+      let jiraTypes = { types: [], serviceDeskId: null };
+      try { jiraTypes = await It.jiraRequestTypes(env); } catch (err) { jiraTypes.error = err.message; }
+      return json({
+        categories: It.IT_CATEGORIES.map(([id, label]) => ({ id, label, mapped: map.get(id)?.request_type_id || null })),
+        ...jiraTypes,
+      });
+    }
+    if (method === 'POST' && pathname === '/api/admin/it-types') return json(await It.saveRequestTypeMap(env, body));
+    if (method === 'POST' && pathname === '/api/admin/vehicle') return json(await Vehicles.saveVehicle(env, body));
+    if (method === 'GET' && pathname === '/api/admin/vehicles') return json(await Vehicles.listVehicles(env, { includeInactive: true }));
+    if (method === 'POST' && pathname === '/api/admin/vehicle-expiries') return json(await Vehicles.checkExpiries(env));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/set-role') {
