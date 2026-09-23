@@ -79,40 +79,58 @@ async function customerProjects(env, region) {
   return projects.map((p) => ({ id: p.key, label: p.name, sublabel: p.key, next: `${region}:${p.key}` }));
 }
 
-// Site visits sit under an order, and the order carries the team, so the
-// visits are fetched first and then filtered by their parent.
+// Site visits sit under an order or a service contract. The order carries the
+// team, and a contract is always service work, so the parents decide which
+// branch a visit belongs to.
+function branchOfParent(parent) {
+  if (!parent) return null;
+  if ((parent.fields?.issuetype?.name || '') === 'Service Contract') return 'service';
+  const value = parent.fields?.[TEAM_FIELD];
+  const id = Array.isArray(value) ? value[0]?.id : value?.id;
+  if (id === TEAM_IDS.service) return 'service';
+  if (id === TEAM_IDS.projecting) return 'projecting';
+  return null;                                     // team not set on the order
+}
+
 async function visitsFor(env, projectKey, branch) {
   const visits = await searchJql(env,
     `project = "${projectKey}" AND issuetype in (${SITE_VISIT_TYPES.map((t) => `"${t}"`).join(', ')})`
-    + ' AND statusCategory != Done ORDER BY updated DESC', VISIT_FIELDS, { limit: 60 });
+    + ' AND statusCategory != Done ORDER BY updated DESC', VISIT_FIELDS, { limit: 80 });
 
   const parentKeys = [...new Set(visits.map((v) => v.fields?.parent?.key).filter(Boolean))];
   const parents = parentKeys.length
-    ? await searchJql(env, `key in (${parentKeys.map((k) => `"${k}"`).join(', ')})`, ['summary', TEAM_FIELD])
+    ? await searchJql(env, `key in (${parentKeys.map((k) => `"${k}"`).join(', ')})`, ['summary', 'issuetype', TEAM_FIELD])
     : [];
-  const teamOf = new Map(parents.map((p) => {
-    const value = p.fields?.[TEAM_FIELD];
-    return [p.key, Array.isArray(value) ? value[0]?.id : value?.id];
-  }));
-  const summaryOf = new Map(parents.map((p) => [p.key, p.fields?.summary || '']));
+  const parentByKey = new Map(parents.map((p) => [p.key, p]));
 
-  return visits
-    .filter((v) => {
-      const parentKey = v.fields?.parent?.key;
-      if (!parentKey) return true;                 // orphans stay visible rather than vanish
-      const team = teamOf.get(parentKey);
-      return !team || team === TEAM_IDS[branch];
-    })
-    .map((v) => ({
-      id: v.key,
-      issueId: String(v.id),
-      label: v.key,
-      title: v.fields?.summary || '',
-      sublabel: [v.fields?.issuetype?.name, v.fields?.status?.name,
-        v.fields?.parent?.key ? `under ${summaryOf.get(v.fields.parent.key) || v.fields.parent.key}` : null]
-        .filter(Boolean).join(', '),
+  const matching = [];
+  const unsorted = [];
+  for (const visit of visits) {
+    const parentKey = visit.fields?.parent?.key;
+    const parent = parentKey ? parentByKey.get(parentKey) : null;
+    const parentBranch = branchOfParent(parent);
+    if (parentBranch && parentBranch !== branch) continue;   // belongs to the other team
+
+    const option = {
+      id: visit.key,
+      issueId: String(visit.id),
+      label: visit.key,
+      title: visit.fields?.summary || '',
+      sublabel: [visit.fields?.issuetype?.name, visit.fields?.status?.name,
+        parent ? `under ${parent.fields?.summary || parentKey}` : null].filter(Boolean).join(', '),
       loggable: true,
-    }));
+    };
+
+    if (parentBranch) {
+      matching.push(option);
+    } else {
+      // Nothing says which team it's for, so it's shown under both rather than
+      // disappearing, but flagged so the gap is obvious.
+      option.note = parent ? 'Team not set' : 'No order';
+      unsorted.push(option);
+    }
+  }
+  return [...matching, ...unsorted];
 }
 
 export async function browseVisits(env, node = 'root') {
