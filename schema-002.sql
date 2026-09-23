@@ -1,0 +1,6 @@
+ALTER TABLE employees ADD COLUMN role TEXT NOT NULL DEFAULT 'engineer';
+ALTER TABLE employees ADD COLUMN team TEXT;
+ALTER TABLE xp_ledger ADD COLUMN logged_at TEXT;
+CREATE TABLE IF NOT EXISTS weekly_snapshots (account_id TEXT NOT NULL, week_start TEXT NOT NULL, xp INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0, elo REAL, seconds INTEGER NOT NULL DEFAULT 0, worklogs INTEGER NOT NULL DEFAULT 0, days_logged INTEGER NOT NULL DEFAULT 0, avg_lag_days REAL, created_at TEXT NOT NULL, PRIMARY KEY (account_id, week_start));
+CREATE TABLE IF NOT EXISTS alerts (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, dedupe TEXT UNIQUE, subject TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, sent_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_alerts_unsent ON alerts(sent_at);
