@@ -577,7 +577,7 @@ function callsRender() {
         </span>`;
     return `<li class="call">
         <span class="title">${call.direction === 'in' ? '↙' : '↗'} ${esc(call.otherName || call.otherRaw)} ${known}</span>
-        <span class="sub">${callTime(call)}, ${call.talkTime || 'no answer'}${call.otherName ? `, ${esc(call.otherRaw)}` : ''}${call.sharedLine ? ', via a shared line' : ''}</span>
+        <span class="sub">${callTime(call)}, ${call.talkTime || 'not connected'}${call.otherName ? `, ${esc(call.otherRaw)}` : ''}${call.sharedLine ? ', via a shared line' : ''}${callsData.showingAll && call.handledBy ? `. <strong>${esc(call.handledBy)}</strong>` : ''}</span>
         ${done}
       </li>`;
   }).join('');
@@ -597,7 +597,7 @@ function callFlowHtml() {
   const header = `<div class="card">
       <p class="muted" style="margin:0">${call.direction === 'in' ? 'Call from' : 'Call to'}</p>
       <h2 style="margin:.2rem 0 0">${esc(call.otherName || call.otherRaw)}</h2>
-      <p class="muted" style="margin:.2rem 0 0">${callTime(call)}, ${call.talkTime || 'no answer'}</p>
+      <p class="muted" style="margin:.2rem 0 0">${callTime(call)}, ${call.talkTime || 'not connected'}${call.handledBy ? `, ${esc(call.handledBy)}` : ''}</p>
     </div><div style="height:1rem"></div>`;
 
   if (step === 'customer') {
