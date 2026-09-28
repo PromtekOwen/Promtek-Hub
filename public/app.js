@@ -278,6 +278,14 @@ const pages = {
     },
   },
 
+  '#/calls': {
+    band: () => `<h1>8x8 calls</h1><p>Turn the calls you took into time and tickets.</p>`,
+    async render() {
+      if (!me.linked) return notLinkedCard();
+      return callsRender();
+    },
+  },
+
   '#/it': {
     band: () => `<h1>IT support</h1><p>Report a problem or ask for what you need.</p>`,
     async render() {
@@ -393,18 +401,19 @@ const pages = {
         <h2>Engineers</h2>
         <p class="muted">During shadow mode, Difference compares the hub's XP with the XP field in Jira. Jira's figure refreshes hourly.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Signed in as</th><th class="num">ELO</th><th class="num">Hub XP</th><th class="num">Jira XP</th><th class="num">Difference</th><th class="num">Worklogs</th></tr></thead>
+          <thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Extension</th><th>Signed in as</th><th class="num">ELO</th><th class="num">Hub XP</th><th class="num">Jira XP</th><th class="num">Difference</th><th class="num">Worklogs</th></tr></thead>
           <tbody>${data.employees.map((e) => `<tr>
             <td>${esc(e.name)}</td>
             <td>${e.role === 'lead' ? 'Team lead' : e.role === 'admin' ? 'Admin' : 'Engineer'}</td>
             <td>${e.team ? esc(e.team) : '<span class="muted">—</span>'}</td>
+            <td><input class="tiny" data-extension="${esc(e.account_id)}" value="${esc(e.extension || '')}" placeholder="—" autocomplete="off"></td>
             <td>${e.email ? esc(e.email) : '<span class="muted">Not linked</span>'}</td>
             <td class="num">${e.elo != null ? n(Math.round(e.elo)) : '—'}</td>
             <td class="num">${n(e.app_xp)}</td>
             <td class="num">${n(e.jira_xp)}</td>
             <td class="num ${Math.abs(e.difference) > 50 ? 'bad' : 'good'}">${e.difference > 0 ? '+' : ''}${n(e.difference)}</td>
             <td class="num">${n(e.worklogs)}</td>
-          </tr>`).join('') || '<tr><td colspan="9" class="muted">No engineers yet. Refresh profiles from Jira.</td></tr>'}</tbody>
+          </tr>`).join('') || '<tr><td colspan="10" class="muted">No engineers yet. Refresh profiles from Jira.</td></tr>'}</tbody>
         </table></div>
 
         <h2>Time from people without a profile</h2>
@@ -434,6 +443,13 @@ const pages = {
           </div>
           <div id="vehicle-form"></div>
           <div class="result" id="vehicle-result" role="status"></div>
+        </div>
+
+        <h2>8x8 calls</h2>
+        <div class="card">
+          <p style="margin-top:0">Calls are only fetched when an engineer asks for them. Matching works on their 8x8 extension or the name on the call, so set extensions below.</p>
+          <button class="btn secondary" data-action="test-8x8">Test the 8x8 connection</button>
+          <div class="result" id="eight8-result" role="status"></div>
         </div>
 
         <h2>IT request types</h2>
@@ -520,6 +536,180 @@ async function tileControl(action, id) {
   if (action === 'show') tilePrefs.hidden = tilePrefs.hidden.filter((h) => h !== id);
   tilePrefs.order = order;
   await saveTilePrefs();
+  return render();
+}
+
+// ---------- 8x8 calls ----------
+
+let callsDate = null;
+let callsData = null;
+let callsAll = false;
+let callsError = null;
+let callFlow = null;        // { call, step, projectKey, options }
+let pendingCall = null;     // a call waiting for its time to be logged
+
+const callTime = (call) => (call.started || '').slice(11, 16);
+
+function callsRender() {
+  if (callFlow) return callFlowHtml();
+  const date = callsDate || todayIso();
+  const head = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:flex-end">
+        <label>Day <input id="calls-date" type="date" value="${date}" max="${todayIso()}"></label>
+        <button class="btn" data-calls="load">${callsData ? 'Refresh' : 'Show my calls'}</button>
+      </div>
+      <p class="muted" style="margin:.85rem 0 0">Nothing is fetched from 8x8 until you ask for it.</p>
+    </div>`;
+
+  if (callsError) return `${head}<div class="card notice error" style="margin-top:1rem"><p style="margin:0">${esc(callsError)}</p></div>`;
+  if (!callsData) return head;
+
+  const rows = callsData.calls.map((call) => {
+    const known = call.customer ? `<span class="badge">${esc(call.customer.label || call.customer.project_key)}</span>` : '';
+    const done = call.handled
+      ? `<span class="sub good">${call.handled.action === 'discarded' ? 'Discarded' : `Logged against ${esc(call.handled.issue_key || 'a job')}`}</span>`
+      : `<span class="row" style="gap:.4rem;margin-top:.5rem">
+          <button class="chip-btn" data-call="job" data-value="${esc(call.callId)}">Job</button>
+          <button class="chip-btn" data-call="psc" data-value="${esc(call.callId)}">Existing PSC</button>
+          <button class="chip-btn" data-call="new-psc" data-value="${esc(call.callId)}">New PSC</button>
+          <button class="chip-btn" data-call="discard" data-value="${esc(call.callId)}">Discard</button>
+        </span>`;
+    return `<li class="call">
+        <span class="title">${call.direction === 'in' ? '↙' : '↗'} ${esc(call.otherName || call.otherRaw)} ${known}</span>
+        <span class="sub">${callTime(call)}, ${call.talkTime || 'no answer'}${call.otherName ? `, ${esc(call.otherRaw)}` : ''}${call.sharedLine ? ', via a shared line' : ''}</span>
+        ${done}
+      </li>`;
+  }).join('');
+
+  return `${head}
+    <h2>${esc(shortDate(callsData.date))}</h2>
+    <p class="muted" style="margin-top:-.5rem">${callsData.showingAll
+      ? `Showing all ${n(callsData.total)} calls on the system.`
+      : `${n(callsData.matched)} of ${n(callsData.total)} calls matched to you.`}
+      <button class="linklike" data-calls="toggle-all">${callsData.showingAll ? 'Just mine' : 'Show everyone\'s'}</button></p>
+    ${callsData.calls.length ? `<ul class="list">${rows}</ul>`
+      : `<div class="card"><p class="muted">No calls found. ${callsData.total ? 'None of them matched you, so try showing everyone\'s.' : ''}</p></div>`}`;
+}
+
+function callFlowHtml() {
+  const { call, step, options } = callFlow;
+  const header = `<div class="card">
+      <p class="muted" style="margin:0">${call.direction === 'in' ? 'Call from' : 'Call to'}</p>
+      <h2 style="margin:.2rem 0 0">${esc(call.otherName || call.otherRaw)}</h2>
+      <p class="muted" style="margin:.2rem 0 0">${callTime(call)}, ${call.talkTime || 'no answer'}</p>
+    </div><div style="height:1rem"></div>`;
+
+  if (step === 'customer') {
+    return `${header}
+      <div class="card">
+        <h3 style="margin-top:0">Which customer was this?</h3>
+        <p class="muted">The number is saved against them, so next time it's recognised.</p>
+        <input id="call-customer-search" type="search" placeholder="Start typing a customer name" autocomplete="off">
+      </div>
+      <div style="height:1rem"></div>
+      <div class="options">${(options || []).slice(0, 25).map((c) => `<button class="option" data-call-customer="${esc(c.key)}" data-label="${esc(c.name)}">
+          <span class="option-main"><strong>${esc(c.name)}</strong><span class="muted">${esc(c.key)}</span></span>
+          <span class="chev">›</span>
+        </button>`).join('')}</div>
+      <div class="card" style="margin-top:1rem">
+        <p style="margin-top:0">Not a customer?</p>
+        <button class="btn secondary" data-call="not-customer">It's not work related</button>
+      </div>`;
+  }
+
+  if (step === 'psc') {
+    return `${header}
+      <div class="card">
+        <h3 style="margin-top:0">Does it relate to one of these?</h3>
+        <p class="muted">Open service items for ${esc(callFlow.projectKey)}.</p>
+      </div>
+      <div style="height:1rem"></div>
+      <div class="options">${(options || []).map(optionRow).join('')
+        || '<div class="card"><p class="muted">Nothing open for them.</p></div>'}</div>
+      <div class="card" style="margin-top:1rem">
+        <button class="btn secondary" data-call="new-psc-here">None of these, raise a new one</button>
+      </div>`;
+  }
+
+  return `${header}${pscFormHtml(callFlow.projectKey)}`;
+}
+
+async function callsControl(action, value) {
+  if (action === 'load' || action === 'toggle-all') {
+    if (action === 'toggle-all') callsAll = !callsAll;
+    callsDate = document.getElementById('calls-date')?.value || todayIso();
+    callsError = null;
+    callsData = null;
+    await render();
+    try {
+      callsData = await api(`/api/calls?date=${callsDate}${callsAll ? '&all=1' : ''}`);
+    } catch (err) {
+      callsError = err.message;
+    }
+    return render();
+  }
+  if (action === 'not-customer') {
+    await api('/api/calls/link', {
+      method: 'POST',
+      body: JSON.stringify({ phone: callFlow.call.other, kind: 'not-work', projectKey: '', label: 'Not work related' }),
+    });
+    await api('/api/calls/handled', { method: 'POST', body: JSON.stringify({ callId: callFlow.call.callId, action: 'discarded' }) });
+    callFlow = null;
+    toast('Noted. That number will not be suggested again.');
+    return callsControl('load');
+  }
+  if (action === 'new-psc-here') {
+    callFlow.step = 'new-psc';
+    logPscProject = callFlow.projectKey;
+    return render();
+  }
+}
+
+// Starting point for each of the four buttons on a call.
+async function callAction(action, callId) {
+  const call = callsData.calls.find((c) => c.callId === callId);
+  if (!call) return;
+
+  if (action === 'discard') {
+    await api('/api/calls/handled', { method: 'POST', body: JSON.stringify({ callId, action: 'discarded' }) });
+    toast('Discarded');
+    return callsControl('load');
+  }
+
+  callFlow = { call, intent: action, projectKey: call.customer?.project_key || null };
+  if (!callFlow.projectKey) {
+    callFlow.step = 'customer';
+    callFlow.options = (await api('/api/calls/customers').catch(() => ({ customers: [] }))).customers;
+    return render();
+  }
+  return callContinue();
+}
+
+// Once the customer is known, each intent goes its own way.
+async function callContinue() {
+  const { call, intent, projectKey } = callFlow;
+  pendingCall = {
+    callId: call.callId,
+    seconds: Math.max(300, call.seconds || 0),
+    description: `${call.direction === 'in' ? 'Support call from' : 'Call to'} ${call.otherName || call.otherRaw}`,
+  };
+
+  if (intent === 'job') {
+    callFlow = null;
+    logNode = `customer:uk:${projectKey}`;
+    logTrail = [{ node: null, label: 'Calls' }];
+    logChosen = null;
+    location.hash = '#/log';
+    return;
+  }
+  if (intent === 'psc') {
+    callFlow.step = 'psc';
+    callFlow.options = (await api(`/api/calls/pscs?projectKey=${encodeURIComponent(projectKey)}`)).options;
+    return render();
+  }
+  callFlow.step = 'new-psc';
+  logPscProject = projectKey;
   return render();
 }
 
@@ -1353,6 +1543,7 @@ function xpPreview(minutes) {
 
 function logFormHtml() {
   const today = todayIso();
+  const prefill = pendingCall;
   const part = logChosen.rate != null && logChosen.rate !== 1 && logChosen.rate !== 0;
   return `
     <div class="card">
@@ -1380,10 +1571,10 @@ function logFormHtml() {
       <div class="row quick">${[15, 30, 60, 90, 120, 240, 450].map((m) =>
         `<button class="chip-btn" data-mins="${m}">${m < 60 ? `${m}m` : `${m / 60}h`.replace('.5', '½')}</button>`).join('')}</div>
       <div class="row" style="margin-top:.75rem">
-        <label>Hours <input id="log-hours" type="number" min="0" max="16" step="1" value="1" inputmode="numeric"></label>
-        <label>Minutes <input id="log-minutes" type="number" min="0" max="59" step="5" value="0" inputmode="numeric"></label>
+        <label>Hours <input id="log-hours" type="number" min="0" max="16" step="1" value="${Math.floor((prefill?.seconds || 3600) / 3600)}" inputmode="numeric"></label>
+        <label>Minutes <input id="log-minutes" type="number" min="0" max="59" step="5" value="${Math.round(((prefill?.seconds || 3600) % 3600) / 60)}" inputmode="numeric"></label>
       </div>
-      <label style="margin-top:.75rem">What did you do? <input id="log-note" placeholder="Optional" autocomplete="off"></label>
+      <label style="margin-top:.75rem">What did you do? <input id="log-note" value="${esc(prefill?.description || '')}" placeholder="Optional" autocomplete="off"></label>
       <p id="log-xp" class="xp-preview"></p>
       <div class="row">
         <button class="btn" data-action="save-log">Log this time</button>
@@ -1818,6 +2009,14 @@ async function logAction(action, button) {
         }),
       });
       toast(`${duration(result.seconds)} logged against ${result.issueKey}`);
+      if (pendingCall) {
+        await api('/api/calls/handled', {
+          method: 'POST',
+          body: JSON.stringify({ callId: pendingCall.callId, action: 'logged', issueKey: result.issueKey, worklogId: result.worklogId }),
+        }).catch(() => {});
+        pendingCall = null;
+        callsData = null;
+      }
       logChosen = null;
       logNode = null;
       logTrail = [];
@@ -1838,6 +2037,7 @@ async function logAction(action, button) {
       });
       logChosen = { label: created.key, issueId: created.id, title: document.getElementById('psc-summary').value, sublabel: 'New service item, assigned to you', rate: 1, jobElo: null };
       logPscProject = null;
+      if (callFlow) { callFlow = null; location.hash = '#/log'; return; }
       await render();
       return updateXpPreview();
     }
@@ -1866,7 +2066,8 @@ async function adminAction(action, button) {
   const target = { 'sync-now': 'sync-result', 'refresh-profiles': 'sync-result', snapshot: 'sync-result',
     'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
-    'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result' }[action];
+    'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
+    'test-8x8': 'eight8-result' }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
@@ -1890,6 +2091,11 @@ async function adminAction(action, button) {
       const months = document.getElementById('backfill-months').value;
       const r = await api('/api/admin/backfill-start', { method: 'POST', body: JSON.stringify({ months }) });
       out(target, `Backfill started, working back to ${r.until}. It runs in the background, a batch every couple of minutes.`);
+    } else if (action === 'test-8x8') {
+      const r = await api('/api/admin/test-8x8', { method: 'POST', body: JSON.stringify({}) });
+      out('eight8-result', r.ok
+        ? `Connected. ${r.records} call${r.records === 1 ? '' : 's'} on the system today.`
+        : r.error, !r.ok);
     } else if (action === 'vehicle-expiries') {
       const r = await api('/api/admin/vehicle-expiries', { method: 'POST', body: JSON.stringify({}) });
       out('vehicle-result', `Checked ${r.vehicles} vehicles, raised ${r.raised} reminder${r.raised === 1 ? '' : 's'}.`);
@@ -1932,7 +2138,7 @@ async function adminAction(action, button) {
       });
       out(target, 'Linked.');
     }
-    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries'].includes(action)) {
+    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8'].includes(action)) {
       setTimeout(render, 1200);
     }
   } catch (err) {
@@ -1960,6 +2166,12 @@ view.addEventListener('click', async (event) => {
   if (pickBtn) {
     const picked = JSON.parse(pickBtn.dataset.pick);
     if (onPow) return powPickVisit(picked);
+    if (callFlow) {
+      callFlow = null;
+      logChosen = picked;
+      location.hash = '#/log';
+      return;
+    }
     logChosen = picked;
     await render();
     updateXpPreview();
@@ -1984,6 +2196,24 @@ view.addEventListener('click', async (event) => {
   if (event.target.closest('[data-flag]')) {
     document.getElementById('flag-box').hidden = false;
     return;
+  }
+
+  const callsBtn = event.target.closest('[data-calls]');
+  if (callsBtn) return callsControl(callsBtn.dataset.calls);
+  const callBtn = event.target.closest('[data-call]');
+  if (callBtn) {
+    return ['job', 'psc', 'new-psc', 'discard'].includes(callBtn.dataset.call)
+      ? callAction(callBtn.dataset.call, callBtn.dataset.value)
+      : callsControl(callBtn.dataset.call);
+  }
+  const callCustomer = event.target.closest('[data-call-customer]');
+  if (callCustomer) {
+    await api('/api/calls/link', {
+      method: 'POST',
+      body: JSON.stringify({ phone: callFlow.call.other, projectKey: callCustomer.dataset.callCustomer, label: callCustomer.dataset.label }),
+    });
+    callFlow.projectKey = callCustomer.dataset.callCustomer;
+    return callContinue();
   }
 
   const itBtn = event.target.closest('[data-it]');
@@ -2106,6 +2336,13 @@ async function render() {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (event.target.id === 'call-customer-search') {
+    const query = event.target.value.toLowerCase();
+    document.querySelectorAll('[data-call-customer]').forEach((el) => {
+      el.hidden = query.length > 1 && !el.textContent.toLowerCase().includes(query);
+    });
+    return;
+  }
   if (event.target.id === 'it-asset-search') {
     clearTimeout(searchTimer);
     const query = event.target.value;
@@ -2132,6 +2369,13 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (event.target.dataset?.extension !== undefined) {
+    await api('/api/admin/set-extension', {
+      method: 'POST',
+      body: JSON.stringify({ accountId: event.target.dataset.extension, extension: event.target.value }),
+    }).catch((err) => toast(err.message));
+    return;
+  }
   if (event.target.dataset?.itMap !== undefined) {
     const select = event.target;
     const option = select.options[select.selectedIndex];
@@ -2158,6 +2402,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
   if (currentRoute() !== '#/') arrangeMode = false;
+  if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }

@@ -39,6 +39,7 @@ schema-003.sql     Completed job tracking
 schema-004.sql     Stage names and shares
 schema-005.sql     Point of work assessments and the RA library
 schema-006.sql     Vehicles, IT request mapping and tile layouts
+schema-007.sql     8x8 call mapping and handled calls
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

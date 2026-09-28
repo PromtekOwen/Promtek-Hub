@@ -48,7 +48,7 @@ This lets people log in with the same Google account they use for Atlassian and 
 12. In the Cloudflare dashboard, go to **Storage & databases → D1 SQL database → Create database**. Name it `promtek-hub` and create it.
 13. On the database's page, copy the **Database ID** (a long string of letters and numbers).
 14. In your GitHub repository, open `wrangler.jsonc`, select the pencil icon to edit, and replace `PASTE_YOUR_D1_DATABASE_ID_HERE` with the Database ID. Commit the change.
-15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with each of `schema-002.sql` (roles, snapshots and alerts), `schema-003.sql` (completed job tracking), `schema-004.sql` (stage-level data), `schema-005.sql` (point of work assessments) and `schema-006.sql` (vehicles, IT support and tile layouts). Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots`, `alerts`, `completed_jobs`, `pow_forms`, `ra_library`, `vehicles`, `vehicle_bookings`, `vehicle_checks`, `vehicle_defects`, `it_request_types` and `user_prefs`.
+15. Back in the D1 database page, open the **Console** tab. Paste the whole of `schema.sql` in and select **Execute**. Then do the same with each of `schema-002.sql` (roles, snapshots and alerts), `schema-003.sql` (completed job tracking), `schema-004.sql` (stage-level data), `schema-005.sql` (point of work assessments) `schema-006.sql` (vehicles, IT support and tile layouts) and `schema-007.sql` (8x8 calls). Afterwards, the **Tables** tab should list `employees`, `jobs`, `xp_ledger`, `unmatched_worklogs`, `sync_state`, `weekly_snapshots`, `alerts`, `completed_jobs`, `pow_forms`, `ra_library`, `vehicles`, `vehicle_bookings`, `vehicle_checks`, `vehicle_defects`, `it_request_types`, `user_prefs`, `call_customers` and `call_actions`.
 
     If the console rejects the file because of the comment lines, delete the lines starting with `--` and run it again, or run one statement at a time.
 
@@ -243,7 +243,26 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 Everyone can order their own home screen. **Arrange tiles** on the dashboard turns on the controls: move a tile up or down, or hide the ones you never use. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
 
-## Part 15: Move the obsolescence app in
+## Part 15: 8x8 calls
+
+Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.
+
+Each call offers four choices: relate it to a job, to an existing PSC, raise a new PSC, or discard it. Anything but discard leads to logging the time, and the customer step is skipped when the number is already known. An unrecognised number asks who it was, and remembers the answer, so the list gets better the more it is used. A number can also be marked as not work related, and it won't be suggested again.
+
+### Setting it up
+
+1. In the 8x8 Admin Console, go to **API Keys → Create App**, give it a name with no spaces, and tick the **Work Analytics** product.
+2. Create or pick an 8x8 account for the hub to use, with Work Analytics access. **Sign in as that account and open Analytics in a browser once**, or the API will refuse it.
+3. Find your PBX name at https://admin.8x8.com/company/pbx.
+4. In the Worker's **Settings → Variables and secrets**, add as **Secrets**:
+    - `EIGHT8_API_KEY`: the key from step 1
+    - `EIGHT8_USERNAME` and `EIGHT8_PASSWORD`: the account from step 2
+    - `EIGHT8_PBX_ID`: your PBX name, or `allpbxes`
+    - `EIGHT8_BASE_URL`: only if you are on the EU region, set it to `https://api.8x8.com/eu/analytics/work`
+5. On the Admin page, select **Test the 8x8 connection**. It reports how many calls are on the system today.
+6. Still on the Admin page, fill in each engineer's **extension** in the engineers table. Calls are matched to people by extension, or by the name on the call if the extension is blank.
+
+## Part 16: Move the obsolescence app in
 
 28. Copy the files from your obsolescence app's GitHub repository into `public/apps/obsolescence/` in this repository, replacing the placeholder `index.html`. Commit.
 29. It now opens from the tile on the home page, behind the same Google sign-in.

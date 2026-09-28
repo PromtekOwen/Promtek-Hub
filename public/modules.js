@@ -52,6 +52,13 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'calls',
+    name: '8x8 calls',
+    route: '#/calls',
+    icon: icon('<path d="M6.5 4h3l1.5 4-2 1.5a12 12 0 005.5 5.5L16 13l4 1.5v3a2 2 0 01-2.2 2A15.5 15.5 0 014.5 6.2 2 2 0 016.5 4z"/>'),
+    detail: () => 'Log the calls you took',
+  },
+  {
     id: 'it',
     name: 'IT support',
     route: '#/it',

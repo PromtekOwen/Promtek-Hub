@@ -291,3 +291,10 @@ label.inline input { width: 18px; height: 18px; }
 .option.on { border-color: var(--blue); background: var(--tint); }
 input.wide { grid-column: 1 / -1; width: 100%; margin-top: .4rem; }
 #it-asset-search, #ra-title, #it-summary, #it-detail { width: 100%; }
+.call .badge { margin-left: .35rem; }
+input.tiny { width: 5.5rem; padding: .35rem .5rem; }
+#calls-date, #call-customer-search { width: 100%; }
+.list li.call { display: block; }
+.list li.call .title, .list li.call .sub { display: block; }
+.list li.call .sub { margin-top: .15rem; }
+.list li.call .row { flex-wrap: wrap; margin-top: .6rem; }

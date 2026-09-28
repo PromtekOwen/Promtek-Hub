@@ -8,6 +8,7 @@ import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js'
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
 import * as Vehicles from './vehicles.js';
+import * as Calls from './calls.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -108,6 +109,20 @@ async function route(request, env, url, user) {
     ).bind(user.accountId || user.email, JSON.stringify(body.order || []), JSON.stringify(body.hidden || []),
       new Date().toISOString()).run();
     return json({ ok: true });
+  }
+
+  if (pathname.startsWith('/api/calls')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/calls') {
+      return json(await Calls.myCalls(env, user, {
+        date: url.searchParams.get('date'),
+        all: url.searchParams.get('all') === '1',
+      }));
+    }
+    if (method === 'GET' && pathname === '/api/calls/customers') return json(await Calls.customerList(env));
+    if (method === 'GET' && pathname === '/api/calls/pscs') return json(await Calls.openPscs(env, url.searchParams.get('projectKey')));
+    if (method === 'POST' && pathname === '/api/calls/link') return json(await Calls.linkNumber(env, user, body));
+    if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
   }
 
   if (pathname.startsWith('/api/it/')) {
@@ -245,6 +260,15 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/vehicle') return json(await Vehicles.saveVehicle(env, body));
     if (method === 'GET' && pathname === '/api/admin/vehicles') return json(await Vehicles.listVehicles(env, { includeInactive: true }));
     if (method === 'POST' && pathname === '/api/admin/vehicle-expiries') return json(await Vehicles.checkExpiries(env));
+    if (method === 'POST' && pathname === '/api/admin/test-8x8') {
+      try { return json(await Calls.testConnection(env)); } catch (err) { return json({ ok: false, error: err.message }); }
+    }
+    if (method === 'POST' && pathname === '/api/admin/set-extension') {
+      await env.DB.prepare('UPDATE employees SET extension = ? WHERE account_id = ?')
+        .bind(String(body.extension || '').trim() || null, body.accountId).run();
+      return json({ ok: true });
+    }
+    if (method === 'POST' && pathname === '/api/admin/forget-number') return json(await Calls.forgetNumber(env, body.phone));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/set-role') {
@@ -368,7 +392,7 @@ async function getTime(env, user, url) {
 async function adminOverview(env) {
   const [employees, unmatched, state, alerts, jobs] = await Promise.all([
     env.DB.prepare(
-      `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team,
+      `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension,
               COALESCE(SUM(l.xp), 0) AS ledger_xp, COUNT(l.worklog_id) AS worklogs
          FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
         GROUP BY e.account_id ORDER BY e.name`
