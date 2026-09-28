@@ -98,7 +98,8 @@ function shape(record, employee) {
     other: normalisePhone(otherRaw),
     otherRaw: String(otherRaw || ''),
     otherName: otherName && otherName !== otherRaw ? otherName : null,
-    handledBy: mineName || null,
+    // Who dealt with it, which matters on the everyone view.
+    handledBy: (incoming ? record.calleeName : record.callerName) || null,
     sharedLine: [record.callee, record.caller, record.dnis].some((value) => SHARED_LINES.includes(normalisePhone(value)))
       || [record.calleeName, record.callerName].some((value) => String(value || '').toLowerCase().includes('queue')),
     mine: Boolean(matchesName || matchesExtension),
@@ -111,7 +112,8 @@ export async function myCalls(env, viewer, { date, all = false } = {}) {
   const calls = raw
     .map((record) => shape(record, viewer.employee))
     .filter((call) => !isExtension(call.otherRaw))         // internal calls aren't customers
-    .filter((call) => call.seconds > 0 || call.answered);
+    // Missed incoming calls are noise here; outgoing ones always count.
+    .filter((call) => call.direction === 'out' || call.answered);
 
   const mine = all ? calls : calls.filter((call) => call.mine);
   const numbers = [...new Set(mine.map((c) => c.other).filter(Boolean))];
