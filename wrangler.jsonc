@@ -1,5 +1,4 @@
 {
-  // Promtek Hub: one Worker serves the web app (public/) and the API (src/).
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "promtek-hub",
   "main": "src/index.js",
@@ -20,15 +19,11 @@
     }
   ],
 
-  // Every 2 minutes: pull new/edited Tempo worklogs, re-check one recent day
-  // for deletions, and (on the hour) refresh ELO/baseline from Jira profiles.
   "triggers": { "crons": ["*/2 * * * *"] },
 
   "observability": { "enabled": true },
 
-  // Non-secret settings. The Jira and Tempo tokens are added as Secrets in
-  // the Cloudflare dashboard (see SETUP.md), not here.
-   "vars": {
+  "vars": {
     "JIRA_BASE_URL": "https://promtek.atlassian.net",
     "JIRA_EMAIL": "owen.hume@promtek.com",
     "ALLOWED_EMAIL_DOMAIN": "promtek.com",
@@ -47,4 +42,5 @@
 
     "DRIVE_FOLDER_ID": "14T2Tk1YjLt0yEiO9m_Q-zWkP__n3X578",
     "EIGHT8_PBX_ID": "promteklimited"
-  },
+  }
+}
