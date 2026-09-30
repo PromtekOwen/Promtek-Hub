@@ -2659,6 +2659,8 @@ view.addEventListener('click', async (event) => {
     return;
   }
 
+  if (event.target.closest('[data-retry]')) return render();
+
   const obsBtn = event.target.closest('[data-obs]');
   if (obsBtn) return obsControl(obsBtn.dataset.obs);
   const obsClient = event.target.closest('[data-obs-client]');
