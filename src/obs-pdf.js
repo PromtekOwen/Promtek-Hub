@@ -64,7 +64,8 @@ function detailsBlock(doc, survey) {
   const t = survey.title || {};
   const rows = [
     ['Client', t.client], ['Contract number', t.contractNo],
-    ['Job number', t.jobNo], ['Site contact', t.siteContact],
+    // The old job number field only existed to steer the Apps Script upload.
+    ['Jira reference', survey.reportKey || t.jobNo], ['Site contact', t.siteContact],
     ['Engineer', t.engineer], ['Date of survey', t.date],
   ];
   const gap = 10;

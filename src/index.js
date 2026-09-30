@@ -318,6 +318,23 @@ async function route(request, env, url, user) {
       return json({ ok: true });
     }
     if (method === 'POST' && pathname === '/api/admin/forget-number') return json(await Calls.forgetNumber(env, body.phone));
+    if (method === 'POST' && pathname === '/api/admin/remove-employee') {
+      const accountId = String(body.accountId || '');
+      if (!accountId) return json({ error: 'Which person?' }, 400);
+      if (body.keepHistory) {
+        await env.DB.prepare('UPDATE employees SET active = 0, updated_at = ? WHERE account_id = ?')
+          .bind(new Date().toISOString(), accountId).run();
+        return json({ ok: true, kept: true });
+      }
+      // A full removal takes their XP history with them.
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM xp_ledger WHERE account_id = ?').bind(accountId),
+        env.DB.prepare('DELETE FROM weekly_snapshots WHERE account_id = ?').bind(accountId),
+        env.DB.prepare('DELETE FROM unmatched_worklogs WHERE account_id = ?').bind(accountId),
+        env.DB.prepare('DELETE FROM employees WHERE account_id = ?').bind(accountId),
+      ]);
+      return json({ ok: true, kept: false });
+    }
     if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
@@ -443,7 +460,7 @@ async function getTime(env, user, url) {
 async function adminOverview(env) {
   const [employees, unmatched, state, alerts, jobs] = await Promise.all([
     env.DB.prepare(
-      `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension,
+      `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension, e.active,
               COALESCE(SUM(l.xp), 0) AS ledger_xp, COUNT(l.worklog_id) AS worklogs
          FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
         GROUP BY e.account_id ORDER BY e.name`

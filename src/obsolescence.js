@@ -77,34 +77,42 @@ export async function removeLibraryEntry(env, id) {
 
 // ---------- The client list, read straight from Jira ----------
 
-async function contractFor(env, projectKey) {
+// One search for every customer's contract, rather than one search each,
+// which made the client list take an age to load.
+async function contractsFor(env, projectKeys) {
+  const found = new Map();
+  if (!projectKeys.length) return found;
   try {
     const issues = await searchJql(env,
-      `project = "${projectKey}" AND issuetype = "${CONTRACT_ISSUE_TYPE}"`
+      `project in (${projectKeys.map((k) => `"${k}"`).join(', ')}) AND issuetype = "${CONTRACT_ISSUE_TYPE}"`
       + ` AND status in (${CONTRACT_STATUSES.map((s) => `"${s}"`).join(', ')}) ORDER BY created DESC`,
-      [CONTRACT_FIELD], { limit: 1 });
-    const first = issues[0];
-    if (!first) return { contractNo: '', serviceContract: '' };
-    const value = first.fields?.[CONTRACT_FIELD];
-    return {
-      contractNo: first.key,
-      serviceContract: typeof value === 'object' ? (value?.value || value?.name || '') : String(value || ''),
-    };
+      ['project', CONTRACT_FIELD], { limit: 200 });
+    for (const issue of issues) {
+      const key = issue.fields?.project?.key;
+      if (!key || found.has(key)) continue;         // newest first, so keep the first
+      const value = issue.fields?.[CONTRACT_FIELD];
+      found.set(key, {
+        contractNo: issue.key,
+        serviceContract: typeof value === 'object' ? (value?.value || value?.name || '') : String(value || ''),
+      });
+    }
   } catch (err) {
-    return { contractNo: '', serviceContract: '' };
+    console.warn('Contract lookup failed:', err.message);
   }
+  return found;
 }
 
 export async function listReports(env, { status = null } = {}) {
   const jql = `issuetype = "${REPORT_ISSUE_TYPE}"${status ? ` AND status = "${status}"` : ''} ORDER BY updated DESC`;
   const issues = await searchJql(env, jql, ['summary', 'status', 'project', 'updated', CONTACT_FIELD, REPORT_LINK_FIELD], { limit: 100 });
 
-  const reports = [];
-  for (const issue of issues) {
+  const contracts = await contractsFor(env, [...new Set(issues.map((i) => i.fields?.project?.key).filter(Boolean))]);
+
+  const reports = issues.map((issue) => {
     const f = issue.fields || {};
     const projectKey = f.project?.key || '';
-    const contract = await contractFor(env, projectKey);
-    reports.push({
+    const contract = contracts.get(projectKey) || { contractNo: '', serviceContract: '' };
+    return {
       key: issue.key,
       url: `${env.JIRA_BASE_URL}/browse/${issue.key}`,
       summary: f.summary || '',
@@ -115,8 +123,8 @@ export async function listReports(env, { status = null } = {}) {
       siteContact: typeof f[CONTACT_FIELD] === 'object' ? (f[CONTACT_FIELD]?.value || '') : (f[CONTACT_FIELD] || ''),
       reportLink: f[REPORT_LINK_FIELD] || '',
       ...contract,
-    });
-  }
+    };
+  });
   return { reports };
 }
 

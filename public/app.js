@@ -286,7 +286,10 @@ const pages = {
       // Sales people can do either job, so they pick first.
       if (obsConfig.sales && !obsView && !obsSurvey) return obsChooserHtml();
       if (obsView === 'sales') return obsSalesHtml(await api('/api/obs/sales'));
-      if (obsSurvey?.picking) return obsPickHtml();
+      if (obsSurvey?.picking) {
+        if (!obsReports) obsReports = (await api('/api/obs/reports')).reports;
+        return obsPickHtml();
+      }
       return obsSurvey ? obsSurveyHtml() : obsHomeHtml(await api('/api/obs/surveys'));
     },
   },
@@ -331,17 +334,11 @@ const pages = {
   },
 
   '#/admin': {
-    band: () => `<h1>Admin</h1><p>Sync status, shadow-mode checks and account links.</p>`,
+    band: () => `<h1>Admin</h1><p>People, sync and alerts. Each app keeps its own settings behind the cog.</p>`,
     async render() {
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, itTypes, adminVehicles, raList] = await Promise.all([
-        api('/api/admin/overview'),
-        api('/api/admin/it-types').catch((err) => ({ categories: [], types: [], error: err.message })),
-        api('/api/admin/vehicles').catch(() => ({ vehicles: [] })),
-        api('/api/admin/ra-library').catch(() => ({ items: [] })),
-      ]);
+      const data = await api('/api/admin/overview');
       const s = data.state;
-      itServiceDeskId = itTypes.serviceDeskId || itServiceDeskId;
       const options = data.employees.map((e) => `<option value="${esc(e.account_id)}">${esc(e.name)}${e.email ? ` (${esc(e.email)})` : ''}</option>`).join('');
       const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
       return `
@@ -355,7 +352,6 @@ const pages = {
           <div class="row">
             <button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
             <button class="btn secondary" data-action="refresh-profiles">Refresh profiles from Jira</button>
-            <button class="btn secondary" data-action="snapshot">Record last week's snapshot</button>
           </div>
           <div class="result" id="sync-result" role="status"></div>
         </div>
@@ -368,27 +364,6 @@ const pages = {
             <button class="btn" data-action="start-ledger">Start ledger</button>
           </div>
           <div class="result" id="start-result" role="status"></div>
-        </div>
-
-        <h2>Completed job tracking</h2>
-        <div class="card">
-          <p style="margin-top:0">Finished customer work is recorded for quoting. It never changes anyone's XP or ELO.</p>
-          <dl class="state">
-            <dt>Items recorded</dt><dd>${n(data.jobs.rows || 0)} (${n(data.jobs.epics || 0)} orders, ${n(data.jobs.categories || 0)} categories, ${n(data.jobs.stages || 0)} stages)</dd>
-            <dt>Covering</dt><dd>${data.jobs.earliest ? `${esc(data.jobs.earliest)} to ${esc(data.jobs.latest)}` : 'Nothing yet'}</dd>
-            <dt>Backfill</dt><dd>${!data.jobs.until ? 'Not started'
-              : data.jobs.done ? `Finished, back to ${esc(data.jobs.until)}`
-              : `Working backwards, reached ${esc(data.jobs.before)} of ${esc(data.jobs.until)}`}</dd>
-          </dl>
-          <div class="row">
-            <button class="btn secondary" data-action="scan-jobs">Scan finished jobs now</button>
-            <label>Backfill <select id="backfill-months">
-              <option value="12">12 months</option><option value="24" selected>24 months</option><option value="36">36 months</option>
-            </select></label>
-            <button class="btn" data-action="backfill-start">Start backfill</button>
-            <button class="btn secondary" data-action="recompute-stages">Rebuild stage names</button>
-          </div>
-          <div class="result" id="jobs-result" role="status"></div>
         </div>
 
         <h2>Alerts</h2>
@@ -420,20 +395,21 @@ const pages = {
         </div>
 
         <h2>Engineers</h2>
-        <p class="muted">During shadow mode, Difference compares the hub's XP with the XP field in Jira. Jira's figure refreshes hourly.</p>
+        <p class="muted">During shadow mode, Difference compares the hub's XP with the XP field in Jira. Jira's figure refreshes hourly.
+        Anyone whose Employee issue has gone from Jira is marked as such the next time profiles are refreshed.</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Extension</th><th>Signed in as</th><th class="num">ELO</th><th class="num">Hub XP</th><th class="num">Jira XP</th><th class="num">Difference</th><th class="num">Worklogs</th></tr></thead>
+          <thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Signed in as</th><th class="num">ELO</th><th class="num">Hub XP</th><th class="num">Jira XP</th><th class="num">Difference</th><th class="num">Worklogs</th><th></th></tr></thead>
           <tbody>${data.employees.map((e) => `<tr>
-            <td>${esc(e.name)}</td>
+            <td>${esc(e.name)}${e.active === 0 ? '<br><span class="muted">No longer in Jira</span>' : ''}</td>
             <td>${e.role === 'lead' ? 'Team lead' : e.role === 'admin' ? 'Admin' : 'Engineer'}</td>
             <td>${e.team ? esc(e.team) : '<span class="muted">—</span>'}</td>
-            <td><input class="tiny" data-extension="${esc(e.account_id)}" value="${esc(e.extension || '')}" placeholder="—" autocomplete="off"></td>
             <td>${e.email ? esc(e.email) : '<span class="muted">Not linked</span>'}</td>
             <td class="num">${e.elo != null ? n(Math.round(e.elo)) : '—'}</td>
             <td class="num">${n(e.app_xp)}</td>
             <td class="num">${n(e.jira_xp)}</td>
             <td class="num ${Math.abs(e.difference) > 50 ? 'bad' : 'good'}">${e.difference > 0 ? '+' : ''}${n(e.difference)}</td>
             <td class="num">${n(e.worklogs)}</td>
+            <td><button class="linklike" data-remove-employee="${esc(e.account_id)}" data-name="${esc(e.name)}">Remove</button></td>
           </tr>`).join('') || '<tr><td colspan="10" class="muted">No engineers yet. Refresh profiles from Jira.</td></tr>'}</tbody>
         </table></div>
 
@@ -444,66 +420,6 @@ const pages = {
         </table></div>
         <p class="muted">Give these people an Employee issue in DNM with their account ID in the UserID field, then refresh profiles. Any of their time from the last two weeks is picked up within about 30 minutes.</p>`
         : '<div class="card"><p class="muted">None. Every worklog belongs to someone with a profile.</p></div>'}
-
-        <h2>Vehicles</h2>
-        <div class="card">
-          <div class="table-wrap"><table>
-            <thead><tr><th>Registration</th><th>Vehicle</th><th>Status</th><th>MOT</th><th>Insurance</th><th>Tax</th><th>Service</th><th class="num">Miles</th></tr></thead>
-            <tbody>${adminVehicles.vehicles.map((v) => `<tr>
-              <td><button class="linklike" data-admin-vehicle="${esc(v.id)}">${esc(v.registration)}</button></td>
-              <td>${esc([v.make, v.model, v.kind].filter(Boolean).join(' '))}</td>
-              <td>${v.active ? (v.offRoad ? '<span class="bad">Off the road</span>' : 'Available') : '<span class="muted">Retired</span>'}</td>
-              <td>${esc(v.mot_due || '—')}</td><td>${esc(v.insurance_due || '—')}</td>
-              <td>${esc(v.tax_due || '—')}</td><td>${esc(v.service_due || '—')}</td>
-              <td class="num">${v.mileage ? n(v.mileage) : '—'}</td>
-            </tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}</tbody>
-          </table></div>
-          <div class="row" style="margin-top:1rem">
-            <button class="btn" data-admin-vehicle="">Add a vehicle</button>
-            <button class="btn secondary" data-action="vehicle-expiries">Check expiry dates now</button>
-          </div>
-          <div id="vehicle-form"></div>
-          <div class="result" id="vehicle-result" role="status"></div>
-        </div>
-
-        <h2>8x8 calls</h2>
-        <div class="card">
-          <p style="margin-top:0">Calls are only fetched when an engineer asks for them. Matching works on their 8x8 extension or the name on the call, so set extensions below.</p>
-          <button class="btn secondary" data-action="test-8x8">Test the 8x8 connection</button>
-          <div class="result" id="eight8-result" role="status"></div>
-        </div>
-
-        <h2>IT request types</h2>
-        <div class="card">
-          <p style="margin-top:0">What the hub offers engineers, and the Jira request type each one raises.</p>
-          ${itTypes.error ? `<p class="bad">${esc(itTypes.error)}</p>` : `
-            <div class="table-wrap"><table>
-              <thead><tr><th>In the hub</th><th>Raises in Jira</th></tr></thead>
-              <tbody>${itTypes.categories.map((c) => `<tr>
-                <td>${esc(c.label)}</td>
-                <td><select data-it-map="${esc(c.id)}">
-                  <option value="">Not set up</option>
-                  ${itTypes.types.map((t) => `<option value="${esc(t.id)}"${t.id === c.mapped ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}
-                </select></td>
-              </tr>`).join('')}</tbody>
-            </table></div>`}
-          <div class="result" id="it-map-result" role="status"></div>
-        </div>
-
-        <h2>Risk assessments and safe systems of work</h2>
-        <div class="card">
-          <p style="margin-top:0">What engineers can pick from on a point of work assessment.</p>
-          <ul class="list" style="box-shadow:none">${raList.items.map((r) => `<li>
-              <span class="title">${esc(r.title)}</span>
-              <span class="sub">${r.active ? 'In the list' : 'Hidden'}</span>
-              <span class="xp"><button class="linklike" data-ra-toggle="${esc(r.id)}" data-ra-active="${r.active ? 0 : 1}" data-ra-title="${esc(r.title)}">${r.active ? 'Hide' : 'Show'}</button></span>
-            </li>`).join('') || '<li><span class="muted">Nothing yet.</span></li>'}</ul>
-          <div class="row" style="margin-top:1rem">
-            <label style="flex:1">Add one <input id="ra-title" placeholder="RA - 1021 - Working at Height" autocomplete="off"></label>
-            <button class="btn" data-action="ra-add">Add</button>
-          </div>
-          <div class="result" id="ra-result" role="status"></div>
-        </div>
 
         <h2>Link a Google account</h2>
         <div class="card">
@@ -560,6 +476,157 @@ async function tileControl(action, id) {
   return render();
 }
 
+// ---------- settings panels ----------
+
+async function renderSettings(route) {
+  settingsData = {
+    overview: await api('/api/admin/overview').catch(() => ({ employees: [], alerts: [], state: {}, jobs: {} })),
+  };
+  if (route === '#/it') settingsData.it = await api('/api/admin/it-types').catch((err) => ({ categories: [], types: [], error: err.message }));
+  if (route === '#/vehicles') settingsData.vehicles = await api('/api/admin/vehicles').catch(() => ({ vehicles: [] }));
+  if (route === '#/pow') settingsData.ra = await api('/api/admin/ra-library').catch(() => ({ items: [] }));
+  if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
+  const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
+  return back + TILE_SETTINGS[route].render();
+}
+
+function settingsPowHtml() {
+  const items = settingsData.ra.items || [];
+  return `<div class="card">
+      <h2 style="margin-top:0">Risk assessments and safe systems of work</h2>
+      <p class="muted">What engineers can pick from when filling in an assessment.</p>
+      <ul class="list" style="box-shadow:none">${items.map((r) => `<li>
+          <span class="title">${esc(r.title)}</span>
+          <span class="sub">${r.active ? 'In the list' : 'Hidden'}</span>
+          <span class="xp"><button class="linklike" data-ra-toggle="${esc(r.id)}" data-ra-active="${r.active ? 0 : 1}" data-ra-title="${esc(r.title)}">${r.active ? 'Hide' : 'Show'}</button></span>
+        </li>`).join('') || '<li><span class="muted">Nothing yet.</span></li>'}</ul>
+      <div class="row" style="margin-top:1rem">
+        <label style="flex:1">Add one <input id="ra-title" placeholder="RA - 1021 - Working at Height" autocomplete="off"></label>
+        <button class="btn" data-action="ra-add">Add</button>
+      </div>
+      <div class="result" id="ra-result" role="status"></div>
+    </div>`;
+}
+
+function settingsVehiclesHtml() {
+  const vehicles = settingsData.vehicles.vehicles || [];
+  return `<div class="card">
+      <h2 style="margin-top:0">The fleet</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Registration</th><th>Vehicle</th><th>Status</th><th>MOT</th><th>Insurance</th><th>Tax</th><th>Service</th><th class="num">Miles</th></tr></thead>
+        <tbody>${vehicles.map((v) => `<tr>
+          <td><button class="linklike" data-admin-vehicle="${esc(v.id)}">${esc(v.registration)}</button></td>
+          <td>${esc([v.make, v.model, v.kind].filter(Boolean).join(' '))}</td>
+          <td>${v.active ? (v.offRoad ? '<span class="bad">Off the road</span>' : 'Available') : '<span class="muted">Retired</span>'}</td>
+          <td>${esc(v.mot_due || '—')}</td><td>${esc(v.insurance_due || '—')}</td>
+          <td>${esc(v.tax_due || '—')}</td><td>${esc(v.service_due || '—')}</td>
+          <td class="num">${v.mileage ? n(v.mileage) : '—'}</td>
+        </tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}</tbody>
+      </table></div>
+      <div class="row" style="margin-top:1rem">
+        <button class="btn" data-admin-vehicle="">Add a vehicle</button>
+        <button class="btn secondary" data-action="vehicle-expiries">Check expiry dates now</button>
+      </div>
+      <div id="vehicle-form"></div>
+      <div class="result" id="vehicle-result" role="status"></div>
+    </div>`;
+}
+
+function settingsCallsHtml() {
+  const people = (settingsData.overview.employees || []).filter((e) => e.active !== 0);
+  return `<div class="card">
+      <h2 style="margin-top:0">8x8 connection</h2>
+      <p class="muted">Calls are only fetched when someone asks for them.</p>
+      <button class="btn secondary" data-action="test-8x8">Test the connection</button>
+      <div class="result" id="eight8-result" role="status"></div>
+    </div>
+    <h2>Extensions</h2>
+    <p class="muted" style="margin-top:-.5rem">Calls are matched to people by extension, or by the name on the call if this is blank.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Engineer</th><th>Extension</th></tr></thead>
+      <tbody>${people.map((e) => `<tr>
+        <td>${esc(e.name)}</td>
+        <td><input class="tiny" data-extension="${esc(e.account_id)}" value="${esc(e.extension || '')}" placeholder="—" autocomplete="off"></td>
+      </tr>`).join('') || '<tr><td colspan="2" class="muted">No engineers yet.</td></tr>'}</tbody>
+    </table></div>`;
+}
+
+function settingsItHtml() {
+  const it = settingsData.it;
+  itServiceDeskId = it.serviceDeskId || itServiceDeskId;
+  return `<div class="card">
+      <h2 style="margin-top:0">Request types</h2>
+      <p class="muted">What the hub offers, and the Jira request type each one raises.</p>
+      ${it.error ? `<p class="bad">${esc(it.error)}</p>` : `
+        <div class="table-wrap"><table>
+          <thead><tr><th>In the hub</th><th>Raises in Jira</th></tr></thead>
+          <tbody>${it.categories.map((c) => `<tr>
+            <td>${esc(c.label)}</td>
+            <td><select data-it-map="${esc(c.id)}">
+              <option value="">Not set up</option>
+              ${it.types.map((t) => `<option value="${esc(t.id)}"${t.id === c.mapped ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}
+            </select></td>
+          </tr>`).join('')}</tbody>
+        </table></div>`}
+      <div class="result" id="it-map-result" role="status"></div>
+    </div>`;
+}
+
+function settingsObsHtml() {
+  const library = settingsData.library || {};
+  const kinds = [['vdus', 'VDUs'], ['controlPCs', 'Control PCs'], ['lcAmps', 'Amplifiers'], ['loadCells', 'Load cells'],
+    ['plcCards', 'PLC cards'], ['software', 'Software'], ['criticalSpares', 'Critical spares']];
+  return `<div class="card">
+      <h2 style="margin-top:0">Equipment library</h2>
+      <p class="muted">What the survey suggests as engineers type. It grows on its own from every finished survey.</p>
+      <div class="stats" style="margin:0">${kinds.map(([key, label]) => `<div>
+          <dt>${esc(label)}</dt><dd>${n((library[key] || []).length)}</dd>
+        </div>`).join('')}</div>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <p style="margin-top:0">The library came from the master sheet and keeps itself up to date, so there is usually
+      nothing to do here. Entries can be removed if something wrong gets in.</p>
+      <div class="row">
+        <label>Type <select id="lib-kind">${kinds.map(([key, label]) => `<option value="${key}">${label}</option>`).join('')}</select></label>
+        <button class="btn secondary" data-action="lib-list">Show entries</button>
+      </div>
+      <div id="lib-list"></div>
+      <div class="result" id="lib-result" role="status"></div>
+    </div>`;
+}
+
+function settingsReportsHtml() {
+  const jobs = settingsData.overview.jobs || {};
+  const state = settingsData.overview.state || {};
+  return `<div class="card">
+      <h2 style="margin-top:0">Completed job tracking</h2>
+      <p style="margin-top:0">Finished customer work is recorded for quoting. It never changes anyone's XP or ELO.</p>
+      <dl class="state">
+        <dt>Items recorded</dt><dd>${n(jobs.rows || 0)} (${n(jobs.epics || 0)} orders, ${n(jobs.categories || 0)} categories, ${n(jobs.stages || 0)} stages)</dd>
+        <dt>Covering</dt><dd>${jobs.earliest ? `${esc(jobs.earliest)} to ${esc(jobs.latest)}` : 'Nothing yet'}</dd>
+        <dt>Backfill</dt><dd>${!jobs.until ? 'Not started'
+          : jobs.done ? `Finished, back to ${esc(jobs.until)}`
+          : `Working backwards, reached ${esc(jobs.before)} of ${esc(jobs.until)}`}</dd>
+      </dl>
+      <div class="row">
+        <button class="btn secondary" data-action="scan-jobs">Scan finished jobs now</button>
+        <label>Backfill <select id="backfill-months">
+          <option value="12">12 months</option><option value="24" selected>24 months</option><option value="36">36 months</option>
+        </select></label>
+        <button class="btn" data-action="backfill-start">Start backfill</button>
+        <button class="btn secondary" data-action="recompute-stages">Rebuild stage names</button>
+      </div>
+      <div class="result" id="jobs-result" role="status"></div>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Weekly snapshots</h2>
+      <p class="muted">Recorded automatically every Monday morning, so progress survives as the numbers move.</p>
+      <dl class="state"><dt>Last recorded</dt><dd>${state.last_scheduled_run ? new Date(state.last_scheduled_run).toLocaleString('en-GB') : 'Not yet'}</dd></dl>
+      <button class="btn secondary" data-action="snapshot">Record last week now</button>
+      <div class="result" id="sync-result" role="status"></div>
+    </div>`;
+}
+
 // ---------- obsolescence ----------
 
 let obsConfig = null;
@@ -589,6 +656,8 @@ function obsChooserHtml() {
 }
 
 function obsHomeHtml(data) {
+  const drafts = data.surveys.filter((s) => s.status === 'draft');
+  const done = data.surveys.filter((s) => s.status !== 'draft');
   const row = (s) => `<li>
       <span class="title">${esc(s.client || 'No client')} ${s.report_key ? `<span class="muted">${esc(s.report_key)}</span>` : ''}</span>
       <span class="sub">${s.status === 'draft' ? `Draft, last touched ${shortDate((s.updated_at || '').slice(0, 10))}`
@@ -604,9 +673,8 @@ function obsHomeHtml(data) {
       <p style="margin-top:0">Walk the site, record what's there, and the hub makes the report, files it and moves the job on.</p>
       <button class="btn" data-obs="new">Start a survey</button>
     </div>
-    <h2>Yours</h2>
-    ${data.surveys.length ? `<ul class="list">${data.surveys.map(row).join('')}</ul>`
-      : '<div class="card"><p class="muted">Nothing yet.</p></div>'}`;
+    ${drafts.length ? `<h2>Unfinished</h2><ul class="list">${drafts.map(row).join('')}</ul>` : ''}
+    ${done.length ? `<h2>Finished</h2><ul class="list">${done.map(row).join('')}</ul>` : ''}`;
 }
 
 function obsSalesHtml(data) {
@@ -671,7 +739,7 @@ function newSurvey(report) {
     reportKey: report?.key || null,
     projectKey: report?.projectKey || null,
     title: {
-      client: report?.client || '', contractNo: report?.contractNo || '', jobNo: '',
+      client: report?.client || '', contractNo: report?.contractNo || '',
       siteContact: report?.siteContact || '', engineer: me.employee.name,
       date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
     },
@@ -761,7 +829,6 @@ function obsSurveyHtml() {
         <p class="muted">Filled in from Jira where possible.</p>
         ${obsField('title.client', 'Client', t.client)}
         ${obsField('title.contractNo', 'Contract number', t.contractNo)}
-        ${obsField('title.jobNo', 'Job number', t.jobNo)}
         ${obsField('title.siteContact', 'Site contact', t.siteContact)}
         ${obsField('title.engineer', 'Engineer', t.engineer)}
         ${obsField('title.date', 'Date of survey', t.date)}
@@ -829,9 +896,8 @@ async function obsControl(action, value) {
   if (action === 'back-to-queue') { obsReading = null; return render(); }
 
   if (action === 'new') {
-    if (!obsReports) obsReports = (await api('/api/obs/reports')).reports;
     obsSurvey = { picking: true };
-    return render();
+    return render();                                 // the render shows a spinner while Jira answers
   }
   if (action === 'back') {
     if (obsSection === 0) {
@@ -2405,6 +2471,14 @@ function renderAccount() {
     </div>`;
 }
 
+// The cog lives in the header, outside the main view, so it needs its own listener.
+band.addEventListener('click', (event) => {
+  const settingsBtn = event.target.closest('[data-settings]');
+  if (!settingsBtn) return;
+  settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
+  render();
+});
+
 document.getElementById('account-btn').addEventListener('click', () => {
   if (!me) return;
   renderAccount();
@@ -2528,7 +2602,7 @@ async function adminAction(action, button) {
     'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
-    'test-8x8': 'eight8-result' }[action];
+    'test-8x8': 'eight8-result', 'lib-list': 'lib-result' }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
@@ -2536,7 +2610,8 @@ async function adminAction(action, button) {
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
     } else if (action === 'refresh-profiles') {
       const r = await api('/api/admin/refresh-profiles', { method: 'POST' });
-      out(target, `Refreshed ${r.employees} profiles.${r.skippedNoUserId.length ? ` Skipped (no UserID): ${r.skippedNoUserId.join(', ')}` : ''}`);
+      out(target, `Refreshed ${r.employees} profiles.${r.departed ? ` ${r.departed} no longer in Jira.` : ''}`
+        + `${r.skippedNoUserId.length ? ` Skipped (no UserID): ${r.skippedNoUserId.join(', ')}` : ''}`);
     } else if (action === 'start-ledger') {
       const confirm = document.getElementById('confirm-start').value.trim();
       const r = await api('/api/admin/start-ledger', { method: 'POST', body: JSON.stringify({ confirm }) });
@@ -2574,6 +2649,19 @@ async function adminAction(action, button) {
         }),
       });
       out('vehicle-result', 'Saved.');
+    } else if (action === 'lib-list') {
+      const kind = document.getElementById('lib-kind').value;
+      const entries = (settingsData.library[kind] || []).slice(0, 60);
+      document.getElementById('lib-list').innerHTML = entries.length
+        ? `<ul class="list" style="box-shadow:none;margin-top:1rem">${entries.map((entry) => {
+            const text = Object.entries(entry).filter(([key]) => !['id', 'source'].includes(key))
+              .map(([, value]) => value).filter(Boolean).slice(0, 4).join(', ');
+            return `<li><span class="title">${esc(text || 'Empty entry')}</span>
+              <span class="sub">${esc(entry.source || '')}</span>
+              <span class="xp"><button class="linklike" data-lib-remove="${esc(entry.id)}">Remove</button></span></li>`;
+          }).join('')}</ul>`
+        : '<p class="muted" style="margin-top:1rem">Nothing recorded for that type yet.</p>';
+      out('lib-result', `${entries.length} shown.`);
     } else if (action === 'ra-add') {
       const title = document.getElementById('ra-title').value.trim();
       if (!title) return out('ra-result', 'Type the name first.', true);
@@ -2599,7 +2687,7 @@ async function adminAction(action, button) {
       });
       out(target, 'Linked.');
     }
-    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8'].includes(action)) {
+    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8', 'lib-list'].includes(action)) {
       setTimeout(render, 1200);
     }
   } catch (err) {
@@ -2660,6 +2748,42 @@ view.addEventListener('click', async (event) => {
   }
 
   if (event.target.closest('[data-retry]')) return render();
+
+  const settingsBtn = event.target.closest('[data-settings]');
+  if (settingsBtn) {
+    settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
+    return render();
+  }
+
+  const removeEmployee = event.target.closest('[data-remove-employee]');
+  if (removeEmployee) {
+    const name = removeEmployee.dataset.name;
+    view.querySelector('#remove-employee-box')?.remove();
+    removeEmployee.closest('td').insertAdjacentHTML('beforeend', `
+      <div id="remove-employee-box" class="card" style="margin-top:.5rem;padding:.75rem">
+        <p style="margin:0 0 .5rem">Remove ${esc(name)}?</p>
+        <div class="row">
+          <button class="btn secondary" data-remove-confirm="keep" data-account="${esc(removeEmployee.dataset.removeEmployee)}">Hide, keep their XP</button>
+          <button class="btn" data-remove-confirm="purge" data-account="${esc(removeEmployee.dataset.removeEmployee)}">Remove everything</button>
+        </div>
+      </div>`);
+    return;
+  }
+  const removeConfirm = event.target.closest('[data-remove-confirm]');
+  if (removeConfirm) {
+    await api('/api/admin/remove-employee', {
+      method: 'POST',
+      body: JSON.stringify({ accountId: removeConfirm.dataset.account, keepHistory: removeConfirm.dataset.removeConfirm === 'keep' }),
+    });
+    toast('Removed');
+    return render();
+  }
+  const libRemove = event.target.closest('[data-lib-remove]');
+  if (libRemove) {
+    await api('/api/admin/library-remove', { method: 'POST', body: JSON.stringify({ id: libRemove.dataset.libRemove }) });
+    toast('Entry removed');
+    return render();
+  }
 
   const obsBtn = event.target.closest('[data-obs]');
   if (obsBtn) return obsControl(obsBtn.dataset.obs);
@@ -2811,23 +2935,63 @@ function currentRoute() {
 const spinner = (label = 'Loading') => `<div class="card loading-card"><span class="spinner" aria-hidden="true"></span>
     <span>${esc(label)}…</span></div>`;
 
+// Some pages know what they are waiting for.
+const WAITING_FOR = {
+  '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
+  '#/calls': () => 'Loading',
+};
+
+// Settings live with the app they configure. The cog appears in the header of
+// any tile that has some, and only for admins.
+const TILE_SETTINGS = {
+  '#/obs': { label: 'Obsolescence settings', render: () => settingsObsHtml() },
+  '#/pow': { label: 'Point of work settings', render: () => settingsPowHtml() },
+  '#/vehicles': { label: 'Vehicle settings', render: () => settingsVehiclesHtml() },
+  '#/calls': { label: '8x8 settings', render: () => settingsCallsHtml() },
+  '#/it': { label: 'IT support settings', render: () => settingsItHtml() },
+  '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
+};
+let settingsOpen = null;
+let settingsData = null;
+
+function cogButton(route) {
+  if (!me?.user?.isAdmin || !TILE_SETTINGS[route]) return '';
+  return `<button class="cog" data-settings="${route}" aria-label="${esc(TILE_SETTINGS[route].label)}" title="${esc(TILE_SETTINGS[route].label)}">
+      ${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}
+    </button>`;
+}
+
+let renderToken = 0;
+
 async function render() {
+  const token = ++renderToken;
   const route = currentRoute();
   const page = pages[route];
   back.hidden = route === '#/';
   avatar.textContent = initials();
-  band.innerHTML = page.band();
-  // Anything that takes a moment gets a spinner rather than a frozen screen.
-  const slow = setTimeout(() => { view.innerHTML = spinner(); }, 160);
+  band.innerHTML = settingsOpen === route
+    ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>Admin only. Everyone else never sees this.</p>`
+    : page.band() + cogButton(route);
+
+  // Anything slow gets a spinner, but only while it is still the newest render.
+  const slow = setTimeout(() => {
+    if (token === renderToken) view.innerHTML = spinner(WAITING_FOR[route]?.() || 'Loading');
+  }, 160);
+
   try {
-    const html = await page.render();
-    clearTimeout(slow);
-    if (currentRoute() === route) {
+    const html = settingsOpen === route ? await renderSettings(route) : await page.render();
+    if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
       if (route === '#/xp') loadLeaderboard();
     }
   } catch (err) {
-    view.innerHTML = `<div class="card notice error"><p>${esc(err.message)}</p></div>`;
+    if (token === renderToken) {
+      view.innerHTML = `<div class="card notice error"><p><strong>That didn't load.</strong></p>
+        <p>${esc(err.message)}</p>
+        <p><button class="btn secondary" data-retry="1">Try again</button></p></div>`;
+    }
+  } finally {
+    clearTimeout(slow);
   }
 }
 
@@ -2909,6 +3073,7 @@ view.addEventListener('change', async (event) => {
 });
 
 window.addEventListener('hashchange', () => {
+  settingsOpen = null;
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
   if (currentRoute() !== '#/') arrangeMode = false;

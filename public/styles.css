@@ -314,3 +314,11 @@ input.hdr { font-weight: 700; font-size: 1.05rem; border: 0; border-bottom: 1px 
 #obs-search { width: 100%; }
 
 a.chip-btn { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* Settings cog */
+.cog { position: absolute; top: calc(.4rem + env(safe-area-inset-top)); right: max(1rem, env(safe-area-inset-right));
+  width: 40px; height: 40px; border: 0; border-radius: 12px; background: rgba(255,255,255,.14); color: #fff;
+  display: grid; place-items: center; cursor: pointer; }
+.cog:hover { background: rgba(255,255,255,.24); }
+.cog svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.band { position: relative; }

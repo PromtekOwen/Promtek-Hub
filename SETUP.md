@@ -123,6 +123,10 @@ When you're happy the numbers are right, the next phase moves ELO updates and jo
 
 Everything below is already in the app; this explains how to set it up.
 
+### Where the settings are
+
+The **Admin** tile holds the things that span the whole hub: sync and the XP ledger, roles, the engineer list, alerts and account linking. Everything that belongs to one app lives behind a **cog** in that app's header, visible to admins only: the RA and SSOW list in Point of work, the fleet in Vehicles, the 8x8 connection and extensions in 8x8 calls, the request type mapping in IT support, the equipment library in Obsolescence, and job tracking and snapshots in Reports.
+
 ### Roles
 
 There are three:
@@ -131,7 +135,7 @@ There are three:
 - **Team lead:** all of the above, plus every report, for the whole company. Leads are attached to Projecting, Service or Condor for alerts and, later, store approvals.
 - **Admin:** everything, plus sync controls and the ability to change roles.
 
-Set them under **Admin → Roles**. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
+Set them under **Admin → Roles**. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
 
 ### Reports
 

@@ -270,8 +270,25 @@ export async function refreshProfiles(env, { importXp = false } = {}) {
       jiraXp, importXp ? jiraXp : 0, now));
   }
   await runBatches(env, stmts);
+
+  // Anyone whose Employee issue has gone is marked as no longer in Jira,
+  // rather than quietly disappearing along with their history.
+  const seen = issues.map((issue) => String(issue.fields?.[userIdField] || '').trim()).filter(Boolean);
+  let departed = 0;
+  if (seen.length) {
+    const { results } = await env.DB.prepare(
+      `SELECT account_id FROM employees WHERE active = 1 AND account_id NOT IN (${seen.map(() => '?').join(',')})`
+    ).bind(...seen).all();
+    departed = results.length;
+    if (departed) {
+      await runBatches(env, results.map((row) => env.DB.prepare(
+        'UPDATE employees SET active = 0, updated_at = ? WHERE account_id = ?'
+      ).bind(now, row.account_id)));
+    }
+  }
+
   await setState(env, 'last_profile_refresh', now);
-  return { employees: stmts.length, skippedNoUserId: skipped };
+  return { employees: stmts.length, skippedNoUserId: skipped, departed };
 }
 
 // One-off go-live step: carry over current XP from Jira and start the ledger today.
