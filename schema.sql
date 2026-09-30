@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS employees (
   baseline    REAL,
   jira_xp     INTEGER NOT NULL DEFAULT 0,  -- XP currently shown in Jira (for shadow-mode comparison)
   opening_xp  INTEGER NOT NULL DEFAULT 0,  -- XP carried over from Jira when the ledger started
+  active      INTEGER NOT NULL DEFAULT 1,  -- 0 once their Employee issue has gone from Jira
   updated_at  TEXT
 );
 

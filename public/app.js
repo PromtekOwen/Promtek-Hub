@@ -334,7 +334,7 @@ const pages = {
   },
 
   '#/admin': {
-    band: () => `<h1>Admin</h1><p>People, sync and alerts. Each app keeps its own settings behind the cog.</p>`,
+    band: () => `<h1>Admin</h1><p>People, sync and alerts.</p>`,
     async render() {
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
       const data = await api('/api/admin/overview');
@@ -2970,7 +2970,7 @@ async function render() {
   back.hidden = route === '#/';
   avatar.textContent = initials();
   band.innerHTML = settingsOpen === route
-    ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>Admin only. Everyone else never sees this.</p>`
+    ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>Admin only.</p>`
     : page.band() + cogButton(route);
 
   // Anything slow gets a spinner, but only while it is still the newest render.
