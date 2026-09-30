@@ -278,6 +278,27 @@ const pages = {
     },
   },
 
+  '#/obs': {
+    band: () => `<h1>Obsolescence</h1><p>${obsConfig?.sales && obsView === 'sales' ? 'Surveys waiting to be read' : 'Site surveys and equipment condition'}</p>`,
+    async render() {
+      if (!me.linked) return notLinkedCard();
+      if (!obsConfig) obsConfig = await api('/api/obs/config');
+      // Sales people can do either job, so they pick first.
+      if (obsConfig.sales && !obsView && !obsSurvey) return obsChooserHtml();
+      if (obsView === 'sales') return obsSalesHtml(await api('/api/obs/sales'));
+      if (obsSurvey?.picking) return obsPickHtml();
+      return obsSurvey ? obsSurveyHtml() : obsHomeHtml(await api('/api/obs/surveys'));
+    },
+  },
+
+  '#/shop': {
+    band: () => `<h1>XP shop</h1><p>A working example while the rewards are agreed.</p>`,
+    async render() {
+      if (!me.user.isAdmin) return `<div class="card"><p>The shop is still being worked on.</p></div>`;
+      return shopSimulation ? shopSimulationHtml() : shopHtml(await api('/api/shop'));
+    },
+  },
+
   '#/calls': {
     band: () => `<h1>8x8 calls</h1><p>Turn the calls you took into time and tickets.</p>`,
     async render() {
@@ -539,12 +560,439 @@ async function tileControl(action, id) {
   return render();
 }
 
+// ---------- obsolescence ----------
+
+let obsConfig = null;
+let obsView = null;          // 'sales' or null for the engineer view
+let obsSurvey = null;        // the survey being filled in
+let obsSection = 0;
+let obsLibrary = null;
+let obsReports = null;
+let obsReading = null;       // the report a salesperson is deciding on
+
+function obsChooserHtml() {
+  return `<div class="card">
+      <h2 style="margin-top:0">What are you here for?</h2>
+      <p class="muted">You can do either. Sales usually read, but the survey form is here whenever you need it.</p>
+    </div>
+    <div style="height:1rem"></div>
+    <div class="options">
+      <button class="option" data-obs="survey-view">
+        <span class="option-main"><strong>Survey a site</strong><span class="muted">Record equipment and produce the report</span></span>
+        <span class="chev">›</span>
+      </button>
+      <button class="option" data-obs="sales">
+        <span class="option-main"><strong>Review surveys</strong><span class="muted">Read finished surveys and decide on quotes</span></span>
+        <span class="chev">›</span>
+      </button>
+    </div>`;
+}
+
+function obsHomeHtml(data) {
+  const row = (s) => `<li>
+      <span class="title">${esc(s.client || 'No client')} ${s.report_key ? `<span class="muted">${esc(s.report_key)}</span>` : ''}</span>
+      <span class="sub">${s.status === 'draft' ? `Draft, last touched ${shortDate((s.updated_at || '').slice(0, 10))}`
+        : `Completed ${shortDate((s.submitted_at || '').slice(0, 10))}`}${s.delivery_note ? ', needs filing by hand' : ''}</span>
+      <span class="xp">${s.status === 'draft'
+        ? `<button class="linklike" data-obs-open="${esc(s.id)}">Continue</button>`
+        : `<a class="linklike" href="/api/obs/pdf?id=${encodeURIComponent(s.id)}" target="_blank" rel="noopener">PDF</a>`}</span>
+    </li>`;
+  return `
+    ${obsConfig.sales ? `<div class="row" style="justify-content:flex-end;margin-bottom:.75rem">
+      <button class="btn secondary" data-obs="chooser">Switch to reviewing</button></div>` : ''}
+    <div class="card">
+      <p style="margin-top:0">Walk the site, record what's there, and the hub makes the report, files it and moves the job on.</p>
+      <button class="btn" data-obs="new">Start a survey</button>
+    </div>
+    <h2>Yours</h2>
+    ${data.surveys.length ? `<ul class="list">${data.surveys.map(row).join('')}</ul>`
+      : '<div class="card"><p class="muted">Nothing yet.</p></div>'}`;
+}
+
+function obsSalesHtml(data) {
+  if (obsReading) {
+    const r = obsReading;
+    return `
+      <div class="card">
+        <p class="muted" style="margin:0">Survey for</p>
+        <h2 style="margin:.2rem 0 .2rem">${esc(r.client)}</h2>
+        <p class="muted" style="margin:0">Surveyed ${esc(shortDate(r.surveyDate))}. ${esc(r.key)}.</p>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <h3 style="margin-top:0">Does this need a quote?</h3>
+        <p class="muted">Either way the report is marked up to date. A quote is created in ${esc(r.projectKey)}, assigned to you, and linked to the report.</p>
+        <div class="row">
+          <button class="btn" data-obs-quote="yes">Quote required</button>
+          <button class="btn secondary" data-obs-quote="no">No quote needed</button>
+        </div>
+        <div class="result" id="obs-quote-result" role="status"></div>
+      </div>
+      <div class="row" style="margin-top:1rem"><button class="btn secondary" data-obs="back-to-queue">Back to the list</button></div>`;
+  }
+
+  const rows = data.reports.map((r) => `<li class="call">
+      <span class="title">${esc(r.client)}</span>
+      <span class="sub">Surveyed ${esc(shortDate(r.surveyDate))}. ${esc(r.key)}${r.serviceContract ? `, ${esc(r.serviceContract)} contract` : ''}${r.siteContact ? `, ${esc(r.siteContact)}` : ''}</span>
+      <span class="row" style="gap:.4rem;margin-top:.6rem">
+        ${r.survey ? `<a class="chip-btn" href="/api/obs/pdf?id=${encodeURIComponent(r.survey.id)}" target="_blank" rel="noopener">Read the survey</a>`
+          : r.reportLink ? `<a class="chip-btn" href="${esc(r.reportLink)}" target="_blank" rel="noopener">Read the survey</a>` : ''}
+        <button class="chip-btn" data-obs-read="${esc(r.key)}">Finished reading</button>
+        <a class="chip-btn" href="${esc(r.url)}" target="_blank" rel="noopener">Jira</a>
+      </span>
+    </li>`).join('');
+
+  return `
+    <div class="row" style="justify-content:flex-end;margin-bottom:.75rem">
+      <button class="btn secondary" data-obs="chooser">Switch to surveying</button>
+    </div>
+    ${data.reports.length ? `<ul class="list">${rows}</ul>`
+      : '<div class="card"><p class="muted">Nothing waiting. Completed surveys appear here for review.</p></div>'}`;
+}
+
+function obsPickHtml() {
+  return `
+    <div class="card"><h2 style="margin-top:0">Which site are you surveying?</h2>
+      <p class="muted">From the obsolescence reports in Jira.</p>
+      <input id="obs-search" type="search" placeholder="Start typing a client name" autocomplete="off">
+    </div>
+    <div style="height:1rem"></div>
+    <div class="options">${(obsReports || []).map((r) => `<button class="option" data-obs-client="${esc(r.key)}">
+        <span class="option-main"><strong>${esc(r.client)}</strong>
+        <span class="muted">${esc(r.key)}, ${esc(r.status)}${r.serviceContract ? `, ${esc(r.serviceContract)}` : ''}</span></span>
+        <span class="chev">›</span>
+      </button>`).join('') || '<div class="card"><p class="muted">No obsolescence report items found in Jira.</p></div>'}</div>
+    <div class="row" style="margin-top:1rem"><button class="btn secondary" data-obs="back">Cancel</button></div>`;
+}
+
+function newSurvey(report) {
+  const section = (id) => obsConfig.sections.find((s) => s.id === id);
+  return {
+    id: `obs-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    reportKey: report?.key || null,
+    projectKey: report?.projectKey || null,
+    title: {
+      client: report?.client || '', contractNo: report?.contractNo || '', jobNo: '',
+      siteContact: report?.siteContact || '', engineer: me.employee.name,
+      date: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }),
+    },
+    controlServers: (section('controlServers').fixed || []).map((label) => ({ label, status: '', comments: '' })),
+    vdus: [], lcAmps: [], loadCells: [], software: [],
+    plcCards: [],
+    criticalSpares: [],
+    notes: '',
+  };
+}
+
+function obsField(path, label, value, list) {
+  return `<label style="margin-top:.6rem">${esc(label)}
+    <input data-obs-field="${esc(path)}" value="${esc(value || '')}"${list ? ` list="${esc(list)}"` : ''} autocomplete="off"></label>`;
+}
+
+function conditionPicker(path, value) {
+  return `<div class="segment" style="margin-top:.6rem">${obsConfig.conditions.map((c) =>
+    `<button class="seg${value === c ? ' on' : ''}" data-obs-status="${esc(path)}" data-value="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
+}
+
+function itemCard(section, item, index) {
+  const base = `${section.id}[${index}]`;
+  return `<div class="card" style="margin-top:.85rem">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <input class="hdr" data-obs-field="${base}.label" value="${esc(item.label || '')}" placeholder="Name" autocomplete="off">
+        <button class="linklike" data-obs-remove="${base}">Remove</button>
+      </div>
+      ${conditionPicker(`${base}.status`, item.status)}
+      ${section.fields.map(([key, label]) => obsField(`${base}.${key}`, label, item[key], `lib-${section.id}-${key}`)).join('')}
+      ${obsField(`${base}.comments`, 'Comments', item.comments)}
+    </div>`;
+}
+
+function panelCard(panel, index) {
+  const base = `plcCards[${index}]`;
+  return `<div class="card" style="margin-top:.85rem">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <input class="hdr" data-obs-field="${base}.label" value="${esc(panel.label || '')}" autocomplete="off">
+        <button class="linklike" data-obs-remove="${base}">Remove</button>
+      </div>
+      ${(panel.cards || []).map((card, c) => `<div class="sig">
+          <strong>${esc(card.title)}</strong>
+          ${conditionPicker(`${base}.cards[${c}].status`, card.status)}
+          ${obsField(`${base}.cards[${c}].manufacturer`, 'Manufacturer', card.manufacturer, 'lib-plcCards-manufacturer')}
+          ${obsField(`${base}.cards[${c}].partNo`, 'Part number', card.partNo, 'lib-plcCards-partNo')}
+          ${obsField(`${base}.cards[${c}].voltage`, 'Control voltage', card.voltage)}
+          ${obsField(`${base}.cards[${c}].density`, 'Density / I/O count', card.density)}
+          ${obsField(`${base}.cards[${c}].comments`, 'Comments', card.comments)}
+        </div>`).join('')}
+    </div>`;
+}
+
+function datalists() {
+  if (!obsLibrary) return '';
+  const lists = [];
+  for (const section of obsConfig.sections) {
+    const rows = obsLibrary[section.library] || [];
+    for (const [key, label] of section.fields) {
+      const values = [...new Set(rows.map((r) => r[label]).filter(Boolean))].slice(0, 200);
+      if (values.length) lists.push(`<datalist id="lib-${section.id}-${key}">${values.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`);
+    }
+  }
+  return lists.join('');
+}
+
+function obsSurveyHtml() {
+  const sections = obsConfig.sections;
+  const step = obsSection;
+  const progress = `<div class="card" style="padding:.85rem 1rem">
+      <div class="row" style="justify-content:space-between">
+        <strong>${step === 0 ? 'Site details' : sections[step - 1].name}</strong>
+        <span class="muted">${step + 1} of ${sections.length + 2}</span>
+      </div>
+      <div class="bar" style="margin-bottom:0"><span style="width:${((step + 1) / (sections.length + 2) * 100).toFixed(0)}%"></span></div>
+    </div><div style="height:1rem"></div>`;
+
+  const nav = `<div class="row" style="margin-top:1rem">
+      <button class="btn secondary" data-obs="back">${step === 0 ? 'Leave' : 'Back'}</button>
+      <button class="btn" data-obs="next">${step === sections.length + 1 ? 'Finish and file' : 'Next'}</button>
+    </div>`;
+
+  if (step === 0) {
+    const t = obsSurvey.title;
+    return `${progress}<div class="card">
+        <h2 style="margin-top:0">Site details</h2>
+        <p class="muted">Filled in from Jira where possible.</p>
+        ${obsField('title.client', 'Client', t.client)}
+        ${obsField('title.contractNo', 'Contract number', t.contractNo)}
+        ${obsField('title.jobNo', 'Job number', t.jobNo)}
+        ${obsField('title.siteContact', 'Site contact', t.siteContact)}
+        ${obsField('title.engineer', 'Engineer', t.engineer)}
+        ${obsField('title.date', 'Date of survey', t.date)}
+      </div>${nav}`;
+  }
+
+  if (step === sections.length + 1) {
+    return `${progress}<div class="card">
+        <h2 style="margin-top:0">Anything else?</h2>
+        <p class="muted">A short summary for whoever reads the report. Optional.</p>
+        ${obsField('notes', 'Notes', obsSurvey.notes)}
+        <div class="result" id="obs-result" role="status"></div>
+      </div>${nav}`;
+  }
+
+  const section = sections[step - 1];
+  const items = obsSurvey[section.id] || [];
+
+  if (section.spares) {
+    const spares = items.length ? items : [];
+    return `${progress}<div class="card">
+        <h2 style="margin-top:0">${esc(section.name)}</h2>
+        <p class="muted">Tick what's on the shelf. Add anything missing from the list.</p>
+        ${spares.map((sp, i) => `<div class="qrow">
+            <span>${esc(sp.description)}<br><span class="muted">${esc(sp.area || '')}</span></span>
+            <span class="segment">${['Yes', 'No', 'N/A'].map((v) =>
+              `<button class="seg${sp.inStock === v ? ' on' : ''}" data-obs-status="criticalSpares[${i}].inStock" data-value="${v}">${v}</button>`).join('')}</span>
+          </div>`).join('') || '<p class="muted">Nothing added yet.</p>'}
+        <div class="row" style="margin-top:1rem"><button class="btn secondary" data-obs="add-spares">Add the standard spares list</button>
+        <button class="btn secondary" data-obs="add-${esc(section.id)}">Add one</button></div>
+      </div>${nav}`;
+  }
+
+  return `${progress}
+    <div class="card">
+      <h2 style="margin-top:0">${esc(section.name)}</h2>
+      <p class="muted">${items.length ? `${items.length} recorded.` : 'Nothing recorded yet.'} Start typing a part number and the library suggests what Promtek has seen before.</p>
+    </div>
+    ${items.map((item, i) => (section.cards ? panelCard(item, i) : itemCard(section, item, i))).join('')}
+    <div class="row" style="margin-top:.85rem"><button class="btn secondary" data-obs="add-${esc(section.id)}">Add ${esc(section.addLabel || 'item')}</button></div>
+    ${datalists()}${nav}`;
+}
+
+function setPath(target, path, value) {
+  const parts = path.replace(/\[(\d+)\]/g, '.$1').split('.');
+  let node = target;
+  for (const part of parts.slice(0, -1)) node = node[part];
+  node[parts[parts.length - 1]] = value;
+}
+
+function removePath(path) {
+  const match = path.match(/^(\w+)\[(\d+)\]$/);
+  if (match) obsSurvey[match[1]].splice(Number(match[2]), 1);
+}
+
+async function obsSaveDraft() {
+  if (!obsSurvey) return;
+  try { await api('/api/obs/draft', { method: 'POST', body: JSON.stringify(obsSurvey) }); } catch { /* kept on screen */ }
+}
+
+async function obsControl(action, value) {
+  if (action === 'sales') { obsView = 'sales'; obsReading = null; return render(); }
+  if (action === 'survey-view') { obsView = 'survey'; return render(); }
+  if (action === 'chooser') { obsView = null; obsReading = null; obsSurvey = null; return render(); }
+  if (action === 'back-to-queue') { obsReading = null; return render(); }
+
+  if (action === 'new') {
+    if (!obsReports) obsReports = (await api('/api/obs/reports')).reports;
+    obsSurvey = { picking: true };
+    return render();
+  }
+  if (action === 'back') {
+    if (obsSection === 0) {
+      obsSurvey = null;
+      obsSection = 0;
+      if (obsConfig.sales && !obsView) obsView = 'survey';
+      return render();
+    }
+    obsSection--;
+    await obsSaveDraft();
+    return render();
+  }
+  if (action === 'next') {
+    if (obsSection === obsConfig.sections.length + 1) return obsSubmit();
+    obsSection++;
+    await obsSaveDraft();
+    return render();
+  }
+  if (action === 'add-spares') {
+    const standard = (obsLibrary?.criticalSpares || []).slice(0, 60);
+    obsSurvey.criticalSpares = standard.map((sp) => ({ description: sp.Description || sp.description || '', area: sp.Area || '', inStock: '', comments: '' }));
+    return render();
+  }
+  if (action.startsWith('add-')) {
+    const id = action.slice(4);
+    const section = obsConfig.sections.find((s) => s.id === id);
+    const list = (obsSurvey[id] ||= []);
+    if (section.cards) {
+      list.push({ label: `PLC Panel ${list.length + 1}`, cards: obsConfig.cardTypes.map((title) => ({ title, cardType: title, manufacturer: '', partNo: '', voltage: '', density: '', comments: '', status: '' })) });
+    } else if (section.spares) {
+      list.push({ description: '', area: '', inStock: '', comments: '' });
+    } else {
+      list.push({ label: `${section.addLabel || 'Item'} ${list.length + 1}`, status: '', comments: '' });
+    }
+    return render();
+  }
+}
+
+async function obsPickClient(reportKey) {
+  const report = obsReports.find((r) => r.key === reportKey);
+  obsSurvey = newSurvey(report);
+  obsSection = 0;
+  if (!obsLibrary) obsLibrary = await api('/api/obs/library').catch(() => ({}));
+  await obsSaveDraft();
+  return render();
+}
+
+async function obsSubmit() {
+  const out = document.getElementById('obs-result');
+  if (out) { out.textContent = 'Making the report…'; out.className = 'result'; }
+  try {
+    const result = await api('/api/obs/submit', { method: 'POST', body: JSON.stringify(obsSurvey) });
+    obsSurvey = null;
+    obsSection = 0;
+    toast(result.notes?.length ? 'Survey saved, but filing needs a hand' : 'Survey filed and the job moved on');
+    return render();
+  } catch (err) {
+    if (out) { out.textContent = err.message; out.className = 'result bad'; }
+  }
+}
+
+async function obsDecide(needed) {
+  const out = document.getElementById('obs-quote-result');
+  out.textContent = 'Updating Jira…';
+  out.className = 'result';
+  try {
+    const result = await api('/api/obs/quote', {
+      method: 'POST',
+      body: JSON.stringify({ reportKey: obsReading.key, projectKey: obsReading.projectKey, surveyDate: obsReading.surveyDate, needed }),
+    });
+    obsReading = null;
+    toast(result.quoteKey ? `${result.quoteKey} raised and linked` : 'Report marked up to date');
+    if (result.notes?.length) toast(result.notes.join(' '));
+    return render();
+  } catch (err) {
+    out.textContent = err.message;
+    out.className = 'result bad';
+  }
+}
+
+// ---------- XP shop (demonstration) ----------
+
+let shopSimulation = null;
+
+const hoursText = (hours) => (hours >= 100 ? `${n(Math.round(hours / 10) * 10)} hours` : `${n(hours)} hours`);
+
+function shopHtml(data) {
+  const card = (r) => {
+    const tone = r.eligible ? '' : ' short';
+    const status = r.eligible
+      ? `<span class="good">You could take this</span>`
+      : `<span class="muted">${n(r.levelsShort)} more level${r.levelsShort === 1 ? '' : 's'} to qualify</span>`;
+    return `<li class="reward${tone}">
+        <span class="title">${esc(r.name)}</span>
+        <span class="sub">${r.fixedPrice
+          ? `${n(r.xpCost)} XP${r.eligible ? `, ${n(r.levelsLost)} level${r.levelsLost === 1 ? '' : 's'} at your level` : ''}`
+          : `${n(r.levels)} levels`}, from level ${n(r.minimumLevel)}${r.cooldown ? `, ${esc(r.cooldown).toLowerCase()}` : ''}. ${status}</span>
+        <span class="xp">${r.eligible ? `<button class="linklike" data-shop="${esc(r.id)}">What would it cost?</button>` : ''}</span>
+      </li>`;
+  };
+  const money = data.rewards.filter((r) => r.kind === 'money');
+  const time = data.rewards.filter((r) => r.kind === 'time');
+
+  return `
+    <div class="card notice">
+      <p style="margin:0"><strong>Demonstration only.</strong> Nothing here spends anything. There is no button that
+      takes levels off anyone, and the hub has no way to do it, so this is safe to show people.</p>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <p class="muted" style="margin:0">Where you are</p>
+      <h2 style="margin:.2rem 0 0">Level ${n(data.you.level)}, ${esc(data.you.title)}</h2>
+      <p class="muted" style="margin:.2rem 0 0">${n(data.you.xp)} XP earned</p>
+    </div>
+    <h2>Cash and career</h2>
+    <ul class="list">${money.map(card).join('')}</ul>
+    <h2>Time off</h2>
+    <ul class="list">${time.map(card).join('')}</ul>
+    <div class="card" style="margin-top:1rem">
+      <p class="muted" style="margin:0">Cash and career rewards cost a set number of levels, so they get dearer the
+      further up you are. Time off costs a fixed amount of XP, so it stays within reach however senior you get,
+      and costs fewer levels the higher you climb.</p>
+    </div>`;
+}
+
+function shopSimulationHtml() {
+  const s = shopSimulation;
+  return `
+    <div class="card">
+      <p class="muted" style="margin:0">If you took</p>
+      <h2 style="margin:.2rem 0 1rem">${esc(s.name)}</h2>
+      <dl class="stats" style="margin:0">
+        <div><dt>Costs</dt><dd>${s.fixedPrice ? n(s.xpCost) : n(s.levels)}<small>${s.fixedPrice ? `XP, a fixed price` : 'levels'}</small></dd></div>
+        <div><dt>You are</dt><dd>${n(s.before.level)}<small>${esc(s.before.title)}</small></dd></div>
+        <div><dt>You would be</dt><dd>${n(s.after.level)}<small>${esc(s.after.title)}</small></dd></div>
+        <div><dt>${s.fixedPrice ? 'Levels lost' : 'XP spent'}</dt><dd>${s.fixedPrice ? n(s.levelsLost) : n(s.xpCost)}</dd></div>
+      </dl>
+      <p style="margin:1.25rem 0 0">Earning that back takes about <strong>${hoursText(s.regainSlowHours)}</strong>
+      of ordinary work, or <strong>${hoursText(s.regainFastHours)}</strong> on hard, well rated jobs.</p>
+      <p class="muted">${s.cooldown ? `${esc(s.cooldown)}.` : 'No cooldown on this one.'}</p>
+      <div class="card notice" style="margin-top:1rem">
+        <p style="margin:0"><strong>Nothing has changed.</strong> Your level is still ${n(s.before.level)}.</p>
+      </div>
+      <div class="row" style="margin-top:1rem">
+        <button class="btn secondary" data-shop="back">Back to the shop</button>
+      </div>
+    </div>`;
+}
+
+async function shopControl(id) {
+  if (id === 'back') { shopSimulation = null; return render(); }
+  shopSimulation = await api(`/api/shop/simulate?reward=${encodeURIComponent(id)}`);
+  return render();
+}
+
 // ---------- 8x8 calls ----------
 
 let callsDate = null;
 let callsData = null;
 let callsAll = false;
 let callsError = null;
+let callsLoading = false;
 let callFlow = null;        // { call, step, projectKey, options }
 let pendingCall = null;     // a call waiting for its time to be logged
 
@@ -562,6 +1010,7 @@ function callsRender() {
       <p class="muted" style="margin:.85rem 0 0">Nothing is fetched from 8x8 until you ask for it.</p>
     </div>`;
 
+  if (callsLoading) return `${head}<div style="height:1rem"></div>${spinner('Asking 8x8 for your calls')}`;
   if (callsError) return `${head}<div class="card notice error" style="margin-top:1rem"><p style="margin:0">${esc(callsError)}</p></div>`;
   if (!callsData) return head;
 
@@ -641,12 +1090,14 @@ async function callsControl(action, value) {
     callsDate = document.getElementById('calls-date')?.value || todayIso();
     callsError = null;
     callsData = null;
+    callsLoading = true;
     await render();
     try {
       callsData = await api(`/api/calls?date=${callsDate}${callsAll ? '&all=1' : ''}`);
     } catch (err) {
       callsError = err.message;
     }
+    callsLoading = false;
     return render();
   }
   if (action === 'not-customer') {
@@ -1491,6 +1942,7 @@ function optionRow(option) {
 }
 
 async function logPickerHtml() {
+  if (logPscProject) return pscFormHtml(logPscProject);
   if (logNode) {
     const step = await api(`/api/log/browse?node=${encodeURIComponent(logNode)}`);
     const crumbs = logTrail.map((c, i) => `<button class="linklike" data-crumb="${i}">${esc(c.label)}</button>`).join(' › ');
@@ -1992,7 +2444,16 @@ async function logAction(action, button) {
   button.disabled = true;
   try {
     if (action === 'cancel-log') { logChosen = null; return render(); }
-    if (action === 'cancel-psc') { logPscProject = null; return render(); }
+    if (action === 'cancel-psc') {
+      logPscProject = null;
+      // Coming from a call, step back to the list it came from rather than
+      // re-rendering the same form.
+      if (callFlow) {
+        if (callFlow.intent === 'new-psc') callFlow = null;
+        else callFlow.step = 'psc';
+      }
+      return render();
+    }
 
     if (action === 'save-log') {
       const seconds = ((Number(document.getElementById('log-hours').value) || 0) * 60
@@ -2185,7 +2646,7 @@ view.addEventListener('click', async (event) => {
     return render();
   }
   const pscBtn = event.target.closest('[data-psc]');
-  if (pscBtn) { logPscProject = pscBtn.dataset.psc; view.innerHTML = pscFormHtml(logPscProject); return; }
+  if (pscBtn) { logPscProject = pscBtn.dataset.psc; return render(); }
   const minsBtn = event.target.closest('[data-mins]');
   if (minsBtn) {
     const mins = Number(minsBtn.dataset.mins);
@@ -2197,6 +2658,34 @@ view.addEventListener('click', async (event) => {
     document.getElementById('flag-box').hidden = false;
     return;
   }
+
+  const obsBtn = event.target.closest('[data-obs]');
+  if (obsBtn) return obsControl(obsBtn.dataset.obs);
+  const obsClient = event.target.closest('[data-obs-client]');
+  if (obsClient) return obsPickClient(obsClient.dataset.obsClient);
+  const obsOpen = event.target.closest('[data-obs-open]');
+  if (obsOpen) {
+    const record = await api(`/api/obs/survey?id=${encodeURIComponent(obsOpen.dataset.obsOpen)}`);
+    obsSurvey = record.data;
+    obsSection = 0;
+    if (!obsLibrary) obsLibrary = await api('/api/obs/library').catch(() => ({}));
+    return render();
+  }
+  const obsStatus = event.target.closest('[data-obs-status]');
+  if (obsStatus) { setPath(obsSurvey, obsStatus.dataset.obsStatus, obsStatus.dataset.value); return render(); }
+  const obsRemove = event.target.closest('[data-obs-remove]');
+  if (obsRemove) { removePath(obsRemove.dataset.obsRemove); return render(); }
+  const obsRead = event.target.closest('[data-obs-read]');
+  if (obsRead) {
+    const queue = await api('/api/obs/sales');
+    obsReading = queue.reports.find((r) => r.key === obsRead.dataset.obsRead);
+    return render();
+  }
+  const obsQuote = event.target.closest('[data-obs-quote]');
+  if (obsQuote) return obsDecide(obsQuote.dataset.obsQuote === 'yes');
+
+  const shopBtn = event.target.closest('[data-shop]');
+  if (shopBtn) return shopControl(shopBtn.dataset.shop);
 
   const callsBtn = event.target.closest('[data-calls]');
   if (callsBtn) return callsControl(callsBtn.dataset.calls);
@@ -2317,14 +2806,20 @@ function currentRoute() {
   return pages[hash] ? hash : '#/';
 }
 
+const spinner = (label = 'Loading') => `<div class="card loading-card"><span class="spinner" aria-hidden="true"></span>
+    <span>${esc(label)}…</span></div>`;
+
 async function render() {
   const route = currentRoute();
   const page = pages[route];
   back.hidden = route === '#/';
   avatar.textContent = initials();
   band.innerHTML = page.band();
+  // Anything that takes a moment gets a spinner rather than a frozen screen.
+  const slow = setTimeout(() => { view.innerHTML = spinner(); }, 160);
   try {
     const html = await page.render();
+    clearTimeout(slow);
     if (currentRoute() === route) {
       view.innerHTML = html;
       if (route === '#/xp') loadLeaderboard();
@@ -2336,6 +2831,19 @@ async function render() {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (event.target.dataset?.obsField !== undefined && obsSurvey) {
+    setPath(obsSurvey, event.target.dataset.obsField, event.target.value);
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => obsSaveDraft(), 1200);
+    return;
+  }
+  if (event.target.id === 'obs-search') {
+    const query = event.target.value.toLowerCase();
+    document.querySelectorAll('[data-obs-client]').forEach((el) => {
+      el.hidden = query.length > 1 && !el.textContent.toLowerCase().includes(query);
+    });
+    return;
+  }
   if (event.target.id === 'call-customer-search') {
     const query = event.target.value.toLowerCase();
     document.querySelectorAll('[data-call-customer]').forEach((el) => {
@@ -2402,6 +2910,8 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
   if (currentRoute() !== '#/') arrangeMode = false;
+  if (currentRoute() !== '#/shop') shopSimulation = null;
+  if (currentRoute() !== '#/obs') { obsSurvey = null; obsSection = 0; obsReading = null; obsView = null; }
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }

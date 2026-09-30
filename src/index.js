@@ -9,11 +9,13 @@ import * as Pow from './pow.js';
 import * as It from './itsupport.js';
 import * as Vehicles from './vehicles.js';
 import * as Calls from './calls.js';
+import * as Shop from './shop.js';
+import * as Obs from './obsolescence.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
-const TEAMS = ['Projecting', 'Service', 'Condor'];
+const TEAMS = ['Projecting', 'Service', 'Condor', 'Sales'];
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -109,6 +111,53 @@ async function route(request, env, url, user) {
     ).bind(user.accountId || user.email, JSON.stringify(body.order || []), JSON.stringify(body.hidden || []),
       new Date().toISOString()).run();
     return json({ ok: true });
+  }
+
+  if (pathname.startsWith('/api/obs')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    const sales = user.team === 'Sales' || user.isLead;
+
+    if (method === 'GET' && pathname === '/api/obs/config') {
+      return json({ sections: Obs.SECTIONS, cardTypes: Obs.CARD_TYPES, conditions: Obs.CONDITIONS, sales });
+    }
+    if (method === 'GET' && pathname === '/api/obs/library') return json(await Obs.library(env, url.searchParams.get('kind')));
+    if (method === 'GET' && pathname === '/api/obs/reports') return json(await Obs.listReports(env));
+    if (method === 'GET' && pathname === '/api/obs/surveys') return json(await Obs.listSurveys(env, user, { all: url.searchParams.get('all') === '1' }));
+    if (method === 'GET' && pathname === '/api/obs/survey') return json(await Obs.getSurvey(env, user, url.searchParams.get('id')));
+    if (method === 'GET' && pathname === '/api/obs/pdf') {
+      const { bytes, filename } = await Obs.renderPdf(env, user, url.searchParams.get('id'));
+      return new Response(bytes, {
+        headers: {
+          'content-type': 'application/pdf',
+          'content-disposition': `inline; filename="${filename}"`,
+          'cache-control': 'no-store',
+        },
+      });
+    }
+    if (method === 'GET' && pathname === '/api/obs/sales') {
+      if (!sales) return json({ error: 'The sales review is for the sales team.' }, 403);
+      return json(await Obs.salesQueue(env));
+    }
+    if (method === 'POST' && pathname === '/api/obs/draft') return json(await Obs.saveSurvey(env, user, body));
+    if (method === 'POST' && pathname === '/api/obs/submit') return json(await Obs.submitSurvey(env, user, body));
+    if (method === 'POST' && pathname === '/api/obs/delete') return json(await Obs.deleteSurvey(env, user, body.id));
+    if (method === 'POST' && pathname === '/api/obs/quote') {
+      if (!sales) return json({ error: 'Only the sales team can decide on quotes.' }, 403);
+      return json(await Obs.quoteDecision(env, user, body));
+    }
+  }
+
+  if (pathname.startsWith('/api/shop')) {
+    // Demonstration only: admins can look, and nothing here spends anything.
+    if (!user.isAdmin) return json({ error: 'The shop is still being worked on.' }, 403);
+    const totals = user.accountId
+      ? await env.DB.prepare('SELECT COALESCE(SUM(xp), 0) AS xp FROM xp_ledger WHERE account_id = ?').bind(user.accountId).first()
+      : { xp: 0 };
+    const xp = (user.employee?.opening_xp || 0) + (totals?.xp || 0);
+    if (method === 'GET' && pathname === '/api/shop') return json(Shop.catalogue(env, user, xp));
+    if (method === 'GET' && pathname === '/api/shop/simulate') {
+      return json(Shop.simulate(xp, url.searchParams.get('reward')));
+    }
   }
 
   if (pathname.startsWith('/api/calls')) {
@@ -269,6 +318,8 @@ async function route(request, env, url, user) {
       return json({ ok: true });
     }
     if (method === 'POST' && pathname === '/api/admin/forget-number') return json(await Calls.forgetNumber(env, body.phone));
+    if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
+    if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/set-role') {

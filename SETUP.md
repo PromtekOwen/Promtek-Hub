@@ -247,6 +247,8 @@ Everyone can order their own home screen. **Arrange tiles** on the dashboard tur
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.
 
+Missed incoming calls are left out, since there's nothing to log against them; outgoing calls always show. On the everyone view each call carries the name of whoever dealt with it.
+
 Each call offers four choices: relate it to a job, to an existing PSC, raise a new PSC, or discard it. Anything but discard leads to logging the time, and the customer step is skipped when the number is already known. An unrecognised number asks who it was, and remembers the answer, so the list gets better the more it is used. A number can also be marked as not work related, and it won't be suggested again.
 
 ### Setting it up
@@ -262,12 +264,46 @@ Each call offers four choices: relate it to a job, to an existing PSC, raise a n
 5. On the Admin page, select **Test the 8x8 connection**. It reports how many calls are on the system today.
 6. Still on the Admin page, fill in each engineer's **extension** in the engineers table. Calls are matched to people by extension, or by the name on the call if the extension is blank.
 
-## Part 16: Move the obsolescence app in
+## Part 16: XP shop (demonstration)
 
-28. Copy the files from your obsolescence app's GitHub repository into `public/apps/obsolescence/` in this repository, replacing the placeholder `index.html`. Commit.
-29. It now opens from the tile on the home page, behind the same Google sign-in.
-    - If it links to its own files with paths starting with `/` (for example `/style.css`), change them to relative paths (`style.css`) so they resolve inside `/apps/obsolescence/`.
-    - Keep the old GitHub Pages copy running until people have switched over.
+The shop is visible to admins only, so you can show it to people while the rewards are being agreed. It has your reward list, works out who qualifies, and shows what a reward would cost: how many levels, how much XP, what level and title you would drop to, and how long it would take to earn back at 60 and at 400 XP an hour.
+
+Nothing is spent. There is no route in the hub that reduces anyone's XP or level, so it can be demonstrated safely.
+
+Pricing works two ways on purpose. **Cash and career rewards cost a set number of levels**, so they get dearer the further up someone is: £100 costs 120 levels, which is about 58,000 XP at level 300 and about 203,000 at level 900. **Time off costs a fixed amount of XP**, set at the level it unlocks, so it stays reachable however senior someone gets: an extra holiday day is always about 68,000 XP, which is 150 levels at level 300 but only 38 levels at level 900.
+
+When you're ready to make it real, the parts still to add are a way to request a reward, an approval step for team leads, and the ledger entry that takes the levels off.
+
+## Part 17: Obsolescence surveys
+
+The obsolescence app now lives in the hub. The Google Sheet, the Apps Script and the Zapier step are no longer involved.
+
+- **The equipment library** ships with the hub, seeded from your master sheet: 25 VDUs, 11 control PCs, 6 amplifiers, 75 PLC cards, 50 software entries and 115 critical spares. It grows on its own: anything an engineer types during a survey is added, so suggestions improve with use.
+- **The client list** is read straight from Jira, from the Obsolescence Reports issues, with the contract number and service level pulled from the matching Service Contract issue exactly as the old script did.
+- **The survey** is filled in section by section: site details, control servers, VDUs, amplifiers, load cells, PLC panels, software, critical spares, then notes. Each item gets a condition, and part numbers suggest from the library as you type.
+- **The report is a PDF**, in the same style as the risk assessment, with a summary of what was found by condition. It is attached to the Jira item, filed in the shared drive under a folder for that client, and the report link field on the issue is updated.
+- **The job moves on**: the Obsolescence Reports item goes to **New Survey Added**.
+
+### The sales review
+
+Anyone whose team is set to **Sales** on the Admin page is asked first whether they want to **survey a site** or **review surveys**, so nobody is locked out of either job. Reviewing shows every report sitting at New Survey Added, with a button to read the PDF, and there's a switch on each screen to move between the two. **Finished reading** then offers **Quote required** or **No quote needed**.
+
+Quote required creates a **Quote** in the customer's project, under their Active Quote List, summarised as "Obsolescence quote for [survey date] Survey", assigned to the salesperson, and linked so the quote is caused by the report. Either choice moves the report to **Report Up To Date**.
+
+### Setting it up
+
+Add one more **Secret** in the Worker's **Settings → Variables and secrets**:
+
+- `OBS_DRIVE_FOLDER_ID`: `1s6Vq0rwZoSjHlkQ1OpIVCHNpPButKkWN`
+
+The same service account used for risk assessments does the uploading, so share that folder with it as well, as **Content manager**.
+
+Two things to check in Jira: that **New Survey Added** and **Report Up To Date** are both reachable from wherever your reports usually sit, and that a link type named **Causes** exists. If it doesn't, the hub links the quote as "relates to" instead and says so.
+
+## Part 18: Retiring the old obsolescence app
+
+28. The tile now opens the hub's own obsolescence app, so nothing needs copying in.
+29. Keep the old GitHub Pages copy and its Apps Script running until a few surveys have gone through the hub, then retire them. The `public/apps/obsolescence/` folder can be deleted once you do.
 
 ## Adding more apps later
 

@@ -39,10 +39,10 @@ export const MODULES = [
   },
   {
     id: 'obsolescence',
-    name: 'Obsolescence reports',
-    href: '/apps/obsolescence/',
+    name: 'Obsolescence',
+    route: '#/obs',
     icon: icon('<path d="M5 3.5h9l5 5V20.5H5z"/><path d="M14 3.5v5h5"/><path d="M8.5 13h7M8.5 16.5h4.5"/>'),
-    detail: () => 'Check parts for end-of-life risk',
+    detail: (me) => (me.user.team === 'Sales' ? 'Survey a site, or read one and quote' : 'Survey a site and file the report'),
   },
   {
     id: 'pow',
@@ -75,9 +75,10 @@ export const MODULES = [
   {
     id: 'shop',
     name: 'XP shop',
-    construction: true,
+    route: '#/shop',
+    adminOnly: true,
     icon: icon('<path d="M4.5 8.5h15l-1.2 11.5H5.7z"/><path d="M9 8.5V7a3 3 0 016 0v1.5"/>'),
-    detail: () => 'Trade XP for rewards',
+    detail: () => 'Rewards for levels, demonstration only',
   },
   {
     id: 'reports',

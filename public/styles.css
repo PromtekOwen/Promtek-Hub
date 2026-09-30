@@ -298,3 +298,19 @@ input.tiny { width: 5.5rem; padding: .35rem .5rem; }
 .list li.call .title, .list li.call .sub { display: block; }
 .list li.call .sub { margin-top: .15rem; }
 .list li.call .row { flex-wrap: wrap; margin-top: .6rem; }
+
+/* Loading */
+.loading-card { display: flex; align-items: center; gap: .75rem; color: var(--muted); }
+.spinner { width: 20px; height: 20px; flex: none; border-radius: 50%;
+  border: 2.5px solid var(--tint); border-top-color: var(--blue); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+.reward.short .title { color: var(--muted); }
+.list li.reward { display: block; }
+.list li.reward .title, .list li.reward .sub { display: block; }
+.list li.reward .xp { display: block; text-align: left; margin-top: .5rem; }
+input.hdr { font-weight: 700; font-size: 1.05rem; border: 0; border-bottom: 1px solid var(--line);
+  border-radius: 0; padding: .3rem 0; flex: 1; }
+#obs-search { width: 100%; }
+
+a.chip-btn { text-decoration: none; display: inline-flex; align-items: center; }

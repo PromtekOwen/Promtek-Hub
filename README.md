@@ -40,6 +40,7 @@ schema-004.sql     Stage names and shares
 schema-005.sql     Point of work assessments and the RA library
 schema-006.sql     Vehicles, IT request mapping and tile layouts
 schema-007.sql     8x8 call mapping and handled calls
+schema-008.sql     Obsolescence library and surveys
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```
