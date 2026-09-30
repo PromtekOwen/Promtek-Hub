@@ -2,7 +2,7 @@
 // assessment: banner, part headings, tinted cards and coloured status pills.
 import { Pdf, A4, wrap, widthOf } from './pdf.js';
 import { LOGO } from './logo.js';
-import { SECTIONS } from './obsolescence.js';
+import { SECTIONS } from './obs-data.js';
 
 const BLUE = [0.055, 0.384, 0.576];
 const BLUE_BRIGHT = [0, 0.553, 0.776];
