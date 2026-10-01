@@ -127,6 +127,18 @@ Everything below is already in the app; this explains how to set it up.
 
 The **Admin** tile holds the things that span the whole hub: sync and the XP ledger, roles, the engineer list, alerts and account linking. Everything that belongs to one app lives behind a **cog** in that app's header, visible to admins only: the RA and SSOW list in Point of work, the fleet in Vehicles, the 8x8 connection and extensions in 8x8 calls, the request type mapping in IT support, the equipment library in Obsolescence, and job tracking and snapshots in Reports.
 
+### Employees
+
+Employees are managed in the hub, under **Admin, Employees**. Each person has one page covering everything the apps use: name, email, pronouns, job title, team, who they report to, their order on the chart, their role in the hub, XP rate, ELO, Jira account ID, 8x8 extension, chart badges and notes.
+
+**XP rate** is XP per hour before the job difficulty adjustment. Engineers are usually 90; anyone not on chargeable engineering work is usually 75.
+
+**Adding someone** before their Atlassian account exists is fine: leave the Jira account ID blank and they are marked as pending. Filling it in later moves their history across with them.
+
+**Removing someone** offers two things: hide them and keep their XP history, or remove them and it entirely.
+
+**Once everyone is in**, select **Stop reading the DNM project**. From then on nothing is read from Jira about employees and the DNM Employee issues can be deleted. The switch is reversible.
+
 ### The company chart
 
 The **Company chart** tile draws the org chart from the employee list, so it follows along as people join, change role or leave. Everyone can see it; admins get a cog where job titles, teams and reporting lines are set, plus the order people sit in under the same manager.

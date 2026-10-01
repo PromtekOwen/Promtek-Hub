@@ -12,6 +12,7 @@ import * as Calls from './calls.js';
 import * as Shop from './shop.js';
 import * as Obs from './obsolescence.js';
 import * as Org from './org.js';
+import * as People from './people.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -338,6 +339,11 @@ async function route(request, env, url, user) {
       ]);
       return json({ ok: true, kept: false });
     }
+    if (method === 'GET' && pathname === '/api/admin/people') return json({ ...(await People.listPeople(env)), icons: People.ICONS.map(([id, label]) => ({ id, label })), departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
+    if (method === 'POST' && pathname === '/api/admin/person') return json(await People.savePerson(env, body));
+    if (method === 'POST' && pathname === '/api/admin/person-id') return json(await People.changeAccountId(env, body));
+    if (method === 'POST' && pathname === '/api/admin/person-remove') return json(await People.removePerson(env, body));
+    if (method === 'POST' && pathname === '/api/admin/employees-source') return json(await People.setSource(env, body.source));
     if (method === 'POST' && pathname === '/api/admin/org-person') return json(await Org.savePerson(env, body));
     if (method === 'POST' && pathname === '/api/admin/org-seed') return json(await Org.applySeed(env, { overwrite: Boolean(body.overwrite) }));
     if (method === 'GET' && pathname === '/api/admin/org-options') {

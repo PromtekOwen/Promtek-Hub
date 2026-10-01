@@ -1,15 +1,12 @@
 // The company chart, built from the employee list so it keeps itself current.
 
 export const DEPARTMENTS = [
-  ['Board', '#1f4e79'],
-  ['Operations', '#2f6fb5'],
-  ['Compliance', '#e07b39'],
+  ['Operations', '#1f4e79'],
   ['Marketing', '#d93a3a'],
   ['Sales', '#b858c4'],
   ['Projects', '#2f9ae0'],
   ['Service', '#2e9e63'],
   ['Condor', '#e8a317'],
-  ['External', '#7a5cd6'],
 ];
 
 export const departmentColour = (name) => (DEPARTMENTS.find(([key]) => key === name) || [null, '#5b7385'])[1];
@@ -19,13 +16,13 @@ export const departmentColour = (name) => (DEPARTMENTS.find(([key]) => key === n
 // unless an admin asks for it.
 export const ORG_SEED = [
   // [name, job title, department, manager name, order]
-  ['Charles Williams', 'Managing Director', 'Board', null, 10],
-  ['Simon Williams', 'Technical Director', 'Board', 'Charles Williams', 20],
-  ['Daniel Williams', 'Senior Commissioning Engineer', 'Board', 'Charles Williams', 30],
+  ['Charles Williams', 'Managing Director', 'Operations', null, 10],
+  ['Simon Williams', 'Technical Director', 'Operations', 'Charles Williams', 20],
+  ['Daniel Williams', 'Senior Commissioning Engineer', 'Operations', 'Charles Williams', 30],
 
   ['Nic Beech', 'Office Manager', 'Operations', 'Charles Williams', 40],
-  ['Katie Bradbury', 'Sustainability and Compliance Manager', 'Compliance', 'Charles Williams', 50],
-  ['Becky Key', 'Compliance Assistant', 'Compliance', 'Katie Bradbury', 10],
+  ['Katie Bradbury', 'Sustainability and Compliance Manager', 'Operations', 'Charles Williams', 50],
+  ['Becky Key', 'Compliance Assistant', 'Operations', 'Katie Bradbury', 10],
 
   ['Lani Scholtz', 'Marketing Manager', 'Marketing', 'Charles Williams', 60],
   ['Georgia Simcock', 'Apprentice Multi-Channel Marketer', 'Marketing', 'Lani Scholtz', 10],
@@ -64,9 +61,9 @@ export const ORG_SEED = [
   ['Callum Lewis', 'Apprentice Software Engineer', 'Condor', 'Kieran Haycock', 40],
   ['Taylor Nixon', 'Apprentice Software Engineer', 'Condor', 'Kieran Haycock', 50],
   ['Mia Opara-Burton', 'Junior Software Engineer', 'Condor', 'Kieran Haycock', 60],
-  ['Michael Mutyaba', 'IT Support', 'Condor', 'Simon Williams', 110],
+  ['Michael Mutyaba', 'IT Support', 'Operations', 'Simon Williams', 110],
 
-  ['Ash Vivakanantha', 'KTP Associate', 'External', 'Simon Williams', 120],
+  ['Ash Vivakanantha', 'KTP Associate', 'Condor', 'Simon Williams', 120],
 ];
 
 // Names come from Jira, so matching is forgiving: case, punctuation and
@@ -88,7 +85,7 @@ export function matchSeed(name) {
 
 export async function chart(env) {
   const { results } = await env.DB.prepare(
-    `SELECT account_id, name, job_title, department, manager_id, org_order, team, role, email
+    `SELECT account_id, name, job_title, department, manager_id, org_order, team, role, email, icons, pronouns
        FROM employees WHERE active = 1 ORDER BY org_order, name`
   ).all();
 
@@ -103,6 +100,8 @@ export async function chart(env) {
     order: e.org_order,
     role: e.role,
     team: e.team,
+    pronouns: e.pronouns || '',
+    icons: e.icons ? JSON.parse(e.icons) : [],
   }));
 
   const unplaced = nodes.filter((n) => !n.managerId && !n.department).length;

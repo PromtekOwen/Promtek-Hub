@@ -239,6 +239,9 @@ export async function reconcileNextDay(env) {
 // ---------- Employees (from the DNM Employee issues) ----------
 
 export async function refreshProfiles(env, { importXp = false } = {}) {
+  if ((await getState(env, 'employees_source')) === 'hub') {
+    return { employees: 0, skippedNoUserId: [], departed: 0, skipped: 'Employees are managed in the hub' };
+  }
   let userIdField = await getState(env, 'userid_field');
   if (!userIdField) {
     userIdField = await findFieldId(env, env.USERID_FIELD_NAME);

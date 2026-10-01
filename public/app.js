@@ -281,6 +281,7 @@ const pages = {
   '#/org': {
     band: () => `<h1>Company chart</h1><p>Who reports to whom, built from the employee list.</p>`,
     async render() {
+      await loadOrgLogo();
       orgData = await api('/api/org');
       return orgHtml(orgData);
     },
@@ -345,7 +346,9 @@ const pages = {
     band: () => `<h1>Admin</h1><p>People, sync and alerts.</p>`,
     async render() {
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const data = await api('/api/admin/overview');
+      const [data, peopleData] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people')]);
+      peopleCache = peopleData;
+      if (personEdit) return personEditHtml();
       const s = data.state;
       const options = data.employees.map((e) => `<option value="${esc(e.account_id)}">${esc(e.name)}${e.email ? ` (${esc(e.email)})` : ''}</option>`).join('');
       const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
@@ -386,40 +389,30 @@ const pages = {
             </li>`).join('')}</ul>` : '<p class="muted">Nothing to report.</p>'}
         </div>
 
-        <h2>Roles</h2>
-        <div class="card">
-          <p>Admins see everything and manage roles. Team leads see all reports and handle alerts and approvals for their team. Engineers see their own data, plus the leaderboard.</p>
-          <div class="row">
-            <label>Engineer <select id="role-account">${options}</select></label>
-            <label>Role <select id="role-role">
-              <option value="engineer">Engineer</option><option value="lead">Team lead</option><option value="admin">Admin</option>
-            </select></label>
-            <label>Team <select id="role-team">
-              <option value="">None</option><option>Projecting</option><option>Service</option><option>Condor</option>
-            </select></label>
-            <button class="btn" data-action="set-role">Save role</button>
-          </div>
-          <div class="result" id="role-result" role="status"></div>
-        </div>
-
-        <h2>Engineers</h2>
-        <p class="muted">During shadow mode, Difference compares the hub's XP with the XP field in Jira. Jira's figure refreshes hourly.
-        Anyone whose Employee issue has gone from Jira is marked as such the next time profiles are refreshed.</p>
+        <h2>Employees</h2>
+        <p class="muted">${peopleData.source === 'hub'
+          ? 'Employees are kept here, and nothing is read from the DNM project.'
+          : 'Employees are read from the DNM project in Jira each hour.'}</p>
         <div class="table-wrap"><table>
-          <thead><tr><th>Name</th><th>Role</th><th>Team</th><th>Signed in as</th><th class="num">ELO</th><th class="num">Hub XP</th><th class="num">Jira XP</th><th class="num">Difference</th><th class="num">Worklogs</th><th></th></tr></thead>
-          <tbody>${data.employees.map((e) => `<tr>
-            <td>${esc(e.name)}${e.active === 0 ? '<br><span class="muted">No longer in Jira</span>' : ''}</td>
-            <td>${e.role === 'lead' ? 'Team lead' : e.role === 'admin' ? 'Admin' : 'Engineer'}</td>
-            <td>${e.team ? esc(e.team) : '<span class="muted">—</span>'}</td>
-            <td>${e.email ? esc(e.email) : '<span class="muted">Not linked</span>'}</td>
-            <td class="num">${e.elo != null ? n(Math.round(e.elo)) : '—'}</td>
-            <td class="num">${n(e.app_xp)}</td>
-            <td class="num">${n(e.jira_xp)}</td>
-            <td class="num ${Math.abs(e.difference) > 50 ? 'bad' : 'good'}">${e.difference > 0 ? '+' : ''}${n(e.difference)}</td>
-            <td class="num">${n(e.worklogs)}</td>
-            <td><button class="linklike" data-remove-employee="${esc(e.account_id)}" data-name="${esc(e.name)}">Remove</button></td>
-          </tr>`).join('') || '<tr><td colspan="10" class="muted">No engineers yet. Refresh profiles from Jira.</td></tr>'}</tbody>
+          <thead><tr><th>Name</th><th>Job title</th><th>Team</th><th>Role</th><th class="num">XP rate</th><th class="num">Level</th><th class="num">ELO</th><th></th></tr></thead>
+          <tbody>${peopleData.people.map((p) => `<tr>
+            <td>${esc(p.name)}${p.active ? '' : '<br><span class="muted">Left</span>'}${p.pending ? '<br><span class="low">No Jira account yet</span>' : ''}</td>
+            <td>${esc(p.jobTitle || '—')}</td>
+            <td>${esc(p.department || p.team || '—')}</td>
+            <td>${p.role === 'lead' ? 'Team lead' : p.role === 'admin' ? 'Admin' : 'Engineer'}</td>
+            <td class="num">${p.xpRate ?? '—'}</td>
+            <td class="num">${n(p.level)}</td>
+            <td class="num">${p.elo == null ? '—' : n(Math.round(p.elo))}</td>
+            <td><button class="linklike" data-person-edit="${esc(p.accountId)}">Edit</button></td>
+          </tr>`).join('') || '<tr><td colspan="8" class="muted">Nobody yet.</td></tr>'}</tbody>
         </table></div>
+        <div class="row" style="margin-top:1rem">
+          <button class="btn" data-person-edit="new">Add someone</button>
+          ${peopleData.source === 'hub'
+            ? '<button class="btn secondary" data-action="source-jira">Read from Jira again</button>'
+            : '<button class="btn secondary" data-action="source-hub">Stop reading the DNM project</button>'}
+        </div>
+        <div class="result" id="people-result" role="status"></div>
 
         <h2>Time from people without a profile</h2>
         ${data.unmatched.length ? `<div class="table-wrap"><table>
@@ -429,16 +422,7 @@ const pages = {
         <p class="muted">Give these people an Employee issue in DNM with their account ID in the UserID field, then refresh profiles. Any of their time from the last two weeks is picked up within about 30 minutes.</p>`
         : '<div class="card"><p class="muted">None. Every worklog belongs to someone with a profile.</p></div>'}
 
-        <h2>Link a Google account</h2>
-        <div class="card">
-          <p>People are linked automatically the first time they sign in. Use this if someone's account didn't match.</p>
-          <div class="row">
-            <label>Engineer <select id="link-account">${options}</select></label>
-            <label>Google email <input id="link-email" type="email" placeholder="name@promtek.com"></label>
-            <button class="btn" data-action="link">Link account</button>
-          </div>
-          <div class="result" id="link-result" role="status"></div>
-        </div>`;
+`;
     },
   },
 };
@@ -484,11 +468,171 @@ async function tileControl(action, id) {
   return render();
 }
 
+// ---------- employees ----------
+
+let peopleCache = null;
+let personEdit = null;        // the person being edited, or a blank one
+
+function personEditHtml() {
+  const p = personEdit;
+  const { people = [], icons = [], departments = [] } = peopleCache || {};
+  const field = (key, label, value, extra = '') =>
+    `<label style="margin-top:.75rem">${esc(label)} <input data-person="${key}" value="${esc(value ?? '')}" ${extra} autocomplete="off"></label>`;
+
+  return `
+    <div class="card">
+      <h2 style="margin-top:0">${p.accountId ? esc(p.name || 'Edit employee') : 'Add someone'}</h2>
+
+      <p class="muted" style="margin:1rem 0 0">Who they are</p>
+      ${field('name', 'Name', p.name)}
+      ${field('email', 'Work email', p.email, 'type="email" placeholder="name@promtek.com"')}
+      ${field('pronouns', 'Pronouns, optional', p.pronouns, 'placeholder="He/Him"')}
+      ${field('jobTitle', 'Job title', p.jobTitle)}
+
+      <p class="muted" style="margin:1.5rem 0 0">Where they sit</p>
+      <label style="margin-top:.75rem">Team <select data-person="department">
+        <option value="">Not set</option>
+        ${departments.map((d) => `<option value="${esc(d.name)}"${d.name === p.department ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+      </select></label>
+      <label style="margin-top:.75rem">Reports to <select data-person="managerId">
+        <option value="">Nobody, top of the chart</option>
+        ${people.filter((m) => m.accountId !== p.accountId && m.active).map((m) =>
+          `<option value="${esc(m.accountId)}"${m.accountId === p.managerId ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}
+      </select></label>
+      <div class="row" style="margin-top:.75rem">
+        <label>Order on the chart <input data-person="order" type="number" value="${p.order ?? 50}"></label>
+        <label>Role in the hub <select data-person="role">
+          ${[['engineer', 'Engineer'], ['lead', 'Team lead'], ['admin', 'Admin']].map(([key, label]) =>
+            `<option value="${key}"${(p.role || 'engineer') === key ? ' selected' : ''}>${label}</option>`).join('')}
+        </select></label>
+        <label>Alerts team <select data-person="team">
+          <option value="">Not set</option>
+          ${['Projecting', 'Service', 'Condor', 'Sales'].map((t) =>
+            `<option value="${t}"${p.team === t ? ' selected' : ''}>${t}</option>`).join('')}
+        </select></label>
+      </div>
+
+      <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
+      <div class="row" style="margin-top:.75rem">
+        <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 75}"></label>
+        <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1100"></label>
+      </div>
+      <p class="muted">XP rate is XP per hour before the job difficulty adjustment. Engineers are usually 90; anyone
+      not on chargeable engineering work is usually 75.</p>
+
+      <p class="muted" style="margin:1.5rem 0 0">Accounts</p>
+      ${field('accountId', 'Jira account ID', p.accountId, p.accountId && !p.pending ? 'readonly' : 'placeholder="712020:..."')}
+      ${p.accountId && !p.pending ? `<p class="muted">Changing this moves their history too.
+        <button class="linklike" data-person-action="change-id">Change it</button></p>` : ''}
+      ${field('extension', '8x8 extension', p.extension, 'placeholder="120088"')}
+
+      <p class="muted" style="margin:1.5rem 0 0">Badges on the chart</p>
+      <div class="chips" style="margin-top:.5rem">${icons.map((icon) =>
+        `<button class="chip${(p.icons || []).includes(icon.id) ? ' on' : ''}" data-person-icon="${esc(icon.id)}">${esc(icon.label)}</button>`).join('')}</div>
+
+      ${field('notes', 'Notes, optional', p.notes)}
+
+      <div class="row" style="margin-top:1.5rem">
+        <button class="btn" data-person-action="save">${p.accountId ? 'Save' : 'Add them'}</button>
+        <button class="btn secondary" data-person-action="cancel">Cancel</button>
+        ${p.accountId ? `<button class="btn secondary" data-person-action="remove">Remove</button>` : ''}
+      </div>
+      <div class="result" id="person-result" role="status"></div>
+    </div>`;
+}
+
+function collectPerson() {
+  document.querySelectorAll('[data-person]').forEach((input) => {
+    personEdit[input.dataset.person] = input.value.trim();
+  });
+}
+
+async function personAction(action) {
+  const out = (text, bad) => {
+    const el = document.getElementById('person-result');
+    if (el) { el.textContent = text; el.className = `result ${bad ? 'bad' : 'good'}`; }
+  };
+  if (action === 'cancel') { personEdit = null; return render(); }
+
+  if (action === 'change-id') {
+    const current = personEdit.accountId;
+    const next = prompt('New Jira account ID', current);
+    if (!next || next === current) return;
+    try {
+      await api('/api/admin/person-id', { method: 'POST', body: JSON.stringify({ from: current, to: next.trim() }) });
+      personEdit.accountId = next.trim();
+      toast('Account ID changed, history moved with it');
+      return render();
+    } catch (err) {
+      return out(err.message, true);
+    }
+  }
+
+  if (action === 'remove') {
+    const keep = confirm(`Remove ${personEdit.name}?\n\nOK keeps their XP history and hides them.\nCancel removes everything.`);
+    try {
+      await api('/api/admin/person-remove', {
+        method: 'POST',
+        body: JSON.stringify({ accountId: personEdit.accountId, keepHistory: keep }),
+      });
+      personEdit = null;
+      toast('Removed');
+      return render();
+    } catch (err) {
+      return out(err.message, true);
+    }
+  }
+
+  collectPerson();
+  try {
+    await api('/api/admin/person', { method: 'POST', body: JSON.stringify(personEdit) });
+    personEdit = null;
+    toast('Saved');
+    return render();
+  } catch (err) {
+    out(err.message, true);
+  }
+}
+
 // ---------- company chart ----------
 
 let orgData = null;
+let orgLogoData = null;
+
+// The logo has to be inlined, or it goes missing when the chart is exported.
+async function loadOrgLogo() {
+  if (orgLogoData) return;
+  try {
+    const response = await fetch('/icon-192.png');
+    const blob = await response.blob();
+    orgLogoData = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    orgLogoData = null;
+  }
+}
 
 const ORG = { boxW: 184, boxH: 58, gapX: 18, gapY: 44, stackY: 10, indent: 26, pad: 28 };
+
+// Little white glyphs that sit on a nameplate.
+const ORG_ICONS = {
+  star: 'M6 0.6 7.6 4 11.2 4.5 8.6 7 9.3 10.6 6 8.9 2.7 10.6 3.4 7 0.8 4.5 4.4 4Z',
+  spanner: 'M8.8 0.8a3.2 3.2 0 0 0-3.9 4L0.9 8.7l2.4 2.4 3.9-3.9a3.2 3.2 0 0 0 4-3.9L9.1 4.6 7.4 2.9Z',
+  laptop: 'M1.6 2h8.8v5.4H1.6Zm-1.2 6.4h11.2v1.2H0.4Z',
+  headset: 'M6 0.8a4.6 4.6 0 0 0-4.6 4.6v3.2h2.4V5.4h-1a3.2 3.2 0 1 1 6.4 0h-1v3.2h2.4V5.4A4.6 4.6 0 0 0 6 0.8Z',
+  chart: 'M1 10.8V6h2.2v4.8Zm3.9 0V1.4h2.2v9.4Zm3.9 0V4h2.2v6.8Z',
+  shield: 'M6 0.6 10.8 2.6v3.2c0 3-2 5.2-4.8 6-2.8-0.8-4.8-3-4.8-6V2.6Z',
+  cap: 'M6 1.2 11.6 4 6 6.8 0.4 4Zm-3.4 4.4L6 7.4l3.4-1.8v2.6C9.4 9.4 7.9 10.2 6 10.2S2.6 9.4 2.6 8.2Z',
+  van: 'M0.8 3.2h6.4v4.2h3l1 1.6v1.2H0.8Zm2 7.2a1.2 1.2 0 1 0 0-2.4 1.2 1.2 0 0 0 0 2.4Zm6.6 0a1.2 1.2 0 1 0 0-2.4 1.2 1.2 0 0 0 0 2.4Z',
+  phone: 'M3.2 1h2l1 2.6-1.4 1a7.6 7.6 0 0 0 3.6 3.6l1-1.4L11 7.8v2a1 1 0 0 1-1.1 1A9.4 9.4 0 0 1 2.2 2.1 1 1 0 0 1 3.2 1Z',
+  'first-aid': 'M4.6 1h2.8v2.6H10v2.8H7.4V9H4.6V6.4H2V3.6h2.6Z',
+  fire: 'M6 0.6c1.8 2 1 3.4 0.4 4.2-0.5 0.7-0.9 1.4-0.3 2.3 0.3-0.6 0.9-1 1.5-1.1-0.2 1.4 1.6 1.8 1.6 3.4A3.4 3.4 0 0 1 6 11.4a3.4 3.4 0 0 1-3.2-3.5C2.8 4.6 6 4 6 0.6Z',
+  leaf: 'M11 1C5.4 1 1 3.2 1 7.6c0 1.2 0.4 2.2 1 3L3.4 9.2C4.6 6.8 7 5.2 9.6 4.6 7.4 5.8 5.4 7.6 4.4 10.2c0.7 0.4 1.5 0.6 2.4 0.6 3.6 0 4.2-5 4.2-9.8Z',
+};
 
 // Laid out like the chart it replaces: the top two levels spread across the
 // page, and from there each team stacks vertically under its lead, which keeps
@@ -594,9 +738,15 @@ function orgSvg(data) {
   });
 
   const boxes = placed.map((node) => {
-    const titleLines = wrapText(node.title || '', 26).slice(0, 2);
+    const icons = (node.icons || []).filter((id) => ORG_ICONS[id]).slice(0, 4);
+    const titleWidth = icons.length ? 24 : 28;
+    const titleLines = wrapText(node.title || '', Math.round((ORG.boxW - titleWidth) / 5.4)).slice(0, 2);
+    const badges = icons.map((id, i) => `<g transform="translate(${node.x + ORG.boxW - 20 - i * 16} ${node.y + 10}) scale(1)">
+        <path d="${ORG_ICONS[id]}" fill="#ffffff" opacity="0.92"/>
+      </g>`).join('');
     return `<g>
       <rect x="${node.x}" y="${node.y}" width="${ORG.boxW}" height="${ORG.boxH}" rx="9" fill="${node.colour}"/>
+      ${badges}
       <text x="${node.x + 12}" y="${node.y + 22}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#ffffff">${esc(node.name)}</text>
       ${titleLines.map((line, i) => `<text x="${node.x + 12}" y="${node.y + 38 + i * 13}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#ffffff" opacity="0.9">${esc(line)}</text>`).join('')}
     </g>`;
@@ -609,9 +759,14 @@ function orgSvg(data) {
     </g>`).join('');
 
   const total = height + 48;
-  return `<svg id="org-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${total}" width="${width}" height="${total}">
+  const logo = orgLogoData
+    ? `<image href="${orgLogoData}" x="${ORG.pad}" y="6" width="34" height="34"/>`
+    : '';
+  return `<svg id="org-svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${total}" width="${width}" height="${total}">
       <rect width="${width}" height="${total}" fill="#ffffff"/>
-      <text x="${ORG.pad}" y="20" font-family="Titillium Web, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#0f2b3d">Promtek, ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }))}</text>
+      ${logo}
+      <text x="${ORG.pad + (logo ? 44 : 0)}" y="20" font-family="Titillium Web, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#0f2b3d">Promtek</text>
+      <text x="${ORG.pad + (logo ? 44 : 0)}" y="34" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#5b7385">Company chart, ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }))}</text>
       ${lines.join('')}
       ${boxes.join('')}
       ${legend}
@@ -684,42 +839,20 @@ async function renderSettings(route) {
   if (route === '#/vehicles') settingsData.vehicles = await api('/api/admin/vehicles').catch(() => ({ vehicles: [] }));
   if (route === '#/pow') settingsData.ra = await api('/api/admin/ra-library').catch(() => ({ items: [] }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
-  if (route === '#/org') settingsData.org = await api('/api/admin/org-options').catch(() => ({ people: [], departments: [] }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
 }
 
 function settingsOrgHtml() {
-  const { people = [], departments = [] } = settingsData.org || {};
-  const rows = people.map((p) => `<tr>
-      <td>${esc(p.name)}</td>
-      <td><input data-org-field="title" data-account="${esc(p.account_id)}" value="${esc(p.job_title || '')}" placeholder="Job title" autocomplete="off"></td>
-      <td><select data-org-field="department" data-account="${esc(p.account_id)}">
-        <option value="">Not set</option>
-        ${departments.map((d) => `<option value="${esc(d.name)}"${d.name === p.department ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
-      </select></td>
-      <td><select data-org-field="manager" data-account="${esc(p.account_id)}">
-        <option value="">Nobody, top of the chart</option>
-        ${people.filter((m) => m.account_id !== p.account_id).map((m) =>
-          `<option value="${esc(m.account_id)}"${m.account_id === p.manager_id ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}
-      </select></td>
-      <td><input class="tiny" data-org-field="order" data-account="${esc(p.account_id)}" type="number" value="${p.org_order ?? 50}"></td>
-    </tr>`).join('');
-
   return `<div class="card">
-      <p style="margin-top:0">Titles and reporting lines come from here. The chart redraws itself whenever this changes,
-      and anyone added to the DNM project in Jira appears once their title and manager are set.</p>
+      <p style="margin-top:0">Job titles, teams, reporting lines and badges are set on each person under
+      <strong>Admin, Employees</strong>. The chart follows whatever is there.</p>
       <div class="row">
-        <button class="btn secondary" data-action="org-seed">Fill in blanks from the current chart</button>
-        <button class="btn secondary" data-action="org-seed-overwrite">Reset everyone to the current chart</button>
+        <button class="btn secondary" data-action="org-seed">Fill in blanks from the 2026 chart</button>
+        <button class="btn secondary" data-action="org-seed-overwrite">Reset everyone to the 2026 chart</button>
       </div>
       <div class="result" id="org-result" role="status"></div>
-    </div>
-    <div class="table-wrap" style="margin-top:1rem"><table>
-      <thead><tr><th>Person</th><th>Job title</th><th>Team</th><th>Reports to</th><th class="num">Order</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="5" class="muted">No engineers yet.</td></tr>'}</tbody>
-    </table></div>
-    <p class="muted">Order decides who sits left to right under the same manager. Lower numbers come first.</p>`;
+    </div>`;
 }
 
 function settingsPowHtml() {
@@ -2835,7 +2968,8 @@ async function adminAction(action, button) {
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
-    'org-seed': 'org-result', 'org-seed-overwrite': 'org-result' }[action];
+    'org-seed': 'org-result', 'org-seed-overwrite': 'org-result',
+    'source-hub': 'people-result', 'source-jira': 'people-result' }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
@@ -2882,6 +3016,14 @@ async function adminAction(action, button) {
         }),
       });
       out('vehicle-result', 'Saved.');
+    } else if (action === 'source-hub' || action === 'source-jira') {
+      await api('/api/admin/employees-source', {
+        method: 'POST',
+        body: JSON.stringify({ source: action === 'source-hub' ? 'hub' : 'jira' }),
+      });
+      out('people-result', action === 'source-hub'
+        ? 'Employees are now kept in the hub. The DNM project is no longer read, so those issues can be deleted.'
+        : 'Reading employees from the DNM project again.');
     } else if (action === 'org-seed' || action === 'org-seed-overwrite') {
       const r = await api('/api/admin/org-seed', {
         method: 'POST',
@@ -3022,6 +3164,26 @@ view.addEventListener('click', async (event) => {
   if (libRemove) {
     await api('/api/admin/library-remove', { method: 'POST', body: JSON.stringify({ id: libRemove.dataset.libRemove }) });
     toast('Entry removed');
+    return render();
+  }
+
+  const personEditBtn = event.target.closest('[data-person-edit]');
+  if (personEditBtn) {
+    const id = personEditBtn.dataset.personEdit;
+    personEdit = id === 'new'
+      ? { name: '', role: 'engineer', xpRate: 75, order: 50, icons: [] }
+      : { ...(peopleCache.people.find((p) => p.accountId === id) || {}) };
+    return render();
+  }
+  const personActionBtn = event.target.closest('[data-person-action]');
+  if (personActionBtn) return personAction(personActionBtn.dataset.personAction);
+  const personIcon = event.target.closest('[data-person-icon]');
+  if (personIcon) {
+    collectPerson();
+    const id = personIcon.dataset.personIcon;
+    personEdit.icons = (personEdit.icons || []).includes(id)
+      ? personEdit.icons.filter((i) => i !== id)
+      : [...(personEdit.icons || []), id];
     return render();
   }
 
@@ -3193,6 +3355,7 @@ const TILE_SETTINGS = {
   '#/org': {
     band: () => `<h1>Company chart</h1><p>Who reports to whom, built from the employee list.</p>`,
     async render() {
+      await loadOrgLogo();
       orgData = await api('/api/org');
       return orgHtml(orgData);
     },
@@ -3353,6 +3516,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
   if (currentRoute() !== '#/') arrangeMode = false;
+  if (currentRoute() !== '#/admin') personEdit = null;
   if (currentRoute() !== '#/shop') shopSimulation = null;
   if (currentRoute() !== '#/obs') { obsSurvey = null; obsSection = 0; obsReading = null; obsView = null; }
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
