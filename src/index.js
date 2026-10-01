@@ -182,6 +182,19 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
   }
 
+  if (pathname.startsWith('/api/mes/')) {
+    const Mes = await import('./mes.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/mes/outstanding') {
+      return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '' }));
+    }
+    if (method === 'POST' && pathname === '/api/mes/question') return json(await Mes.nextQuestion(env, body));
+    if (method === 'POST' && pathname === '/api/mes/estimate') return json(await Mes.saveEstimate(env, user, body));
+    if (method === 'POST' && pathname === '/api/mes/triage') return json(await Mes.triage(env, user, body));
+    if (method === 'GET' && pathname === '/api/mes/rating') return json(await Mes.ratingHistory(env, user, url.searchParams.get('accountId')));
+    if (method === 'GET' && pathname === '/api/mes/team') return json({ team: await Mes.team(env, user) });
+  }
+
   if (pathname.startsWith('/api/devtime')) {
     const DevTime = await import('./devtime.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

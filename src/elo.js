@@ -186,7 +186,7 @@ export async function stopEngine(env) {
 export async function freezeWeek(env, { force = false } = {}) {
   const monday = mondayOf(londonDate());
   if (!force && (await getState(env, 'elo_week_of')) === monday) return { skipped: 'Already frozen this week' };
-  await env.DB.prepare('UPDATE employees SET elo_week = COALESCE(elo, ?)').bind(DEFAULT_ELO).run();
+  await env.DB.prepare('UPDATE employees SET elo_week = COALESCE(elo, ?), condor_elo_week = COALESCE(condor_elo, ?)').bind(DEFAULT_ELO, DEFAULT_ELO).run();
   await setState(env, 'elo_week_of', monday);
   return { week: monday };
 }

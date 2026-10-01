@@ -98,12 +98,15 @@ export async function processWorklogs(env, worklogs) {
   const wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart);
   if (!wls.length) return { processed: 0, changed: 0 };
 
-  const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, baseline FROM employees').all();
+  const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, condor_elo, condor_elo_week, baseline FROM employees').all();
   const employees = new Map(empRows.map((e) => [e.account_id, e]));
   const jobs = await loadJobs(env, wls.map((w) => w.issueId));
   // An approved dispute sets the category's ELO here, covering its stages too.
   const { results: overrideRows } = await env.DB.prepare('SELECT category_id, job_elo FROM job_overrides').all();
   const overrides = new Map(overrideRows.map((o) => [o.category_id, o.job_elo]));
+  // Condor development tickets take their difficulty from the hub's estimate.
+  const { results: mesRows } = await env.DB.prepare('SELECT issue_id, ticket_elo FROM mes_estimates WHERE ticket_elo IS NOT NULL').all();
+  for (const m of mesRows) overrides.set(m.issue_id, m.ticket_elo);
 
   const existing = new Map();
   for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
@@ -134,7 +137,10 @@ export async function processWorklogs(env, worklogs) {
     const prev = existing.get(wl.id);
     // The engineer's ELO is captured when the time is first logged, from the
     // value frozen on Monday, so later changes never rewrite XP already earned.
-    const engineerElo = prev?.engineer_elo ?? emp.elo_week ?? emp.elo ?? DEFAULT_ELO;
+    // Condor development is judged against the developer's Condor rating, not their customer ELO.
+    const isMes = /^MES-/i.test(job.issue_key || '');
+    const engineerElo = prev?.engineer_elo
+      ?? (isMes ? emp.condor_elo_week ?? emp.condor_elo : emp.elo_week ?? emp.elo) ?? DEFAULT_ELO;
     const override = job.xp_override ?? 1;
     const jobElo = overrides.get(String(wl.issueId)) ?? (job.parent_id ? overrides.get(job.parent_id) : undefined) ?? job.job_elo;
     const rate = xpRate({ jobElo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
@@ -388,6 +394,9 @@ export async function runScheduled(env) {
   await attempt('ELO ratings', () => Elo.rateStep(env));
   const DevTime = await import('./devtime.js');
   await attempt('Bitbucket', async () => { const r = await DevTime.poll(env); if (r.error) throw new Error(r.error); return r; });
+  const Mes = await import('./mes.js');
+  await attempt('MES tickets', () => Mes.scan(env));
+  await attempt('Condor ratings', () => Mes.rateStep(env));
   if (new Date().getUTCMinutes() < 2) await attempt('Day reminders', () => DevTime.reminders(env));
   if (new Date().getUTCMinutes() < 2) {
     await attempt('Profile refresh', () => refreshProfiles(env));
@@ -399,6 +408,7 @@ export async function runScheduled(env) {
     await attempt('Estimates and disputes', () => Disputes.hourly(env));
     const Quotes = await import('./quotes.js');
     await attempt('Quotes', () => Quotes.hourly(env));
+    await attempt('MES to Jira', () => Mes.hourly(env));
     if (new Date().getUTCHours() === 7) {
       const { checkExpiries } = await import('./vehicles.js');
       await attempt('Vehicle expiries', () => checkExpiries(env));

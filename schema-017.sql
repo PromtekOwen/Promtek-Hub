@@ -1,0 +1,10 @@
+ALTER TABLE employees ADD COLUMN condor_elo REAL;
+ALTER TABLE employees ADD COLUMN condor_elo_week REAL;
+CREATE TABLE IF NOT EXISTS mes_tickets (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, summary TEXT, type TEXT, module TEXT, status TEXT, done INTEGER NOT NULL DEFAULT 0, done_date TEXT, actual_seconds INTEGER, parent_id TEXT, created TEXT, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_mes_tickets_done ON mes_tickets(done, done_date);
+CREATE TABLE IF NOT EXISTS mes_estimates (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, hours REAL NOT NULL, low REAL, high REAL, difficulty REAL, ticket_elo REAL, method TEXT NOT NULL, timebox INTEGER NOT NULL DEFAULT 0, comparisons TEXT, tags TEXT, estimated_by TEXT, jira_synced INTEGER NOT NULL DEFAULT 0, jira_error TEXT, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mes_estimate_log (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_id TEXT NOT NULL, hours REAL, difficulty REAL, method TEXT, timebox INTEGER, estimated_by TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mes_plan (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, version_id TEXT, version_name TEXT, priority TEXT, triaged_by TEXT, triaged_at TEXT NOT NULL, jira_synced INTEGER NOT NULL DEFAULT 0, jira_error TEXT);
+CREATE TABLE IF NOT EXISTS mes_matches (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, summary TEXT, status TEXT NOT NULL, reason TEXT, ticket_elo REAL, ticket_elo_after REAL, estimate_seconds INTEGER, actual_seconds INTEGER, ratio REAL, score REAL, weight REAL, people INTEGER NOT NULL DEFAULT 0, done_date TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS mes_rating_events (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, issue_id TEXT, kind TEXT NOT NULL, seconds INTEGER, share REAL, expected REAL, score REAL, k REAL, weight REAL, modifier_factor REAL, delta REAL NOT NULL, elo_before REAL NOT NULL, elo_after REAL NOT NULL, reversed_at TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_mes_events_account ON mes_rating_events(account_id, created_at);

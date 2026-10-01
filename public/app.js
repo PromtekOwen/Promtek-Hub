@@ -334,11 +334,8 @@ const pages = {
   },
 
   '#/condor': {
-    band: () => '<h1>Condor Dev</h1><p>Development on MES, logged from what you pushed to Bitbucket.</p>',
-    render() {
-      if (!me.linked) return notLinkedCard();
-      return '<div id="day-drafts"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading your days</p></div></div>';
-    },
+    band: () => '<h1>Condor Dev</h1><p>Logging, estimating and planning work on Condor.</p>',
+    render: () => condorHtml(),
   },
 
   '#/jobs': {
@@ -3653,6 +3650,201 @@ function bitbucketAdminHtml(b) {
       <div class="result" id="bb-result" role="status"></div></div>`;
 }
 
+// ---------- Condor Dev: estimating, triage and ratings ----------
+
+let condorTab = 'day';
+let mesFilter = 'unestimated';
+let mesEst = null;          // the estimate in progress
+let mesTriage = { versionId: null, skipped: [] };
+let mesRatingFor = null;
+
+function condorTabs() {
+  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor') ? [['triage', 'Triage']] : []), ['ratings', 'Ratings']];
+  return `<div class="tabs condor-tabs">${tabs.map(([k, l]) => `<button class="tab${condorTab === k ? ' on' : ''}" data-condor-tab="${k}">${l}</button>`).join('')}</div>`;
+}
+
+const mesMeta = (t) => [t.type, t.module].filter(Boolean).map(esc).join(', ');
+const mesLink = (key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(key)}</a>`;
+
+async function mesListHtml() {
+  const data = await api(`/api/mes/outstanding?filter=${mesFilter}`);
+  const rows = data.tickets.map((t) => `<li data-mes-row>
+      <span class="title">${mesLink(t.issue_key)} ${esc(t.summary)}</span>
+      <span class="sub">${mesMeta(t)}. ${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}` : 'No estimate yet'}${t.priority ? `. ${esc(t.priority === 'Not this time' ? 'Not this time' : `${t.priority} for ${t.version_name}`)}` : ''}.</span>
+      ${data.canEstimate ? `<button class="chip-btn" data-mes-estimate="${esc(t.issue_id)}" style="margin-top:.4rem">${t.hours != null ? 'Re-estimate' : 'Estimate'}</button>` : ''}</li>`).join('');
+  return `<div class="row jobs-tools"><span class="segment">${[['unestimated', 'Needs an estimate'], ['all', 'All open']].map(([k, l]) =>
+      `<button class="seg${mesFilter === k ? ' on' : ''}" data-mes-filter="${k}">${l}</button>`).join('')}</span>
+      <input type="search" id="mes-search" placeholder="Search MES" aria-label="Search MES"></div>
+    <p class="help">Estimates come from comparing each ticket with finished ones of the same kind: a few smaller, same or bigger questions.</p>
+    ${rows ? `<ul class="list mes-list">${rows}</ul>${data.total > data.tickets.length ? `<p class="muted">Showing ${data.tickets.length} of ${data.total}. Search to narrow it down.</p>` : ''}`
+      : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
+}
+
+async function mesEstimateHtml() {
+  const e = mesEst;
+  // Only needed when estimating, so a problem here never stops My day loading.
+  if (!me._mesTags) {
+    const d = await api('/api/mes/outstanding?filter=none').catch(() => null);
+    if (d) { me._mesTags = d.tags; me._mesHints = d.hints; }
+  }
+  const q = await api('/api/mes/question', { method: 'POST', body: JSON.stringify({ issueId: e.issueId, answers: e.answers }) });
+  e.ticket = q.ticket;
+  const isBug = q.ticket.type === 'Bug';
+  let step;
+  if (e.method === 'timebox') {
+    step = `<h3>Time to find the cause</h3>
+      <label>Hours to spend investigating<input type="number" min="0.5" max="40" step="0.5" data-mes-field="timeboxHours" value="${esc(e.timeboxHours)}"></label>
+      <p class="help">Once the cause is known, re-estimate the fix itself. Time-boxed tickets don't count towards anyone's rating.</p>`;
+  } else if (e.method === 'three-point' || (!q.poolSize && !e.answers.length)) {
+    e.method = 'three-point';
+    step = `<p class="help">There aren't finished tickets with time on them to compare with yet, so give your own hours. Comparisons take over as tickets are finished and logged.</p>
+      <div class="q-hours">${[['best', 'Best case'], ['likely', 'Likely'], ['worst', 'Worst case']].map(([k, l]) =>
+        `<label>${l}<input type="number" min="0" step="0.5" data-mes-field="${k}" value="${esc(e[k] ?? '')}"></label>`).join('')}</div>`;
+  } else if (q.next) {
+    e.method = 'compare';
+    step = `<p class="muted" style="margin-top:0">Question ${q.asked + 1} of up to ${q.maxQuestions}</p>
+      <div class="mes-compare">
+        <p>Compared with ${mesLink(q.next.key)} <strong>${esc(q.next.summary)}</strong>,<br><span class="muted">${mesMeta(q.next)}, which took ${hoursLabel(Math.round(q.next.hours * 4) / 4)}</span></p>
+        <p style="margin-bottom:.5rem"><strong>is ${esc(q.ticket.issue_key)}</strong></p>
+        <div class="row mes-answers">${[['smaller', 'Smaller'], ['same', 'About the same'], ['bigger', 'Bigger']].map(([k, l]) =>
+          `<button class="btn${k === 'same' ? '' : ' secondary'}" data-mes-answer="${k}" data-ref="${esc(q.next.id)}">${l}</button>`).join('')}</div></div>`;
+  } else {
+    e.result = q.estimate;
+    step = `<div class="q-suggest"><div class="q-figures"><div><span>Estimate</span><strong>${hoursLabel(q.estimate.hours)}</strong></div>
+        <div><span>Likely range</span><strong style="font-size:1.15rem">${hoursLabel(q.estimate.low)} to ${hoursLabel(q.estimate.high)}</strong></div></div></div>
+      <button class="linklike" data-mes-restart="1" style="margin-top:.5rem">Answer again</button>`;
+  }
+  const ready = e.method === 'timebox' || e.method === 'three-point' || Boolean(q.estimate);
+  const alt = [];
+  if (isBug && e.method !== 'timebox') alt.push('<button class="linklike" data-mes-method="timebox">Cause not known yet: time-box the investigation</button>');
+  if (e.method !== 'three-point' && q.poolSize) alt.push('<button class="linklike" data-mes-method="three-point">Give hours instead</button>');
+  if (e.method !== 'compare' && q.poolSize) alt.push('<button class="linklike" data-mes-method="compare">Compare with finished tickets</button>');
+  const hint = me._mesHints?.[e.difficulty] || '';
+  return `<div class="card">
+      <p style="margin-top:0"><strong>${mesLink(q.ticket.issue_key)} ${esc(q.ticket.summary)}</strong><br><span class="muted">${mesMeta(q.ticket)}</span></p>
+      ${step}
+      ${alt.length ? `<p class="mes-alt">${alt.join(' · ')}</p>` : ''}
+      ${ready ? `<h3>How hard is it to do well?</h3>
+        <div class="segment">${[1, 2, 3, 4, 5].map((v) => `<button class="seg${Number(e.difficulty) === v ? ' on' : ''}" data-mes-difficulty="${v}">${v}</button>`).join('')}</div>
+        <p class="help" id="mes-hint">${esc(hint)}</p>
+        <div class="chips">${(me._mesTags || []).map((t) => `<button class="chip${e.tags.includes(t) ? ' on' : ''}" data-mes-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+        <div class="row" style="margin-top:1rem"><button class="btn" data-mes-save="1">Save the estimate</button></div>` : ''}
+      <div class="row" style="margin-top:.75rem"><button class="btn secondary" data-mes-back="1">Back</button></div>
+      <div class="result" id="mes-result" role="status"></div></div>`;
+}
+
+async function mesTriageHtml() {
+  const data = await api('/api/mes/outstanding?filter=untriaged');
+  if (!data.versions.length) return '<div class="card"><p style="margin:0">There are no open releases in MES. Create the next version in Jira, with its start and release dates, and it appears here.</p></div>';
+  if (!mesTriage.versionId || !data.versions.some((v) => v.id === mesTriage.versionId)) mesTriage.versionId = data.versions[0].id;
+  const version = data.versions.find((v) => v.id === mesTriage.versionId);
+  const queue = data.tickets.filter((t) => !mesTriage.skipped.includes(t.issue_id));
+  const t = queue[0];
+  const picker = `<label>Release<select data-mes-version>${data.versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}</select></label>`;
+  if (!t) return `<div class="card">${picker}<p style="margin-bottom:0">Everything open has been triaged.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>`;
+  return `<div class="card">${picker}
+      <p class="muted">${n(queue.length)} left to triage</p>
+      <div class="triage-ticket">
+        <p style="margin-top:0"><strong>${mesLink(t.issue_key)} ${esc(t.summary)}</strong><br><span class="muted">${mesMeta(t)}</span></p>
+        <p>${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated at'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}.` : 'No estimate yet.'}
+          <button class="linklike" data-mes-estimate="${esc(t.issue_id)}" data-from="triage">${t.hours != null ? 'Re-estimate' : 'Estimate it now'}</button></p>
+        <div class="row triage-actions">${data.priorities.map((p) => `<button class="btn" data-mes-triage="${p}" data-issue="${esc(t.issue_id)}">${p}</button>`).join('')}
+          <button class="btn secondary" data-mes-triage="none" data-issue="${esc(t.issue_id)}">Not this time</button>
+          <button class="btn secondary" data-mes-skip="${esc(t.issue_id)}">Skip for now</button></div>
+        <p class="help">Must, Should and Could put it in ${esc(version.name)} and set its Fix Version in Jira. When work has to give way, Coulds go first.</p>
+      </div><div class="result" id="mes-result" role="status"></div></div>`;
+}
+
+async function mesRatingsHtml() {
+  const isLead = me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor');
+  const team = isLead ? (await api('/api/mes/team')).team : [];
+  const teamHtml = team.length ? `<h2>The team</h2><ul class="list">${team.map((p) => `<li><button class="linklike title" data-mes-rating="${esc(p.account_id)}">${esc(p.name)}</button>
+      <span class="xp">${n(Math.round(p.condor_elo))}<small>${n(p.jobs)} ${p.jobs === 1 ? 'ticket' : 'tickets'}</small></span></li>`).join('')}</ul>` : '';
+  const who = mesRatingFor || null;
+  const data = await api(`/api/mes/rating${who ? `?accountId=${encodeURIComponent(who)}` : ''}`);
+  if (!data) return teamHtml || '<div class="card"><p style="margin:0">Your account isn\'t linked to a profile yet.</p></div>';
+  const width = Math.min(view.clientWidth || 640, 1000) - 40;
+  return `<h2>${who ? `${esc(data.name)}'s` : 'Your'} Condor rating</h2>
+    <div class="card"><p style="margin:0"><strong style="font-size:1.6rem">${n(Math.round(data.elo))}</strong> <span class="muted">Condor development, kept separate from customer ELO</span></p></div>
+    <div style="margin-top:1rem">${eloHistoryHtml({ ...data, rank: null }, { self: !who, width })}</div>
+    ${who ? '<div class="row" style="margin-top:1rem"><button class="btn secondary" data-mes-rating="">Back to yours</button></div>' : ''}
+    ${teamHtml}`;
+}
+
+async function condorHtml() {
+  if (!me.linked) return notLinkedCard();
+  let body;
+  if (mesEst) body = await mesEstimateHtml();
+  else if (condorTab === 'estimate') body = await mesListHtml();
+  else if (condorTab === 'triage') body = await mesTriageHtml();
+  else if (condorTab === 'ratings') body = await mesRatingsHtml();
+  else body = '<div id="day-drafts"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading your days</p></div></div>';
+  return `${mesEst ? '' : condorTabs()}${body}`;
+}
+
+async function condorClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-condor-tab]')) { condorTab = t('[data-condor-tab]').dataset.condorTab; mesRatingFor = null; return render(); }
+  if (t('[data-mes-filter]')) { mesFilter = t('[data-mes-filter]').dataset.mesFilter; return render(); }
+  const est = t('[data-mes-estimate]');
+  if (est) { mesEst = { issueId: est.dataset.mesEstimate, answers: [], tags: [], difficulty: null, timeboxHours: 4, from: est.dataset.from || null }; window.scrollTo(0, 0); return render(); }
+  if (t('[data-mes-back]')) { mesEst = null; return render(); }
+  if (!mesEst && t('[data-mes-rating]')) { mesRatingFor = t('[data-mes-rating]').dataset.mesRating || null; return render(); }
+  if (mesEst) {
+    const ans = t('[data-mes-answer]');
+    if (ans) { mesEst.answers.push({ refId: ans.dataset.ref, answer: ans.dataset.mesAnswer }); return render(); }
+    if (t('[data-mes-restart]')) { mesEst.answers = []; mesEst.method = 'compare'; return render(); }
+    const m = t('[data-mes-method]');
+    if (m) { mesEst.method = m.dataset.mesMethod; mesEst.answers = []; return render(); }
+    const d = t('[data-mes-difficulty]');
+    if (d) {
+      mesEst.difficulty = Number(d.dataset.mesDifficulty);
+      d.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === d));
+      document.getElementById('mes-hint').textContent = me._mesHints?.[mesEst.difficulty] || '';
+      return true;
+    }
+    const tag = t('[data-mes-tag]');
+    if (tag) { const x = tag.dataset.mesTag; mesEst.tags = mesEst.tags.includes(x) ? mesEst.tags.filter((y) => y !== x) : [...mesEst.tags, x]; tag.classList.toggle('on'); return true; }
+    const save = t('[data-mes-save]');
+    if (save) {
+      save.disabled = true;
+      try {
+        const r = await api('/api/mes/estimate', { method: 'POST', body: JSON.stringify({ issueId: mesEst.issueId, method: mesEst.method, answers: mesEst.answers,
+          difficulty: mesEst.difficulty, tags: mesEst.tags, timeboxHours: mesEst.timeboxHours, best: mesEst.best, likely: mesEst.likely, worst: mesEst.worst }) });
+        toast(r.jiraSynced ? `Estimated at ${hoursLabel(r.hours)}` : `Estimated at ${hoursLabel(r.hours)}. Jira will catch up`);
+        if (mesEst.from === 'triage') condorTab = 'triage';
+        mesEst = null; return render();
+      } catch (err) { document.getElementById('mes-result').textContent = err.message; save.disabled = false; }
+      return true;
+    }
+  }
+  const tri = t('[data-mes-triage]');
+  if (tri) {
+    tri.disabled = true;
+    try {
+      const r = await api('/api/mes/triage', { method: 'POST', body: JSON.stringify({ issueId: tri.dataset.issue, versionId: tri.dataset.mesTriage === 'none' ? null : mesTriage.versionId, priority: tri.dataset.mesTriage }) });
+      if (!r.jiraSynced) toast('Saved. Jira will catch up');
+      return render();
+    } catch (err) { document.getElementById('mes-result').textContent = err.message; tri.disabled = false; }
+    return true;
+  }
+  if (t('[data-mes-skip]')) { mesTriage.skipped.push(t('[data-mes-skip]').dataset.mesSkip); return render(); }
+  if (t('[data-mes-unskip]')) { mesTriage.skipped = []; return render(); }
+  return false;
+}
+
+function condorInput(event) {
+  const el = event.target;
+  if (el.dataset.mesField && mesEst) { mesEst[el.dataset.mesField] = el.value; return true; }
+  if (el.matches('[data-mes-version]')) { mesTriage.versionId = el.value; render(); return true; }
+  if (el.id === 'mes-search') {
+    const q = el.value.toLowerCase();
+    document.querySelectorAll('[data-mes-row]').forEach((r) => { r.hidden = q.length > 1 && !r.textContent.toLowerCase().includes(q); });
+    return true;
+  }
+  return false;
+}
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4214,6 +4406,7 @@ view.addEventListener('click', async (event) => {
   const leaderBtn = event.target.closest('button[data-leader]');
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
+  if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
   const bb = event.target.closest('[data-bb]');
@@ -4280,6 +4473,7 @@ const spinner = (label = 'Loading') => `<div class="card loading-card"><span cla
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : 'Loading'),
+  '#/condor': () => (condorTab === 'triage' ? 'Fetching releases from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
 };
@@ -4337,7 +4531,8 @@ async function render() {
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
-      if (route === '#/condor') loadDayDrafts();
+      if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
+      if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
       if (route !== '#/quotes') { quotesView = null; quoteData = null; }
@@ -4356,6 +4551,7 @@ async function render() {
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
+  if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (event.target.dataset?.jobsField && jobsDraft) { jobsDraft[event.target.dataset.jobsField] = event.target.value; return; }
   if (event.target.dataset?.modField && modDraft) { modDraft[event.target.dataset.modField] = event.target.value; return; }
   if (event.target.id === 'jobs-search') {

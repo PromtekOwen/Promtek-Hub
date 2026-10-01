@@ -417,6 +417,34 @@ Developers check the times, change anything that's wrong, and log the day to Tem
 
 The Condor Dev cog shows the last check and any problem, and has Test connection and Check now. When the token expires, the cog and Admin's "Last sync problem" say so; the next check after it's replaced starts where the last good one finished.
 
+### Estimating MES tickets
+
+The hub keeps its own copy of MES: two years back on the first run, then kept current every couple of minutes.
+
+A ticket is estimated by comparing it with finished tickets that have logged time:
+- Comparison tickets are of the same type and Condor Module where there are at least five. Otherwise the pool widens to the same module, then the same type, then all of MES.
+- Up to three questions are asked, each about the middle of what's left: smaller, about the same, or bigger.
+- The answers narrow the range, and the estimate is the middle of it. "About the same" stops at that ticket's time.
+- With nothing to compare against yet, best, likely and worst hours are asked instead.
+- A bug whose cause isn't known can be time-boxed for investigation and re-estimated once the cause is found.
+
+Each estimate also records how hard the ticket is to do well (1 to 5), which sets its ticket ELO at 750 + 250 × difficulty, plus optional tags. Saving an estimate:
+- sets Original Estimate in Jira;
+- recalculates XP already logged on the ticket;
+- keeps every earlier estimate, so re-estimates can be learned from.
+
+Anyone in the Condor team can estimate.
+
+### Triage
+
+Condor leads and admins go through open tickets for a release, one at a time: Must, Should, Could, or Not this time. The ticket's Fix Version in Jira follows the decision. Releases are the open versions in MES, in order of release date.
+
+### The Condor development rating
+
+Each developer has a Condor rating, separate from their customer ELO. Each finished MES ticket with an estimate is rated three days after it closes, the same way as customer categories. Time-boxed tickets aren't rated. Time on MES earns XP at the ticket's ELO against the developer's Condor rating. Developers see their own rating; Condor leads and admins see the team's.
+
+If Jira can't take an estimate or a triage decision, it's kept in the hub, retried every hour, and an alert says how many are waiting.
+
 ## Adding more apps later
 
 Each app lives in its own folder under `public/apps/`, and gets one entry in `public/modules.js` with a name, description, link and icon. Set `comingSoon: true` to show a placeholder tile, or `adminOnly: true` to show it only to admins. Apps that need to save data get their own API routes in `src/index.js` and tables in the same database.

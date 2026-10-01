@@ -416,3 +416,22 @@ textarea, label > input[data-jobs-field], label > input[data-mod-field] { font-w
 .draft-fields label { font-size: .88rem; color: var(--muted); }
 .draft-fields input { display: block; margin-top: .2rem; width: 9rem; font-weight: 400; }
 .day-card .list li { display: block; }
+
+/* Condor Dev */
+.condor-tabs { margin-bottom: 1rem; }
+.mes-list li { display: block; }
+.mes-list .title { display: block; white-space: normal; }
+.mes-list .sub { display: block; }
+.mes-compare { background: var(--tint); border-radius: 12px; padding: 1rem; }
+.mes-compare p { margin-top: 0; }
+.mes-answers { gap: .5rem; flex-wrap: wrap; }
+.mes-answers .btn { flex: 1 1 8rem; }
+.mes-alt { margin: .9rem 0 0; font-size: .92rem; }
+.triage-ticket { border-top: 1px solid var(--line); padding-top: 1rem; }
+.triage-actions { gap: .5rem; flex-wrap: wrap; }
+.card > label > select { display: block; width: 100%; margin-top: .3rem; font-weight: 400; }
+.condor-tabs { display: flex; width: 100%; }
+.condor-tabs .tab { flex: 1 1 0; white-space: nowrap; padding: .45rem .3rem; }
+.mes-answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+.mes-answers .btn { white-space: normal; line-height: 1.2; padding-left: .4rem; padding-right: .4rem; }
+.mes-answers .btn.secondary { background: #fff; border: 1px solid var(--line); }
