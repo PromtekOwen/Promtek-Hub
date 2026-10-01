@@ -1,0 +1,10 @@
+ALTER TABLE jobs ADD COLUMN parent_id TEXT;
+ALTER TABLE alerts ADD COLUMN recipient TEXT;
+ALTER TABLE elo_events ADD COLUMN modifier_factor REAL;
+CREATE TABLE IF NOT EXISTS job_disputes (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id TEXT NOT NULL, category_key TEXT NOT NULL, epic_key TEXT, summary TEXT, order_summary TEXT, discipline TEXT, team TEXT, account_id TEXT NOT NULL, status TEXT NOT NULL, reasons TEXT, comment TEXT, quoted_tech REAL, quoted_scope REAL, quoted_risk REAL, quoted_dep REAL, quoted_elo REAL, quoted_estimate_seconds INTEGER, before_elo REAL, before_estimate_seconds INTEGER, proposed_tech REAL, proposed_scope REAL, proposed_risk REAL, proposed_dep REAL, proposed_elo REAL, proposed_estimate_seconds INTEGER, approved_tech REAL, approved_scope REAL, approved_risk REAL, approved_dep REAL, approved_elo REAL, approved_estimate_seconds INTEGER, logged_seconds INTEGER, decided_by TEXT, decided_at TEXT, decision_note TEXT, jira_synced INTEGER NOT NULL DEFAULT 0, jira_error TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_disputes_category ON job_disputes(category_id);
+CREATE INDEX IF NOT EXISTS idx_disputes_status ON job_disputes(status);
+CREATE TABLE IF NOT EXISTS job_overrides (category_id TEXT PRIMARY KEY, category_key TEXT, job_elo REAL, estimate_seconds INTEGER, dispute_id INTEGER, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS estimate_flags (category_id TEXT NOT NULL, level INTEGER NOT NULL, category_key TEXT, raised_at TEXT NOT NULL, silent INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (category_id, level));
+CREATE TABLE IF NOT EXISTS modifiers (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, kind TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT, status TEXT NOT NULL, manager_id TEXT, decided_by TEXT, decided_at TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_modifiers_account ON modifiers(account_id, status);

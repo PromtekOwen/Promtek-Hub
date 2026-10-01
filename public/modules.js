@@ -31,6 +31,13 @@ export const MODULES = [
     detail: (me) => me.linked ? `<b>${hours(me.employee.week.seconds)}</b> logged this week` : 'Your Tempo time logs',
   },
   {
+    id: 'jobs',
+    name: 'Jobs',
+    route: '#/jobs',
+    icon: icon('<path d="M4 8.5h16v10.5H4z"/><path d="M9 8.5V6a1.5 1.5 0 011.5-1.5h3A1.5 1.5 0 0115 6v2.5"/><path d="M4 13h16"/>'),
+    detail: () => 'Difficulty and time on your open jobs',
+  },
+  {
     id: 'log',
     name: 'Log time',
     route: '#/log',

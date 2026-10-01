@@ -41,6 +41,7 @@ function jobFromIssue(env, issue) {
     summary: issue.fields?.summary || '',
     job_elo: num(issue.fields?.[env.FIELD_ELO]),
     xp_override: num(issue.fields?.[env.FIELD_XP_OVERRIDE]),
+    parent_id: issue.fields?.parent?.id ? String(issue.fields.parent.id) : null,
     fetched_at: Date.now(),
   };
 }
@@ -58,7 +59,7 @@ async function loadJobs(env, issueIds) {
   }
 
   const missing = ids.filter((id) => !jobs.has(id));
-  const fields = ['summary', env.FIELD_ELO, env.FIELD_XP_OVERRIDE];
+  const fields = ['summary', 'parent', env.FIELD_ELO, env.FIELD_XP_OVERRIDE];
   for (const part of chunk(missing, CHUNK)) {
     let issues;
     try {
@@ -75,11 +76,12 @@ async function loadJobs(env, issueIds) {
       const job = jobFromIssue(env, issue);
       jobs.set(job.issue_id, job);
       return env.DB.prepare(
-        `INSERT INTO jobs (issue_id, issue_key, summary, job_elo, xp_override, fetched_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO jobs (issue_id, issue_key, summary, job_elo, xp_override, parent_id, fetched_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, summary = excluded.summary,
-           job_elo = excluded.job_elo, xp_override = excluded.xp_override, fetched_at = excluded.fetched_at`
-      ).bind(job.issue_id, job.issue_key, job.summary, job.job_elo, job.xp_override, job.fetched_at);
+           job_elo = excluded.job_elo, xp_override = excluded.xp_override, parent_id = excluded.parent_id,
+           fetched_at = excluded.fetched_at`
+      ).bind(job.issue_id, job.issue_key, job.summary, job.job_elo, job.xp_override, job.parent_id, job.fetched_at);
     });
     await runBatches(env, stmts);
   }
@@ -99,6 +101,9 @@ export async function processWorklogs(env, worklogs) {
   const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, baseline FROM employees').all();
   const employees = new Map(empRows.map((e) => [e.account_id, e]));
   const jobs = await loadJobs(env, wls.map((w) => w.issueId));
+  // An approved dispute sets the category's ELO here, covering its stages too.
+  const { results: overrideRows } = await env.DB.prepare('SELECT category_id, job_elo FROM job_overrides').all();
+  const overrides = new Map(overrideRows.map((o) => [o.category_id, o.job_elo]));
 
   const existing = new Map();
   for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
@@ -131,7 +136,8 @@ export async function processWorklogs(env, worklogs) {
     // value frozen on Monday, so later changes never rewrite XP already earned.
     const engineerElo = prev?.engineer_elo ?? emp.elo_week ?? emp.elo ?? DEFAULT_ELO;
     const override = job.xp_override ?? 1;
-    const rate = xpRate({ jobElo: job.job_elo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
+    const jobElo = overrides.get(String(wl.issueId)) ?? (job.parent_id ? overrides.get(job.parent_id) : undefined) ?? job.job_elo;
+    const rate = xpRate({ jobElo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
     const xp = Math.round(rate * (wl.seconds / 60));
 
     if (prev && prev.xp === xp && prev.seconds === wl.seconds && prev.work_date === wl.startDate && prev.issue_id === wl.issueId) {
@@ -146,7 +152,7 @@ export async function processWorklogs(env, worklogs) {
          job_elo = excluded.job_elo, override = excluded.override, rate = excluded.rate, xp = excluded.xp,
          logged_at = excluded.logged_at, updated_at = excluded.updated_at`
     ).bind(wl.id, wl.accountId, wl.issueId, wl.startDate, wl.seconds, wl.description.slice(0, 500),
-      job.job_elo ?? null, engineerElo, override, rate, xp, wl.loggedAt || now, now, now));
+      jobElo ?? null, engineerElo, override, rate, xp, wl.loggedAt || now, now, now));
     stmts.push(env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(wl.id));
   }
 
@@ -157,11 +163,29 @@ export async function processWorklogs(env, worklogs) {
 
 // ---------- Alerts ----------
 
-export async function raiseAlert(env, { kind, dedupe, subject, body }) {
+export async function raiseAlert(env, { kind, dedupe, subject, body, recipient = null }) {
   await env.DB.prepare(
-    `INSERT INTO alerts (kind, dedupe, subject, body, created_at) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO alerts (kind, dedupe, subject, body, recipient, created_at) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(dedupe) DO NOTHING`
-  ).bind(kind, dedupe, subject, body, new Date().toISOString()).run();
+  ).bind(kind, dedupe, subject, body, recipient, new Date().toISOString()).run();
+}
+
+// Recalculates XP already earned on these issues, keeping each worklog's
+// engineer ELO as it was when the time was logged.
+export async function recalcIssues(env, issueIds) {
+  const ids = [...new Set(issueIds.map(String))];
+  let changed = 0;
+  for (const part of chunk(ids, CHUNK)) {
+    await env.DB.prepare(`UPDATE jobs SET fetched_at = 0 WHERE issue_id IN (${placeholders(part.length)})`).bind(...part).run();
+    const { results } = await env.DB.prepare(
+      `SELECT worklog_id, account_id, issue_id, work_date, seconds, description, logged_at FROM xp_ledger
+        WHERE issue_id IN (${placeholders(part.length)})`
+    ).bind(...part).all();
+    const wls = results.map((r) => ({ id: r.worklog_id, accountId: r.account_id, issueId: r.issue_id, startDate: r.work_date,
+      seconds: r.seconds, description: r.description || '', loggedAt: r.logged_at }));
+    if (wls.length) changed += (await processWorklogs(env, wls)).changed;
+  }
+  return { changed };
 }
 
 async function raiseUnmatchedAlert(env, accountIds) {
@@ -180,7 +204,7 @@ async function raiseUnmatchedAlert(env, accountIds) {
 export async function sendAlerts(env) {
   if (!env.ALERT_WEBHOOK_URL) return { skipped: 'No mail relay configured' };
   const { results } = await env.DB.prepare(
-    'SELECT id, subject, body FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 20'
+    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 20'
   ).all();
   if (!results.length) return { sent: 0 };
   const now = new Date().toISOString();
@@ -189,7 +213,7 @@ export async function sendAlerts(env) {
     const res = await fetch(env.ALERT_WEBHOOK_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
+      body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
     });
     if (!res.ok) break;
     await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(now, alert.id).run();
@@ -358,6 +382,8 @@ export async function runScheduled(env) {
   await attempt('Deletion check', () => reconcileNextDay(env));
   const { backfillStep } = await import('./jobs.js');
   await attempt('Job backfill', () => backfillStep(env));
+  const { scanCategories } = await import('./jobs.js');
+  await attempt('Finished categories', () => scanCategories(env));
   const Elo = await import('./elo.js');
   await attempt('ELO ratings', () => Elo.rateStep(env));
   if (new Date().getUTCMinutes() < 2) {
@@ -366,6 +392,8 @@ export async function runScheduled(env) {
     await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
     const { scanCompleted } = await import('./jobs.js');
     await attempt('Completed jobs', () => scanCompleted(env));
+    const Disputes = await import('./disputes.js');
+    await attempt('Estimates and disputes', () => Disputes.hourly(env));
     if (new Date().getUTCHours() === 7) {
       const { checkExpiries } = await import('./vehicles.js');
       await attempt('Vehicle expiries', () => checkExpiries(env));

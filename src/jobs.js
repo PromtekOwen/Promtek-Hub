@@ -60,16 +60,17 @@ const num = (v) => {
   const parsed = parseFloat(v);
   return Number.isFinite(parsed) ? parsed : null;
 };
-const isDone = (issue) => issue.fields?.status?.statusCategory?.key === 'done';
+export const isDone = (issue) => issue.fields?.status?.statusCategory?.key === 'done';
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 
 const BASE_FIELDS = [
   'summary', 'issuetype', 'status', 'parent', 'project', 'resolutiondate', 'updated',
   'timespent', 'aggregatetimespent', 'timeoriginalestimate', 'customfield_14562', 'customfield_15378',
+  'statuscategorychangedate',
 ];
-const ALL_FIELDS = [...BASE_FIELDS, ...Object.values(DISCIPLINES).flatMap((d) => Object.values(d))];
+export const ALL_FIELDS = [...BASE_FIELDS, ...Object.values(DISCIPLINES).flatMap((d) => Object.values(d))];
 
-const teamOf = (issue) => {
+export const teamOf = (issue) => {
   const value = issue.fields?.customfield_14562;
   if (Array.isArray(value)) return value[0]?.value || null;
   return value?.value || null;
@@ -109,6 +110,69 @@ function saveRows(env, rows) {
     r.team, r.discipline, r.summary, r.status, r.done_date, r.story_points, r.score_scope, r.score_tech,
     r.score_dep, r.score_risk, r.weighted_score, r.job_elo, r.estimate_seconds, r.actual_seconds,
     r.child_count, r.legacy, r.confidence, r.updated_at, r.stage_name ?? null, r.stage_share ?? null));
+}
+
+// The latest move into Done is the end of a category; reopening one means it
+// was closed in error.
+const categoryDoneDate = (issue) => {
+  const f = issue.fields || {};
+  return (f.statuscategorychangedate || f.resolutiondate || f.updated || '').slice(0, 10) || null;
+};
+
+// One finished category and its stages, as rows. Scores live on the order.
+export function categoryRows({ epic, category, categoryStages, doneDate = null }) {
+  const f = epic.fields || {};
+  const team = teamOf(epic);
+  const project = f.project || {};
+  const out = [];
+  const cf = category.fields || {};
+  const discipline = disciplineOf(category);
+  const map = DISCIPLINES[discipline];
+  const scope = num(f[map.scope]);
+  const tech = num(f[map.tech]);
+  const dep = num(f[map.dep]);
+  const risk = num(f[map.risk]);
+  const weighted = [scope, tech, dep, risk].every((v) => v != null)
+    ? weightedScore({ tech, scope, risk, dep })
+    : null;
+  const sprints = num(cf[map.sprint]);
+
+  out.push(row({
+    issue_id: String(category.id), issue_key: category.key, kind: 'category',
+    epic_id: String(epic.id), epic_key: epic.key, parent_id: String(epic.id),
+    project_key: project.key || null, project_name: project.name || null,
+    team, discipline, summary: cf.summary || '', status: cf.status?.name || null,
+    done_date: categoryDoneDate(category) || doneDate,
+    story_points: num(f[map.points]),
+    score_scope: scope, score_tech: tech, score_dep: dep, score_risk: risk, weighted_score: weighted,
+    job_elo: num(cf.customfield_15378),
+    estimate_seconds: sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : num(cf.timeoriginalestimate),
+    // Stage time rolls up here, which is how each category is estimated.
+    actual_seconds: num(cf.aggregatetimespent) || num(cf.timespent) || 0,
+    child_count: categoryStages.length,
+    legacy: 0,
+  }));
+
+  const categoryActual = num(cf.aggregatetimespent) || num(cf.timespent) || 0;
+  for (const stage of categoryStages) {
+    const sf = stage.fields || {};
+    const stageActual = num(sf.timespent) || 0;
+    out.push(row({
+      stage_name: stageNameOf(sf.summary, stage.key),
+      stage_share: categoryActual > 0 ? stageActual / categoryActual : null,
+      issue_id: String(stage.id), issue_key: stage.key, kind: 'stage',
+      epic_id: String(epic.id), epic_key: epic.key, parent_id: String(category.id),
+      project_key: project.key || null, project_name: project.name || null,
+      team, discipline, summary: sf.summary || '', status: sf.status?.name || null,
+      done_date: (sf.resolutiondate || sf.updated || '').slice(0, 10) || categoryDoneDate(category) || doneDate,
+      story_points: null, score_scope: null, score_tech: null, score_dep: null, score_risk: null,
+      weighted_score: null, job_elo: null,
+      estimate_seconds: num(sf.timeoriginalestimate),
+      actual_seconds: num(sf.timespent) || 0,
+      child_count: 0, legacy: 0,
+    }));
+  }
+  return out;
 }
 
 // Turns a batch of finished epics, with their categories and stages, into rows.
@@ -160,54 +224,7 @@ export async function processEpics(env, epics) {
     }));
 
     for (const category of epicCategories) {
-      const cf = category.fields || {};
-      const discipline = disciplineOf(category);
-      const map = DISCIPLINES[discipline];
-      const scope = num(f[map.scope]);
-      const tech = num(f[map.tech]);
-      const dep = num(f[map.dep]);
-      const risk = num(f[map.risk]);
-      const weighted = [scope, tech, dep, risk].every((v) => v != null)
-        ? weightedScore({ tech, scope, risk, dep })
-        : null;
-      const sprints = num(cf[map.sprint]);
-      const categoryStages = stagesByParent.get(category.id) || [];
-
-      rows.push(row({
-        issue_id: String(category.id), issue_key: category.key, kind: 'category',
-        epic_id: String(epic.id), epic_key: epic.key, parent_id: String(epic.id),
-        project_key: project.key || null, project_name: project.name || null,
-        team, discipline, summary: cf.summary || '', status: cf.status?.name || null,
-        done_date: (cf.resolutiondate || cf.updated || '').slice(0, 10) || doneDate,
-        story_points: num(f[map.points]),
-        score_scope: scope, score_tech: tech, score_dep: dep, score_risk: risk, weighted_score: weighted,
-        job_elo: num(cf.customfield_15378),
-        estimate_seconds: sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : num(cf.timeoriginalestimate),
-        // Stage time rolls up here, which is how each category is estimated.
-        actual_seconds: num(cf.aggregatetimespent) || num(cf.timespent) || 0,
-        child_count: categoryStages.length,
-        legacy: 0,
-      }));
-
-      const categoryActual = num(cf.aggregatetimespent) || num(cf.timespent) || 0;
-      for (const stage of categoryStages) {
-        const sf = stage.fields || {};
-        const stageActual = num(sf.timespent) || 0;
-        rows.push(row({
-          stage_name: stageNameOf(sf.summary, stage.key),
-          stage_share: categoryActual > 0 ? stageActual / categoryActual : null,
-          issue_id: String(stage.id), issue_key: stage.key, kind: 'stage',
-          epic_id: String(epic.id), epic_key: epic.key, parent_id: String(category.id),
-          project_key: project.key || null, project_name: project.name || null,
-          team, discipline, summary: sf.summary || '', status: sf.status?.name || null,
-          done_date: (sf.resolutiondate || sf.updated || '').slice(0, 10) || doneDate,
-          story_points: null, score_scope: null, score_tech: null, score_dep: null, score_risk: null,
-          weighted_score: null, job_elo: null,
-          estimate_seconds: num(sf.timeoriginalestimate),
-          actual_seconds: num(sf.timespent) || 0,
-          child_count: 0, legacy: 0,
-        }));
-      }
+      rows.push(...categoryRows({ epic, category, categoryStages: stagesByParent.get(category.id) || [], doneDate }));
     }
 
     // Legacy epics: children hang straight off the epic with no category layer.
@@ -236,7 +253,7 @@ export async function processEpics(env, epics) {
   return { epics: epics.length, rows: rows.length };
 }
 
-const customerFilter = `category in (${CUSTOMER_CATEGORIES.map((c) => `"${c}"`).join(', ')})`;
+export const customerFilter = `category in (${CUSTOMER_CATEGORIES.map((c) => `"${c}"`).join(', ')})`;
 
 // Picks up jobs finished since the last scan.
 export async function scanCompleted(env) {
@@ -246,6 +263,77 @@ export async function scanCompleted(env) {
   const result = await processEpics(env, epics.filter(isDone));
   await setState(env, 'jobs_cursor', londonDate(Date.now() - 2 * 86_400_000));
   return result;
+}
+
+const CATEGORY_BATCH = 25;
+
+// Jira reads JQL dates in the API user's time zone, which is London.
+function jqlMinute(ms) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
+  return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}`;
+}
+const jqlMinuteOf = (jiraTime) => String(jiraTime || '').slice(0, 16).replace('T', ' ').replace(/-/g, '/');
+const addMinute = (minute) => jqlMinute(Date.parse(`${minute.replace(/\//g, '-').replace(' ', 'T')}:00Z`) + 60_000 - londonOffsetMs(minute));
+function londonOffsetMs(minute) {
+  const utc = Date.parse(`${minute.replace(/\//g, '-').replace(' ', 'T')}:00Z`);
+  return Date.parse(`${jqlMinute(utc).replace(/\//g, '-').replace(' ', 'T')}:00Z`) - utc;
+}
+
+// Categories are measured when they finish, not when their whole order does.
+// Works forwards from the backfill date a batch at a time, then keeps up.
+export async function scanCategories(env) {
+  let cursor = await getState(env, 'category_cursor');
+  if (!cursor) {
+    const from = (await getState(env, 'backfill_until')) || londonDate(Date.now() - 24 * 30 * 86_400_000);
+    cursor = `${from.replace(/-/g, '/')} 00:00`;
+  }
+  const jql = `${customerFilter} AND statusCategory = Done AND issuetype != Epic AND issuetype not in subTaskIssueTypes()`
+    + ` AND parent is not EMPTY AND updated >= "${cursor}" ORDER BY updated ASC`;
+  const startedAt = Date.now();
+  const issues = await searchJql(env, jql, ALL_FIELDS, { limit: CATEGORY_BATCH });
+  const result = await processCategories(env, issues.filter((i) => isDone(i) && disciplineOf(i)));
+
+  let next;
+  if (issues.length < CATEGORY_BATCH) {
+    // Caught up: look back a few minutes next time for anything updated mid-scan.
+    next = jqlMinute(startedAt - 10 * 60_000);
+    if (next < cursor) next = cursor;
+  } else {
+    next = jqlMinuteOf(issues[issues.length - 1].fields?.updated) || cursor;
+    // A full batch inside one minute would otherwise be read again forever.
+    if (next <= cursor) next = addMinute(cursor);
+  }
+  await setState(env, 'category_cursor', next);
+  return { checked: issues.length, ...result, cursor: next };
+}
+
+export async function processCategories(env, categories) {
+  if (!categories.length) return { categories: 0, rows: 0 };
+  const epicIds = [...new Set(categories.map((c) => c.fields?.parent?.id).filter(Boolean))];
+  const epics = new Map();
+  for (const part of chunk(epicIds, 50)) {
+    for (const epic of await searchJql(env, `id in (${part.join(',')})`, ALL_FIELDS)) epics.set(String(epic.id), epic);
+  }
+  const stagesByParent = new Map();
+  for (const part of chunk(categories.map((c) => c.key), 50)) {
+    for (const stage of await searchJql(env, `parent in (${part.join(',')})`, ALL_FIELDS)) {
+      const parent = String(stage.fields?.parent?.id || '');
+      if (!stagesByParent.has(parent)) stagesByParent.set(parent, []);
+      stagesByParent.get(parent).push(stage);
+    }
+  }
+  const rows = [];
+  let recorded = 0;
+  for (const category of categories) {
+    const epic = epics.get(String(category.fields?.parent?.id));
+    if (!epic) continue;
+    recorded++;
+    rows.push(...categoryRows({ epic, category, categoryStages: stagesByParent.get(String(category.id)) || [] }));
+  }
+  for (const part of chunk(rows, 40)) await env.DB.batch(saveRows(env, part));
+  return { categories: recorded, rows: rows.length };
 }
 
 // Walks backwards through history a batch at a time, so nothing times out.
@@ -464,15 +552,16 @@ export async function recomputeStages(env) {
 }
 
 export async function backfillStatus(env) {
-  const [until, before, cursor, counts] = await Promise.all([
+  const [until, before, cursor, categoryCursor, counts] = await Promise.all([
     getState(env, 'backfill_until'),
     getState(env, 'backfill_before'),
     getState(env, 'jobs_cursor'),
+    getState(env, 'category_cursor'),
     env.DB.prepare(
       `SELECT COUNT(*) AS rows, SUM(kind = 'epic') AS epics, SUM(kind = 'category') AS categories,
               SUM(kind = 'stage') AS stages, MIN(done_date) AS earliest, MAX(done_date) AS latest
          FROM completed_jobs`
     ).first(),
   ]);
-  return { until, before, cursor, done: Boolean(until && before && before <= until), ...counts };
+  return { until, before, cursor, categoryCursor, done: Boolean(until && before && before <= until), ...counts };
 }

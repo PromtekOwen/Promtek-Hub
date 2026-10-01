@@ -4,6 +4,8 @@ import { getUser } from './auth.js';
 import { findAccountIdByEmail } from './jira.js';
 import { progressFor } from './progression.js';
 import * as Elo from './elo.js';
+import * as Disputes from './disputes.js';
+import * as Modifiers from './modifiers.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
@@ -15,7 +17,7 @@ import * as Obs from './obsolescence.js';
 import * as Org from './org.js';
 import * as People from './people.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
-import { scanCompleted, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
+import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
 const TEAMS = ['Projecting', 'Service', 'Condor', 'Sales'];
@@ -179,6 +181,24 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
   }
 
+  if (pathname.startsWith('/api/jobs') || pathname.startsWith('/api/modifiers') || pathname === '/api/approvals') {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/jobs') return json(await Disputes.listActive(env, user, { scope: url.searchParams.get('scope') || 'mine' }));
+    if (method === 'GET' && pathname === '/api/jobs/category') return json(await Disputes.categoryDetail(env, url.searchParams.get('id')));
+    if (method === 'POST' && pathname === '/api/jobs/dispute') return json(await Disputes.raiseDispute(env, user, body));
+    if (method === 'POST' && pathname === '/api/jobs/dispute-withdraw') return json(await Disputes.withdrawDispute(env, user, body.id));
+    if (method === 'POST' && pathname === '/api/jobs/dispute-decide') return json(await Disputes.decideDispute(env, user, body));
+    if (method === 'GET' && pathname === '/api/approvals') {
+      const [disputes, modifiers, supervised] = await Promise.all([
+        Disputes.pendingDisputes(env, user), Modifiers.pending(env, user), Modifiers.supervised(env, user)]);
+      return json({ disputes, modifiers, supervised });
+    }
+    if (method === 'GET' && pathname === '/api/modifiers') return json(await Modifiers.mine(env, user));
+    if (method === 'POST' && pathname === '/api/modifiers/request') return json(await Modifiers.request(env, user, body));
+    if (method === 'POST' && pathname === '/api/modifiers/end') return json(await Modifiers.end(env, user, body.id));
+    if (method === 'POST' && pathname === '/api/modifiers/decide') return json(await Modifiers.decide(env, user, body));
+  }
+
   if (pathname.startsWith('/api/it/')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/it/options') return json(await It.options(env));
@@ -238,7 +258,7 @@ async function route(request, env, url, user) {
     const accountId = url.searchParams.get('accountId') || user.accountId;
     if (!accountId) return json({ error: 'Your account isn\'t linked to a profile yet.' }, 404);
     if (accountId !== user.accountId && !user.isLead) return json({ error: 'Only team leads and admins can see someone else\'s history.' }, 403);
-    const data = await Elo.history(env, accountId);
+    const data = await Elo.history(env, accountId, user);
     return data ? json(data) : json({ error: 'No such person.' }, 404);
   }
 
@@ -308,7 +328,11 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/admin/refresh-profiles') return json(await refreshProfiles(env));
     if (method === 'POST' && pathname === '/api/admin/snapshot') return json(await snapshotWeek(env, body.week || null));
-    if (method === 'POST' && pathname === '/api/admin/scan-jobs') return json(await scanCompleted(env));
+    if (method === 'POST' && pathname === '/api/admin/scan-jobs') {
+      const orders = await scanCompleted(env);
+      const categories = await scanCategories(env);
+      return json({ ...orders, categories: categories.categories, rows: orders.rows + categories.rows });
+    }
     if (method === 'POST' && pathname === '/api/admin/backfill-start') return json(await startBackfill(env, Number(body.months) || 24));
     if (method === 'POST' && pathname === '/api/admin/backfill-step') return json(await backfillStep(env));
     if (method === 'POST' && pathname === '/api/admin/recompute-stages') return json(await recomputeStages(env));

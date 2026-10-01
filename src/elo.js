@@ -5,6 +5,7 @@
 import { fetchIssueWorklogs } from './tempo.js';
 import { getState, setState, londonDate, mondayOf } from './sync.js';
 import { DEFAULT_ELO, rankFor, jobEloFromScore } from './progression.js';
+import { approvedFor, factorOn } from './modifiers.js';
 
 export const K_FACTOR = 32;
 export const PROVISIONAL_K = 48;        // bigger steps until someone has a few jobs behind them
@@ -53,25 +54,35 @@ function skipRow(env, cat, status, reason, extra = {}) {
 // Rates one finished category. Returns the statements to run, so the match
 // and every rating change land together or not at all.
 export async function rateCategory(env, cat, { employees, counts, worklogsFor = fetchIssueWorklogs }) {
-  const jobElo = cat.job_elo ?? jobEloFromScore(cat.weighted_score);
+  // An approved dispute replaces the quoted difficulty and estimate.
+  const override = await env.DB.prepare('SELECT job_elo, estimate_seconds FROM job_overrides WHERE category_id = ?')
+    .bind(cat.issue_id).first();
+  if (override?.estimate_seconds) cat = { ...cat, estimate_seconds: override.estimate_seconds };
+  const jobElo = override?.job_elo ?? cat.job_elo ?? jobEloFromScore(cat.weighted_score);
   if (!cat.estimate_seconds) return { status: 'skipped', stmts: [skipRow(env, cat, 'skipped', 'No estimate', { jobElo })] };
-  if (!cat.actual_seconds) return { status: 'skipped', stmts: [skipRow(env, cat, 'skipped', 'No time logged', { jobElo })] };
   if (jobElo == null) return { status: 'skipped', stmts: [skipRow(env, cat, 'skipped', 'No difficulty set') ] };
 
   const { results: stages } = await env.DB.prepare(
     "SELECT issue_id FROM completed_jobs WHERE parent_id = ? AND kind = 'stage'"
   ).bind(cat.issue_id).all();
   const seconds = new Map();
+  const days = new Map();
   let total = 0;
   for (const issueId of [cat.issue_id, ...stages.map((s) => s.issue_id)]) {
     for (const wl of await worklogsFor(env, issueId)) {
       if (!wl.accountId || !wl.seconds) continue;
       seconds.set(wl.accountId, (seconds.get(wl.accountId) || 0) + wl.seconds);
+      if (!days.has(wl.accountId)) days.set(wl.accountId, []);
+      days.get(wl.accountId).push([wl.startDate, wl.seconds]);
       total += wl.seconds;
     }
   }
 
-  const ratio = cat.actual_seconds / cat.estimate_seconds;
+  // Jira's total was read when the category closed; Tempo has anything logged since.
+  const actual = Math.max(cat.actual_seconds || 0, total);
+  cat = { ...cat, actual_seconds: actual };
+  if (!actual) return { status: 'skipped', stmts: [skipRow(env, cat, 'skipped', 'No time logged', { jobElo })] };
+  const ratio = actual / cat.estimate_seconds;
   const rated = [...seconds].filter(([id]) => employees.get(id)?.active);
   if (!total || !rated.length) {
     return { status: 'skipped', stmts: [skipRow(env, cat, 'skipped', 'Nobody with a profile logged time on it', { jobElo, ratio })] };
@@ -82,6 +93,7 @@ export async function rateCategory(env, cat, { employees, counts, worklogsFor = 
   const now = new Date().toISOString();
   const stmts = [];
   let jobDelta = 0;
+  const modifiers = await approvedFor(env, rated.map(([id]) => id));
 
   for (const [accountId, secs] of rated) {
     const emp = employees.get(accountId);
@@ -89,15 +101,21 @@ export async function rateCategory(env, cat, { employees, counts, worklogsFor = 
     const share = secs / total;
     const expected = expectedScore(before, jobElo);
     const k = (counts.get(accountId) || 0) < PROVISIONAL_MATCHES ? PROVISIONAL_K : K_FACTOR;
-    const delta = round1(k * weight * share * (score - expected));
+    // Time logged while an approved modifier applied counts for less, both ways.
+    const mods = modifiers.get(accountId) || [];
+    const factor = mods.length
+      ? days.get(accountId).reduce((a, [date, s]) => a + s * factorOn(mods, date), 0) / secs
+      : 1;
+    const delta = round1(k * weight * factor * share * (score - expected));
     jobDelta -= delta;
     emp.elo = before + delta;
     counts.set(accountId, (counts.get(accountId) || 0) + 1);
     stmts.push(
       env.DB.prepare(
         `INSERT INTO elo_events (account_id, category_id, kind, seconds, share, expected, score, k, weight, delta,
-           elo_before, elo_after, created_at) VALUES (?, ?, 'match', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      ).bind(accountId, cat.issue_id, secs, share, expected, score, k, weight, delta, before, before + delta, now),
+           elo_before, elo_after, modifier_factor, created_at) VALUES (?, ?, 'match', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(accountId, cat.issue_id, secs, share, expected, score, k, weight, delta, before, before + delta,
+        factor < 1 ? factor : null, now),
       env.DB.prepare('UPDATE employees SET elo = COALESCE(elo, ?) + ?, updated_at = ? WHERE account_id = ?')
         .bind(DEFAULT_ELO, delta, now, accountId),
     );
@@ -195,17 +213,20 @@ export function rankWithPeak(elo, peak) {
   return { ...rank, heldFrom: held ? best : null };
 }
 
-export async function history(env, accountId) {
-  const emp = await env.DB.prepare('SELECT account_id, name, elo FROM employees WHERE account_id = ?').bind(accountId).first();
+export async function history(env, accountId, viewer = null) {
+  const emp = await env.DB.prepare('SELECT account_id, name, elo, manager_id FROM employees WHERE account_id = ?').bind(accountId).first();
   if (!emp) return null;
   const { results } = await env.DB.prepare(
     `SELECT e.id, e.kind, e.seconds, e.share, e.expected, e.score, e.k, e.weight, e.delta, e.elo_before, e.elo_after,
-            e.reverses_id, e.reversed_at, e.note, e.created_at,
+            e.reverses_id, e.reversed_at, e.note, e.created_at, e.modifier_factor,
             m.issue_key, m.epic_key, m.summary, m.discipline, m.done_date, m.job_elo, m.estimate_seconds, m.actual_seconds
        FROM elo_events e LEFT JOIN elo_matches m ON m.category_id = e.category_id
       WHERE e.account_id = ? ORDER BY e.id`
   ).bind(accountId).all();
   const peak = (await peakElos(env)).get(accountId) ?? null;
+  // Only the person, their supervisor and admins see that a modifier applied.
+  const seesModifiers = !viewer || viewer.isAdmin || viewer.accountId === accountId || viewer.accountId === emp.manager_id;
+  if (!seesModifiers) for (const e of results) e.modifier_factor = null;
   return {
     elo: emp.elo,
     start: results[0]?.elo_before ?? emp.elo ?? DEFAULT_ELO,

@@ -25,6 +25,8 @@ src/               The Worker (API and background sync)
   sync.js          Tempo polling, XP ledger, profile refresh
   progression.js   XP rate, level, title and rank rules
   elo.js           The ELO engine: rating finished jobs, weekly freeze, history
+  disputes.js      Open jobs, difficulty disputes, estimate alerts
+  modifiers.js     Supervisor-approved modifiers
   reports.js       Team and engineer reports, leaderboard, CSV export
   jobs.js          Finished job tracking and quoting data
   logging.js       Finding a job and writing worklogs to Tempo
@@ -44,6 +46,7 @@ schema-007.sql     8x8 call mapping and handled calls
 schema-008.sql     Obsolescence library and surveys
 schema-009 to 012  Employee details for the company chart
 schema-013.sql     The ELO engine and its history
+schema-014.sql     Disputes, estimate alerts and modifiers
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```
@@ -68,3 +71,5 @@ Each finished category is a match between the job and the people who logged time
 - **Zero-sum:** whatever the people gain, the job's learned ELO loses, so ratings don't drift upwards over time.
 - **Rank** shows the best reached in the last three months.
 - **History** is kept for every change, and admins can undo one.
+- **Disputes:** an engineer can say a job is harder than quoted. Once a team lead agrees, the agreed difficulty and estimate replace the quoted ones for XP and ELO, XP already earned on it is recalculated, and the quoted values are kept for quoting.
+- **Modifiers:** while one agreed by the person's supervisor applies, time logged counts for less in both directions (Unwell 25%, Covering for absence, Learning on the job and Personal circumstances 50%, Supporting apprentices and Training someone 60%, Heavy workload 75%).

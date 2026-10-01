@@ -177,7 +177,7 @@ The **Quoting** tab on the Reports page compares finished customer work with wha
 - **By customer** and **by team**, showing where work routinely runs over or under.
 - The recently finished list, and a CSV of everything recorded.
 
-Every hour the hub records customer orders that have reached a Done status, along with their Category items and stages. Stage time rolls up into its category, since that's the level each is estimated at. Legacy epics with no Category items are still recorded but marked, so they don't distort the bands.
+Every hour the hub records customer orders that have reached a Done status, along with their Category items and stages. Category items are also recorded as soon as they are done themselves, without waiting for the order to close, and the latest move into Done counts as the finish date. Stage time rolls up into its category, since that's the level each is estimated at. Legacy epics with no Category items are still recorded but marked, so they don't distort the bands.
 
 Items are rated **good** when they have an estimate, a story point band and believable hours; anything else is excluded from the medians unless you tick "Include patchy data". None of this changes XP or ELO.
 
@@ -348,6 +348,23 @@ Each finished category is a match between the job and the people who logged time
 1. Make sure employees are kept in the hub (Admin, Employees). The engine won't start while they're read from Jira, because a refresh would overwrite the ratings.
 2. Under **Admin, ELO engine**, choose the date to rate finished jobs from and select **Start the ELO engine**. Today rates only work finished from now on; an earlier date replays jobs already recorded, oldest first.
 3. Once it's running, switch off the Jira automations that update ELO on the DNM Employee issues.
+
+## Part 20: Jobs, disputes and modifiers
+
+**Jobs tile.** Every open order in the customer projects, with each category's job ELO and its time logged against the estimate. Mine shows categories you've logged time on in the last six months; My team and All show the rest.
+
+**Disputes.** Anyone can dispute a category's difficulty: their own scores for the four areas, an optional better estimate, what changed, and a comment. It goes to the team leads for the order's Promtek Team (Service or Projecting; any lead if it has none), who agree, adjust or decline it in Jobs. Nobody decides their own.
+
+Once agreed:
+- the agreed ELO and estimate are used for XP and by the ELO engine, and the XP already earned on that category and its stages is recalculated;
+- the quoted scores, ELO and estimate are kept alongside, for quoting;
+- the agreed ELO is written to the category in Jira with a comment. If Jira can't be reached, the hub carries on with the agreed values, tells the lead, and retries every hour.
+
+**Estimate alerts.** Every hour, open Service and Projecting categories are checked against their estimate. Team leads are emailed once at 90% and once when it passes. The first run only records where things stand, so nobody is sent alerts for jobs already over. An agreed dispute starts the alerts again against the new estimate.
+
+**Modifiers.** From XP & rank, anyone can ask for something to be taken into account: Supporting apprentices, Training someone, Covering for absence, Learning on the job, Heavy workload, Unwell or Personal circumstances. No details are recorded. Their supervisor (the manager on the company chart) is emailed, without saying what it is, and agrees or declines it in Jobs. Only the person, their supervisor and admins can see it. While it applies, time logged counts for less towards ELO in both directions.
+
+Alert emails go to each lead or supervisor's own email address through the mail relay, falling back to `ALERT_EMAIL` when there's nobody to send them to.
 
 ## Adding more apps later
 

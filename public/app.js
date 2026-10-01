@@ -186,6 +186,8 @@ const pages = {
         </dl>
         <h2>ELO history</h2>
         <div id="elo-history"><div class="card"><p class="muted">Loading your ELO history…</p></div></div>
+        <h2>Taken into account</h2>
+        <div id="modifiers"><div class="card"><p class="muted">Loading…</p></div></div>
         <h2>Leaderboard</h2>
         <div id="leaderboard" class="card"><p class="muted">Loading the leaderboard…</p></div>
         <h2>Where your XP came from</h2>
@@ -318,6 +320,15 @@ const pages = {
     async render() {
       if (!me.linked) return notLinkedCard();
       return callsRender();
+    },
+  },
+
+  '#/jobs': {
+    band: () => `<h1>Jobs</h1><p>Open orders, how hard each part is and how its time is going.</p>`,
+    async render() {
+      if (jobsView?.kind === 'dispute') return jobsDisputeHtml();
+      if (jobsView?.kind === 'decide') return jobsDecideHtml();
+      return jobsHomeHtml();
     },
   },
 
@@ -988,13 +999,14 @@ function settingsReportsHtml() {
   const state = settingsData.overview.state || {};
   return `<div class="card">
       <h2 style="margin-top:0">Completed job tracking</h2>
-      <p style="margin-top:0">Finished customer work is recorded for quoting. It never changes anyone's XP or ELO.</p>
+      <p style="margin-top:0">Finished customer work is recorded for quoting. Each category is recorded as soon as it is done, and that is what the ELO engine rates.</p>
       <dl class="state">
         <dt>Items recorded</dt><dd>${n(jobs.rows || 0)} (${n(jobs.epics || 0)} orders, ${n(jobs.categories || 0)} categories, ${n(jobs.stages || 0)} stages)</dd>
         <dt>Covering</dt><dd>${jobs.earliest ? `${esc(jobs.earliest)} to ${esc(jobs.latest)}` : 'Nothing yet'}</dd>
         <dt>Backfill</dt><dd>${!jobs.until ? 'Not started'
           : jobs.done ? `Finished, back to ${esc(jobs.until)}`
           : `Working backwards, reached ${esc(jobs.before)} of ${esc(jobs.until)}`}</dd>
+        <dt>Finished categories</dt><dd>${jobs.categoryCursor ? `Checked up to ${esc(jobs.categoryCursor.replace(/\//g, '-'))}` : 'Not checked yet'}</dd>
       </dl>
       <div class="row">
         <button class="btn secondary" data-action="scan-jobs">Scan finished jobs now</button>
@@ -2577,7 +2589,7 @@ function teamReportHtml(data) {
     </table></div>`;
 }
 
-const DISCIPLINE_NAMES = { software: 'Software', hardware: 'Hardware', engineering: 'Engineering', condor: 'Condor' };
+const DISCIPLINE_NAMES = { software: 'Software', hardware: 'Hardware', engineering: 'Site visit', condor: 'Condor' };
 
 function quotingHtml(data) {
   const ratioCell = (ratio) => {
@@ -2869,7 +2881,7 @@ function eloEventItem(e, { canUndo, self }) {
   }
   const how = e.actual_seconds <= e.estimate_seconds ? 'inside' : 'over';
   const detail = `Finished ${shortDate(e.done_date)}. ${hoursText1(e.actual_seconds)} against ${hoursText1(e.estimate_seconds)} estimated, ${how} by ${hoursText1(Math.abs(e.estimate_seconds - e.actual_seconds))}.
-    ${self ? 'Your' : 'Their'} share ${Math.round(e.share * 100)}% (${hoursText1(e.seconds)}). Job ELO ${n(Math.round(e.job_elo))}.`;
+    ${self ? 'Your' : 'Their'} share ${Math.round(e.share * 100)}% (${hoursText1(e.seconds)}). Job ELO ${n(Math.round(e.job_elo))}.${e.modifier_factor != null ? ` Counted at ${Math.round(e.modifier_factor * 100)}% while something was taken into account.` : ''}`;
   const undo = canUndo && !e.reversed_at
     ? ` <button class="linklike" data-elo-undo="${e.id}">Undo</button>` : '';
   return `<li${e.reversed_at ? ' class="undone"' : ''}><span class="title">${issue}${esc(jobName(e.summary) || 'Finished job')}</span>${change}
@@ -2905,6 +2917,262 @@ async function loadEloHistory(accountId = null) {
   } catch (err) {
     host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`;
   }
+}
+
+// ---------- Jobs: difficulty, estimates, disputes ----------
+
+let jobsScope = 'mine';
+let jobsView = null;        // null, { kind: 'dispute', id } or { kind: 'decide', id }
+let jobsDraft = null;       // the dispute or decision being filled in
+const SCORE_LABELS = [['tech', 'Technical complexity'], ['scope', 'Scope and size'], ['risk', 'Uncertainty and risk'], ['dep', 'Dependencies and coordination']];
+const SCORE_WEIGHTS = { tech: 0.4, scope: 0.3, risk: 0.2, dep: 0.1 };
+const eloFromScores = (s) => 750 + 250 * SCORE_LABELS.reduce((a, [k]) => a + (Number(s[k]) || 0) * SCORE_WEIGHTS[k], 0);
+const hoursShort = (seconds) => (seconds == null ? '—' : `${n(Math.round(seconds / 360) / 10)}h`);
+
+function scoreRow(key, label, value, { quoted, name = 'jobs-score' } = {}) {
+  return `<div class="score-row"><span class="score-label">${label}${quoted != null ? `<small>Quoted ${n(quoted)}</small>` : ''}</span>
+    <span class="segment">${[1, 2, 3, 4, 5].map((v) =>
+      `<button class="seg${Number(value) === v ? ' on' : ''}" data-${name}="${key}" data-value="${v}">${v}</button>`).join('')}</span></div>`;
+}
+
+function jobsCategoryRow(c) {
+  const pct = c.pct ?? 0;
+  const state = pct >= 1 ? ' over' : pct >= 0.9 ? ' near' : '';
+  const label = DISCIPLINE_NAMES[c.discipline] || '';
+  const extra = jobName(c.summary);
+  const name = `${label}${extra && extra.toLowerCase() !== label.toLowerCase() ? `, ${esc(extra)}` : ''}`;
+  const notes = [
+    c.pendingDispute ? (c.pendingIsMine ? 'Your dispute is with the team lead' : 'A dispute is with the team lead') : '',
+    c.disputed ? `Agreed after a dispute, quoted ${n(Math.round(c.quotedElo || 0))}` : '',
+  ].filter(Boolean).join('. ');
+  const prompt = c.mine && !c.done && !c.pendingDispute && pct >= 0.9
+    ? `<p class="job-prompt">${pct >= 1 ? 'This has passed its estimate.' : 'This is close to its estimate.'} Does the difficulty still look right?</p>` : '';
+  const action = !c.done && !c.pendingDispute
+    ? `<button class="chip-btn" data-jobs-dispute="${esc(c.id)}">Dispute</button>` : '';
+  return `<li class="job-cat${state}">
+    <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${name}</span>
+      <span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span></div>
+    <div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>
+    <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.done ? '. Done' : ''}${notes ? `. ${notes}` : ''}</span>${action}</div>
+    ${prompt}
+  </li>`;
+}
+
+function approvalsHtml(a) {
+  const disputes = a.disputes.map((d) => `<li>
+      <span class="title">${esc(d.raised_by || 'Someone')} disputes <a href="${esc(me.jiraBaseUrl)}/browse/${esc(d.category_key)}" target="_blank" rel="noopener">${esc(d.category_key)}</a></span>
+      <span class="sub">${esc(d.order_summary || '')}, ${esc(DISCIPLINE_NAMES[d.discipline] || '')}. Job ELO ${n(Math.round(d.before_elo || 0))} to ${n(Math.round(d.proposed_elo))}${d.proposed_estimate_seconds ? `, estimate ${hoursShort(d.before_estimate_seconds)} to ${hoursShort(d.proposed_estimate_seconds)}` : ''}.</span>
+      <button class="btn secondary" data-jobs-decide="${d.id}" style="margin-top:.6rem">Review</button></li>`).join('');
+  const mods = a.modifiers.map((m) => `<li>
+      <span class="title">${esc(m.name || 'Someone')}: ${esc(m.kind)}</span>
+      <span class="sub">From ${shortDate(m.start_date)}${m.end_date ? ` to ${shortDate(m.end_date)}` : ', until it ends'}. Jobs count for less towards their ELO while it applies. A good moment to check in and see whether they need any support.</span>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-mod-decide="${m.id}" data-decision="approve">Approve</button>
+      <button class="btn secondary" data-mod-decide="${m.id}" data-decision="decline">Decline</button></div></li>`).join('');
+  if (!disputes && !mods) return '';
+  return `<h2>Waiting for you</h2><ul class="list approvals">${disputes}${mods}</ul>`;
+}
+
+function supervisedHtml(list) {
+  if (!list.length) return '';
+  return `<h2>Taken into account for your team</h2><ul class="list supervised">${list.map((m) => `<li>
+    <span class="title">${esc(m.name)}: ${esc(m.kind)}</span>
+    <span class="sub">Since ${shortDate(m.start_date)}${m.end_date ? `, until ${shortDate(m.end_date)}` : ''}. <button class="linklike" data-mod-end="${m.id}">End it</button></span></li>`).join('')}</ul>`;
+}
+
+async function jobsHomeHtml() {
+  const [data, approvals] = await Promise.all([api(`/api/jobs?scope=${jobsScope}`), api('/api/approvals')]);
+  const scopes = [['mine', 'Mine'], ['team', 'My team'], ['all', 'All']];
+  const orders = data.orders.map((o) => `<div class="card job-order" data-job-order>
+      <p class="job-order-head"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
+        <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}</span></p>
+      <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul></div>`).join('');
+  const empty = jobsScope === 'mine'
+    ? '<div class="card"><p style="margin:0">Nothing open that you have logged time on in the last six months. My team and All show everything else.</p></div>'
+    : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
+  return `${approvalsHtml(approvals)}
+    ${supervisedHtml(approvals.supervised)}
+    <h2>Open jobs</h2>
+    <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) =>
+      `<button class="seg${jobsScope === k ? ' on' : ''}" data-jobs-scope="${k}">${l}</button>`).join('')}</span>
+      <input type="search" id="jobs-search" placeholder="Search orders, customers or keys" aria-label="Search jobs"></div>
+    <p class="help">Each category shows its job ELO and the time logged against its estimate. If a job has turned out harder than quoted, dispute it and your team lead will take a look.</p>
+    ${orders || empty}`;
+}
+
+async function jobsDisputeHtml() {
+  const c = await api(`/api/jobs/category?id=${encodeURIComponent(jobsView.id)}`);
+  if (!jobsDraft || jobsDraft.id !== c.id) {
+    jobsDraft = { id: c.id, scores: Object.fromEntries(SCORE_LABELS.map(([k]) => [k, c.current[k]])), estimateHours: '', reasons: [], comment: '' };
+  }
+  const elo = eloFromScores(jobsDraft.scores);
+  const reasons = c.reasons.map((r) =>
+    `<button class="chip${jobsDraft.reasons.includes(r) ? ' on' : ''}" data-jobs-reason="${esc(r)}">${esc(r)}</button>`).join('');
+  const past = c.history.length ? `<h2>Earlier disputes</h2><ul class="list">${c.history.map((d) => `<li>
+      <span class="title">${esc(d.raised_by || 'Someone')}, ${shortDate(d.created_at.slice(0, 10))}</span>
+      <span class="sub">${{ pending: 'With the team lead', approved: `Agreed at ${n(Math.round(d.approved_elo))}`, declined: 'Not agreed', withdrawn: 'Withdrawn' }[d.status]}${d.decision_note ? `. ${esc(d.decision_note)}` : ''}</span></li>`).join('')}</ul>` : '';
+  return `<div class="card">
+      <p style="margin-top:0"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(DISCIPLINE_NAMES[c.discipline] || '')}</strong><br>
+        <span class="muted">${esc(c.epicKey)} ${esc(c.orderSummary)}, ${esc(c.customer || '')}</span></p>
+      <p class="muted">${hoursShort(c.loggedSeconds)} logged of ${hoursShort(c.current.estimateSeconds)} estimated.</p>
+      <h3>How hard is it really?</h3>
+      ${SCORE_LABELS.map(([k, l]) => scoreRow(k, l, jobsDraft.scores[k], { quoted: c.quoted[k] })).join('')}
+      <p class="elo-change">Job ELO <strong>${n(Math.round(c.current.elo || 0))}</strong> to <strong>${n(Math.round(elo))}</strong></p>
+      <label>A better estimate, in hours <span class="muted">(optional)</span>
+        <input type="number" min="0" step="0.5" inputmode="decimal" data-jobs-field="estimateHours" value="${esc(jobsDraft.estimateHours)}" placeholder="${Math.round((c.current.estimateSeconds || 0) / 360) / 10}"></label>
+      <h3>What changed?</h3>
+      <div class="chips">${reasons}</div>
+      <label style="margin-top:1rem">In your words
+        <textarea rows="4" data-jobs-field="comment" placeholder="What made it harder than it looked when it was quoted?">${esc(jobsDraft.comment)}</textarea></label>
+      <p class="help">Your team lead sees this and can agree, adjust or decline it. The quoted difficulty is kept too, so future quotes can learn from it.</p>
+      <div class="row"><button class="btn" data-jobs-send="1">Send to the team lead</button>
+        <button class="btn secondary" data-jobs-back="1">Back to jobs</button></div>
+      <div class="result" id="jobs-result" role="status"></div>
+    </div>${past}`;
+}
+
+
+async function jobsDecideHtml() {
+  const approvals = await api('/api/approvals');
+  const d = approvals.disputes.find((x) => String(x.id) === String(jobsView.id));
+  if (!d) { jobsView = null; return jobsHomeHtml(); }
+  if (!jobsDraft || jobsDraft.decide !== d.id) {
+    jobsDraft = { decide: d.id, scores: { tech: d.proposed_tech, scope: d.proposed_scope, risk: d.proposed_risk, dep: d.proposed_dep },
+      estimateHours: d.proposed_estimate_seconds ? String(Math.round(d.proposed_estimate_seconds / 360) / 10) : '', note: '' };
+  }
+  const elo = eloFromScores(jobsDraft.scores);
+  const compare = SCORE_LABELS.map(([k, l]) => `<tr><td>${l}</td><td class="num">${n(d[`quoted_${k}`])}</td><td class="num">${n(d[`proposed_${k}`])}</td></tr>`).join('');
+  return `<div class="card">
+      <p style="margin-top:0"><strong>${esc(d.raised_by || 'Someone')} disputes <a href="${esc(me.jiraBaseUrl)}/browse/${esc(d.category_key)}" target="_blank" rel="noopener">${esc(d.category_key)}</a></strong><br>
+        <span class="muted">${esc(d.epic_key)} ${esc(d.order_summary || '')}, ${esc(DISCIPLINE_NAMES[d.discipline] || '')}. ${hoursShort(d.logged_seconds)} logged of ${hoursShort(d.before_estimate_seconds)} when raised.</span></p>
+      ${d.reasons.length ? `<div class="chips">${d.reasons.map((r) => `<span class="chip on">${esc(r)}</span>`).join('')}</div>` : ''}
+      <blockquote class="dispute-words">${esc(d.comment)}</blockquote>
+      <div class="table-wrap"><table><thead><tr><th>Area</th><th class="num">Quoted</th><th class="num">Suggested</th></tr></thead><tbody>${compare}</tbody></table></div>
+      <h3>Agreed difficulty</h3>
+      ${SCORE_LABELS.map(([k, l]) => scoreRow(k, l, jobsDraft.scores[k], { name: 'jobs-score' })).join('')}
+      <p class="elo-change">Job ELO <strong>${n(Math.round(d.before_elo || 0))}</strong> to <strong>${n(Math.round(elo))}</strong></p>
+      <label>Agreed estimate, in hours
+        <input type="number" min="0" step="0.5" inputmode="decimal" data-jobs-field="estimateHours" value="${esc(jobsDraft.estimateHours)}" placeholder="${Math.round((d.before_estimate_seconds || 0) / 360) / 10}"></label>
+      <label style="margin-top:1rem">Note for ${esc((d.raised_by || 'them').split(' ')[0])} <span class="muted">(optional)</span>
+        <textarea rows="3" data-jobs-field="note">${esc(jobsDraft.note)}</textarea></label>
+      <p class="help">Agreeing it recalculates the XP already earned on this category at the new ELO, and the ELO engine judges it against the agreed difficulty and estimate. Jira is updated to match.</p>
+      <div class="row"><button class="btn" data-jobs-verdict="approve">Agree</button>
+        <button class="btn secondary" data-jobs-verdict="decline">Decline</button>
+        <button class="btn secondary" data-jobs-back="1">Back to jobs</button></div>
+      <div class="result" id="jobs-result" role="status"></div></div>`;
+}
+
+async function jobsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-jobs-scope]')) { jobsScope = t('[data-jobs-scope]').dataset.jobsScope; return render(); }
+  if (t('[data-jobs-dispute]')) { jobsView = { kind: 'dispute', id: t('[data-jobs-dispute]').dataset.jobsDispute }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-jobs-decide]')) { jobsView = { kind: 'decide', id: t('[data-jobs-decide]').dataset.jobsDecide }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-jobs-back]')) { jobsView = null; jobsDraft = null; return render(); }
+  const seg = t('[data-jobs-score]');
+  if (seg && jobsDraft) {
+    jobsDraft.scores[seg.dataset.jobsScore] = Number(seg.dataset.value);
+    seg.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === seg));
+    const strong = view.querySelectorAll('.elo-change strong');
+    if (strong[1]) strong[1].textContent = n(Math.round(eloFromScores(jobsDraft.scores)));
+    return true;
+  }
+  const reason = t('[data-jobs-reason]');
+  if (reason && jobsDraft) {
+    const r = reason.dataset.jobsReason;
+    jobsDraft.reasons = jobsDraft.reasons.includes(r) ? jobsDraft.reasons.filter((x) => x !== r) : [...jobsDraft.reasons, r];
+    reason.classList.toggle('on');
+    return true;
+  }
+  const send = t('[data-jobs-send]');
+  if (send && jobsDraft) {
+    send.disabled = true;
+    try {
+      await api('/api/jobs/dispute', { method: 'POST', body: JSON.stringify({ categoryId: jobsDraft.id, scores: jobsDraft.scores,
+        estimateHours: jobsDraft.estimateHours, reasons: jobsDraft.reasons, comment: jobsDraft.comment }) });
+      jobsView = null; jobsDraft = null; toast('Sent to your team lead');
+      return render();
+    } catch (err) { document.getElementById('jobs-result').textContent = err.message; send.disabled = false; }
+    return true;
+  }
+  const verdict = t('[data-jobs-verdict]');
+  if (verdict && jobsDraft) {
+    verdict.disabled = true;
+    try {
+      const r = await api('/api/jobs/dispute-decide', { method: 'POST', body: JSON.stringify({ id: jobsDraft.decide, decision: verdict.dataset.jobsVerdict,
+        scores: jobsDraft.scores, estimateHours: jobsDraft.estimateHours, note: jobsDraft.note }) });
+      jobsView = null; jobsDraft = null;
+      toast(r.status === 'approved' ? (r.jiraSynced ? 'Agreed' : 'Agreed. Jira will catch up shortly') : 'Declined');
+      return render();
+    } catch (err) { document.getElementById('jobs-result').textContent = err.message; verdict.disabled = false; }
+    return true;
+  }
+  const modDecide = t('[data-mod-decide]');
+  if (modDecide) {
+    modDecide.disabled = true;
+    try { await api('/api/modifiers/decide', { method: 'POST', body: JSON.stringify({ id: modDecide.dataset.modDecide, decision: modDecide.dataset.decision }) }); toast(modDecide.dataset.decision === 'approve' ? 'Approved' : 'Declined'); }
+    catch (err) { toast(err.message); }
+    return render();
+  }
+  const modEnd = t('[data-mod-end]');
+  if (modEnd) {
+    if (!confirm('End this now? Jobs count fully again from tomorrow.')) return true;
+    try { await api('/api/modifiers/end', { method: 'POST', body: JSON.stringify({ id: modEnd.dataset.modEnd }) }); toast('Ended'); }
+    catch (err) { toast(err.message); }
+    return render();
+  }
+  return false;
+}
+
+// ---------- Modifiers on the XP page ----------
+
+let modDraft = null;
+async function modifiersHtml() {
+  const data = await api('/api/modifiers');
+  const current = data.modifiers.filter((m) => ['pending', 'approved'].includes(m.status) && (!m.end_date || m.end_date >= todayIso()));
+  const status = { pending: 'Waiting for your supervisor', approved: 'Agreed', declined: 'Not agreed', withdrawn: 'Withdrawn' };
+  const list = current.length ? `<ul class="list">${current.map((m) => `<li><span class="title">${esc(m.kind)}</span>
+      <span class="sub">${status[m.status]}. From ${shortDate(m.start_date)}${m.end_date ? ` to ${shortDate(m.end_date)}` : ', until you end it'}. <button class="linklike" data-mod-end="${m.id}">${m.status === 'pending' ? 'Withdraw' : 'End it'}</button></span></li>`).join('')}</ul>` : '';
+  const form = modDraft ? `<div class="card" style="margin-top:1rem">
+      <div class="chips">${data.kinds.map((k) => `<button class="chip${modDraft.kind === k ? ' on' : ''}" data-mod-kind="${esc(k)}">${esc(k)}</button>`).join('')}</div>
+      <div class="row" style="margin-top:1rem">
+        <label>From <input type="date" data-mod-field="from" value="${esc(modDraft.from)}"></label>
+        <label>Until <span class="muted">(optional)</span> <input type="date" data-mod-field="until" value="${esc(modDraft.until)}"></label></div>
+      <p class="help">No details are needed. ${data.supervisor ? esc(data.supervisor) : 'Your supervisor'} is asked to agree it and may check in to see whether there is anything that would help.</p>
+      <div class="row"><button class="btn" data-mod-send="1">Ask</button><button class="btn secondary" data-mod-cancel="1">Cancel</button></div>
+      <div class="result" id="mod-result" role="status"></div></div>`
+    : '<button class="btn secondary" data-mod-new="1" style="margin-top:.85rem">Ask for something to be taken into account</button>';
+  return `<div class="card"><p style="margin:0">If something is making work harder for a while, such as being unwell, a heavy workload or bringing on an apprentice, your supervisor can agree for your jobs to count for less towards ELO while it applies.</p></div>
+    ${list}${form}`;
+}
+
+async function loadModifiers() {
+  const host = document.getElementById('modifiers');
+  if (!host) return;
+  try { host.innerHTML = await modifiersHtml(); } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; }
+}
+
+async function modifiersClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-mod-new]')) { modDraft = { kind: null, from: todayIso(), until: '' }; return loadModifiers(); }
+  if (t('[data-mod-cancel]')) { modDraft = null; return loadModifiers(); }
+  const kind = t('[data-mod-kind]');
+  if (kind && modDraft) { modDraft.kind = kind.dataset.modKind; return loadModifiers(); }
+  const send = t('[data-mod-send]');
+  if (send && modDraft) {
+    send.disabled = true;
+    try {
+      await api('/api/modifiers/request', { method: 'POST', body: JSON.stringify(modDraft) });
+      modDraft = null; toast('Sent to your supervisor');
+      return loadModifiers();
+    } catch (err) { document.getElementById('mod-result').textContent = err.message; send.disabled = false; }
+    return true;
+  }
+  const end = t('#modifiers [data-mod-end]');
+  if (end) {
+    if (!confirm('End this now?')) return true;
+    try { await api('/api/modifiers/end', { method: 'POST', body: JSON.stringify({ id: end.dataset.modEnd }) }); } catch (err) { toast(err.message); }
+    return loadModifiers();
+  }
+  return false;
 }
 
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -3144,7 +3412,7 @@ async function adminAction(action, button) {
       out(target, r.skipped ? r.skipped : `Recorded ${r.engineers} engineers for the week of ${r.week}.`);
     } else if (action === 'scan-jobs') {
       const r = await api('/api/admin/scan-jobs', { method: 'POST', body: JSON.stringify({}) });
-      out(target, `Recorded ${r.epics} finished orders and ${r.rows} items.`);
+      out(target, `Recorded ${r.epics} finished orders, ${r.categories} finished categories and ${r.rows} items.`);
     } else if (action === 'backfill-start') {
       const months = document.getElementById('backfill-months').value;
       const r = await api('/api/admin/backfill-start', { method: 'POST', body: JSON.stringify({ months }) });
@@ -3467,6 +3735,8 @@ view.addEventListener('click', async (event) => {
   if (periodBtn) { leaderPeriod = periodBtn.dataset.period; leaderExpanded = false; return loadLeaderboard(); }
   const leaderBtn = event.target.closest('button[data-leader]');
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
+  if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  if (currentRoute() === '#/xp' && event.target.closest('#modifiers') && await modifiersClick(event) !== false) return;
   if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
   const eloUndo = event.target.closest('button[data-elo-undo]');
   if (eloUndo) {
@@ -3510,6 +3780,7 @@ const spinner = (label = 'Loading') => `<div class="card loading-card"><span cla
 
 // Some pages know what they are waiting for.
 const WAITING_FOR = {
+  '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
 };
@@ -3564,8 +3835,9 @@ async function render() {
     const html = settingsOpen === route ? await renderSettings(route) : await page.render();
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
-      if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); }
+      if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
+      if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
     }
   } catch (err) {
     if (token === renderToken) {
@@ -3580,6 +3852,13 @@ async function render() {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (event.target.dataset?.jobsField && jobsDraft) { jobsDraft[event.target.dataset.jobsField] = event.target.value; return; }
+  if (event.target.dataset?.modField && modDraft) { modDraft[event.target.dataset.modField] = event.target.value; return; }
+  if (event.target.id === 'jobs-search') {
+    const query = event.target.value.toLowerCase();
+    document.querySelectorAll('[data-job-order]').forEach((el) => { el.hidden = query.length > 1 && !el.textContent.toLowerCase().includes(query); });
+    return;
+  }
   if (event.target.dataset?.obsField !== undefined && obsSurvey) {
     setPath(obsSurvey, event.target.dataset.obsField, event.target.value);
     clearTimeout(searchTimer);
