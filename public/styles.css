@@ -322,3 +322,8 @@ a.chip-btn { text-decoration: none; display: inline-flex; align-items: center; }
 .cog:hover { background: rgba(255,255,255,.24); }
 .cog svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .band { position: relative; }
+
+/* Company chart */
+.org-scroll { margin-top: 1rem; overflow-x: auto; background: #fff; border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: .5rem; }
+.org-scroll svg { display: block; max-width: none; }

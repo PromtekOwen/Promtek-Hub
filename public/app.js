@@ -278,6 +278,14 @@ const pages = {
     },
   },
 
+  '#/org': {
+    band: () => `<h1>Company chart</h1><p>Who reports to whom, built from the employee list.</p>`,
+    async render() {
+      orgData = await api('/api/org');
+      return orgHtml(orgData);
+    },
+  },
+
   '#/obs': {
     band: () => `<h1>Obsolescence</h1><p>${obsConfig?.sales && obsView === 'sales' ? 'Surveys waiting to be read' : 'Site surveys and equipment condition'}</p>`,
     async render() {
@@ -476,6 +484,196 @@ async function tileControl(action, id) {
   return render();
 }
 
+// ---------- company chart ----------
+
+let orgData = null;
+
+const ORG = { boxW: 184, boxH: 58, gapX: 18, gapY: 44, stackY: 10, indent: 26, pad: 28 };
+
+// Laid out like the chart it replaces: the top two levels spread across the
+// page, and from there each team stacks vertically under its lead, which keeps
+// the whole thing a sensible width.
+function layout(nodes) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const children = new Map();
+  for (const node of nodes) {
+    const key = node.managerId && byId.has(node.managerId) ? node.managerId : '__root';
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(node);
+  }
+  for (const list of children.values()) list.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+
+  const kidsOf = (node) => children.get(node.id) || [];
+
+  // How much room a person and everyone under them needs.
+  const measure = (node, depth) => {
+    const kids = kidsOf(node);
+    if (!kids.length) return { width: ORG.boxW, height: ORG.boxH };
+
+    if (depth < 1) {
+      const blocks = kids.map((kid) => measure(kid, depth + 1));
+      const width = blocks.reduce((sum, b) => sum + b.width, 0) + ORG.gapX * (blocks.length - 1);
+      const height = ORG.boxH + ORG.gapY + Math.max(...blocks.map((b) => b.height));
+      return { width: Math.max(ORG.boxW, width), height, blocks };
+    }
+
+    const blocks = kids.map((kid) => measure(kid, depth + 1));
+    const width = ORG.indent + Math.max(...blocks.map((b) => b.width));
+    const height = ORG.boxH + ORG.gapY
+      + blocks.reduce((sum, b) => sum + b.height, 0) + ORG.stackY * (blocks.length - 1);
+    return { width: Math.max(ORG.boxW, width), height, blocks };
+  };
+
+  const placed = [];
+  const place = (node, depth, left, top, block) => {
+    const kids = kidsOf(node);
+    const x = depth < 1 && kids.length ? left + (block.width - ORG.boxW) / 2 : left;
+    placed.push({ ...node, x, y: top, depth, stacked: depth >= 1 && kids.length > 0 });
+    if (!kids.length) return;
+
+    if (depth < 1) {
+      let cursor = left;
+      kids.forEach((kid, i) => {
+        place(kid, depth + 1, cursor, top + ORG.boxH + ORG.gapY, block.blocks[i]);
+        cursor += block.blocks[i].width + ORG.gapX;
+      });
+      return;
+    }
+
+    let cursor = top + ORG.boxH + ORG.gapY;
+    kids.forEach((kid, i) => {
+      place(kid, depth + 1, left + ORG.indent, cursor, block.blocks[i]);
+      cursor += block.blocks[i].height + ORG.stackY;
+    });
+  };
+
+  const roots = children.get('__root') || [];
+  let cursor = ORG.pad;
+  let tallest = 0;
+  for (const root of roots) {
+    const block = measure(root, 0);
+    place(root, 0, cursor, ORG.pad + 16, block);
+    cursor += block.width + ORG.gapX * 2;
+    tallest = Math.max(tallest, block.height);
+  }
+
+  return {
+    placed,
+    width: cursor + ORG.pad,
+    height: ORG.pad * 2 + 16 + tallest,
+    children,
+  };
+}
+
+function orgSvg(data) {
+  const { placed, width, height, children } = layout(data.nodes);
+  const byId = new Map(placed.map((p) => [p.id, p]));
+
+  const stroke = 'fill="none" stroke="#c6d2db" stroke-width="1.5"';
+  const lines = placed.flatMap((node) => {
+    const kids = (children.get(node.id) || []).map((k) => byId.get(k.id)).filter(Boolean);
+    if (!kids.length) return [];
+
+    if (node.depth < 1) {
+      const from = node.y + ORG.boxH;
+      const mid = from + ORG.gapY / 2;
+      const cx = node.x + ORG.boxW / 2;
+      return [
+        `<path d="M${cx} ${from} V${mid}" ${stroke}/>`,
+        ...kids.map((kid) => `<path d="M${cx} ${mid} H${kid.x + ORG.boxW / 2} V${kid.y}" ${stroke}/>`),
+      ];
+    }
+
+    // A spine down the left of the team, with a short arm into each person.
+    const spineX = node.x + 14;
+    const last = kids[kids.length - 1];
+    return [
+      `<path d="M${spineX} ${node.y + ORG.boxH} V${last.y + ORG.boxH / 2}" ${stroke}/>`,
+      ...kids.map((kid) => `<path d="M${spineX} ${kid.y + ORG.boxH / 2} H${kid.x}" ${stroke}/>`),
+    ];
+  });
+
+  const boxes = placed.map((node) => {
+    const titleLines = wrapText(node.title || '', 26).slice(0, 2);
+    return `<g>
+      <rect x="${node.x}" y="${node.y}" width="${ORG.boxW}" height="${ORG.boxH}" rx="9" fill="${node.colour}"/>
+      <text x="${node.x + 12}" y="${node.y + 22}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#ffffff">${esc(node.name)}</text>
+      ${titleLines.map((line, i) => `<text x="${node.x + 12}" y="${node.y + 38 + i * 13}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#ffffff" opacity="0.9">${esc(line)}</text>`).join('')}
+    </g>`;
+  });
+
+  const legendY = height + 10;
+  const legend = data.departments.map((d, i) => `<g>
+      <rect x="${ORG.pad + i * 118}" y="${legendY}" width="11" height="11" rx="3" fill="${d.colour}"/>
+      <text x="${ORG.pad + i * 118 + 18}" y="${legendY + 10}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="11" fill="#5b7385">${esc(d.name)}</text>
+    </g>`).join('');
+
+  const total = height + 48;
+  return `<svg id="org-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${total}" width="${width}" height="${total}">
+      <rect width="${width}" height="${total}" fill="#ffffff"/>
+      <text x="${ORG.pad}" y="20" font-family="Titillium Web, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#0f2b3d">Promtek, ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }))}</text>
+      ${lines.join('')}
+      ${boxes.join('')}
+      ${legend}
+    </svg>`;
+}
+
+function wrapText(text, perLine) {
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = '';
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (candidate.length > perLine && line) { lines.push(line); line = word; } else { line = candidate; }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+function orgHtml(data) {
+  const missing = data.nodes.filter((n) => !n.title || !n.department).length;
+  return `
+    <div class="card">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <span class="muted">${n(data.nodes.length)} people on the chart${missing ? `, ${n(missing)} without a title or team` : ''}</span>
+        <button class="btn" data-org="download">Download as an image</button>
+      </div>
+    </div>
+    <div class="org-scroll">${orgSvg(data)}</div>`;
+}
+
+// The chart is drawn as SVG, so it can be turned straight into a PNG.
+async function orgDownload() {
+  const svg = document.getElementById('org-svg');
+  if (!svg) return;
+  const source = new XMLSerializer().serializeToString(svg);
+  const url = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(source)))}`;
+
+  const image = new Image();
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error('The chart could not be turned into an image.'));
+    image.src = url;
+  });
+
+  const scale = 2;                                       // readable when printed or pasted
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width * scale;
+  canvas.height = image.height * scale;
+  const context = canvas.getContext('2d');
+  context.fillStyle = '#ffffff';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  canvas.toBlob((blob) => {
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `Promtek company chart ${todayIso()}.png`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+  }, 'image/png');
+}
+
 // ---------- settings panels ----------
 
 async function renderSettings(route) {
@@ -486,8 +684,42 @@ async function renderSettings(route) {
   if (route === '#/vehicles') settingsData.vehicles = await api('/api/admin/vehicles').catch(() => ({ vehicles: [] }));
   if (route === '#/pow') settingsData.ra = await api('/api/admin/ra-library').catch(() => ({ items: [] }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
+  if (route === '#/org') settingsData.org = await api('/api/admin/org-options').catch(() => ({ people: [], departments: [] }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
+}
+
+function settingsOrgHtml() {
+  const { people = [], departments = [] } = settingsData.org || {};
+  const rows = people.map((p) => `<tr>
+      <td>${esc(p.name)}</td>
+      <td><input data-org-field="title" data-account="${esc(p.account_id)}" value="${esc(p.job_title || '')}" placeholder="Job title" autocomplete="off"></td>
+      <td><select data-org-field="department" data-account="${esc(p.account_id)}">
+        <option value="">Not set</option>
+        ${departments.map((d) => `<option value="${esc(d.name)}"${d.name === p.department ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
+      </select></td>
+      <td><select data-org-field="manager" data-account="${esc(p.account_id)}">
+        <option value="">Nobody, top of the chart</option>
+        ${people.filter((m) => m.account_id !== p.account_id).map((m) =>
+          `<option value="${esc(m.account_id)}"${m.account_id === p.manager_id ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}
+      </select></td>
+      <td><input class="tiny" data-org-field="order" data-account="${esc(p.account_id)}" type="number" value="${p.org_order ?? 50}"></td>
+    </tr>`).join('');
+
+  return `<div class="card">
+      <p style="margin-top:0">Titles and reporting lines come from here. The chart redraws itself whenever this changes,
+      and anyone added to the DNM project in Jira appears once their title and manager are set.</p>
+      <div class="row">
+        <button class="btn secondary" data-action="org-seed">Fill in blanks from the current chart</button>
+        <button class="btn secondary" data-action="org-seed-overwrite">Reset everyone to the current chart</button>
+      </div>
+      <div class="result" id="org-result" role="status"></div>
+    </div>
+    <div class="table-wrap" style="margin-top:1rem"><table>
+      <thead><tr><th>Person</th><th>Job title</th><th>Team</th><th>Reports to</th><th class="num">Order</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="5" class="muted">No engineers yet.</td></tr>'}</tbody>
+    </table></div>
+    <p class="muted">Order decides who sits left to right under the same manager. Lower numbers come first.</p>`;
 }
 
 function settingsPowHtml() {
@@ -2602,7 +2834,8 @@ async function adminAction(action, button) {
     'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
-    'test-8x8': 'eight8-result', 'lib-list': 'lib-result' }[action];
+    'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
+    'org-seed': 'org-result', 'org-seed-overwrite': 'org-result' }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
@@ -2649,6 +2882,13 @@ async function adminAction(action, button) {
         }),
       });
       out('vehicle-result', 'Saved.');
+    } else if (action === 'org-seed' || action === 'org-seed-overwrite') {
+      const r = await api('/api/admin/org-seed', {
+        method: 'POST',
+        body: JSON.stringify({ overwrite: action === 'org-seed-overwrite' }),
+      });
+      out('org-result', `${r.filled} filled in.${r.unmatched.length ? ` No match for: ${r.unmatched.join(', ')}` : ''}`);
+      settingsData.org = await api('/api/admin/org-options');
     } else if (action === 'lib-list') {
       const kind = document.getElementById('lib-kind').value;
       const entries = (settingsData.library[kind] || []).slice(0, 60);
@@ -2687,7 +2927,7 @@ async function adminAction(action, button) {
       });
       out(target, 'Linked.');
     }
-    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8', 'lib-list'].includes(action)) {
+    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8', 'lib-list', 'org-seed', 'org-seed-overwrite'].includes(action)) {
       setTimeout(render, 1200);
     }
   } catch (err) {
@@ -2783,6 +3023,12 @@ view.addEventListener('click', async (event) => {
     await api('/api/admin/library-remove', { method: 'POST', body: JSON.stringify({ id: libRemove.dataset.libRemove }) });
     toast('Entry removed');
     return render();
+  }
+
+  const orgBtn = event.target.closest('[data-org]');
+  if (orgBtn) {
+    try { await orgDownload(); } catch (err) { toast(err.message); }
+    return;
   }
 
   const obsBtn = event.target.closest('[data-obs]');
@@ -2944,12 +3190,21 @@ const WAITING_FOR = {
 // Settings live with the app they configure. The cog appears in the header of
 // any tile that has some, and only for admins.
 const TILE_SETTINGS = {
+  '#/org': {
+    band: () => `<h1>Company chart</h1><p>Who reports to whom, built from the employee list.</p>`,
+    async render() {
+      orgData = await api('/api/org');
+      return orgHtml(orgData);
+    },
+  },
+
   '#/obs': { label: 'Obsolescence settings', render: () => settingsObsHtml() },
   '#/pow': { label: 'Point of work settings', render: () => settingsPowHtml() },
   '#/vehicles': { label: 'Vehicle settings', render: () => settingsVehiclesHtml() },
   '#/calls': { label: '8x8 settings', render: () => settingsCallsHtml() },
   '#/it': { label: 'IT support settings', render: () => settingsItHtml() },
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
+  '#/org': { label: 'Chart settings', render: () => settingsOrgHtml() },
 };
 let settingsOpen = null;
 let settingsData = null;
@@ -3043,6 +3298,27 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (event.target.dataset?.orgField) {
+    const accountId = event.target.dataset.account;
+    const row = event.target.closest('tr');
+    const value = (field) => row.querySelector(`[data-org-field="${field}"]`)?.value ?? '';
+    try {
+      await api('/api/admin/org-person', {
+        method: 'POST',
+        body: JSON.stringify({
+          accountId,
+          jobTitle: value('title'),
+          department: value('department'),
+          managerId: value('manager') || null,
+          order: value('order'),
+        }),
+      });
+      toast('Saved');
+    } catch (err) {
+      toast(err.message);
+    }
+    return;
+  }
   if (event.target.dataset?.extension !== undefined) {
     await api('/api/admin/set-extension', {
       method: 'POST',

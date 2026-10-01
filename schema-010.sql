@@ -1,0 +1,4 @@
+ALTER TABLE employees ADD COLUMN job_title TEXT;
+ALTER TABLE employees ADD COLUMN manager_id TEXT;
+ALTER TABLE employees ADD COLUMN department TEXT;
+ALTER TABLE employees ADD COLUMN org_order INTEGER NOT NULL DEFAULT 50;

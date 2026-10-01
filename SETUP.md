@@ -127,6 +127,16 @@ Everything below is already in the app; this explains how to set it up.
 
 The **Admin** tile holds the things that span the whole hub: sync and the XP ledger, roles, the engineer list, alerts and account linking. Everything that belongs to one app lives behind a **cog** in that app's header, visible to admins only: the RA and SSOW list in Point of work, the fleet in Vehicles, the 8x8 connection and extensions in 8x8 calls, the request type mapping in IT support, the equipment library in Obsolescence, and job tracking and snapshots in Reports.
 
+### The company chart
+
+The **Company chart** tile draws the org chart from the employee list, so it follows along as people join, change role or leave. Everyone can see it; admins get a cog where job titles, teams and reporting lines are set, plus the order people sit in under the same manager.
+
+**Fill in blanks from the current chart** seeds everyone's title, team and manager from the chart as it stood in October 2026, matching on name, and reports anyone it couldn't match. It only fills in blanks unless the reset button is used.
+
+**Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
+
+Someone added to the DNM project in Jira appears on the chart once they have a title and a manager. Until then they sit on their own at the top, which makes them easy to spot.
+
 ### Roles
 
 There are three:

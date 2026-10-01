@@ -81,6 +81,13 @@ export const MODULES = [
     detail: () => 'Rewards for levels, demonstration only',
   },
   {
+    id: 'org',
+    name: 'Company chart',
+    route: '#/org',
+    icon: icon('<rect x="9" y="3" width="6" height="5" rx="1.5"/><rect x="3" y="15" width="6" height="5" rx="1.5"/><rect x="15" y="15" width="6" height="5" rx="1.5"/><path d="M12 8v4M6 15v-3h12v3"/>'),
+    detail: () => 'Who reports to whom, ready to download',
+  },
+  {
     id: 'reports',
     name: 'Reports',
     route: '#/reports',
