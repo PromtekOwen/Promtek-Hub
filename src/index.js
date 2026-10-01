@@ -6,6 +6,7 @@ import { progressFor } from './progression.js';
 import * as Elo from './elo.js';
 import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
+import * as Quotes from './quotes.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
@@ -181,6 +182,25 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
   }
 
+  if (pathname.startsWith('/api/quotes')) {
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/quotes') return json(await Quotes.list(env, user, { scope: url.searchParams.get('scope') || 'open' }));
+    if (method === 'GET' && pathname === '/api/quotes/get') return json(await Quotes.get(env, user, url.searchParams.get('id')));
+    if (method === 'GET' && pathname === '/api/quotes/people') return json({ people: await Quotes.people(env) });
+    if (method === 'GET' && pathname === '/api/quotes/customers') {
+      const { customerList } = await import('./calls.js');
+      return json(await customerList(env));
+    }
+    if (method === 'POST' && pathname === '/api/quotes/create') return json(await Quotes.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/section') return json(await Quotes.saveSection(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/status') return json(await Quotes.setStatus(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/ask') return json(await Quotes.ask(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/answer') return json(await Quotes.answer(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/use-answer') return json(await Quotes.useAnswer(env, user, body.requestId));
+    if (method === 'POST' && pathname === '/api/quotes/retry-jira') return json(await Quotes.retryJira(env, body.id));
+    if (method === 'POST' && pathname === '/api/quotes/check-counts') return json(await Quotes.checkCounts(env, user, body));
+  }
+
   if (pathname.startsWith('/api/jobs') || pathname.startsWith('/api/modifiers') || pathname === '/api/approvals') {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/jobs') return json(await Disputes.listActive(env, user, { scope: url.searchParams.get('scope') || 'mine' }));
@@ -189,9 +209,9 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/jobs/dispute-withdraw') return json(await Disputes.withdrawDispute(env, user, body.id));
     if (method === 'POST' && pathname === '/api/jobs/dispute-decide') return json(await Disputes.decideDispute(env, user, body));
     if (method === 'GET' && pathname === '/api/approvals') {
-      const [disputes, modifiers, supervised] = await Promise.all([
-        Disputes.pendingDisputes(env, user), Modifiers.pending(env, user), Modifiers.supervised(env, user)]);
-      return json({ disputes, modifiers, supervised });
+      const [disputes, modifiers, supervised, countChecks] = await Promise.all([
+        Disputes.pendingDisputes(env, user), Modifiers.pending(env, user), Modifiers.supervised(env, user), Quotes.pendingCountChecks(env, user)]);
+      return json({ disputes, modifiers, supervised, countChecks });
     }
     if (method === 'GET' && pathname === '/api/modifiers') return json(await Modifiers.mine(env, user));
     if (method === 'POST' && pathname === '/api/modifiers/request') return json(await Modifiers.request(env, user, body));
@@ -317,6 +337,8 @@ async function route(request, env, url, user) {
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
     if (method === 'GET' && pathname === '/api/admin/elo') return json(await Elo.status(env));
+    if (method === 'GET' && pathname === '/api/admin/quote-config') return json(await Quotes.config(env));
+    if (method === 'POST' && pathname === '/api/admin/quote-config') return json(await Quotes.saveConfig(env, body));
     if (method === 'POST' && pathname === '/api/admin/elo-start') return json(await Elo.startEngine(env, body.from));
     if (method === 'POST' && pathname === '/api/admin/elo-stop') return json(await Elo.stopEngine(env));
     if (method === 'POST' && pathname === '/api/admin/elo-step') return json(await Elo.rateStep(env));

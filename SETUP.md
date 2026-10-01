@@ -173,13 +173,13 @@ Every Monday morning the hub records a snapshot of everyone's XP, level, ELO and
 
 The **Quoting** tab on the Reports page compares finished customer work with what it was estimated to take:
 
-- **How long each story point band really takes**, per discipline. Where the median actual and the median estimate differ consistently, that band's sprint value is the number to change.
+- **How long jobs of each size really take**, per discipline, grouped by their estimate: up to a day, three days, a week, two weeks, a month, and longer. Where the median actual and the median estimate differ consistently, estimates of that size are running light or heavy.
 - **By customer** and **by team**, showing where work routinely runs over or under.
 - The recently finished list, and a CSV of everything recorded.
 
-Every hour the hub records customer orders that have reached a Done status, along with their Category items and stages. Category items are also recorded as soon as they are done themselves, without waiting for the order to close, and the latest move into Done counts as the finish date. Stage time rolls up into its category, since that's the level each is estimated at. Legacy epics with no Category items are still recorded but marked, so they don't distort the bands.
+Every hour the hub records customer orders that have reached a Done status, along with their Category items and stages. A category's estimate is its Original Estimate, with base sprints used only for older categories that have no Original Estimate. Category items are also recorded as soon as they are done themselves, without waiting for the order to close, and the latest move into Done counts as the finish date. Stage time rolls up into its category, since that's the level each is estimated at. Legacy epics with no Category items are still recorded but marked, so they don't distort the bands.
 
-Items are rated **good** when they have an estimate, a story point band and believable hours; anything else is excluded from the medians unless you tick "Include patchy data". None of this changes XP or ELO.
+Items are rated **good** when they have an estimate and believable hours; anything else is excluded from the medians unless you tick "Include patchy data". None of this changes XP or ELO.
 
 To build a starting set, open **Admin → Completed job tracking**, choose how far back to go and select **Start backfill**. It works backwards a batch at a time in the background, so it takes a while on a few years of history, and the Admin page shows how far it has reached.
 
@@ -365,6 +365,33 @@ Once agreed:
 **Modifiers.** From XP & rank, anyone can ask for something to be taken into account: Supporting apprentices, Training someone, Covering for absence, Learning on the job, Heavy workload, Unwell or Personal circumstances. No details are recorded. Their supervisor (the manager on the company chart) is emailed, without saying what it is, and agrees or declines it in Jobs. Only the person, their supervisor and admins can see it. While it applies, time logged counts for less towards ELO in both directions.
 
 Alert emails go to each lead or supervisor's own email address through the mail relay, falling back to `ALERT_EMAIL` when there's nobody to send them to.
+
+## Part 21: Quotes
+
+**Who uses it.** The sales team and team leads start and edit quotes. Anyone asked for an estimate can open that quote and give theirs; nobody else sees it.
+
+**Starting a quote** creates a Quote issue in the customer's Jira project, under their Quote List, assigned to whoever started it. Its key is the quote number in Quoter. If Jira can't be reached, the quote is kept in the hub and created in Jira on the next hourly run, or with Try again.
+
+**Each category** (Software, Hardware, Site visit, Condor) records:
+- counts and conditions for that kind of work, and for site visits the kind of visit;
+- whether it has been done before and how clear the spec is;
+- best, likely and worst hours;
+- technical complexity, uncertainty and risk, and dependencies, each 1 to 5;
+- the hours to quote.
+
+Alongside, the hub suggests hours from the three-point estimate, adjusted by how the most similar finished jobs ran against their estimates. It shows how the estimator's likely hours have compared with what happened, and job ELO from the three difficulty scores. Similar finished jobs are listed with their estimated and actual hours, and can be marked easier, the same or harder.
+
+**The learned estimate** starts for each kind of work once 15 quoted jobs of that kind have finished. It learns how the counts, conditions, novelty and spec relate to actual hours and to the job's learned difficulty, and shows its figures beside the others.
+
+**Asking an engineer** emails them and puts the request at the top of Quotes for them. Their answer is posted as a comment on the Jira quote. If the category is still empty it fills it in; otherwise sales can choose to use it.
+
+**When the quote becomes an order.** Every hour, the hub looks for orders whose Quote Number matches a quote. It then writes each category's job ELO and its hours (Original Estimate) to Jira, and the difficulty scores onto the order. Categories can arrive a little after the order, so it waits up to a week for them before saying any are missing. If Jira refuses, nothing is marked done, an alert is raised, and it tries again the next hour. Once linked, the quote is marked as won and can no longer change.
+
+**Were the counts right?** When a quoted category finishes, its team lead gets a card in Jobs with the quoted counts to confirm or correct. Corrected counts are what the learned estimate and the similar-jobs list use.
+
+**Settings.** Admins edit the counts, conditions and kinds of visit under the cog. Keep a count's short name the same once quotes use it, or its history stops matching.
+
+**Estimates.** A category's estimate is its Original Estimate. Base sprints and story points are no longer used; base sprints only fill in for older categories with no Original Estimate. Quoting groups jobs by the size of their estimate.
 
 ## Adding more apps later
 

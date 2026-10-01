@@ -77,9 +77,9 @@ export const teamOf = (issue) => {
 };
 
 // How much the row can be trusted for quoting.
-function confidenceOf({ estimate_seconds, actual_seconds, story_points }) {
+function confidenceOf({ estimate_seconds, actual_seconds }) {
   if (!actual_seconds) return 'poor';
-  if (!estimate_seconds || !story_points) return 'partial';
+  if (!estimate_seconds) return 'partial';
   const ratio = actual_seconds / estimate_seconds;
   if (ratio > 10 || ratio < 0.05) return 'partial';
   return 'good';
@@ -146,7 +146,9 @@ export function categoryRows({ epic, category, categoryStages, doneDate = null }
     story_points: num(f[map.points]),
     score_scope: scope, score_tech: tech, score_dep: dep, score_risk: risk, weighted_score: weighted,
     job_elo: num(cf.customfield_15378),
-    estimate_seconds: sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : num(cf.timeoriginalestimate),
+    // Original Estimate is the estimate; base sprints only fill in for older
+    // categories that never had one.
+    estimate_seconds: num(cf.timeoriginalestimate) || (sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : null),
     // Stage time rolls up here, which is how each category is estimated.
     actual_seconds: num(cf.aggregatetimespent) || num(cf.timespent) || 0,
     child_count: categoryStages.length,
@@ -374,6 +376,9 @@ const median = (values) => {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 };
 
+// Estimates grouped by working time: a day, three days, a week, two weeks, a month.
+const SIZE_BANDS = [['Up to a day', 7.5], ['Up to 3 days', 22.5], ['Up to a week', 37.5], ['Up to 2 weeks', 75], ['Up to a month', 150], ['Over a month', Infinity]];
+
 export async function quotingSummary(env, { discipline = null, minConfidence = 'good' } = {}) {
   const params = [];
   let filter = "kind = 'category' AND actual_seconds > 0";
@@ -386,12 +391,13 @@ export async function quotingSummary(env, { discipline = null, minConfidence = '
        FROM completed_jobs WHERE ${filter} ORDER BY done_date DESC`
   ).bind(...params).all();
 
-  // Median actual hours per discipline and story point band.
+  // Median actual hours per discipline and size of estimate.
   const bands = new Map();
   for (const r of results) {
-    if (!r.discipline || r.story_points == null) continue;
-    const key = `${r.discipline}|${r.story_points}`;
-    if (!bands.has(key)) bands.set(key, { discipline: r.discipline, storyPoints: r.story_points, actual: [], estimate: [], ratios: [] });
+    if (!r.discipline || !r.estimate_seconds) continue;
+    const size = SIZE_BANDS.findIndex(([, upTo]) => r.estimate_seconds / 3600 <= upTo);
+    const key = `${r.discipline}|${size}`;
+    if (!bands.has(key)) bands.set(key, { discipline: r.discipline, size, actual: [], estimate: [], ratios: [] });
     const band = bands.get(key);
     band.actual.push(r.actual_seconds / 3600);
     if (r.estimate_seconds) {
@@ -402,13 +408,14 @@ export async function quotingSummary(env, { discipline = null, minConfidence = '
 
   const byBand = [...bands.values()].map((b) => ({
     discipline: b.discipline,
-    storyPoints: b.storyPoints,
+    size: SIZE_BANDS[b.size][0],
+    sizeOrder: b.size,
     jobs: b.actual.length,
     medianActualHours: median(b.actual),
     medianEstimateHours: median(b.estimate),
     medianRatio: median(b.ratios),
     spreadHours: b.actual.length > 1 ? [Math.min(...b.actual), Math.max(...b.actual)] : null,
-  })).sort((a, b) => a.discipline.localeCompare(b.discipline) || a.storyPoints - b.storyPoints);
+  })).sort((a, b) => a.discipline.localeCompare(b.discipline) || a.sizeOrder - b.sizeOrder);
 
   // Accuracy by customer and by team.
   const group = (keyOf) => {

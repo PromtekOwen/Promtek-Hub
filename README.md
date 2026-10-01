@@ -27,6 +27,7 @@ src/               The Worker (API and background sync)
   elo.js           The ELO engine: rating finished jobs, weekly freeze, history
   disputes.js      Open jobs, difficulty disputes, estimate alerts
   modifiers.js     Supervisor-approved modifiers
+  quotes.js        Quote builder: estimates, reference jobs, learned estimate, hand-off to orders
   reports.js       Team and engineer reports, leaderboard, CSV export
   jobs.js          Finished job tracking and quoting data
   logging.js       Finding a job and writing worklogs to Tempo
@@ -47,6 +48,7 @@ schema-008.sql     Obsolescence library and surveys
 schema-009 to 012  Employee details for the company chart
 schema-013.sql     The ELO engine and its history
 schema-014.sql     Disputes, estimate alerts and modifiers
+schema-015.sql     Quote builder, and estimates read from Original Estimate
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```
@@ -73,3 +75,4 @@ Each finished category is a match between the job and the people who logged time
 - **History** is kept for every change, and admins can undo one.
 - **Disputes:** an engineer can say a job is harder than quoted. Once a team lead agrees, the agreed difficulty and estimate replace the quoted ones for XP and ELO, XP already earned on it is recalculated, and the quoted values are kept for quoting.
 - **Modifiers:** while one agreed by the person's supervisor applies, time logged counts for less in both directions (Unwell 25%, Covering for absence, Learning on the job and Personal circumstances 50%, Supporting apprentices and Training someone 60%, Heavy workload 75%).
+- **New quotes** set job ELO from difficulty alone: 750 + 250 × (technical 55%, risk 30%, dependencies 15%). Size goes into the hours estimate instead. Jobs quoted before the quote builder keep the older formula.

@@ -394,6 +394,8 @@ export async function runScheduled(env) {
     await attempt('Completed jobs', () => scanCompleted(env));
     const Disputes = await import('./disputes.js');
     await attempt('Estimates and disputes', () => Disputes.hourly(env));
+    const Quotes = await import('./quotes.js');
+    await attempt('Quotes', () => Quotes.hourly(env));
     if (new Date().getUTCHours() === 7) {
       const { checkExpiries } = await import('./vehicles.js');
       await attempt('Vehicle expiries', () => checkExpiries(env));

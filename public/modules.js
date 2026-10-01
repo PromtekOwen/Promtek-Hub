@@ -31,6 +31,13 @@ export const MODULES = [
     detail: (me) => me.linked ? `<b>${hours(me.employee.week.seconds)}</b> logged this week` : 'Your Tempo time logs',
   },
   {
+    id: 'quotes',
+    name: 'Quotes',
+    route: '#/quotes',
+    icon: icon('<path d="M6 3.5h9l3 3V20.5H6z"/><path d="M9 10h6M9 13.5h6M9 17h3.5"/>'),
+    detail: (me) => (me.user.team === 'Sales' || me.user.isLead ? 'Build a quote from what the job involves' : 'Estimates you have been asked for'),
+  },
+  {
     id: 'jobs',
     name: 'Jobs',
     route: '#/jobs',

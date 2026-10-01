@@ -323,6 +323,16 @@ const pages = {
     },
   },
 
+  '#/quotes': {
+    band: () => `<h1>Quotes</h1><p>${quotesView?.kind === 'answer' ? 'Your view on how long it will take and how hard it is.' : 'What the job involves, how long it should take and how hard it is.'}</p>`,
+    async render() {
+      if (quotesView?.kind === 'new') return quoteNewHtml();
+      if (quotesView?.kind === 'quote') return quoteHtml();
+      if (quotesView?.kind === 'answer') return quoteAnswerHtml();
+      return quotesHomeHtml();
+    },
+  },
+
   '#/jobs': {
     band: () => `<h1>Jobs</h1><p>Open orders, how hard each part is and how its time is going.</p>`,
     async render() {
@@ -884,9 +894,44 @@ async function renderSettings(route) {
   if (route === '#/it') settingsData.it = await api('/api/admin/it-types').catch((err) => ({ categories: [], types: [], error: err.message }));
   if (route === '#/vehicles') settingsData.vehicles = await api('/api/admin/vehicles').catch(() => ({ vehicles: [] }));
   if (route === '#/pow') settingsData.ra = await api('/api/admin/ra-library').catch(() => ({ items: [] }));
+  if (route === '#/quotes') settingsData.quoteConfig = await api('/api/admin/quote-config');
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
+}
+
+function settingsQuotesHtml() {
+  const c = settingsData.quoteConfig;
+  const box = (id, label, value, hint) => `<label style="margin-top:1rem">${label}<small class="muted" style="display:block;font-weight:400">${hint}</small>
+    <textarea rows="5" data-qcfg="${id}">${esc(value)}</textarea></label>`;
+  const sections = ['software', 'hardware', 'engineering', 'condor'].map((d) => `<div class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">${DISCIPLINE_NAMES[d]}</h2>
+      ${d === 'engineering' ? box(`${d}.jobTypes`, 'Kinds of visit', (c[d].jobTypes || []).join('\n'), 'One per line.') : ''}
+      ${box(`${d}.counts`, 'Counts', c[d].counts.map(([k, l]) => `${k}: ${l}`).join('\n'), 'One per line, as a short name, a colon, then the label. Keep the short name the same once quotes use it, or their history stops matching.')}
+      ${box(`${d}.chips`, 'Conditions', c[d].chips.join('\n'), 'One per line.')}</div>`).join('');
+  return `<div class="card"><p style="margin-top:0">These are what the quote builder asks about. The counts and conditions that best explain how long jobs take are the ones worth keeping; the learned estimate uses all of them.</p>
+      ${box('common', 'Conditions for every category', (c.common || []).join('\n'), 'One per line.')}</div>
+    ${sections}
+    <div class="row" style="margin-top:1rem"><button class="btn" data-qcfg-save="1">Save</button></div>
+    <div class="result" id="qcfg-result" role="status"></div>`;
+}
+
+async function saveQuoteSettings(button) {
+  const val = (id) => view.querySelector(`[data-qcfg="${id}"]`)?.value.split('\n').map((x) => x.trim()).filter(Boolean) || [];
+  const out = { common: val('common') };
+  for (const d of ['software', 'hardware', 'engineering', 'condor']) {
+    out[d] = {
+      counts: val(`${d}.counts`).map((line) => { const i = line.indexOf(':'); return i > 0 ? [line.slice(0, i).trim(), line.slice(i + 1).trim()] : null; }).filter(Boolean),
+      chips: val(`${d}.chips`),
+    };
+    if (d === 'engineering') out[d].jobTypes = val(`${d}.jobTypes`);
+  }
+  button.disabled = true;
+  try {
+    settingsData.quoteConfig = await api('/api/admin/quote-config', { method: 'POST', body: JSON.stringify(out) });
+    document.getElementById('qcfg-result').textContent = 'Saved.';
+  } catch (err) { document.getElementById('qcfg-result').textContent = err.message; }
+  button.disabled = false;
 }
 
 function settingsPowHtml() {
@@ -2599,7 +2644,7 @@ function quotingHtml(data) {
   };
   const bands = data.byBand.map((b) => `<tr>
       <td>${esc(DISCIPLINE_NAMES[b.discipline] || b.discipline)}</td>
-      <td class="num">${n(b.storyPoints)}</td>
+      <td>${esc(b.size)}</td>
       <td class="num">${n(b.jobs)}</td>
       <td class="num">${b.medianEstimateHours == null ? '—' : b.medianEstimateHours.toFixed(1)}</td>
       <td class="num">${b.medianActualHours == null ? '—' : b.medianActualHours.toFixed(1)}</td>
@@ -2621,7 +2666,7 @@ function quotingHtml(data) {
       <td>${esc(j.project_name || '')}</td>
       <td><a href="${esc(me.jiraBaseUrl)}/browse/${esc(j.issue_key)}" target="_blank" rel="noopener">${esc(j.issue_key)}</a></td>
       <td>${esc(DISCIPLINE_NAMES[j.discipline] || '')}</td>
-      <td class="num">${j.story_points == null ? '—' : n(j.story_points)}</td>
+      <td class="num">${j.job_elo == null ? '—' : n(Math.round(j.job_elo))}</td>
       <td class="num">${j.estimate_seconds ? (j.estimate_seconds / 3600).toFixed(1) : '—'}</td>
       <td class="num">${(j.actual_seconds / 3600).toFixed(1)}</td>
       ${ratioCell(j.estimate_seconds ? j.actual_seconds / j.estimate_seconds : null)}
@@ -2639,25 +2684,24 @@ function quotingHtml(data) {
         <a class="btn secondary" href="/api/reports/export?type=jobs">Completed jobs CSV</a>
       </div>
       <p class="muted" style="margin:.85rem 0 0">Finished work compared with what it was estimated to take.
-      One sprint is ${data.sprintHours} hours. ${n(good)} of ${n(counted)} recorded items have an estimate,
-      a story point band and believable hours; the rest are excluded unless you tick the box.</p>
+      ${n(good)} of ${n(counted)} recorded items have an estimate and believable hours; the rest are excluded unless you tick the box.</p>
     </div>
 
-    <h2>How long each story point band really takes</h2>
+    <h2>How long jobs of each size really take</h2>
     ${data.byBand.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>Discipline</th><th class="num">Story points</th><th class="num">Jobs</th>
+      <thead><tr><th>Discipline</th><th>Estimated</th><th class="num">Jobs</th>
         <th class="num">Estimate (median)</th><th class="num">Actual (median)</th><th class="num">Actual vs estimate</th><th class="num">Range</th></tr></thead>
       <tbody>${bands}</tbody>
     </table></div>
-    <p class="muted">Where actual and estimate differ consistently, the sprint value table for that band is the thing to change.</p>`
-    : '<div class="card"><p class="muted">No finished categories with story points yet. Run the historical backfill from the Admin page to build up a starting set.</p></div>'}
+    <p class="muted">Where actual and estimate differ consistently for a size of job, estimates of that size are running light or heavy.</p>`
+    : '<div class="card"><p class="muted">No finished categories with an estimate yet. Run the historical backfill from the Admin page to build up a starting set.</p></div>'}
 
     ${groupTable('By customer', data.byCustomer)}
     ${groupTable('By team', data.byTeam)}
 
     <h2>Recently finished</h2>
     ${jobs ? `<div class="table-wrap"><table>
-      <thead><tr><th>Finished</th><th>Customer</th><th>Item</th><th>Discipline</th><th class="num">Points</th>
+      <thead><tr><th>Finished</th><th>Customer</th><th>Item</th><th>Discipline</th><th class="num">Job ELO</th>
         <th class="num">Estimate</th><th class="num">Actual</th><th class="num">Ratio</th></tr></thead>
       <tbody>${jobs}</tbody>
     </table></div>` : '<div class="card"><p class="muted">Nothing recorded yet.</p></div>'}`;
@@ -2990,6 +3034,7 @@ async function jobsHomeHtml() {
     ? '<div class="card"><p style="margin:0">Nothing open that you have logged time on in the last six months. My team and All show everything else.</p></div>'
     : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
   return `${approvalsHtml(approvals)}
+    ${countChecksHtml(approvals.countChecks)}
     ${supervisedHtml(approvals.supervised)}
     <h2>Open jobs</h2>
     <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) =>
@@ -3105,6 +3150,17 @@ async function jobsClick(event) {
     } catch (err) { document.getElementById('jobs-result').textContent = err.message; verdict.disabled = false; }
     return true;
   }
+  const countBtn = t('[data-count-save]') || t('[data-count-skip]');
+  if (countBtn) {
+    const id = countBtn.dataset.countSave || countBtn.dataset.countSkip;
+    const row = view.querySelector(`[data-count-check="${CSS.escape(id)}"]`);
+    const counts = Object.fromEntries([...row.querySelectorAll('[data-count-key]')].map((i) => [i.dataset.countKey, i.value]));
+    try {
+      await api('/api/quotes/check-counts', { method: 'POST', body: JSON.stringify({ categoryId: id, counts, skip: Boolean(countBtn.dataset.countSkip) }) });
+      toast(countBtn.dataset.countSkip ? 'Skipped' : 'Saved');
+    } catch (err) { toast(err.message); }
+    return render();
+  }
   const modDecide = t('[data-mod-decide]');
   if (modDecide) {
     modDecide.disabled = true;
@@ -3173,6 +3229,312 @@ async function modifiersClick(event) {
     return loadModifiers();
   }
   return false;
+}
+
+// ---------- Quote builder ----------
+
+let quotesView = null;      // null, { kind: 'new' }, { kind: 'quote', id } or { kind: 'answer', id }
+let quotesScope = 'open';
+let quoteData = null;       // the open quote, with each section as edited
+let quoteNew = null;
+let quotePeople = null;
+let quoteCustomers = null;
+const quoteTimers = {};
+const Q_SCORES = [['tech', 'Technical complexity', '1 is routine for us, 5 is something we have never built'],
+  ['risk', 'Uncertainty and risk', '1 is all known, 5 is a lot unknown or likely to change'],
+  ['dep', 'Dependencies and coordination', '1 is all in our hands, 5 relies on several others']];
+const NOVELTY_OPTS = [['exact', 'Done this exact thing'], ['similar', 'Done something similar'], ['never', 'Never done it']];
+const SPEC_OPTS = [['clear', 'Clear'], ['partly', 'Partly clear'], ['vague', 'Vague']];
+const qDisc = (d) => DISCIPLINE_NAMES[d] || d;
+const qHours = (h) => (h == null ? '—' : `${n(Math.round(h * 10) / 10)}h`);
+
+function qSeg(name, options, value, d) {
+  return `<span class="segment stack">${options.map(([k, l]) =>
+    `<button class="seg${value === k ? ' on' : ''}" data-q-set="${name}" data-q-disc="${d}" data-value="${esc(k)}">${esc(l)}</button>`).join('')}</span>`;
+}
+
+function qHelpHtml(s) {
+  const h = s.help || {};
+  const lines = [];
+  if (h.pert != null) lines.push(`Three-point estimate ${qHours(h.pert)}.`);
+  if (h.refFactor) lines.push(`Similar jobs took ${h.refFactor >= 1 ? `${Math.round((h.refFactor - 1) * 100)}% more` : `${Math.round((1 - h.refFactor) * 100)}% less`} than estimated.`);
+  if (h.bias) lines.push(`${esc(s.estimator || 'This estimator')}'s likely hours have ${h.bias.ratio >= 1 ? `run ${Math.round((h.bias.ratio - 1) * 100)}% light` : `run ${Math.round((1 - h.bias.ratio) * 100)}% heavy`} over ${h.bias.jobs} jobs.`);
+  lines.push(h.model ? `Learned from ${h.model.jobs} quoted jobs: ${qHours(h.model.hours)}${h.model.elo ? `, job ELO ${n(Math.round(h.model.elo))}` : ''}.`
+    : `The learned estimate starts once ${h.modelNeeds} more quoted ${qDisc(s.discipline).toLowerCase()} jobs have finished.`);
+  const refs = (h.references || []).map((r) => `<li>
+      <span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(r.key)}" target="_blank" rel="noopener">${esc(r.key)}</a> ${esc(r.customer || '')}</span>
+      <span class="sub">${r.estimateHours ? `${qHours(r.estimateHours)} estimated, ` : ''}${qHours(r.actualHours)} taken${r.learnedElo ? `, job ELO ${n(Math.round(r.learnedElo))}` : ''}. Finished ${shortDate(r.doneDate)}.</span>
+      ${quoteData?.canEdit ? `<span class="row ref-compare">${['easier', 'same', 'harder'].map((c) =>
+        `<button class="chip${s.reference_id === r.id && s.reference_compare === c ? ' on' : ''}" data-q-ref="${esc(r.id)}" data-q-disc="${s.discipline}" data-value="${c}">${{ easier: 'Easier than this', same: 'About the same', harder: 'Harder than this' }[c]}</button>`).join('')}</span>` : ''}
+    </li>`).join('');
+  return `<div class="q-suggest">
+      <div class="q-figures"><div><span>Suggested</span><strong>${qHours(h.suggestedHours)}</strong></div>
+        <div><span>Job ELO</span><strong>${h.jobElo ? n(Math.round(h.jobElo)) : '—'}</strong></div></div>
+      <p class="help" style="padding:.4rem 0 0">${lines.join(' ')}</p></div>
+    <h3>Similar finished jobs</h3>
+    ${refs ? `<ul class="list plain refs">${refs}</ul>` : '<p class="muted">None close enough yet. They appear as counts and conditions are filled in.</p>'}`;
+}
+
+function qSectionFields(s, cfg, editable, key = s.discipline) {
+  const c = cfg[s.discipline] || { counts: [], chips: [] };
+  const dis = editable ? '' : ' disabled';
+  const counts = c.counts.map(([k, l]) => `<label class="q-count">${esc(l)}
+      <input type="number" min="0" step="1" inputmode="numeric" data-q-count="${esc(k)}" data-q-disc="${key}" value="${esc(s.counts?.[k] ?? '')}"${dis}></label>`).join('');
+  const chips = [...(cfg.common || []), ...c.chips].map((x) =>
+    `<button class="chip${(s.chips || []).includes(x) ? ' on' : ''}" data-q-chip="${esc(x)}" data-q-disc="${key}"${dis}>${esc(x)}</button>`).join('');
+  const hours = [['best_hours', 'Best case'], ['likely_hours', 'Likely'], ['worst_hours', 'Worst case']].map(([k, l]) =>
+    `<label>${l}<input type="number" min="0" step="0.5" inputmode="decimal" data-q-field="${k}" data-q-disc="${key}" value="${esc(s[k] ?? '')}"${dis}></label>`).join('');
+  return `${s.discipline === 'engineering' ? `<h3>Kind of visit</h3>${qSeg('job_type', (c.jobTypes || []).map((t) => [t, t]), s.job_type, key)}` : ''}
+    <h3>How much</h3><div class="q-counts">${counts}</div>
+    <h3>Conditions</h3><div class="chips">${chips}</div>
+    <h3>Done it before?</h3>${qSeg('novelty', NOVELTY_OPTS, s.novelty, key)}
+    <h3>How clear is the spec?</h3>${qSeg('spec', SPEC_OPTS, s.spec, key)}
+    <h3>Hours</h3><div class="q-hours">${hours}</div>
+    <h3>Difficulty</h3>
+    ${Q_SCORES.map(([k, l, hint]) => `<div class="score-row"><span class="score-label">${l}<small>${hint}</small></span>
+      <span class="segment">${[1, 2, 3, 4, 5].map((v) => `<button class="seg${Number(s[k]) === v ? ' on' : ''}" data-q-set="${k}" data-q-disc="${key}" data-value="${v}">${v}</button>`).join('')}</span></div>`).join('')}`;
+}
+
+function qSectionHtml(s, data) {
+  const asks = data.requests.filter((r) => r.discipline === s.discipline);
+  const people = (quotePeople || []).map((p) => `<option value="${esc(p.account_id)}">${esc(p.name)}${p.team ? `, ${esc(p.team)}` : ''}</option>`).join('');
+  const askHtml = data.canEdit ? `<h3>Ask an engineer</h3>
+      ${asks.length ? `<ul class="list plain">${asks.map((r) => `<li><span class="title">${esc(r.name || 'Someone')}</span>
+        <span class="sub">${r.status === 'pending' ? 'Asked, waiting for an answer' : `Best ${qHours(r.answer?.best_hours)}, likely ${qHours(r.answer?.likely_hours)}, worst ${qHours(r.answer?.worst_hours)}${r.comment ? `. "${esc(r.comment)}"` : ''}`}</span>
+        ${r.status === 'answered' && s.estimator_id !== r.account_id ? `<button class="chip-btn" data-q-use="${r.id}" style="margin-top:.4rem">Use these figures</button>` : ''}</li>`).join('')}</ul>` : ''}
+      <div class="row q-ask"><select data-q-ask-who="${s.discipline}" aria-label="Who to ask"><option value="">Choose someone</option>${people}</select>
+        <input type="text" data-q-ask-note="${s.discipline}" placeholder="Anything they should know (optional)">
+        <button class="btn secondary" data-q-ask="${s.discipline}">Ask</button></div>` : '';
+  return `<section class="card q-section" data-q-section="${s.discipline}">
+      <h2 style="margin-top:0">${qDisc(s.discipline)}${s.estimator ? `<small class="muted"> estimated by ${esc(s.estimator)}</small>` : ''}</h2>
+      <div class="q-grid"><div>${qSectionFields(s, data.config, data.canEdit && !data.quote.epic_key)}</div>
+        <div class="q-side"><div id="q-help-${s.discipline}">${qHelpHtml(s)}</div>
+          ${data.canEdit ? `<label style="margin-top:1rem">Hours to quote
+            <input type="number" min="0" step="0.5" inputmode="decimal" data-q-field="quoted_hours" data-q-disc="${s.discipline}" value="${esc(s.quoted_hours ?? '')}"
+              placeholder="${s.help?.suggestedHours ? Math.round(s.help.suggestedHours * 10) / 10 : ''}"${data.quote.epic_key ? ' disabled' : ''}></label>` : ''}
+          ${askHtml}</div></div>
+      <div class="result" id="q-result-${s.discipline}" role="status"></div></section>`;
+}
+
+async function quoteHtml() {
+  quoteData = await api(`/api/quotes/get?id=${encodeURIComponent(quotesView.id)}`);
+  if (quoteData.canEdit && !quotePeople) quotePeople = (await api('/api/quotes/people')).people;
+  const q = quoteData.quote;
+  const status = { open: 'Being worked on', ready: 'Ready to send', won: `Became order ${q.epic_key || ''}`, lost: 'Not going ahead' }[q.status];
+  const jira = q.quote_key
+    ? `<a href="${esc(quoteData.jiraUrl)}" target="_blank" rel="noopener">${esc(q.quote_key)}</a>`
+    : `<span class="bad">Not in Jira yet</span> <button class="linklike" data-q-retry="${q.id}">Try again</button>`;
+  const actions = quoteData.canEdit && !q.epic_key ? `<div class="row" style="margin-top:.75rem">
+      ${q.status !== 'ready' ? '<button class="btn" data-q-status="ready">Ready to send</button>' : '<button class="btn secondary" data-q-status="open">Back to working on it</button>'}
+      ${q.status !== 'lost' ? '<button class="btn secondary" data-q-status="lost">Not going ahead</button>' : ''}</div>` : '';
+  return `<div class="card"><p style="margin:0"><strong>${esc(q.title)}</strong><br>
+      <span class="muted">${esc(q.customer || q.project_key)}. Quote ${jira}. ${status}.</span></p>
+      ${q.jira_error && !q.quote_key ? `<p class="help">${esc(q.jira_error)}. Everything here is saved; it goes to Jira when it can.</p>` : ''}
+      ${q.handoff_error ? `<p class="help">The order's figures are waiting to go into Jira: ${esc(q.handoff_error)}</p>` : ''}
+      ${actions}<div class="result" id="q-status-result" role="status"></div></div>
+    ${quoteData.sections.map((s) => qSectionHtml(s, quoteData)).join('')}
+    <div class="row"><button class="btn secondary" data-q-back="1">Back to quotes</button></div>`;
+}
+
+async function quoteNewHtml() {
+  if (!quoteCustomers) quoteCustomers = (await api('/api/quotes/customers')).customers;
+  quoteNew = quoteNew || { projectKey: '', customer: '', title: '', disciplines: [] };
+  const picked = quoteCustomers.find((c) => c.key === quoteNew.projectKey);
+  return `<div class="card">
+      <label>Customer
+        <input type="search" id="q-customer-search" placeholder="Search customers" value="${esc(picked ? picked.name : '')}"></label>
+      <ul class="list plain q-customers" ${picked ? 'hidden' : ''}>${quoteCustomers.map((c) =>
+        `<li data-q-customer-row><button class="linklike" data-q-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
+      <label style="margin-top:1rem">Title<input type="text" data-q-new="title" value="${esc(quoteNew.title)}" placeholder="What the customer is asking for"></label>
+      <h3>Categories</h3>
+      <div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((d) =>
+        `<button class="chip${quoteNew.disciplines.includes(d) ? ' on' : ''}" data-q-new-disc="${d}">${qDisc(d)}</button>`).join('')}</div>
+      <p class="help">The quote is created in Jira under the customer's quote list, and its key is the quote number in Quoter.</p>
+      <div class="row"><button class="btn" data-q-create="1">Start the quote</button><button class="btn secondary" data-q-back="1">Cancel</button></div>
+      <div class="result" id="q-new-result" role="status"></div></div>`;
+}
+
+let answerDraft = null;
+async function quoteAnswerHtml() {
+  const list = await api('/api/quotes');
+  const r = list.requests.find((x) => String(x.id) === String(quotesView.id));
+  if (!r) { quotesView = null; return quotesHomeHtml(); }
+  const data = await api(`/api/quotes/get?id=${r.quote_id}`);
+  if (!answerDraft || answerDraft.requestId !== r.id) {
+    const s = data.sections.find((x) => x.discipline === r.discipline) || {};
+    answerDraft = { requestId: r.id, discipline: r.discipline, counts: { ...(s.counts || {}) }, chips: [...(s.chips || [])], comment: '' };
+  }
+  return `<div class="card"><p style="margin-top:0"><strong>${esc(r.requested_name || 'Someone')} would like your estimate</strong><br>
+      <span class="muted">${esc(r.title)} for ${esc(r.customer || '')}, ${qDisc(r.discipline)}${r.quote_key ? `, ${esc(r.quote_key)}` : ''}.</span></p>
+      ${r.note ? `<blockquote class="dispute-words">${esc(r.note)}</blockquote>` : ''}
+      <div data-q-section="answer">${qSectionFields({ ...answerDraft, discipline: r.discipline }, data.config, true, 'answer')}</div>
+      <label style="margin-top:1rem">Anything else <span class="muted">(optional)</span>
+        <textarea rows="3" data-q-answer-comment="1" placeholder="What the estimate depends on, or what worries you">${esc(answerDraft.comment)}</textarea></label>
+      <div class="row"><button class="btn" data-q-answer="1">Send my estimate</button><button class="btn secondary" data-q-back="1">Back</button></div>
+      <div class="result" id="q-answer-result" role="status"></div></div>`;
+}
+
+async function quotesHomeHtml() {
+  const data = await api(`/api/quotes?scope=${quotesScope}`);
+  const asks = data.requests.length ? `<h2>Waiting for your estimate</h2><ul class="list approvals">${data.requests.map((r) => `<li>
+      <span class="title">${esc(r.title)}, ${qDisc(r.discipline)}</span>
+      <span class="sub">${esc(r.customer || '')}. Asked by ${esc(r.requested_name || 'someone')}.</span>
+      <button class="btn secondary" data-q-answer-open="${r.id}" style="margin-top:.6rem">Give my estimate</button></li>`).join('')}</ul>` : '';
+  const scopes = [['open', 'Open'], ['mine', 'Mine'], ['all', 'All']];
+  const status = { open: 'Being worked on', ready: 'Ready to send', won: 'Became an order', lost: 'Not going ahead' };
+  const rows = data.quotes.map((q) => `<li data-q-row><button class="linklike title" data-q-open="${q.id}">${esc(q.title)}</button>
+      <span class="sub">${esc(q.customer || q.project_key)}${q.quote_key ? `, ${esc(q.quote_key)}` : ''}. ${status[q.status]}${q.created_name ? `. ${esc(q.created_name)}` : ''}.</span></li>`).join('');
+  return `${asks}
+    ${data.canCreate ? `<div class="row" style="margin:1rem 0"><button class="btn" data-q-new-open="1">Start a quote</button></div>
+      <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) => `<button class="seg${quotesScope === k ? ' on' : ''}" data-q-scope="${k}">${l}</button>`).join('')}</span>
+      <input type="search" id="q-search" placeholder="Search quotes" aria-label="Search quotes"></div>` : ''}
+    ${rows ? `<ul class="list q-list">${rows}</ul>` : `<div class="card"><p style="margin:0">${data.canCreate ? 'No quotes here yet.' : 'When someone asks for your estimate on a quote, it appears here.'}</p></div>`}`;
+}
+
+function qSectionOf(d) { return d === 'answer' ? answerDraft : quoteData?.sections.find((s) => s.discipline === d); }
+
+function qQueueSave(d) {
+  if (d === 'answer' || !quoteData?.canEdit) return;
+  clearTimeout(quoteTimers[d]);
+  quoteTimers[d] = setTimeout(async () => {
+    const s = qSectionOf(d);
+    try {
+      const { help, estimator, ...data } = s;
+      const r = await api('/api/quotes/section', { method: 'POST', body: JSON.stringify({ quoteId: quoteData.quote.id, discipline: d, data }) });
+      s.help = r.help;
+      const host = document.getElementById(`q-help-${d}`);
+      if (host) host.innerHTML = qHelpHtml(s);
+      const quoted = view.querySelector(`[data-q-field="quoted_hours"][data-q-disc="${d}"]`);
+      if (quoted && r.help.suggestedHours) quoted.placeholder = Math.round(r.help.suggestedHours * 10) / 10;
+      const out = document.getElementById(`q-result-${d}`);
+      if (out) out.textContent = '';
+    } catch (err) {
+      const out = document.getElementById(`q-result-${d}`);
+      if (out) out.textContent = `Not saved: ${err.message}`;
+    }
+  }, 600);
+}
+
+async function quotesClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-q-scope]')) { quotesScope = t('[data-q-scope]').dataset.qScope; return render(); }
+  if (t('[data-q-new-open]')) { quotesView = { kind: 'new' }; quoteNew = null; return render(); }
+  if (t('[data-q-open]')) { quotesView = { kind: 'quote', id: t('[data-q-open]').dataset.qOpen }; window.scrollTo(0, 0); return render(); }
+  if (t('[data-q-answer-open]')) { quotesView = { kind: 'answer', id: t('[data-q-answer-open]').dataset.qAnswerOpen }; answerDraft = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-q-back]')) { quotesView = null; quoteData = null; return render(); }
+  const cust = t('[data-q-customer]');
+  if (cust) {
+    quoteNew.projectKey = cust.dataset.qCustomer; quoteNew.customer = cust.dataset.name;
+    document.getElementById('q-customer-search').value = cust.dataset.name;
+    document.querySelector('.q-customers').hidden = true;
+    return true;
+  }
+  const nd = t('[data-q-new-disc]');
+  if (nd) { const d = nd.dataset.qNewDisc; quoteNew.disciplines = quoteNew.disciplines.includes(d) ? quoteNew.disciplines.filter((x) => x !== d) : [...quoteNew.disciplines, d]; nd.classList.toggle('on'); return true; }
+  const create = t('[data-q-create]');
+  if (create) {
+    create.disabled = true;
+    try {
+      const r = await api('/api/quotes/create', { method: 'POST', body: JSON.stringify(quoteNew) });
+      toast(r.quoteKey ? `Quote ${r.quoteKey} started` : 'Quote started. Jira will catch up');
+      quotesView = { kind: 'quote', id: r.id }; quoteNew = null; return render();
+    } catch (err) { document.getElementById('q-new-result').textContent = err.message; create.disabled = false; }
+    return true;
+  }
+  const set = t('[data-q-set]');
+  if (set) {
+    const s = qSectionOf(set.dataset.qDisc); if (!s || set.disabled) return true;
+    const key = set.dataset.qSet; const raw = set.dataset.value;
+    s[key] = ['tech', 'risk', 'dep'].includes(key) ? Number(raw) : raw;
+    set.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === set));
+    qQueueSave(set.dataset.qDisc); return true;
+  }
+  const chip = t('[data-q-chip]');
+  if (chip) {
+    const s = qSectionOf(chip.dataset.qDisc); if (!s || chip.disabled) return true;
+    const x = chip.dataset.qChip;
+    s.chips = (s.chips || []).includes(x) ? s.chips.filter((c) => c !== x) : [...(s.chips || []), x];
+    chip.classList.toggle('on'); qQueueSave(chip.dataset.qDisc); return true;
+  }
+  const ref = t('[data-q-ref]');
+  if (ref) {
+    const s = qSectionOf(ref.dataset.qDisc);
+    s.reference_id = ref.dataset.qRef; s.reference_compare = ref.dataset.value;
+    ref.parentElement.parentElement.parentElement.querySelectorAll('[data-q-ref]').forEach((b) => b.classList.toggle('on', b === ref));
+    qQueueSave(ref.dataset.qDisc); return true;
+  }
+  const ask = t('[data-q-ask]');
+  if (ask) {
+    const d = ask.dataset.qAsk;
+    const who = view.querySelector(`[data-q-ask-who="${d}"]`).value;
+    if (!who) { document.getElementById(`q-result-${d}`).textContent = 'Choose who to ask.'; return true; }
+    ask.disabled = true;
+    try {
+      await api('/api/quotes/ask', { method: 'POST', body: JSON.stringify({ quoteId: quoteData.quote.id, discipline: d, accountId: who, note: view.querySelector(`[data-q-ask-note="${d}"]`).value }) });
+      toast('Asked'); return render();
+    } catch (err) { document.getElementById(`q-result-${d}`).textContent = err.message; ask.disabled = false; }
+    return true;
+  }
+  const use = t('[data-q-use]');
+  if (use) { try { await api('/api/quotes/use-answer', { method: 'POST', body: JSON.stringify({ requestId: use.dataset.qUse }) }); toast('Figures used'); } catch (err) { toast(err.message); } return render(); }
+  const st = t('[data-q-status]');
+  if (st) {
+    st.disabled = true;
+    try {
+      const r = await api('/api/quotes/status', { method: 'POST', body: JSON.stringify({ id: quoteData.quote.id, status: st.dataset.qStatus }) });
+      if (r.jiraUpdated === false) toast('Saved. The Jira description could not be updated');
+      return render();
+    } catch (err) { document.getElementById('q-status-result').textContent = err.message; st.disabled = false; }
+    return true;
+  }
+  const retry = t('[data-q-retry]');
+  if (retry) { await api('/api/quotes/retry-jira', { method: 'POST', body: JSON.stringify({ id: retry.dataset.qRetry }) }).catch(() => {}); return render(); }
+  const send = t('[data-q-answer]');
+  if (send) {
+    send.disabled = true;
+    try {
+      const r = await api('/api/quotes/answer', { method: 'POST', body: JSON.stringify({ requestId: answerDraft.requestId, data: answerDraft, comment: answerDraft.comment }) });
+      toast(r.commented ? 'Sent, and noted on the Jira quote' : 'Sent'); quotesView = null; answerDraft = null; return render();
+    } catch (err) { document.getElementById('q-answer-result').textContent = err.message; send.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+function quotesInput(event) {
+  const el = event.target;
+  if (el.dataset.qNew && quoteNew) { quoteNew[el.dataset.qNew] = el.value; return true; }
+  if (el.id === 'q-customer-search') {
+    const query = el.value.toLowerCase(); const list = document.querySelector('.q-customers');
+    if (list) list.hidden = false;
+    if (quoteNew) quoteNew.projectKey = '';
+    document.querySelectorAll('[data-q-customer-row]').forEach((row) => { row.hidden = query.length > 0 && !row.textContent.toLowerCase().includes(query); });
+    return true;
+  }
+  if (el.id === 'q-search') {
+    const query = el.value.toLowerCase();
+    document.querySelectorAll('[data-q-row]').forEach((row) => { row.hidden = query.length > 1 && !row.textContent.toLowerCase().includes(query); });
+    return true;
+  }
+  if (el.dataset.qAnswerComment && answerDraft) { answerDraft.comment = el.value; return true; }
+  const d = el.dataset.qDisc;
+  const s = d && qSectionOf(d);
+  if (!s) return false;
+  if (el.dataset.qCount) { s.counts = { ...(s.counts || {}), [el.dataset.qCount]: el.value === '' ? '' : Number(el.value) }; }
+  else if (el.dataset.qField) { s[el.dataset.qField] = el.value === '' ? null : Number(el.value); }
+  else return false;
+  qQueueSave(d); return true;
+}
+
+function countChecksHtml(list) {
+  if (!list?.length) return '';
+  return `<h2>Were the counts right?</h2><ul class="list approvals">${list.map((k) => `<li data-count-check="${esc(k.category_id)}">
+      <span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(k.category_key)}" target="_blank" rel="noopener">${esc(k.category_key)}</a> ${qDisc(k.discipline)}, ${esc(k.customer || '')}</span>
+      <span class="sub">Finished. If the job turned out bigger or smaller than quoted, correct the counts so future quotes learn from it.</span>
+      <div class="q-counts" style="margin-top:.5rem">${Object.entries(k.quoted).map(([key, v]) => `<label class="q-count">${esc(k.labels[key] || key)}
+        <input type="number" min="0" step="1" data-count-key="${esc(key)}" value="${esc(v)}"></label>`).join('')}</div>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-count-save="${esc(k.category_id)}">Save</button>
+        <button class="btn secondary" data-count-skip="${esc(k.category_id)}">Skip</button></div></li>`).join('')}</ul>`;
 }
 
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -3736,6 +4098,8 @@ view.addEventListener('click', async (event) => {
   const leaderBtn = event.target.closest('button[data-leader]');
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
+  if (currentRoute() === '#/quotes' && !settingsOpen && await quotesClick(event) !== false) return;
   if (currentRoute() === '#/xp' && event.target.closest('#modifiers') && await modifiersClick(event) !== false) return;
   if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
   const eloUndo = event.target.closest('button[data-elo-undo]');
@@ -3781,6 +4145,7 @@ const spinner = (label = 'Loading') => `<div class="card loading-card"><span cla
 // Some pages know what they are waiting for.
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
+  '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
 };
@@ -3803,6 +4168,7 @@ const TILE_SETTINGS = {
   '#/calls': { label: '8x8 settings', render: () => settingsCallsHtml() },
   '#/it': { label: 'IT support settings', render: () => settingsItHtml() },
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
+  '#/quotes': { label: 'Quote settings', render: () => settingsQuotesHtml() },
 };
 let settingsOpen = null;
 let settingsData = null;
@@ -3838,6 +4204,7 @@ async function render() {
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
+      if (route !== '#/quotes') { quotesView = null; quoteData = null; }
     }
   } catch (err) {
     if (token === renderToken) {
@@ -3852,6 +4219,7 @@ async function render() {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (event.target.dataset?.jobsField && jobsDraft) { jobsDraft[event.target.dataset.jobsField] = event.target.value; return; }
   if (event.target.dataset?.modField && modDraft) { modDraft[event.target.dataset.modField] = event.target.value; return; }
   if (event.target.id === 'jobs-search') {

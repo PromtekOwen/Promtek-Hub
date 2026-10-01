@@ -374,3 +374,37 @@ textarea { display: block; width: 100%; margin-top: .4rem; resize: vertical; }
 label > input[data-jobs-field] { display: block; width: 100%; margin-top: .4rem; }
 #modifiers .list { margin-top: 1rem; }
 textarea, label > input[data-jobs-field], label > input[data-mod-field] { font-weight: 400; }
+
+/* Quotes */
+.q-grid { display: grid; gap: 1.25rem; }
+@media (min-width: 900px) { .q-grid { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); } }
+.q-counts { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .6rem .9rem; }
+.q-count { font-size: .9rem; }
+.q-count input, .q-hours input, .q-side label > input, .q-ask input, .q-ask select, .card > label > input[type=text], .card > label > input[type=search] { display: block; width: 100%; margin-top: .3rem; font-weight: 400; }
+.q-hours { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; }
+.q-section h3 { margin: 1.1rem 0 .5rem; font-size: 1rem; }
+.q-section h2 small { font-size: .85rem; font-weight: 400; margin-left: .4rem; }
+.q-suggest { background: var(--tint); border-radius: 12px; padding: .9rem 1rem; }
+.q-figures { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.q-figures span { display: block; color: var(--muted); font-size: .85rem; }
+.q-figures strong { font-size: 1.6rem; color: var(--blue-deep); }
+.refs li { display: block; }
+.refs .title { display: block; white-space: normal; }
+.refs .sub { display: block; }
+.ref-compare { flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+.ref-compare .chip { font-size: .82rem; padding: .25rem .6rem; }
+.q-ask { flex-wrap: wrap; gap: .5rem; margin-top: .4rem; }
+.q-ask select, .q-ask input { flex: 1 1 12rem; margin-top: 0; }
+.q-customers { max-height: 16rem; overflow-y: auto; margin-top: .4rem; }
+.q-customers li { display: block; padding: .45rem 0; }
+.q-list li { display: block; }
+.q-list .title { display: block; text-align: left; white-space: normal; font-size: 1rem; }
+.q-list .sub { display: block; }
+.q-counts { align-items: end; }
+.segment.stack { display: flex; flex-wrap: wrap; max-width: 100%; }
+.segment.stack .seg { flex: 1 1 auto; white-space: normal; }
+@media (max-width: 560px) {
+  .segment.stack { flex-direction: column; width: 100%; }
+  .segment.stack .seg + .seg { border-left: 0; border-top: 1px solid var(--line); }
+  .segment.stack .seg { text-align: left; }
+}

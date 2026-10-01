@@ -94,3 +94,9 @@ export function weightedScore({ tech, scope, risk, dep }) {
 export function jobEloFromScore(weighted) {
   return weighted == null ? null : 750 + weighted * 250;
 }
+
+// Difficulty for new quotes. Size lives in the hours estimate instead.
+export function quoteElo({ tech, risk, dep }) {
+  if ([tech, risk, dep].some((v) => v == null || v === '')) return null;
+  return 750 + 250 * (tech * 0.55 + risk * 0.30 + dep * 0.15);
+}
