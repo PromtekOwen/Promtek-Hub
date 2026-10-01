@@ -345,13 +345,6 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/person-remove') return json(await People.removePerson(env, body));
     if (method === 'POST' && pathname === '/api/admin/employees-source') return json(await People.setSource(env, body.source));
     if (method === 'POST' && pathname === '/api/admin/org-person') return json(await Org.savePerson(env, body));
-    if (method === 'POST' && pathname === '/api/admin/org-seed') return json(await Org.applySeed(env, { overwrite: Boolean(body.overwrite) }));
-    if (method === 'GET' && pathname === '/api/admin/org-options') {
-      const { results } = await env.DB.prepare(
-        `SELECT account_id, name, job_title, department, manager_id, org_order FROM employees WHERE active = 1 ORDER BY org_order, name`
-      ).all();
-      return json({ people: results, departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
-    }
     if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));

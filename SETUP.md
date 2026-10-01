@@ -131,19 +131,21 @@ The **Admin** tile holds the things that span the whole hub: sync and the XP led
 
 Employees are managed in the hub, under **Admin, Employees**. Each person has one page covering everything the apps use: name, email, pronouns, job title, team, who they report to, their order on the chart, their role in the hub, XP rate, ELO, Jira account ID, 8x8 extension, chart badges and notes.
 
-**XP rate** is XP per hour before the job difficulty adjustment. Engineers are usually 90; anyone not on chargeable engineering work is usually 75.
+**XP rate** is the base XP per hour. Engineers are on 60, and their rate rises and falls with the difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.
+
+**Pictures** are added on the same page and appear on the company chart. They are squared off and shrunk in the browser before saving, so a phone photo is fine.
+
+**Badges** mark the people to go to in an emergency: first aider, mental health first aider, fire marshal, evacuation warden, defibrillator trained, and health and safety trained. They show as white discs on the nameplate.
 
 **Adding someone** before their Atlassian account exists is fine: leave the Jira account ID blank and they are marked as pending. Filling it in later moves their history across with them.
 
 **Removing someone** offers two things: hide them and keep their XP history, or remove them and it entirely.
 
-**Once everyone is in**, select **Stop reading the DNM project**. From then on nothing is read from Jira about employees and the DNM Employee issues can be deleted. The switch is reversible.
+Nothing about employees is read from Jira, so the DNM Employee issues can be deleted once everyone is entered here.
 
 ### The company chart
 
-The **Company chart** tile draws the org chart from the employee list, so it follows along as people join, change role or leave. Everyone can see it; admins get a cog where job titles, teams and reporting lines are set, plus the order people sit in under the same manager.
-
-**Fill in blanks from the current chart** seeds everyone's title, team and manager from the chart as it stood in October 2026, matching on name, and reports anyone it couldn't match. It only fills in blanks unless the reset button is used.
+The **Company chart** tile draws the org chart from the employee list, so it follows along as people join, change role or leave. Job titles, teams, reporting lines, pictures and badges are all set on each person under **Admin, Employees**.
 
 **Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
 

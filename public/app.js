@@ -362,7 +362,6 @@ const pages = {
           </dl>
           <div class="row">
             <button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
-            <button class="btn secondary" data-action="refresh-profiles">Refresh profiles from Jira</button>
           </div>
           <div class="result" id="sync-result" role="status"></div>
         </div>
@@ -390,9 +389,6 @@ const pages = {
         </div>
 
         <h2>Employees</h2>
-        <p class="muted">${peopleData.source === 'hub'
-          ? 'Employees are kept here, and nothing is read from the DNM project.'
-          : 'Employees are read from the DNM project in Jira each hour.'}</p>
         <div class="table-wrap"><table>
           <thead><tr><th>Name</th><th>Job title</th><th>Team</th><th>Role</th><th class="num">XP rate</th><th class="num">Level</th><th class="num">ELO</th><th></th></tr></thead>
           <tbody>${peopleData.people.map((p) => `<tr>
@@ -408,9 +404,6 @@ const pages = {
         </table></div>
         <div class="row" style="margin-top:1rem">
           <button class="btn" data-person-edit="new">Add someone</button>
-          ${peopleData.source === 'hub'
-            ? '<button class="btn secondary" data-action="source-jira">Read from Jira again</button>'
-            : '<button class="btn secondary" data-action="source-hub">Stop reading the DNM project</button>'}
         </div>
         <div class="result" id="people-result" role="status"></div>
 
@@ -483,6 +476,18 @@ function personEditHtml() {
     <div class="card">
       <h2 style="margin-top:0">${p.accountId ? esc(p.name || 'Edit employee') : 'Add someone'}</h2>
 
+      <div class="avatar-edit">
+        <label class="avatar-circle" for="avatar-input" title="Choose a picture">
+          ${p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : `<span>${esc(initialsOf(p.name))}</span>`}
+        </label>
+        <input id="avatar-input" type="file" accept="image/*" hidden>
+        <div>
+          <label class="linklike" for="avatar-input">${p.avatar ? 'Change picture' : 'Add picture'}</label>
+          ${p.avatar ? ' <button class="linklike" data-person-action="remove-avatar">Remove</button>' : ''}
+          <p class="muted" style="margin:.25rem 0 0">Shown on the company chart.</p>
+        </div>
+      </div>
+
       <p class="muted" style="margin:1rem 0 0">Who they are</p>
       ${field('name', 'Name', p.name)}
       ${field('email', 'Work email', p.email, 'type="email" placeholder="name@promtek.com"')}
@@ -514,11 +519,11 @@ function personEditHtml() {
 
       <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
       <div class="row" style="margin-top:.75rem">
-        <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 75}"></label>
+        <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 60}"></label>
         <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1100"></label>
       </div>
-      <p class="muted">XP rate is XP per hour before the job difficulty adjustment. Engineers are usually 90; anyone
-      not on chargeable engineering work is usually 75.</p>
+      <p class="muted">XP rate is the base XP per hour. Engineers are on 60, and their rate rises and falls with the
+      difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>
 
       <p class="muted" style="margin:1.5rem 0 0">Accounts</p>
       ${field('accountId', 'Jira account ID', p.accountId, p.accountId && !p.pending ? 'readonly' : 'placeholder="712020:..."')}
@@ -541,6 +546,22 @@ function personEditHtml() {
     </div>`;
 }
 
+const initialsOf = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('');
+
+// Pictures are squared off and shrunk in the browser, so what reaches the
+// database is a few kilobytes rather than a few megabytes.
+async function readAvatar(file) {
+  const bitmap = await createImageBitmap(file);
+  const size = 128;
+  const side = Math.min(bitmap.width, bitmap.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  canvas.getContext('2d').drawImage(bitmap,
+    (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, size, size);
+  return canvas.toDataURL('image/png');
+}
+
 function collectPerson() {
   document.querySelectorAll('[data-person]').forEach((input) => {
     personEdit[input.dataset.person] = input.value.trim();
@@ -553,6 +574,11 @@ async function personAction(action) {
     if (el) { el.textContent = text; el.className = `result ${bad ? 'bad' : 'good'}`; }
   };
   if (action === 'cancel') { personEdit = null; return render(); }
+  if (action === 'remove-avatar') {
+    collectPerson();
+    personEdit.avatar = null;
+    return render();
+  }
 
   if (action === 'change-id') {
     const current = personEdit.accountId;
@@ -616,22 +642,16 @@ async function loadOrgLogo() {
   }
 }
 
-const ORG = { boxW: 184, boxH: 58, gapX: 18, gapY: 44, stackY: 10, indent: 26, pad: 28 };
+const ORG = { boxW: 208, boxH: 62, gapX: 18, gapY: 44, stackY: 10, indent: 26, pad: 28, avatar: 38 };
 
 // Little white glyphs that sit on a nameplate.
 const ORG_ICONS = {
-  star: 'M6 0.6 7.6 4 11.2 4.5 8.6 7 9.3 10.6 6 8.9 2.7 10.6 3.4 7 0.8 4.5 4.4 4Z',
-  spanner: 'M8.8 0.8a3.2 3.2 0 0 0-3.9 4L0.9 8.7l2.4 2.4 3.9-3.9a3.2 3.2 0 0 0 4-3.9L9.1 4.6 7.4 2.9Z',
-  laptop: 'M1.6 2h8.8v5.4H1.6Zm-1.2 6.4h11.2v1.2H0.4Z',
-  headset: 'M6 0.8a4.6 4.6 0 0 0-4.6 4.6v3.2h2.4V5.4h-1a3.2 3.2 0 1 1 6.4 0h-1v3.2h2.4V5.4A4.6 4.6 0 0 0 6 0.8Z',
-  chart: 'M1 10.8V6h2.2v4.8Zm3.9 0V1.4h2.2v9.4Zm3.9 0V4h2.2v6.8Z',
-  shield: 'M6 0.6 10.8 2.6v3.2c0 3-2 5.2-4.8 6-2.8-0.8-4.8-3-4.8-6V2.6Z',
-  cap: 'M6 1.2 11.6 4 6 6.8 0.4 4Zm-3.4 4.4L6 7.4l3.4-1.8v2.6C9.4 9.4 7.9 10.2 6 10.2S2.6 9.4 2.6 8.2Z',
-  van: 'M0.8 3.2h6.4v4.2h3l1 1.6v1.2H0.8Zm2 7.2a1.2 1.2 0 1 0 0-2.4 1.2 1.2 0 0 0 0 2.4Zm6.6 0a1.2 1.2 0 1 0 0-2.4 1.2 1.2 0 0 0 0 2.4Z',
-  phone: 'M3.2 1h2l1 2.6-1.4 1a7.6 7.6 0 0 0 3.6 3.6l1-1.4L11 7.8v2a1 1 0 0 1-1.1 1A9.4 9.4 0 0 1 2.2 2.1 1 1 0 0 1 3.2 1Z',
   'first-aid': 'M4.6 1h2.8v2.6H10v2.8H7.4V9H4.6V6.4H2V3.6h2.6Z',
+  'mental-health': 'M6 10.6 1.9 6.7a2.7 2.7 0 0 1 3.8-3.8L6 3.2l0.3-0.3a2.7 2.7 0 0 1 3.8 3.8Z',
   fire: 'M6 0.6c1.8 2 1 3.4 0.4 4.2-0.5 0.7-0.9 1.4-0.3 2.3 0.3-0.6 0.9-1 1.5-1.1-0.2 1.4 1.6 1.8 1.6 3.4A3.4 3.4 0 0 1 6 11.4a3.4 3.4 0 0 1-3.2-3.5C2.8 4.6 6 4 6 0.6Z',
-  leaf: 'M11 1C5.4 1 1 3.2 1 7.6c0 1.2 0.4 2.2 1 3L3.4 9.2C4.6 6.8 7 5.2 9.6 4.6 7.4 5.8 5.4 7.6 4.4 10.2c0.7 0.4 1.5 0.6 2.4 0.6 3.6 0 4.2-5 4.2-9.8Z',
+  evacuation: 'M7.1 0.8a1.2 1.2 0 1 1-1.2 1.2 1.2 1.2 0 0 1 1.2-1.2ZM5.4 4 3 5.6l0.8 1.3 1.7-1.1 0.3 1.6-2 3.4 1.3 0.8 1.9-3.1 1.4 1.5 0.4 2.2 1.5-0.3-0.5-2.7-1.6-1.8 0.6-2 1.2 1.3 1.8-0.2-0.2-1.5-1.3 0.1-1.8-1.9Z',
+  defib: 'M1 6.2h2.4l1-2.4 1.6 4.6 1.3-3.2 0.8 1h2.9v1.4H7.4l-1.3 3L4.4 6.2 3.7 7.6H1Z',
+  safety: 'M6 0.6 10.8 2.6v3.2c0 3-2 5.2-4.8 6-2.8-0.8-4.8-3-4.8-6V2.6Zm-0.5 7.6 3.2-3.2-1-1-2.2 2.2-1-1-1 1Z',
 };
 
 // Laid out like the chart it replaces: the top two levels spread across the
@@ -738,17 +758,28 @@ function orgSvg(data) {
   });
 
   const boxes = placed.map((node) => {
-    const icons = (node.icons || []).filter((id) => ORG_ICONS[id]).slice(0, 4);
-    const titleWidth = icons.length ? 24 : 28;
-    const titleLines = wrapText(node.title || '', Math.round((ORG.boxW - titleWidth) / 5.4)).slice(0, 2);
-    const badges = icons.map((id, i) => `<g transform="translate(${node.x + ORG.boxW - 20 - i * 16} ${node.y + 10}) scale(1)">
-        <path d="${ORG_ICONS[id]}" fill="#ffffff" opacity="0.92"/>
+    const icons = (node.icons || []).filter((id) => ORG_ICONS[id]).slice(0, 3);
+    const textX = node.x + (node.avatar ? ORG.avatar + 18 : 12);
+    const room = ORG.boxW - (textX - node.x) - (icons.length ? icons.length * 20 + 8 : 10);
+    const titleLines = wrapText(node.title || '', Math.max(12, Math.round(room / 5.1))).slice(0, 2);
+
+    // A white disc behind each badge keeps it readable at chart size.
+    const badges = icons.map((id, i) => `<g transform="translate(${node.x + ORG.boxW - 26 - i * 20} ${node.y + 8})">
+        <circle cx="8" cy="8" r="8.5" fill="#ffffff" opacity="0.95"/>
+        <g transform="translate(2.1 2.1)"><path d="${ORG_ICONS[id]}" fill="${node.colour}"/></g>
       </g>`).join('');
+
+    const avatar = node.avatar ? `
+      <clipPath id="clip-${esc(node.id)}"><circle cx="${node.x + 10 + ORG.avatar / 2}" cy="${node.y + ORG.boxH / 2}" r="${ORG.avatar / 2}"/></clipPath>
+      <circle cx="${node.x + 10 + ORG.avatar / 2}" cy="${node.y + ORG.boxH / 2}" r="${ORG.avatar / 2 + 1.5}" fill="#ffffff" opacity="0.95"/>
+      <image href="${node.avatar}" x="${node.x + 10}" y="${node.y + (ORG.boxH - ORG.avatar) / 2}" width="${ORG.avatar}" height="${ORG.avatar}" clip-path="url(#clip-${esc(node.id)})" preserveAspectRatio="xMidYMid slice"/>` : '';
+
     return `<g>
       <rect x="${node.x}" y="${node.y}" width="${ORG.boxW}" height="${ORG.boxH}" rx="9" fill="${node.colour}"/>
+      ${avatar}
       ${badges}
-      <text x="${node.x + 12}" y="${node.y + 22}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#ffffff">${esc(node.name)}</text>
-      ${titleLines.map((line, i) => `<text x="${node.x + 12}" y="${node.y + 38 + i * 13}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#ffffff" opacity="0.9">${esc(line)}</text>`).join('')}
+      <text x="${textX}" y="${node.y + (titleLines.length > 1 ? 22 : 26)}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="12.5" font-weight="700" fill="#ffffff">${esc(node.name)}</text>
+      ${titleLines.map((line, i) => `<text x="${textX}" y="${node.y + 37 + i * 12}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10" fill="#ffffff" opacity="0.9">${esc(line)}</text>`).join('')}
     </g>`;
   });
 
@@ -841,18 +872,6 @@ async function renderSettings(route) {
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
-}
-
-function settingsOrgHtml() {
-  return `<div class="card">
-      <p style="margin-top:0">Job titles, teams, reporting lines and badges are set on each person under
-      <strong>Admin, Employees</strong>. The chart follows whatever is there.</p>
-      <div class="row">
-        <button class="btn secondary" data-action="org-seed">Fill in blanks from the 2026 chart</button>
-        <button class="btn secondary" data-action="org-seed-overwrite">Reset everyone to the 2026 chart</button>
-      </div>
-      <div class="result" id="org-result" role="status"></div>
-    </div>`;
 }
 
 function settingsPowHtml() {
@@ -2963,22 +2982,17 @@ async function adminAction(action, button) {
     el.textContent = text;
     el.className = `result ${isError ? 'bad' : ''}`;
   };
-  const target = { 'sync-now': 'sync-result', 'refresh-profiles': 'sync-result', snapshot: 'sync-result',
+  const target = { 'sync-now': 'sync-result', snapshot: 'sync-result',
     'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
-    'org-seed': 'org-result', 'org-seed-overwrite': 'org-result',
-    'source-hub': 'people-result', 'source-jira': 'people-result' }[action];
+ }[action];
   button.disabled = true;
   try {
     if (action === 'sync-now') {
       const r = await api('/api/admin/sync-now', { method: 'POST' });
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
-    } else if (action === 'refresh-profiles') {
-      const r = await api('/api/admin/refresh-profiles', { method: 'POST' });
-      out(target, `Refreshed ${r.employees} profiles.${r.departed ? ` ${r.departed} no longer in Jira.` : ''}`
-        + `${r.skippedNoUserId.length ? ` Skipped (no UserID): ${r.skippedNoUserId.join(', ')}` : ''}`);
     } else if (action === 'start-ledger') {
       const confirm = document.getElementById('confirm-start').value.trim();
       const r = await api('/api/admin/start-ledger', { method: 'POST', body: JSON.stringify({ confirm }) });
@@ -3016,21 +3030,6 @@ async function adminAction(action, button) {
         }),
       });
       out('vehicle-result', 'Saved.');
-    } else if (action === 'source-hub' || action === 'source-jira') {
-      await api('/api/admin/employees-source', {
-        method: 'POST',
-        body: JSON.stringify({ source: action === 'source-hub' ? 'hub' : 'jira' }),
-      });
-      out('people-result', action === 'source-hub'
-        ? 'Employees are now kept in the hub. The DNM project is no longer read, so those issues can be deleted.'
-        : 'Reading employees from the DNM project again.');
-    } else if (action === 'org-seed' || action === 'org-seed-overwrite') {
-      const r = await api('/api/admin/org-seed', {
-        method: 'POST',
-        body: JSON.stringify({ overwrite: action === 'org-seed-overwrite' }),
-      });
-      out('org-result', `${r.filled} filled in.${r.unmatched.length ? ` No match for: ${r.unmatched.join(', ')}` : ''}`);
-      settingsData.org = await api('/api/admin/org-options');
     } else if (action === 'lib-list') {
       const kind = document.getElementById('lib-kind').value;
       const entries = (settingsData.library[kind] || []).slice(0, 60);
@@ -3069,7 +3068,7 @@ async function adminAction(action, button) {
       });
       out(target, 'Linked.');
     }
-    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8', 'lib-list', 'org-seed', 'org-seed-overwrite'].includes(action)) {
+    if (!['sync-now', 'snapshot', 'scan-jobs', 'backfill-start', 'recompute-stages', 'vehicle-expiries', 'test-8x8', 'lib-list'].includes(action)) {
       setTimeout(render, 1200);
     }
   } catch (err) {
@@ -3171,7 +3170,7 @@ view.addEventListener('click', async (event) => {
   if (personEditBtn) {
     const id = personEditBtn.dataset.personEdit;
     personEdit = id === 'new'
-      ? { name: '', role: 'engineer', xpRate: 75, order: 50, icons: [] }
+      ? { name: '', role: 'engineer', xpRate: 60, order: 50, icons: [] }
       : { ...(peopleCache.people.find((p) => p.accountId === id) || {}) };
     return render();
   }
@@ -3367,7 +3366,6 @@ const TILE_SETTINGS = {
   '#/calls': { label: '8x8 settings', render: () => settingsCallsHtml() },
   '#/it': { label: 'IT support settings', render: () => settingsItHtml() },
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
-  '#/org': { label: 'Chart settings', render: () => settingsOrgHtml() },
 };
 let settingsOpen = null;
 let settingsData = null;
@@ -3461,6 +3459,17 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (event.target.id === 'avatar-input' && personEdit) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    collectPerson();
+    try {
+      personEdit.avatar = await readAvatar(file);
+    } catch {
+      toast('That picture could not be read.');
+    }
+    return render();
+  }
   if (event.target.dataset?.orgField) {
     const accountId = event.target.dataset.account;
     const row = event.target.closest('tr');

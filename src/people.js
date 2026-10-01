@@ -3,16 +3,29 @@
 import { progressFor, rankFor } from './progression.js';
 import { getState, setState } from './sync.js';
 
-// Small badges that appear on someone's nameplate on the company chart.
+// Badges mark the people to go to in an emergency, so they stand out on the
+// chart. Ordinary job roles are covered by the job title.
 export const ICONS = [
-  ['star', 'Star'], ['spanner', 'Engineer'], ['laptop', 'Developer'], ['headset', 'Support'],
-  ['chart', 'Analyst'], ['shield', 'Compliance'], ['cap', 'Apprentice'], ['van', 'Field'],
-  ['phone', 'On call'], ['first-aid', 'First aider'], ['fire', 'Fire marshal'], ['leaf', 'Sustainability'],
+  ['first-aid', 'First aider'],
+  ['mental-health', 'Mental health first aider'],
+  ['fire', 'Fire marshal'],
+  ['evacuation', 'Evacuation warden'],
+  ['defib', 'Defibrillator trained'],
+  ['safety', 'Health and safety trained'],
 ];
 
-export const DEFAULT_XP_RATE = 75;      // non-engineers; engineers are usually higher
+export const DEFAULT_XP_RATE = 60;      // engineers; admin staff are usually 75
 
 const newLocalId = () => `pending-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+// Avatars arrive as a small data URI from the browser, already resized.
+function cleanAvatar(value) {
+  if (!value) return null;
+  const text = String(value);
+  if (!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(text)) return null;
+  if (text.length > 200_000) throw new Error('That picture is too big. Try a smaller one.');
+  return text;
+}
+
 const clean = (value, max = 160) => (value === undefined || value === null ? null : String(value).trim().slice(0, max) || null);
 
 export async function listPeople(env, { includeInactive = true } = {}) {
@@ -48,6 +61,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         title: progress.title,
         worklogs: e.worklogs,
         icons: e.icons ? JSON.parse(e.icons) : [],
+        avatar: e.avatar || null,
         notes: e.notes,
         active: e.active !== 0,
         pending: String(e.account_id).startsWith('pending-'),
@@ -71,26 +85,27 @@ export async function savePerson(env, person) {
   if (!existing) {
     await env.DB.prepare(
       `INSERT INTO employees (account_id, name, email, pronouns, job_title, department, manager_id, org_order,
-         role, team, extension, baseline, elo, icons, notes, jira_xp, opening_xp, active, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
+         role, team, extension, baseline, elo, icons, avatar, notes, jira_xp, opening_xp, active, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
     ).bind(accountId, name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
       clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
       ['engineer', 'lead', 'admin'].includes(person.role) ? person.role : 'engineer',
       clean(person.team, 40), clean(person.extension, 20),
-      Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons, clean(person.notes, 500), now).run();
+      Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
+      cleanAvatar(person.avatar), clean(person.notes, 500), now).run();
     return { accountId, created: true };
   }
 
   await env.DB.prepare(
     `UPDATE employees SET name = ?, email = ?, pronouns = ?, job_title = ?, department = ?, manager_id = ?,
-       org_order = ?, role = ?, team = ?, extension = ?, baseline = ?, elo = ?, icons = ?, notes = ?,
-       active = ?, updated_at = ? WHERE account_id = ?`
+       org_order = ?, role = ?, team = ?, extension = ?, baseline = ?, elo = ?, icons = ?, avatar = ?,
+       notes = ?, active = ?, updated_at = ? WHERE account_id = ?`
   ).bind(name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
     clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
     ['engineer', 'lead', 'admin'].includes(person.role) ? person.role : 'engineer',
     clean(person.team, 40), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE, person.elo === '' || person.elo === null ? null : Number(person.elo),
-    icons, clean(person.notes, 500), person.active === false ? 0 : 1, now, accountId).run();
+    icons, cleanAvatar(person.avatar), clean(person.notes, 500), person.active === false ? 0 : 1, now, accountId).run();
   return { accountId, created: false };
 }
 

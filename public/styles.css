@@ -327,3 +327,12 @@ a.chip-btn { text-decoration: none; display: inline-flex; align-items: center; }
 .org-scroll { margin-top: 1rem; overflow-x: auto; background: #fff; border-radius: var(--radius);
   box-shadow: var(--shadow); padding: .5rem; }
 .org-scroll svg { display: block; max-width: none; }
+
+/* Avatars */
+.avatar-edit { display: flex; align-items: center; gap: 1rem; margin: 1rem 0 .5rem; }
+.avatar-circle { width: 76px; height: 76px; flex: none; border-radius: 50%; cursor: pointer;
+  background: var(--tint); border: 2px dashed var(--line); display: grid; place-items: center;
+  color: var(--blue-deep); font-weight: 700; font-size: 1.3rem; overflow: hidden; }
+.avatar-circle:hover { border-color: var(--blue); }
+.avatar-circle img { width: 100%; height: 100%; object-fit: cover; }
+label.linklike { cursor: pointer; }
