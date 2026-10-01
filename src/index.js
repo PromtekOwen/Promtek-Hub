@@ -182,6 +182,15 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
   }
 
+  if (pathname.startsWith('/api/devtime')) {
+    const DevTime = await import('./devtime.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (!user.accountId) return json({ days: [] });
+    if (method === 'GET' && pathname === '/api/devtime/drafts') return json(await DevTime.drafts(env, user.accountId));
+    if (method === 'POST' && pathname === '/api/devtime/log') return json(await DevTime.logDrafts(env, user, body));
+    if (method === 'POST' && pathname === '/api/devtime/dismiss') return json(await DevTime.dismiss(env, user, body));
+  }
+
   if (pathname.startsWith('/api/quotes')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/quotes') return json(await Quotes.list(env, user, { scope: url.searchParams.get('scope') || 'open' }));
@@ -337,6 +346,9 @@ async function route(request, env, url, user) {
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
     if (method === 'GET' && pathname === '/api/admin/elo') return json(await Elo.status(env));
+    if (method === 'GET' && pathname === '/api/admin/bitbucket') return json(await (await import('./devtime.js')).status(env));
+    if (method === 'POST' && pathname === '/api/admin/bitbucket-test') return json(await (await import('./devtime.js')).testConnection(env));
+    if (method === 'POST' && pathname === '/api/admin/bitbucket-poll') return json(await (await import('./devtime.js')).poll(env, { force: true }));
     if (method === 'GET' && pathname === '/api/admin/quote-config') return json(await Quotes.config(env));
     if (method === 'POST' && pathname === '/api/admin/quote-config') return json(await Quotes.saveConfig(env, body));
     if (method === 'POST' && pathname === '/api/admin/elo-start') return json(await Elo.startEngine(env, body.from));

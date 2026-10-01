@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS dev_activity (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, issue_key TEXT NOT NULL, at TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL, repo TEXT, created_at TEXT NOT NULL, UNIQUE (account_id, kind, ref, issue_key));
+CREATE INDEX IF NOT EXISTS idx_dev_activity_day ON dev_activity(account_id, day);
+CREATE TABLE IF NOT EXISTS dev_day_state (account_id TEXT NOT NULL, day TEXT NOT NULL, issue_key TEXT NOT NULL, status TEXT NOT NULL, seconds INTEGER, worklog_id TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (account_id, day, issue_key));

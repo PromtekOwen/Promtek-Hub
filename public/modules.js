@@ -4,6 +4,7 @@
 //   href:         a separate app, e.g. '/apps/obsolescence/'
 //   construction: true shows a greyed-out "Under construction" tile
 //   adminOnly:    true shows the tile to admins only
+//   teams:        e.g. ['Condor'] shows the tile to those teams and to admins
 //   detail(me):   optional live line of text under the name (may return HTML)
 
 const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
@@ -29,6 +30,14 @@ export const MODULES = [
     route: '#/time',
     icon: icon('<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>'),
     detail: (me) => me.linked ? `<b>${hours(me.employee.week.seconds)}</b> logged this week` : 'Your Tempo time logs',
+  },
+  {
+    id: 'condor',
+    name: 'Condor Dev',
+    route: '#/condor',
+    teams: ['Condor'],
+    icon: icon('<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>'),
+    detail: () => 'Your development day, ready to log',
   },
   {
     id: 'quotes',

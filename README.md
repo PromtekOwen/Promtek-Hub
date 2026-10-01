@@ -28,6 +28,7 @@ src/               The Worker (API and background sync)
   disputes.js      Open jobs, difficulty disputes, estimate alerts
   modifiers.js     Supervisor-approved modifiers
   quotes.js        Quote builder: estimates, reference jobs, learned estimate, hand-off to orders
+  devtime.js       Condor Dev: Bitbucket activity turned into draft worklogs
   reports.js       Team and engineer reports, leaderboard, CSV export
   jobs.js          Finished job tracking and quoting data
   logging.js       Finding a job and writing worklogs to Tempo
@@ -49,6 +50,7 @@ schema-009 to 012  Employee details for the company chart
 schema-013.sql     The ELO engine and its history
 schema-014.sql     Disputes, estimate alerts and modifiers
 schema-015.sql     Quote builder, and estimates read from Original Estimate
+schema-016.sql     Condor Dev: Bitbucket activity and logged days
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

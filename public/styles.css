@@ -408,3 +408,11 @@ textarea, label > input[data-jobs-field], label > input[data-mod-field] { font-w
   .segment.stack .seg + .seg { border-left: 0; border-top: 1px solid var(--line); }
   .segment.stack .seg { text-align: left; }
 }
+
+/* Your day */
+.day-card { margin-bottom: 1rem; }
+.day-head { margin: 0 0 .5rem; display: flex; flex-wrap: wrap; gap: .25rem .75rem; align-items: baseline; }
+.draft-fields { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: end; margin-top: .45rem; }
+.draft-fields label { font-size: .88rem; color: var(--muted); }
+.draft-fields input { display: block; margin-top: .2rem; width: 9rem; font-weight: 400; }
+.day-card .list li { display: block; }

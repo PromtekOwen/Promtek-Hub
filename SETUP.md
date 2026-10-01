@@ -393,6 +393,30 @@ Alongside, the hub suggests hours from the three-point estimate, adjusted by how
 
 **Estimates.** A category's estimate is its Original Estimate. Base sprints and story points are no longer used; base sprints only fill in for older categories with no Original Estimate. Quoting groups jobs by the size of their estimate.
 
+## Part 22: Condor Dev
+
+The Condor Dev tile is shown to the Condor team and to admins.
+
+**Your day, from Bitbucket.** Every 15 minutes the hub reads Bitbucket with an API token. It checks only repositories with new work and records commits on branches carrying an MES key, plus pull request reviews, approvals and comments. A developer is matched by their Atlassian account, or by the email in the commit.
+
+Each day's activity becomes draft worklogs:
+- activity close together is one block of work, starting half an hour before the first commit and ending a quarter of an hour after the last;
+- a pause of over two hours starts a new block;
+- half an hour comes off a block that runs through 12:30;
+- time is split between tickets where the work switched;
+- drafts are rounded to the quarter hour;
+- time already logged on that ticket that day is taken off, so nothing is logged twice.
+
+Developers check the times, change anything that's wrong, and log the day to Tempo in one tap. "Not work time" clears a draft. Anything Tempo refuses stays as a draft. Drafts go back a week. On weekdays they're emailed at 16:00 that their day is ready, and at 09:00 the next working day if it's still waiting.
+
+**Setting it up.**
+1. At id.atlassian.com, create an API token with scopes, with Bitbucket as the app and read:repository:bitbucket, read:pullrequest:bitbucket and read:workspace:bitbucket. Note its expiry date.
+2. Add it to the Worker as the secret `BITBUCKET_API_TOKEN`.
+3. Add `"BITBUCKET_WORKSPACE": "<workspace slug>"` to the vars in `wrangler.jsonc`. The slug is the part after `bitbucket.org/` in a repository's address.
+4. The token is used with `JIRA_EMAIL`. If it belongs to a different account, add that account's email as `BITBUCKET_EMAIL`.
+
+The Condor Dev cog shows the last check and any problem, and has Test connection and Check now. When the token expires, the cog and Admin's "Last sync problem" say so; the next check after it's replaced starts where the last good one finished.
+
 ## Adding more apps later
 
 Each app lives in its own folder under `public/apps/`, and gets one entry in `public/modules.js` with a name, description, link and icon. Set `comingSoon: true` to show a placeholder tile, or `adminOnly: true` to show it only to admins. Apps that need to save data get their own API routes in `src/index.js` and tables in the same database.

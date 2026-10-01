@@ -386,6 +386,9 @@ export async function runScheduled(env) {
   await attempt('Finished categories', () => scanCategories(env));
   const Elo = await import('./elo.js');
   await attempt('ELO ratings', () => Elo.rateStep(env));
+  const DevTime = await import('./devtime.js');
+  await attempt('Bitbucket', async () => { const r = await DevTime.poll(env); if (r.error) throw new Error(r.error); return r; });
+  if (new Date().getUTCMinutes() < 2) await attempt('Day reminders', () => DevTime.reminders(env));
   if (new Date().getUTCMinutes() < 2) {
     await attempt('Profile refresh', () => refreshProfiles(env));
     await attempt('Weekly snapshot', () => snapshotWeek(env));
