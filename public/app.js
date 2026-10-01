@@ -184,6 +184,8 @@ const pages = {
           <div><dt>ELO rating</dt><dd>${e.elo != null ? n(Math.round(e.elo)) : '—'}${e.rank ? `<small>${esc(e.rank.name)}</small>` : ''}</dd></div>
           <div><dt>Next rank</dt><dd>${e.rank?.nextAt ? n(e.rank.nextAt) : '—'}${e.rank?.nextName ? `<small>${esc(e.rank.nextName)}</small>` : ''}</dd></div>
         </dl>
+        <h2>ELO history</h2>
+        <div id="elo-history"><div class="card"><p class="muted">Loading your ELO history…</p></div></div>
         <h2>Leaderboard</h2>
         <div id="leaderboard" class="card"><p class="muted">Loading the leaderboard…</p></div>
         <h2>Where your XP came from</h2>
@@ -346,7 +348,7 @@ const pages = {
     band: () => `<h1>Admin</h1><p>People, sync and alerts.</p>`,
     async render() {
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people')]);
+      const [data, peopleData, elo] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo')]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -375,6 +377,8 @@ const pages = {
           </div>
           <div class="result" id="start-result" role="status"></div>
         </div>
+
+        ${eloAdminHtml(elo, peopleData.source)}
 
         <h2>Alerts</h2>
         <div class="card">
@@ -412,7 +416,7 @@ const pages = {
           <thead><tr><th>Atlassian account ID</th><th class="num">Worklogs</th><th class="num">Time</th><th>Latest</th></tr></thead>
           <tbody>${data.unmatched.map((u) => `<tr><td>${esc(u.account_id)}</td><td class="num">${n(u.worklogs)}</td><td class="num">${duration(u.seconds)}</td><td>${esc(u.latest)}</td></tr>`).join('')}</tbody>
         </table></div>
-        <p class="muted">Give these people an Employee issue in DNM with their account ID in the UserID field, then refresh profiles. Any of their time from the last two weeks is picked up within about 30 minutes.</p>`
+        <p class="muted">Add these people under Employees with their Jira account ID. Any of their time from the last two weeks is picked up within about 30 minutes.</p>`
         : '<div class="card"><p class="muted">None. Every worklog belongs to someone with a profile.</p></div>'}
 
 `;
@@ -520,7 +524,7 @@ function personEditHtml() {
       <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
       <div class="row" style="margin-top:.75rem">
         <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 60}"></label>
-        <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1100"></label>
+        <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1099"></label>
       </div>
       <p class="muted">XP rate is the base XP per hour. Engineers are on 60, and their rate rises and falls with the
       difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>
@@ -2735,7 +2739,7 @@ function engineerReportHtml(data) {
   const avgLag = recentWeeks.length ? recentWeeks.reduce((a, w) => a + (w.avg_lag_days || 0), 0) / recentWeeks.length : null;
 
   const snapshots = data.snapshots.slice(0, 12).reverse();
-  const trend = snapshots.length > 1 ? `<h2>Level and ELO over time</h2>
+  const trend = snapshots.length > 1 ? `<h2>Weekly snapshots</h2>
     <div class="table-wrap"><table>
       <thead><tr><th>Week beginning</th><th class="num">Total XP</th><th class="num">Level</th><th class="num">ELO</th></tr></thead>
       <tbody>${snapshots.map((snap) => `<tr><td>${shortDate(snap.week_start)}</td>
@@ -2760,6 +2764,8 @@ function engineerReportHtml(data) {
     </dl>
     <h2>Hours logged per week</h2>
     <div class="card"><div class="chart wide">${chart}</div></div>
+    <h2>ELO history</h2>
+    <div id="elo-history"><div class="card"><p class="muted">Loading ELO history…</p></div></div>
     ${trend}
     <h2>Most time spent on</h2>
     ${data.topJobs.length ? `<ul class="list">${data.topJobs.map((j) => `<li>
@@ -2807,6 +2813,97 @@ async function loadLeaderboard() {
     host.innerHTML = leaderboardHtml(data);
   } catch (err) {
     host.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
+  }
+}
+
+// ---------- ELO history ----------
+
+let eloExpanded = false;
+const RANK_LINES = [[800, 'Gram II'], [1100, 'Kilogram I'], [1300, 'Kilogram II'], [1500, 'Tonne I'], [1700, 'Tonne II'],
+  [1900, 'Megatonne I'], [2100, 'Megatonne II'], [2300, 'Gigatonne I'], [2500, 'Gigatonne II'], [2800, 'Gigatonne III'], [3100, 'Neutron Star']];
+const signed = (v) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1).replace(/\.0$/, '')}`;
+const jobName = (summary) => String(summary || '').replace(/^category\s*-\s*/i, '');
+const hoursText1 = (seconds) => `${(Math.round((seconds || 0) / 360) / 10).toLocaleString('en-GB')}h`;
+
+function eloChart(data, width = 640) {
+  const live = data.events;
+  const points = [{ elo: data.start, when: null }, ...live.map((e) => ({ elo: e.elo_after, when: (e.done_date || e.created_at || '').slice(0, 10) }))];
+  const w = Math.max(280, Math.round(width)), h = w < 500 ? 170 : 210, padL = 6, padR = 84, padT = 14, padB = 24;
+  const values = points.map((p) => p.elo);
+  let lo = Math.min(...values), hi = Math.max(...values);
+  const span = Math.max(80, hi - lo);
+  lo -= span * 0.25; hi += span * 0.25;
+  const x = (i) => padL + (points.length > 1 ? (i / (points.length - 1)) * (w - padL - padR) : (w - padL - padR) / 2);
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (h - padT - padB);
+  const lines = RANK_LINES.filter(([v]) => v > lo && v < hi).map(([v, name]) => `
+    <line x1="${padL}" x2="${w - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="4 4"/>
+    <text x="${w - padR + 8}" y="${(y(v) + 4).toFixed(1)}" font-size="12" fill="var(--muted)">${esc(name)}</text>`).join('');
+  const path = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.elo).toFixed(1)}`).join(' ');
+  const area = `${path} L${x(points.length - 1).toFixed(1)},${h - padB} L${x(0).toFixed(1)},${h - padB} Z`;
+  const dots = points.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.elo).toFixed(1)}" r="${i === points.length - 1 ? 5 : 3}" fill="${i === points.length - 1 ? 'var(--blue)' : '#fff'}" stroke="var(--blue-deep)" stroke-width="2"/>`).join('');
+  const first = points.find((p) => p.when)?.when;
+  const last = points[points.length - 1].when;
+  return `<svg class="elo-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="ELO over time, now ${n(Math.round(data.elo ?? data.start))}">
+    <defs><linearGradient id="eloFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgb(0,141,198)" stop-opacity=".22"/><stop offset="1" stop-color="rgb(0,141,198)" stop-opacity="0"/></linearGradient></defs>
+    ${lines}
+    <path d="${area}" fill="url(#eloFill)"/>
+    <path d="${path}" fill="none" stroke="var(--blue-deep)" stroke-width="2.5" stroke-linejoin="round"/>
+    ${dots}
+    ${first ? `<text x="${padL}" y="${h - 6}" font-size="12" fill="var(--muted)">${shortDate(first)}</text>` : ''}
+    ${last && last !== first ? `<text x="${w - padR}" y="${h - 6}" font-size="12" fill="var(--muted)" text-anchor="end">${shortDate(last)}</text>` : ''}
+  </svg>`;
+}
+
+function eloEventItem(e, { canUndo, self }) {
+  const issue = e.issue_key
+    ? `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(e.issue_key)}" target="_blank" rel="noopener">${esc(e.issue_key)}</a> `
+    : '';
+  const change = `<span class="xp${e.delta < 0 ? ' down' : ''}">${signed(e.delta)}<small>${n(Math.round(e.elo_after))}</small></span>`;
+  if (e.kind === 'adjustment') {
+    return `<li><span class="title">Set by hand</span>${change}
+      <span class="sub">${shortDate(e.created_at.slice(0, 10))}. ${esc(e.note || '')}</span></li>`;
+  }
+  if (e.kind === 'reversal') {
+    return `<li><span class="title">${issue}${esc(jobName(e.summary) || 'Job rating')} undone</span>${change}
+      <span class="sub">${shortDate(e.created_at.slice(0, 10))}. ${esc(e.note || '')}</span></li>`;
+  }
+  const how = e.actual_seconds <= e.estimate_seconds ? 'inside' : 'over';
+  const detail = `Finished ${shortDate(e.done_date)}. ${hoursText1(e.actual_seconds)} against ${hoursText1(e.estimate_seconds)} estimated, ${how} by ${hoursText1(Math.abs(e.estimate_seconds - e.actual_seconds))}.
+    ${self ? 'Your' : 'Their'} share ${Math.round(e.share * 100)}% (${hoursText1(e.seconds)}). Job ELO ${n(Math.round(e.job_elo))}.`;
+  const undo = canUndo && !e.reversed_at
+    ? ` <button class="linklike" data-elo-undo="${e.id}">Undo</button>` : '';
+  return `<li${e.reversed_at ? ' class="undone"' : ''}><span class="title">${issue}${esc(jobName(e.summary) || 'Finished job')}</span>${change}
+    <span class="sub">${detail}${e.reversed_at ? ' Undone.' : ''}${undo}</span></li>`;
+}
+
+function eloHistoryHtml(data, { canUndo = false, width, self = true } = {}) {
+  const events = [...data.events].reverse();
+  const shown = eloExpanded ? events : events.slice(0, 10);
+  const held = data.rank?.heldFrom
+    ? `<p class="help" style="padding:.35rem 0 0"><strong>${esc(data.rank.name)}</strong> is held from ${n(Math.round(data.rank.heldFrom))}, the best in the last three months.</p>` : '';
+  const chart = data.events.length
+    ? `<div class="card">${eloChart(data, width)}
+        <p class="help" style="padding:.5rem 0 0">Each finished job compares its time with the estimate, allowing for how hard it was against ${self ? 'your' : 'their'} ELO. ${self ? 'Your' : 'Their'} share of the hours sets how much it counts.</p>
+        ${held}</div>`
+    : `<div class="card"><p style="margin-top:0"><strong>No finished jobs rated yet.</strong></p>
+        <p class="muted" style="margin-bottom:0">ELO moves when a job with an estimate and a difficulty is finished, a few days after it closes so late time logs still count. Each job compares the time it took with its estimate, allowing for how hard it was rated.</p></div>`;
+  const list = events.length ? `<ul class="list elo-list" style="margin-top:1rem">${shown.map((e) => eloEventItem(e, { canUndo, self })).join('')}</ul>
+    ${events.length > 10 ? `<button class="btn secondary" data-elo-more="1" style="margin-top:.85rem">${eloExpanded ? 'Show the latest 10' : `Show all ${n(events.length)}`}</button>` : ''}` : '';
+  return chart + list;
+}
+
+let eloHistoryFor = null;
+async function loadEloHistory(accountId = null) {
+  const host = document.getElementById('elo-history');
+  if (!host) return;
+  eloHistoryFor = accountId;
+  try {
+    const data = await api(`/api/elo/history${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''}`);
+    // Drawn at the card's real width so the labels stay readable on a phone.
+    const width = host.clientWidth - 2 * parseFloat(getComputedStyle(host.querySelector('.card') || host).paddingLeft || 0);
+    host.innerHTML = eloHistoryHtml(data, { canUndo: me.user.isAdmin && Boolean(accountId), width, self: !accountId });
+  } catch (err) {
+    host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`;
   }
 }
 
@@ -2976,6 +3073,49 @@ async function logAction(action, button) {
   }
 }
 
+const SKIP_PHRASES = {
+  'No estimate': 'with no estimate',
+  'No time logged': 'with no time logged',
+  'No difficulty set': 'with no difficulty set',
+  'Nobody with a profile logged time on it': 'logged only by people without a profile',
+};
+
+function eloAdminHtml(elo, source) {
+  const skipped = elo.skipped.reduce((a, r) => a + r.n, 0);
+  const rows = elo.recent.map((m) => `<tr>
+      <td><a href="${esc(me.jiraBaseUrl)}/browse/${esc(m.issue_key)}" target="_blank" rel="noopener">${esc(m.issue_key)}</a><br><span class="muted">${esc(jobName(m.summary))}</span></td>
+      <td>${m.done_date ? shortDate(m.done_date) : '—'}</td>
+      <td class="num">${m.estimate_seconds ? hoursText1(m.estimate_seconds) : '—'}</td>
+      <td class="num">${m.actual_seconds ? hoursText1(m.actual_seconds) : '—'}</td>
+      <td>${m.status === 'rated'
+        ? `${m.people} ${m.people === 1 ? 'person' : 'people'}. Job ${n(Math.round(m.job_elo))} → ${n(Math.round(m.job_elo_after))}`
+        : `<span class="muted">Not rated, ${esc(String(m.reason || '').toLowerCase())}</span>`}</td>
+    </tr>`).join('');
+  const controls = elo.from
+    ? `<dl class="state">
+        <dt>Rating finished jobs from</dt><dd>${shortDate(elo.from)} ${elo.from.slice(0, 4)}</dd>
+        <dt>XP rates use ELO from</dt><dd>${elo.weekOf ? `Monday ${shortDate(elo.weekOf)}` : 'Not frozen yet'}</dd>
+        <dt>Rated</dt><dd>${n(elo.rated)} ${elo.rated === 1 ? 'job' : 'jobs'}</dd>
+        <dt>Not rated</dt><dd>${skipped ? elo.skipped.map((r) => `${n(r.n)} ${esc(SKIP_PHRASES[r.reason] || r.reason.toLowerCase())}`).join(', ') : 'None'}</dd>
+        <dt>Waiting</dt><dd>${n(elo.waiting)}, including anything finished in the last three days</dd>
+      </dl>
+      <div class="row">
+        <button class="btn secondary" data-action="elo-step">Rate the next few now</button>
+        <button class="btn secondary" data-action="elo-stop">Pause the engine</button>
+      </div>`
+    : `<p style="margin-top:0">The engine rates each finished category against the people who worked on it, once its time has settled. ${source !== 'hub' ? '<strong>Switch employees to the hub before starting it.</strong>' : ''}</p>
+      <p class="muted">Choose an earlier date to replay jobs already recorded under Completed job tracking, oldest first. Today rates only work finished from now on.</p>
+      <div class="row">
+        <label>Rate jobs finished from <input type="date" id="elo-from" value="${todayIso()}" max="${todayIso()}"></label>
+        <button class="btn" data-action="elo-start">Start the ELO engine</button>
+      </div>`;
+  return `<h2>ELO engine</h2>
+    <div class="card">${controls}<div class="result" id="elo-result" role="status"></div></div>
+    ${rows ? `<div class="table-wrap" style="margin-top:1rem"><table>
+      <thead><tr><th>Category</th><th>Finished</th><th class="num">Estimate</th><th class="num">Actual</th><th>Result</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>` : ''}`;
+}
+
 async function adminAction(action, button) {
   const out = (id, text, isError) => {
     const el = document.getElementById(id);
@@ -2987,6 +3127,7 @@ async function adminAction(action, button) {
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
+    'elo-start': 'elo-result', 'elo-stop': 'elo-result', 'elo-step': 'elo-result',
  }[action];
   button.disabled = true;
   try {
@@ -3048,6 +3189,17 @@ async function adminAction(action, button) {
       if (!title) return out('ra-result', 'Type the name first.', true);
       await api('/api/admin/ra-save', { method: 'POST', body: JSON.stringify({ title }) });
       out('ra-result', 'Added.');
+    } else if (action === 'elo-start') {
+      await api('/api/admin/elo-start', { method: 'POST', body: JSON.stringify({ from: document.getElementById('elo-from').value }) });
+      return render();
+    } else if (action === 'elo-stop') {
+      if (!confirm('Pause the ELO engine? Nothing already rated changes, and finished jobs wait until it starts again.')) return;
+      await api('/api/admin/elo-stop', { method: 'POST' });
+      return render();
+    } else if (action === 'elo-step') {
+      const r = await api('/api/admin/elo-step', { method: 'POST' });
+      if (typeof r.skipped === 'string') out(target, r.skipped);
+      else { out(target, `${r.rated} rated, ${r.skipped} not rated.`); setTimeout(render, 900); }
     } else if (action === 'recompute-stages') {
       const r = await api('/api/admin/recompute-stages', { method: 'POST', body: JSON.stringify({}) });
       out(target, `Rebuilt names and shares for ${r.stages} stages.`);
@@ -3172,6 +3324,9 @@ view.addEventListener('click', async (event) => {
     personEdit = id === 'new'
       ? { name: '', role: 'engineer', xpRate: 60, order: 50, icons: [] }
       : { ...(peopleCache.people.find((p) => p.accountId === id) || {}) };
+    // Saving leaves the rating alone unless it was edited, so a job rated
+    // while the form is open isn't overwritten.
+    personEdit.eloLoaded = String(personEdit.elo ?? '');
     return render();
   }
   const personActionBtn = event.target.closest('[data-person-action]');
@@ -3312,6 +3467,17 @@ view.addEventListener('click', async (event) => {
   if (periodBtn) { leaderPeriod = periodBtn.dataset.period; leaderExpanded = false; return loadLeaderboard(); }
   const leaderBtn = event.target.closest('button[data-leader]');
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
+  if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
+  const eloUndo = event.target.closest('button[data-elo-undo]');
+  if (eloUndo) {
+    if (!confirm('Undo this rating change? The points go back to where they were and the job keeps its own rating.')) return;
+    eloUndo.disabled = true;
+    try {
+      await api('/api/admin/elo-reverse', { method: 'POST', body: JSON.stringify({ id: eloUndo.dataset.eloUndo }) });
+      toast('Undone');
+    } catch (err) { toast(err.message); }
+    return loadEloHistory(eloHistoryFor);
+  }
   const engineerBtn = event.target.closest('button[data-engineer]');
   if (engineerBtn) { reportAccount = engineerBtn.dataset.engineer || null; return render(); }
   const viewBtn = event.target.closest('button[data-view]');
@@ -3398,7 +3564,8 @@ async function render() {
     const html = settingsOpen === route ? await renderSettings(route) : await page.render();
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
-      if (route === '#/xp') loadLeaderboard();
+      if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); }
+      if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
     }
   } catch (err) {
     if (token === renderToken) {

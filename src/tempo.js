@@ -33,3 +33,21 @@ export async function fetchWorklogs(env, query) {
   if (next) throw new Error('Tempo returned more results than expected for one sync; nothing was changed.');
   return out;
 }
+
+// Every worklog on one issue, whoever logged it and whenever.
+export async function fetchIssueWorklogs(env, issueId) {
+  let next = `${TEMPO}/worklogs/issue/${encodeURIComponent(issueId)}?limit=1000`;
+  const out = [];
+  let pages = 0;
+  while (next && pages < MAX_PAGES) {
+    pages++;
+    const res = await fetch(next, {
+      headers: { Authorization: `Bearer ${env.TEMPO_API_TOKEN}`, Accept: 'application/json' },
+    });
+    if (!res.ok) throw new Error(`Tempo ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = await res.json();
+    out.push(...(data.results || []).map(normalise));
+    next = data.metadata?.next || null;
+  }
+  return out;
+}

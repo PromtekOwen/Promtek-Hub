@@ -8,7 +8,7 @@ What you'll end up with:
 
 - A web app that runs on Cloudflare. Engineers sign in with Google and see their level, title, ELO rank and a breakdown of which time logs earned which XP.
 - A database (Cloudflare D1) holding an XP ledger with one row per Tempo worklog.
-- A background job every 2 minutes that picks up new and edited Tempo worklogs and removes XP for deleted ones. On the hour it also refreshes ELO and baseline values from the DNM Employee issues.
+- A background job every 2 minutes that picks up new and edited Tempo worklogs and removes XP for deleted ones. On the hour it also records finished jobs, and the ELO engine rates them once their time has settled.
 - Shadow mode. Your existing Jira automations and Apps Scripts keep running untouched while you compare the hub's numbers against Jira. Nothing in Jira is changed by the hub.
 
 Cloudflare's dashboard moves things around occasionally. If a menu name below doesn't match exactly, look for the nearest equivalent; the steps themselves don't change.
@@ -117,7 +117,7 @@ Leave your Jira automations and Apps Scripts running for a week or two. During t
 - **Worklogs from people without a profile** lists time from people who have no Employee issue. If this shows the whole team, the Tempo worklog author isn't matching the UserID field; the same values that work in your current automation should work here.
 - **Sync** shows the last background run and any error message.
 
-When you're happy the numbers are right, the next phase moves ELO updates and job difficulty scoring into the hub, and then the old automations can be switched off.
+When you're happy the numbers are right, switch employees to the hub and start the ELO engine (Part 19). The old XP and ELO automations can then be switched off.
 
 ## Part 10: Roles, reports and alerts
 
@@ -141,7 +141,7 @@ Employees are managed in the hub, under **Admin, Employees**. Each person has on
 
 **Removing someone** offers two things: hide them and keep their XP history, or remove them and it entirely.
 
-Nothing about employees is read from Jira, so the DNM Employee issues can be deleted once everyone is entered here.
+Nothing about employees is read from Jira once they're switched to the hub. The DNM Employee issues can be deleted once everyone is entered here and the ELO engine is running.
 
 ### The company chart
 
@@ -149,7 +149,7 @@ The **Company chart** tile draws the org chart from the employee list, so it fol
 
 **Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
 
-Someone added to the DNM project in Jira appears on the chart once they have a title and a manager. Until then they sit on their own at the top, which makes them easy to spot.
+Someone new appears on the chart once they have a title and a manager. Until then they sit on their own at the top, which makes them easy to spot.
 
 ### Roles
 
@@ -198,7 +198,7 @@ If you recorded jobs before this was added, select **Rebuild stage names** on th
 
 ### Alert emails (optional but recommended)
 
-The hub raises an alert when someone logs time in Tempo with no Employee issue in DNM, since they'd be earning no XP. Alerts always appear on the Admin page. To have them emailed too:
+The hub raises an alert when someone logs time in Tempo but isn't in the employee list, since they'd be earning no XP. Alerts always appear on the Admin page. To have them emailed too:
 
 1. Go to https://script.google.com and create a project called `Promtek Hub mail relay`.
 2. Paste in the contents of `mail-relay.gs` from this folder.
@@ -332,6 +332,22 @@ Two things to check in Jira: that **New Survey Added** and **Report Up To Date**
 
 28. The tile now opens the hub's own obsolescence app, so nothing needs copying in.
 29. Keep the old GitHub Pages copy and its Apps Script running until a few surveys have gone through the hub, then retire them. The `public/apps/obsolescence/` folder can be deleted once you do.
+
+## Part 19: The ELO engine
+
+Each finished category is a match between the job and the people who logged time on it. Doing it in less time than the estimate raises their ELO, running over lowers it, and how much depends on how hard the job was rated against their own ELO and on their share of the hours. Whatever people gain, the job's own learned ELO loses, so ratings stay comparable with job difficulty instead of creeping upwards.
+
+- **What gets rated:** categories recorded under Completed job tracking, three days after they finish so late time logs still count. Categories with no estimate, no time or no difficulty are listed as not rated, with the reason.
+- **Job ELO** is 750 + 250 × the weighted score from the order's difficulty scores, unless the category already has one.
+- **XP rates** use each person's ELO as it stood on Monday morning, so a rating that moves mid-week never changes what the rest of that week earns.
+- **Rank** shows the best reached in the last three months, so one difficult job never costs anyone their rank.
+- **History:** everyone sees their own on the XP & rank page, and leads see anyone's from Reports. Admins can undo a rating, which puts back both the person's points and the job's.
+
+### Starting it
+
+1. Make sure employees are kept in the hub (Admin, Employees). The engine won't start while they're read from Jira, because a refresh would overwrite the ratings.
+2. Under **Admin, ELO engine**, choose the date to rate finished jobs from and select **Start the ELO engine**. Today rates only work finished from now on; an earlier date replays jobs already recorded, oldest first.
+3. Once it's running, switch off the Jira automations that update ELO on the DNM Employee issues.
 
 ## Adding more apps later
 

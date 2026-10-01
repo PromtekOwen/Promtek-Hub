@@ -1,6 +1,7 @@
 // Employees live here now, rather than as issues in the DNM project. Everything
 // the other apps need about a person is on this record.
-import { progressFor, rankFor } from './progression.js';
+import { progressFor } from './progression.js';
+import { peakElos, rankWithPeak } from './elo.js';
 import { getState, setState } from './sync.js';
 
 // Badges mark the people to go to in an emergency, so they stand out on the
@@ -36,6 +37,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
       GROUP BY e.account_id ORDER BY e.active DESC, e.name`
   ).all();
 
+  const peaks = await peakElos(env);
   return {
     source: (await getState(env, 'employees_source')) || 'jira',
     people: results.map((e) => {
@@ -54,8 +56,8 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         team: e.team,
         extension: e.extension,
         xpRate: e.baseline,
-        elo: e.elo,
-        rank: rankFor(e.elo),
+        elo: e.elo == null ? null : Math.round(e.elo * 10) / 10,
+        rank: rankWithPeak(e.elo, peaks.get(e.account_id) ?? null),
         xp,
         level: progress.level,
         title: progress.title,
@@ -98,15 +100,34 @@ export async function savePerson(env, person) {
 
   await env.DB.prepare(
     `UPDATE employees SET name = ?, email = ?, pronouns = ?, job_title = ?, department = ?, manager_id = ?,
-       org_order = ?, role = ?, team = ?, extension = ?, baseline = ?, elo = ?, icons = ?, avatar = ?,
+       org_order = ?, role = ?, team = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
        notes = ?, active = ?, updated_at = ? WHERE account_id = ?`
   ).bind(name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
     clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
     ['engineer', 'lead', 'admin'].includes(person.role) ? person.role : 'engineer',
     clean(person.team, 40), clean(person.extension, 20),
-    Number(person.xpRate) || DEFAULT_XP_RATE, person.elo === '' || person.elo === null ? null : Number(person.elo),
+    Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), person.active === false ? 0 : 1, now, accountId).run();
+
+  const edited = person.eloLoaded === undefined || String(person.elo ?? '') !== String(person.eloLoaded ?? '');
+  if (edited) await setEloByHand(env, accountId, person.elo === '' || person.elo === null ? null : Number(person.elo));
   return { accountId, created: false };
+}
+
+// A hand-set rating goes in the history like any other change.
+async function setEloByHand(env, accountId, elo) {
+  const current = await env.DB.prepare('SELECT elo FROM employees WHERE account_id = ?').bind(accountId).first();
+  const before = current?.elo ?? null;
+  if (elo === before || (elo != null && !Number.isFinite(elo))) return;
+  const now = new Date().toISOString();
+  const stmts = [env.DB.prepare('UPDATE employees SET elo = ?, updated_at = ? WHERE account_id = ?').bind(elo, now, accountId)];
+  if (elo != null && before != null) {
+    stmts.push(env.DB.prepare(
+      `INSERT INTO elo_events (account_id, kind, delta, elo_before, elo_after, note, created_at)
+       VALUES (?, 'adjustment', ?, ?, ?, 'Set by hand on the Admin page', ?)`
+    ).bind(accountId, elo - before, before, elo, now));
+  }
+  await env.DB.batch(stmts);
 }
 
 // Someone added before their Atlassian account existed keeps their history

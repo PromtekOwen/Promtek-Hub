@@ -1,6 +1,7 @@
 // Progress and effort reporting, built from the XP ledger and weekly snapshots.
 import { londonDate, mondayOf } from './sync.js';
-import { progressFor, rankFor } from './progression.js';
+import { progressFor } from './progression.js';
+import { peakElos, rankWithPeak } from './elo.js';
 
 const STANDARD_WEEK_SECONDS = 37.5 * 3600;
 
@@ -85,7 +86,8 @@ export async function engineerReport(env, accountId, { weeks = 12 } = {}) {
     employee: {
       accountId: employee.account_id, name: employee.name, email: employee.email,
       team: employee.team, role: employee.role, elo: employee.elo,
-      rank: rankFor(employee.elo), progress: progressFor(xp), totalSeconds: totals.seconds,
+      rank: rankWithPeak(employee.elo, (await peakElos(env)).get(accountId) ?? null),
+      progress: progressFor(xp), totalSeconds: totals.seconds,
     },
     weeks: weeksBack(weeks),
     byWeek: byWeek.results,

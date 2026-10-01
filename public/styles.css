@@ -336,3 +336,10 @@ a.chip-btn { text-decoration: none; display: inline-flex; align-items: center; }
 .avatar-circle:hover { border-color: var(--blue); }
 .avatar-circle img { width: 100%; height: 100%; object-fit: cover; }
 label.linklike { cursor: pointer; }
+
+/* ELO history */
+.elo-chart { display: block; width: 100%; height: auto; }
+.list .xp.down { color: var(--muted); }
+.list li.undone .title, .list li.undone .xp { opacity: .55; text-decoration: line-through; }
+.elo-list .sub .linklike { font-size: .88rem; }
+.elo-list .title { white-space: normal; }

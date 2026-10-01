@@ -2,6 +2,7 @@
 // Nothing here touches XP or ELO; it only reads Jira and writes its own table.
 import { searchJql } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
+import { weightedScore } from './progression.js';
 
 const SPRINT_HOURS = 37.5;
 const CUSTOMER_CATEGORIES = ['Promtek UK Customers', 'Promtek SA Customers'];
@@ -167,7 +168,7 @@ export async function processEpics(env, epics) {
       const dep = num(f[map.dep]);
       const risk = num(f[map.risk]);
       const weighted = [scope, tech, dep, risk].every((v) => v != null)
-        ? tech * 0.40 + scope * 0.30 + dep * 0.20 + risk * 0.10
+        ? weightedScore({ tech, scope, risk, dep })
         : null;
       const sprints = num(cf[map.sprint]);
       const categoryStages = stagesByParent.get(category.id) || [];

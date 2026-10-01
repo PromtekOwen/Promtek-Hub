@@ -1,6 +1,8 @@
 // XP, level, title and ELO rank rules, matching the existing Jira automations.
 
-export const DEFAULT_ELO = 1100;
+// One below the Kilogram I threshold, so the first job anyone finishes well
+// lifts them a rank.
+export const DEFAULT_ELO = 1099;
 export const DEFAULT_BASELINE = 60;
 
 export const TITLES = [
@@ -82,4 +84,13 @@ export function xpRate({ jobElo, engineerElo, baseline, override }) {
   const o = override ?? 1;
   if (jobElo) return o * Math.max(0.5, 1 + (jobElo - engineerElo) / 800);
   return o * ((baseline ?? DEFAULT_BASELINE) / 60);
+}
+
+// Quote-time difficulty, from the four 1–5 scores set on the order.
+export function weightedScore({ tech, scope, risk, dep }) {
+  return tech * 0.40 + scope * 0.30 + risk * 0.20 + dep * 0.10;
+}
+
+export function jobEloFromScore(weighted) {
+  return weighted == null ? null : 750 + weighted * 250;
 }

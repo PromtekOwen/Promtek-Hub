@@ -1,1 +1,2 @@
-ALTER TABLE employees ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+-- employees.active is created by schema.sql, so nothing is added here.
+-- Kept so the numbering stays in step with databases set up earlier.

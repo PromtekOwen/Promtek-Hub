@@ -96,7 +96,7 @@ export async function processWorklogs(env, worklogs) {
   const wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart);
   if (!wls.length) return { processed: 0, changed: 0 };
 
-  const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, baseline FROM employees').all();
+  const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, baseline FROM employees').all();
   const employees = new Map(empRows.map((e) => [e.account_id, e]));
   const jobs = await loadJobs(env, wls.map((w) => w.issueId));
 
@@ -127,9 +127,9 @@ export async function processWorklogs(env, worklogs) {
 
     const job = jobs.get(wl.issueId) || {};
     const prev = existing.get(wl.id);
-    // The engineer's ELO is captured when the time is first logged, so later
-    // ELO changes never rewrite XP that has already been earned.
-    const engineerElo = prev?.engineer_elo ?? emp.elo ?? DEFAULT_ELO;
+    // The engineer's ELO is captured when the time is first logged, from the
+    // value frozen on Monday, so later changes never rewrite XP already earned.
+    const engineerElo = prev?.engineer_elo ?? emp.elo_week ?? emp.elo ?? DEFAULT_ELO;
     const override = job.xp_override ?? 1;
     const rate = xpRate({ jobElo: job.job_elo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
     const xp = Math.round(rate * (wl.seconds / 60));
@@ -170,9 +170,9 @@ async function raiseUnmatchedAlert(env, accountIds) {
     kind: 'unmatched-worklog',
     dedupe: `unmatched:${day}:${accountIds.sort().join(',')}`,
     subject: 'Time logged by someone without an Employee profile',
-    body: `Time was logged in Tempo by ${accountIds.length} Atlassian account(s) with no Employee issue in ${env.PROFILE_PROJECT}:\n\n`
+    body: `Time was logged in Tempo by ${accountIds.length} Atlassian account(s) with no employee in the hub:\n\n`
       + accountIds.map((id) => `  ${id}`).join('\n')
-      + `\n\nThey are earning no XP until a profile exists with their account ID in the ${env.USERID_FIELD_NAME} field.`,
+      + '\n\nThey are earning no XP until they are added under Admin, Employees with that Jira account ID.',
   });
 }
 
@@ -358,9 +358,12 @@ export async function runScheduled(env) {
   await attempt('Deletion check', () => reconcileNextDay(env));
   const { backfillStep } = await import('./jobs.js');
   await attempt('Job backfill', () => backfillStep(env));
+  const Elo = await import('./elo.js');
+  await attempt('ELO ratings', () => Elo.rateStep(env));
   if (new Date().getUTCMinutes() < 2) {
     await attempt('Profile refresh', () => refreshProfiles(env));
     await attempt('Weekly snapshot', () => snapshotWeek(env));
+    await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
     const { scanCompleted } = await import('./jobs.js');
     await attempt('Completed jobs', () => scanCompleted(env));
     if (new Date().getUTCHours() === 7) {

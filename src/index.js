@@ -2,7 +2,8 @@
 // scheduled Tempo sync.
 import { getUser } from './auth.js';
 import { findAccountIdByEmail } from './jira.js';
-import { progressFor, rankFor } from './progression.js';
+import { progressFor } from './progression.js';
+import * as Elo from './elo.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
@@ -233,6 +234,14 @@ async function route(request, env, url, user) {
     return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', accountId: user.accountId }));
   }
 
+  if (method === 'GET' && pathname === '/api/elo/history') {
+    const accountId = url.searchParams.get('accountId') || user.accountId;
+    if (!accountId) return json({ error: 'Your account isn\'t linked to a profile yet.' }, 404);
+    if (accountId !== user.accountId && !user.isLead) return json({ error: 'Only team leads and admins can see someone else\'s history.' }, 403);
+    const data = await Elo.history(env, accountId);
+    return data ? json(data) : json({ error: 'No such person.' }, 404);
+  }
+
   if (method === 'GET' && pathname === '/api/reports/me') {
     if (!user.accountId) return json({ error: 'Your account isn\'t linked to a profile yet.' }, 404);
     return json(await engineerReport(env, user.accountId, { weeks: 12 }));
@@ -287,6 +296,11 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
+    if (method === 'GET' && pathname === '/api/admin/elo') return json(await Elo.status(env));
+    if (method === 'POST' && pathname === '/api/admin/elo-start') return json(await Elo.startEngine(env, body.from));
+    if (method === 'POST' && pathname === '/api/admin/elo-stop') return json(await Elo.stopEngine(env));
+    if (method === 'POST' && pathname === '/api/admin/elo-step') return json(await Elo.rateStep(env));
+    if (method === 'POST' && pathname === '/api/admin/elo-reverse') return json(await Elo.reverseEvent(env, user, body.id));
 
     if (method === 'POST' && pathname === '/api/admin/start-ledger') {
       if (body.confirm !== 'START') return json({ error: 'Type START to confirm.' }, 400);
@@ -431,6 +445,7 @@ async function getMe(env, user) {
   ]);
 
   const xp = emp.opening_xp + totals.xp;
+  const peak = (await Elo.peakElos(env)).get(emp.account_id) ?? null;
   return {
     ...base,
     linked: true,
@@ -441,7 +456,7 @@ async function getMe(env, user) {
       team: emp.team,
       elo: emp.elo,
       baseline: emp.baseline,
-      rank: rankFor(emp.elo),
+      rank: Elo.rankWithPeak(emp.elo, peak),
       progress: progressFor(xp),
       week: { xp: week.xp, seconds: week.seconds, from: monday },
     },
