@@ -445,6 +445,37 @@ Each developer has a Condor rating, separate from their customer ELO. Each finis
 
 If Jira can't take an estimate or a triage decision, it's kept in the hub, retried every hour, and an alert says how many are waiting.
 
+### Release planning
+
+The Plan tab lays each open release's triaged tickets onto the Condor team's working days.
+
+**Capacity.** Each person has their hours a week on Condor, the weekdays they work on it, and periods away (leave, university blocks, customer work). It defaults to 37.5 hours, Monday to Friday. Anyone can be left out of planning. A share of everyone's time is kept free for emergencies, 20% unless changed. Kieran, Simon and admins edit all of this on the Plan tab. Bank holidays aren't known to the hub, so add them as days away.
+
+**The plan.**
+1. Musts first, then Shoulds, then Coulds. Within each, work in progress comes first, then assigned work, then the oldest.
+2. Assigned tickets go to their assignee; unassigned ones to whoever would finish soonest.
+3. A ticket's hours are its estimate less the time already logged. A ticket already past its estimate keeps a fifth of it, at least an hour, and is marked for re-estimating.
+4. Tickets without an estimate are listed for estimating rather than planned.
+5. A release with no date in Jira is planned to 90 days ahead.
+
+**Suggestions.** When Musts or Shoulds don't fit, lower-priority work is offered for the next release. A move is only suggested if it lets more important work finish sooner. A Should never makes way for another Should, and work in progress is never moved. Coulds that can't fit are offered too. "Move it" changes the Fix Version in Jira; "Keep it in" stops the suggestion for that release.
+
+**Accepting the plan** writes each planned ticket's start and due dates to Jira, and the planned person where nobody is assigned. The start date goes in the field named "Start date", looked up by name; if there isn't one, only due dates are written. Writes beyond the first 30 carry on in the background. Developers see their own planned tickets.
+
+### Keeping inside Cloudflare's limits
+
+The free Workers plan allows 50 outside calls (to Jira, Tempo, Bitbucket or the mail relay) in each run. Every 2 minutes the hub runs the weekly snapshot, the ELO freeze and the Tempo sync, then the next of these jobs in turn:
+- orders
+- finished categories
+- ELO ratings
+- Bitbucket
+- MES
+- MES changes to Jira
+- the three hourly jobs
+- alert emails
+
+A job with nothing to do passes its turn on. Long pieces of work, such as reading Bitbucket or two years of MES, carry on across runs, a capped amount at a time.
+
 ## Adding more apps later
 
 Each app lives in its own folder under `public/apps/`, and gets one entry in `public/modules.js` with a name, description, link and icon. Set `comingSoon: true` to show a placeholder tile, or `adminOnly: true` to show it only to admins. Apps that need to save data get their own API routes in `src/index.js` and tables in the same database.

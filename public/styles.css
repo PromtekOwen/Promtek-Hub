@@ -435,3 +435,18 @@ textarea, label > input[data-jobs-field], label > input[data-mod-field] { font-w
 .mes-answers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
 .mes-answers .btn { white-space: normal; line-height: 1.2; padding-left: .4rem; padding-right: .4rem; }
 .mes-answers .btn.secondary { background: #fff; border: 1px solid var(--line); }
+
+/* Release plan */
+.plan-timeline { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.plan-timeline svg { display: block; max-width: none; }
+.key-dot { display: inline-block; width: .7rem; height: .7rem; border-radius: 3px; margin: 0 .3rem 0 .6rem; vertical-align: -1px; }
+tr.unfit td { background: #fff4f2; }
+.cap-list li { display: block; }
+.cap-list .title { display: block; }
+.cap-list .sub { display: block; }
+.cap-edit { margin-top: .75rem; display: grid; gap: .6rem; }
+.cap-edit label > input[type=number] { display: block; width: 8rem; margin-top: .3rem; font-weight: 400; }
+.inline-check { display: flex; gap: .5rem; align-items: center; font-weight: 600; }
+.cap-away-add { gap: .5rem; align-items: end; flex-wrap: wrap; }
+.cap-away-add input { display: block; margin-top: .3rem; font-weight: 400; }
+.cap-away li { padding: .25rem 0; }

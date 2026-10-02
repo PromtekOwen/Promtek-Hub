@@ -210,7 +210,7 @@ async function raiseUnmatchedAlert(env, accountIds) {
 export async function sendAlerts(env) {
   if (!env.ALERT_WEBHOOK_URL) return { skipped: 'No mail relay configured' };
   const { results } = await env.DB.prepare(
-    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 20'
+    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 15'
   ).all();
   if (!results.length) return { sent: 0 };
   const now = new Date().toISOString();
@@ -378,43 +378,82 @@ export async function snapshotWeek(env, weekStart) {
 
 // ---------- Scheduled run (every 2 minutes) ----------
 
+// The free Workers plan allows 50 outside calls per run. Each run does the
+// Tempo sync, then the next job in turn; a job with nothing to do (no calls
+// made) hands over to the one after, so quiet jobs never waste a run.
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
+
 export async function runScheduled(env) {
   if (!(await getState(env, 'ledger_start'))) return;
   const errors = [];
   const attempt = async (label, fn) => {
-    try { await fn(); } catch (err) { errors.push(`${label}: ${err.message}`); console.error(label, err); }
+    try { return await fn(); } catch (err) { errors.push(`${label}: ${err.message}`); console.error(label, err); return null; }
   };
+  // These make no outside calls, and the freeze must come before Monday's first time is counted.
+  const Elo = await import('./elo.js');
+  await attempt('Weekly snapshot', () => snapshotWeek(env));
+  await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
   await attempt('Deletion check', () => reconcileNextDay(env));
-  const { backfillStep } = await import('./jobs.js');
-  await attempt('Job backfill', () => backfillStep(env));
-  const { scanCategories } = await import('./jobs.js');
-  await attempt('Finished categories', () => scanCategories(env));
-  const Elo = await import('./elo.js');
-  await attempt('ELO ratings', () => Elo.rateStep(env));
-  const DevTime = await import('./devtime.js');
-  await attempt('Bitbucket', async () => { const r = await DevTime.poll(env); if (r.error) throw new Error(r.error); return r; });
-  const Mes = await import('./mes.js');
-  await attempt('MES tickets', () => Mes.scan(env));
-  await attempt('Condor ratings', () => Mes.rateStep(env));
-  if (new Date().getUTCMinutes() < 2) await attempt('Day reminders', () => DevTime.reminders(env));
-  if (new Date().getUTCMinutes() < 2) {
-    await attempt('Profile refresh', () => refreshProfiles(env));
-    await attempt('Weekly snapshot', () => snapshotWeek(env));
-    await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
-    const { scanCompleted } = await import('./jobs.js');
-    await attempt('Completed jobs', () => scanCompleted(env));
-    const Disputes = await import('./disputes.js');
-    await attempt('Estimates and disputes', () => Disputes.hourly(env));
-    const Quotes = await import('./quotes.js');
-    await attempt('Quotes', () => Quotes.hourly(env));
-    await attempt('MES to Jira', () => Mes.hourly(env));
-    if (new Date().getUTCHours() === 7) {
-      const { checkExpiries } = await import('./vehicles.js');
-      await attempt('Vehicle expiries', () => checkExpiries(env));
-    }
-    await attempt('Alert email', () => sendAlerts(env));
+
+  const hourKey = new Date().toISOString().slice(0, 13);
+  const onceAnHour = async (slot, fn) => {
+    if ((await getState(env, `slot_hour:${slot}`)) === hourKey) return { idle: true };
+    await setState(env, `slot_hour:${slot}`, hourKey);
+    await fn();
+    return {};
+  };
+  const jobs = {
+    orders: async () => attempt('Job backfill', async () => (await import('./jobs.js')).backfillStep(env)),
+    categories: async () => attempt('Finished categories', async () => (await import('./jobs.js')).scanCategories(env)),
+    elo: async () => {
+      const r = await attempt('ELO ratings', async () => (await import('./elo.js')).rateStep(env, { limit: 2 }));
+      return typeof r?.skipped === 'string' ? { idle: true } : r;
+    },
+    bitbucket: async () => attempt('Bitbucket', async () => {
+      const r = await (await import('./devtime.js')).poll(env);
+      if (r.error) throw new Error(r.error);
+      return r;
+    }),
+    mes: async () => {
+      const Mes = await import('./mes.js');
+      await attempt('MES tickets', () => Mes.scan(env));
+      await attempt('Condor ratings', () => Mes.rateStep(env));
+    },
+    'hourly-scan': () => onceAnHour('hourly-scan', async () => {
+      await attempt('Profile refresh', () => refreshProfiles(env));
+      await attempt('Day reminders', async () => (await import('./devtime.js')).reminders(env));
+      await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));
+    }),
+    'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
+    'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {
+      await attempt('Quotes', async () => (await import('./quotes.js')).hourly(env));
+      if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
+    }),
+    'mes-sync': async () => {
+      const pending = await env.DB.prepare(
+        `SELECT (SELECT COUNT(*) FROM mes_estimates WHERE jira_synced = 0) + (SELECT COUNT(*) FROM mes_plan WHERE jira_synced = 0)
+              + (SELECT COUNT(*) FROM mes_schedule WHERE jira_synced = 0) AS n`
+      ).first();
+      if (!pending?.n) return { idle: true };
+      await attempt('MES to Jira', async () => (await import('./mes.js')).hourly(env));
+      await attempt('MES timeline', async () => (await import('./mes-plan.js')).syncSchedule(env, { max: 20 }));
+    },
+    alerts: async () => {
+      const waiting = await env.DB.prepare('SELECT COUNT(*) AS n FROM alerts WHERE sent_at IS NULL').first();
+      if (!waiting?.n) return { idle: true };
+      await attempt('Alert email', () => sendAlerts(env));
+    },
+  };
+
+  let pointer = Number(await getState(env, 'slot_pointer')) || 0;
+  for (let tries = 0; tries < SLOTS.length; tries++) {
+    const slot = SLOTS[pointer % SLOTS.length];
+    pointer = (pointer + 1) % SLOTS.length;
+    const r = await jobs[slot]();
+    if (!r?.idle) break;
   }
+  await setState(env, 'slot_pointer', pointer);
 
   await setState(env, 'last_scheduled_run', new Date().toISOString());
   await setState(env, 'last_error', errors.length ? `${new Date().toISOString()} ${errors.join(' | ')}` : '');

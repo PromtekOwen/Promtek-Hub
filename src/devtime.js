@@ -55,45 +55,55 @@ const BB = 'https://api.bitbucket.org/2.0';
 const POLL_MS = 15 * 60_000;
 const OVERLAP_MS = 60 * 60_000;        // look back a little further than the last check
 const FIRST_LOOK_MS = 3 * 86_400_000;  // the first check covers the last three days
-const MAX_CALLS = 250;                 // well inside Bitbucket's hourly allowance
+// The free Workers plan allows 50 outside calls per run, shared with everything else.
+export const BB_CALLS_PER_RUN = 30;
+
+class OutOfCalls extends Error {}
 
 function bbAuth(env) {
   const email = env.BITBUCKET_EMAIL || env.JIRA_EMAIL;
   return `Basic ${btoa(`${email}:${env.BITBUCKET_API_TOKEN}`)}`;
 }
 
-function bitbucketClient(env) {
+function bitbucketClient(env, maxCalls) {
   let calls = 0;
-  return async function get(url) {
-    if (++calls > MAX_CALLS) throw new Error("Stopped early to stay inside Bitbucket's limits; the rest is read next time.");
+  const get = async (url) => {
+    if (calls >= maxCalls) throw new OutOfCalls();
+    calls++;
     const res = await fetch(url.startsWith('http') ? url : `${BB}${url}`, { headers: { Authorization: bbAuth(env), Accept: 'application/json' } });
     if (res.status === 401 || res.status === 403) throw new Error(`Bitbucket refused the token (${res.status}). Check it has the Bitbucket read scopes and hasn't expired.`);
     if (!res.ok) throw new Error(`Bitbucket ${res.status}: ${(await res.text()).slice(0, 200)}`);
     return res.json();
   };
+  get.calls = () => calls;
+  return get;
 }
 
 // Pages newest first, stopping once items are older than `since`.
-async function* newestFirst(get, url, dateOf, since) {
+async function newestFirst(get, url, dateOf, since) {
+  const out = [];
   let next = url;
   while (next) {
     const page = await get(next);
     for (const item of page.values || []) {
-      if (Date.parse(dateOf(item) || 0) < since) return;
-      yield item;
+      if (Date.parse(dateOf(item) || 0) < since) return out;
+      out.push(item);
     }
     next = page.next || null;
   }
+  return out;
 }
 
-export async function poll(env, { force = false } = {}) {
-  if (!env.BITBUCKET_API_TOKEN || !env.BITBUCKET_WORKSPACE) return { skipped: "Bitbucket isn't set up" };
+// One check is a queue of small tasks (a repository, a branch, a pull request),
+// worked through over as many runs as it takes, so no run goes over its calls.
+export async function poll(env, { force = false, maxCalls = BB_CALLS_PER_RUN } = {}) {
+  if (!env.BITBUCKET_API_TOKEN || !env.BITBUCKET_WORKSPACE) return { idle: true, skipped: "Bitbucket isn't set up" };
   const state = JSON.parse((await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'bitbucket_poll'").first())?.value || '{}');
-  const started = Date.now();
-  if (!force && state.at && started - Date.parse(state.at) < POLL_MS) return { skipped: 'Checked recently' };
+  const now = Date.now();
+  let queue = state.queue || [];
+  if (!queue.length && !force && state.at && now - Date.parse(state.at) < POLL_MS) return { idle: true, skipped: 'Checked recently' };
 
-  const since = state.through ? Date.parse(state.through) - OVERLAP_MS : started - FIRST_LOOK_MS;
-  const get = bitbucketClient(env);
+  const get = bitbucketClient(env, maxCalls);
   const people = await employeeIndex(env);
   const ws = encodeURIComponent(env.BITBUCKET_WORKSPACE);
   const points = [];
@@ -102,50 +112,75 @@ export async function poll(env, { force = false } = {}) {
     for (const key of keys) points.push({ accountId, key, at: new Date(at).toISOString(), kind, ref: String(ref), repo });
   };
 
-  let repos = 0, error = null;
+  let cycleStart = state.cycleStart || null;
+  let since = state.since || null;
+  let error = null, finished = false, reposThisCycle = state.repos || 0;
   try {
-    for await (const repo of newestFirst(get, `/repositories/${ws}?sort=-updated_on&pagelen=100&fields=next,values.slug,values.full_name,values.updated_on`,
-      (r) => r.updated_on, since)) {
-      repos++;
-      const base = `/repositories/${ws}/${encodeURIComponent(repo.slug)}`;
-      // Commits on ticket branches count for the branch's ticket.
-      for await (const branch of newestFirst(get, `${base}/refs/branches?sort=-target.date&pagelen=100&fields=next,values.name,values.target.date`,
-        (b) => b.target?.date, since)) {
-        const keys = keysIn(branch.name);
-        if (!keys.length) continue;
-        for await (const c of newestFirst(get, `${base}/commits/${encodeURIComponent(branch.name)}?pagelen=50`, (x) => x.date, since)) {
-          add(whoIs(people, c.author?.user, c.author?.raw), keys, c.date, 'commit', c.hash, repo.full_name);
+    if (!queue.length) {
+      cycleStart = new Date(now).toISOString();
+      since = state.through ? Date.parse(state.through) - OVERLAP_MS : now - FIRST_LOOK_MS;
+      const repos = await newestFirst(get, `/repositories/${ws}?sort=-updated_on&pagelen=100&fields=next,values.slug,values.full_name,values.updated_on`,
+        (r) => r.updated_on, since);
+      queue = repos.map((r) => ({ t: 'repo', slug: r.slug, full: r.full_name }));
+      reposThisCycle = repos.length;
+    }
+    while (queue.length) {
+      const task = queue[0];
+      const base = `/repositories/${ws}/${encodeURIComponent(task.slug)}`;
+      if (task.t === 'repo') {
+        const branches = await newestFirst(get, `${base}/refs/branches?sort=-target.date&pagelen=100&fields=next,values.name,values.target.date`, (b) => b.target?.date, since);
+        const prs = await newestFirst(get, `${base}/pullrequests?state=OPEN&state=MERGED&state=DECLINED&sort=-updated_on&pagelen=50`, (x) => x.updated_on, since);
+        queue.shift();
+        for (const b of branches) if (keysIn(b.name).length) queue.push({ t: 'branch', slug: task.slug, full: task.full, name: b.name });
+        for (const pr of prs) {
+          const keys = keysIn(pr.source?.branch?.name || '', pr.title || '');
+          if (!keys.length) continue;
+          add(whoIs(people, pr.author), keys, pr.created_on, 'pr-created', `${task.full}#${pr.id}:created`, task.full);
+          queue.push({ t: 'pr', slug: task.slug, full: task.full, id: pr.id, keys });
         }
-      }
-      // Reviews, approvals and comments on pull requests for tickets.
-      for await (const pr of newestFirst(get, `${base}/pullrequests?state=OPEN&state=MERGED&state=DECLINED&sort=-updated_on&pagelen=50`,
-        (x) => x.updated_on, since)) {
-        const keys = keysIn(pr.source?.branch?.name || '', pr.title || '');
-        if (!keys.length) continue;
-        add(whoIs(people, pr.author), keys, pr.created_on, 'pr-created', `${repo.full_name}#${pr.id}:created`, repo.full_name);
-        for await (const a of newestFirst(get, `${base}/pullrequests/${pr.id}/activity?pagelen=50`,
-          (x) => x.approval?.date || x.comment?.created_on || x.update?.date, since)) {
-          if (a.approval) add(whoIs(people, a.approval.user), keys, a.approval.date, 'pr-approved', `${repo.full_name}#${pr.id}:approved:${a.approval.user?.account_id}`, repo.full_name);
-          if (a.comment) add(whoIs(people, a.comment.user), keys, a.comment.created_on, 'pr-comment', `${repo.full_name}#${pr.id}:comment:${a.comment.id}`, repo.full_name);
+      } else if (task.t === 'branch') {
+        // Commits on ticket branches count for the branch's ticket.
+        const commits = await newestFirst(get, `${base}/commits/${encodeURIComponent(task.name)}?pagelen=50`, (x) => x.date, since);
+        for (const c of commits) add(whoIs(people, c.author?.user, c.author?.raw), keysIn(task.name), c.date, 'commit', c.hash, task.full);
+        queue.shift();
+      } else {
+        const activity = await newestFirst(get, `${base}/pullrequests/${task.id}/activity?pagelen=50`,
+          (x) => x.approval?.date || x.comment?.created_on || x.update?.date, since);
+        for (const a of activity) {
+          if (a.approval) add(whoIs(people, a.approval.user), task.keys, a.approval.date, 'pr-approved', `${task.full}#${task.id}:approved:${a.approval.user?.account_id}`, task.full);
+          if (a.comment) add(whoIs(people, a.comment.user), task.keys, a.comment.created_on, 'pr-comment', `${task.full}#${task.id}:comment:${a.comment.id}`, task.full);
         }
+        queue.shift();
       }
     }
+    finished = true;
   } catch (err) {
-    error = err.message;
+    // Running out of calls isn't a problem: the rest of the queue carries on next run.
+    if (!(err instanceof OutOfCalls)) error = err.message;
   }
 
   const added = await store(env, points);
-  // After a failure the next check starts from the same place, so nothing is missed.
-  const through = error ? state.through || null : new Date(started).toISOString();
+  const next = {
+    at: new Date(now).toISOString(),
+    // Only a finished check moves the starting point on, so nothing is missed.
+    through: finished && !error ? cycleStart : state.through || null,
+    cycleStart: finished ? null : cycleStart,
+    since: finished ? null : since,
+    queue: finished ? [] : queue,
+    repos: reposThisCycle,
+    added: (state.queue?.length ? state.added || 0 : 0) + added,
+    calls: get.calls(),
+    error,
+  };
   await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('bitbucket_poll', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-    .bind(JSON.stringify({ at: new Date(started).toISOString(), through, repos, added, error })).run();
-  return { repos, added, error };
+    .bind(JSON.stringify(next)).run();
+  return { repos: reposThisCycle, added, waiting: next.queue.length, finished, error };
 }
 
 export async function testConnection(env) {
   if (!env.BITBUCKET_API_TOKEN) throw new Error('Add BITBUCKET_API_TOKEN to the Worker first.');
   if (!env.BITBUCKET_WORKSPACE) throw new Error('Set BITBUCKET_WORKSPACE in wrangler.jsonc first.');
-  const get = bitbucketClient(env);
+  const get = bitbucketClient(env, 2);
   const page = await get(`/repositories/${encodeURIComponent(env.BITBUCKET_WORKSPACE)}?pagelen=5&sort=-updated_on&fields=size,values.full_name`);
   return { ok: true, repositories: page.size ?? null, recent: (page.values || []).map((r) => r.full_name) };
 }
@@ -304,6 +339,7 @@ export async function status(env) {
   const last = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'bitbucket_poll'").first();
   const week = await env.DB.prepare('SELECT COUNT(*) AS n, COUNT(DISTINCT account_id) AS people FROM dev_activity WHERE day >= ?')
     .bind(new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10)).first();
-  return { configured: Boolean(env.BITBUCKET_API_TOKEN && env.BITBUCKET_WORKSPACE), workspace: env.BITBUCKET_WORKSPACE || null,
-    last: last ? JSON.parse(last.value) : null, week };
+  const parsed = last ? JSON.parse(last.value) : null;
+  if (parsed) { parsed.waiting = parsed.queue?.length || 0; delete parsed.queue; }
+  return { configured: Boolean(env.BITBUCKET_API_TOKEN && env.BITBUCKET_WORKSPACE), workspace: env.BITBUCKET_WORKSPACE || null, last: parsed, week };
 }

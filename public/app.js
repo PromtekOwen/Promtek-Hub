@@ -3635,7 +3635,7 @@ async function dayClick(event) {
 function bitbucketAdminHtml(b) {
   const when = (iso) => new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
   const last = b.last
-    ? `${when(b.last.at)}. ${n(b.last.repos || 0)} ${b.last.repos === 1 ? 'repository' : 'repositories'} with new work, ${n(b.last.added || 0)} new pieces of activity.`
+    ? `${when(b.last.at)}. ${n(b.last.repos || 0)} ${b.last.repos === 1 ? 'repository' : 'repositories'} with new work, ${n(b.last.added || 0)} new pieces of activity.${b.last.waiting ? ` Part-way through: ${n(b.last.waiting)} ${b.last.waiting === 1 ? 'piece' : 'pieces'} left, carried on every few minutes.` : ''}`
     : 'Not yet';
   return `<h2>Bitbucket</h2>
     <div class="card"><dl class="state">
@@ -3645,7 +3645,7 @@ function bitbucketAdminHtml(b) {
         ${b.last?.error ? `<dt>Problem</dt><dd class="bad">${esc(b.last.error)}</dd>` : ''}
         <dt>Last 7 days</dt><dd>${n(b.week?.n || 0)} pieces of activity from ${n(b.week?.people || 0)} ${b.week?.people === 1 ? 'person' : 'people'}</dd>
       </dl>
-      <p class="muted">Every repository in the workspace is checked every 15 minutes. Commits on MES branches, and pull request reviews, approvals and comments, become draft worklogs that developers check and log in one go from Condor Dev.</p>
+      <p class="muted">Repositories with new work are checked about every 15 minutes, a few at a time so each run stays inside Cloudflare's limits. Commits on MES branches, and pull request reviews, approvals and comments, become draft worklogs that developers check and log in one go from Condor Dev.</p>
       <div class="row"><button class="btn secondary" data-bb="test">Test connection</button><button class="btn secondary" data-bb="poll">Check now</button></div>
       <div class="result" id="bb-result" role="status"></div></div>`;
 }
@@ -3659,12 +3659,17 @@ let mesTriage = { versionId: null, skipped: [] };
 let mesRatingFor = null;
 
 function condorTabs() {
-  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor') ? [['triage', 'Triage']] : []), ['ratings', 'Ratings']];
+  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor') ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['ratings', 'Ratings']];
   return `<div class="tabs condor-tabs">${tabs.map(([k, l]) => `<button class="tab${condorTab === k ? ' on' : ''}" data-condor-tab="${k}">${l}</button>`).join('')}</div>`;
 }
 
 const mesMeta = (t) => [t.type, t.module].filter(Boolean).map(esc).join(', ');
 const mesLink = (key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(key)}</a>`;
+
+function mesReadingHtml(data) {
+  if (!data.catchingUp) return '';
+  return `<div class="card notice"><p style="margin:0"><span class="spinner" aria-hidden="true"></span> MES is still being read from Jira${data.readUpTo ? `, up to tickets last changed on ${shortDate(data.readUpTo)} ${data.readUpTo.slice(0, 4)}` : ''}. ${n(data.known)} ${data.known === 1 ? 'ticket' : 'tickets'} so far; the rest arrive over the next hour or so.</p></div>`;
+}
 
 async function mesListHtml() {
   const data = await api(`/api/mes/outstanding?filter=${mesFilter}`);
@@ -3676,8 +3681,9 @@ async function mesListHtml() {
       `<button class="seg${mesFilter === k ? ' on' : ''}" data-mes-filter="${k}">${l}</button>`).join('')}</span>
       <input type="search" id="mes-search" placeholder="Search MES" aria-label="Search MES"></div>
     <p class="help">Estimates come from comparing each ticket with finished ones of the same kind: a few smaller, same or bigger questions.</p>
+    ${mesReadingHtml(data)}
     ${rows ? `<ul class="list mes-list">${rows}</ul>${data.total > data.tickets.length ? `<p class="muted">Showing ${data.tickets.length} of ${data.total}. Search to narrow it down.</p>` : ''}`
-      : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
+      : data.catchingUp && !data.known ? '' : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
 }
 
 async function mesEstimateHtml() {
@@ -3741,9 +3747,10 @@ async function mesTriageHtml() {
   const queue = data.tickets.filter((t) => !mesTriage.skipped.includes(t.issue_id));
   const t = queue[0];
   const picker = `<label>Release<select data-mes-version>${data.versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}</select></label>`;
+  if (!t && data.catchingUp) return `${mesReadingHtml(data)}<div class="card">${picker}<p style="margin-bottom:0">Tickets to triage appear here as MES is read.</p></div>`;
   if (!t) return `<div class="card">${picker}<p style="margin-bottom:0">Everything open has been triaged.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>`;
-  return `<div class="card">${picker}
-      <p class="muted">${n(queue.length)} left to triage</p>
+  return `${mesReadingHtml(data)}<div class="card">${picker}
+      <p class="muted">${n(queue.length)} left to triage${data.catchingUp ? ' so far' : ''}</p>
       <div class="triage-ticket">
         <p style="margin-top:0"><strong>${mesLink(t.issue_key)} ${esc(t.summary)}</strong><br><span class="muted">${mesMeta(t)}</span></p>
         <p>${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated at'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}.` : 'No estimate yet.'}
@@ -3778,12 +3785,14 @@ async function condorHtml() {
   else if (condorTab === 'estimate') body = await mesListHtml();
   else if (condorTab === 'triage') body = await mesTriageHtml();
   else if (condorTab === 'ratings') body = await mesRatingsHtml();
+  else if (condorTab === 'plan') body = await mesPlanHtml();
   else body = '<div id="day-drafts"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading your days</p></div></div>';
   return `${mesEst ? '' : condorTabs()}${body}`;
 }
 
 async function condorClick(event) {
   const t = (sel) => event.target.closest(sel);
+  if (condorTab === 'plan' && !mesEst && await planClick(event) !== false) return true;
   if (t('[data-condor-tab]')) { condorTab = t('[data-condor-tab]').dataset.condorTab; mesRatingFor = null; return render(); }
   if (t('[data-mes-filter]')) { mesFilter = t('[data-mes-filter]').dataset.mesFilter; return render(); }
   const est = t('[data-mes-estimate]');
@@ -3813,6 +3822,7 @@ async function condorClick(event) {
           difficulty: mesEst.difficulty, tags: mesEst.tags, timeboxHours: mesEst.timeboxHours, best: mesEst.best, likely: mesEst.likely, worst: mesEst.worst }) });
         toast(r.jiraSynced ? `Estimated at ${hoursLabel(r.hours)}` : `Estimated at ${hoursLabel(r.hours)}. Jira will catch up`);
         if (mesEst.from === 'triage') condorTab = 'triage';
+        if (mesEst.from === 'plan') condorTab = 'plan';
         mesEst = null; return render();
       } catch (err) { document.getElementById('mes-result').textContent = err.message; save.disabled = false; }
       return true;
@@ -3837,10 +3847,201 @@ function condorInput(event) {
   const el = event.target;
   if (el.dataset.mesField && mesEst) { mesEst[el.dataset.mesField] = el.value; return true; }
   if (el.matches('[data-mes-version]')) { mesTriage.versionId = el.value; render(); return true; }
+  if (el.matches('[data-plan-version]')) { planVersion = el.value; planCapacityOpen = null; render(); return true; }
   if (el.id === 'mes-search') {
     const q = el.value.toLowerCase();
     document.querySelectorAll('[data-mes-row]').forEach((r) => { r.hidden = q.length > 1 && !r.textContent.toLowerCase().includes(q); });
     return true;
+  }
+  return false;
+}
+
+// ---------- Condor Dev: release plan ----------
+
+let planVersion = null;
+let planCapacityOpen = null;
+const PRIORITY_COLOURS = { Must: 'var(--blue-deep)', Should: 'rgb(0,141,198)', Could: 'rgb(140,196,224)' };
+const WEEKDAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri']];
+const dayDiff = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
+
+function planTimeline(p) {
+  const rows = [...new Set(p.schedule.filter((s) => s.start).map((s) => s.personId))];
+  if (!rows.length) return '';
+  const start = p.schedule.reduce((m, s) => (s.start && s.start < m ? s.start : m), p.version.releaseDate);
+  const end = p.schedule.reduce((m, s) => (s.due && s.due > m ? s.due : m), p.version.releaseDate);
+  const days = dayDiff(start, end) + 1;
+  const dw = 14, label = 96, rowH = 34, top = 24;
+  const w = label + days * dw + 10, h = top + rows.length * rowH + 8;
+  const x = (d) => label + dayDiff(start, d) * dw;
+  let ticks = '';
+  for (let i = 0; i < days; i += 7) {
+    const d = new Date(Date.parse(`${start}T12:00:00Z`) + i * 86_400_000).toISOString().slice(0, 10);
+    ticks += `<line x1="${x(d)}" x2="${x(d)}" y1="${top - 4}" y2="${h}" stroke="var(--line)"/><text x="${x(d) + 3}" y="14" font-size="11" fill="var(--muted)">${shortDate(d)}</text>`;
+  }
+  const bars = p.schedule.filter((s) => s.start).map((s) => {
+    const y = top + rows.indexOf(s.personId) * rowH + 6;
+    const bw = Math.max(dw - 2, (dayDiff(s.start, s.due) + 1) * dw - 2);
+    return `<g><title>${esc(s.key)} ${esc(s.summary)}: ${shortDate(s.start)} to ${shortDate(s.due)}, ${hoursLabel(s.hours)}</title>
+      <rect x="${x(s.start) + 1}" y="${y}" width="${bw}" height="${rowH - 12}" rx="5" fill="${s.fits ? PRIORITY_COLOURS[s.priority] : 'var(--danger)'}" opacity="${s.fits ? 1 : 0.75}"/>
+      ${bw > 52 ? `<text x="${x(s.start) + 6}" y="${y + 15}" font-size="11" fill="#fff">${esc(s.key)}</text>` : ''}</g>`;
+  }).join('');
+  const names = rows.map((id, i) => `<text x="0" y="${top + i * rowH + 21}" font-size="12" fill="var(--ink)">${esc((p.names[id] || 'Unassigned').split(' ')[0])}</text>`).join('');
+  const rel = x(p.version.releaseDate) + dw;
+  return `<div class="plan-timeline"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="Timeline of planned tickets">
+      ${ticks}${names}${bars}
+      <line x1="${rel}" x2="${rel}" y1="${top - 6}" y2="${h}" stroke="var(--danger)" stroke-width="2" stroke-dasharray="4 3"/>
+      <text x="${rel + 3}" y="${top + 4}" font-size="11" fill="var(--danger)">Release</text></svg></div>
+    <p class="help">${Object.entries(PRIORITY_COLOURS).map(([k, c]) => `<span class="key-dot" style="background:${c}"></span>${k}`).join(' ')} <span class="key-dot" style="background:var(--danger)"></span>After the release</p>`;
+}
+
+function planRowsHtml(list, p) {
+  return `<div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Priority</th>${p.canPlan ? '<th>Who</th>' : ''}<th>Starts</th><th>Due</th><th class="num">Hours left</th></tr></thead>
+    <tbody>${list.map((s) => `<tr${s.fits ? '' : ' class="unfit"'}>
+      <td>${mesLink(s.key)}<br><span class="muted">${esc(s.summary)}</span></td><td>${esc(s.priority)}</td>
+      ${p.canPlan ? `<td>${esc(p.names[s.personId] || '—')}${s.plannedAssignee && s.personId ? '<br><span class="muted">suggested</span>' : ''}</td>` : ''}
+      <td>${s.start ? shortDate(s.start) : '—'}</td><td>${s.due ? shortDate(s.due) : '—'}${s.fits ? '' : '<br><span class="bad">after the release</span>'}</td>
+      <td class="num">${hoursLabel(Math.round(s.hours * 4) / 4)}${s.overrun ? '<br><span class="bad">over estimate</span>' : ''}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
+function capacityListHtml(p) {
+  const rows = p.people.map((c) => {
+    const open = planCapacityOpen === c.id;
+    const days = WEEKDAYS.filter(([d]) => c.days.includes(d)).map(([, l]) => l).join(', ');
+    return `<li data-cap="${esc(c.id)}">
+      <span class="title">${esc(c.name)}</span>
+      <span class="sub">${c.included ? `${n(c.hoursPerWeek)}h a week on Condor, ${days || 'no days'}${c.away.length ? `. Away ${c.away.map((a) => `${shortDate(a.from)}${a.until !== a.from ? ` to ${shortDate(a.until)}` : ''}${a.note ? ` (${esc(a.note)})` : ''}`).join(', ')}` : ''}` : 'Not planned for'}
+        <button class="linklike" data-cap-edit="${esc(c.id)}">${open ? 'Close' : 'Change'}</button></span>
+      ${open ? `<div class="cap-edit">
+        <label class="inline-check"><input type="checkbox" data-cap-included ${c.included ? 'checked' : ''}> Plan work for ${esc(c.name.split(' ')[0])}</label>
+        <label>Hours a week on Condor<input type="number" min="0" max="60" step="0.5" data-cap-hours value="${c.hoursPerWeek}"></label>
+        <div class="chips">${WEEKDAYS.map(([d, l]) => `<button class="chip${c.days.includes(d) ? ' on' : ''}" data-cap-day="${d}">${l}</button>`).join('')}</div>
+        <p class="help">Days away, such as leave, university blocks or time on customer work</p>
+        <ul class="list plain cap-away">${c.away.map((a, i) => `<li>${shortDate(a.from)}${a.until !== a.from ? ` to ${shortDate(a.until)}` : ''}${a.note ? `, ${esc(a.note)}` : ''} <button class="linklike" data-cap-away-remove="${i}">Remove</button></li>`).join('')}</ul>
+        <div class="row cap-away-add"><label>From<input type="date" data-cap-away-from></label><label>Until<input type="date" data-cap-away-until></label>
+          <label>Note<input type="text" data-cap-away-note placeholder="Optional"></label><button class="btn secondary" data-cap-away-add>Add</button></div>
+        <div class="row" style="margin-top:.75rem"><button class="btn" data-cap-save>Save</button></div></div>` : ''}
+    </li>`;
+  }).join('');
+  return `<ul class="list cap-list">${rows}</ul>`;
+}
+
+function capacityHtml(p) {
+  return `<h2>Capacity</h2>
+    <div class="card"><div class="row" style="align-items:end;gap:.75rem"><label>Kept free for emergencies<input type="number" min="0" max="50" step="5" id="plan-reserve" value="${Math.round(p.reserve * 100)}"></label>
+      <span style="padding-bottom:.6rem">%</span><button class="btn secondary" data-plan-reserve>Save</button></div>
+      <p class="help">Planned work fills each person's time up to this point, so emergencies have somewhere to go without moving everything.</p></div>
+    ${capacityListHtml(p)}`;
+}
+
+function renderPlanFrom(p) {
+  // Keeps unsaved capacity edits while the away list changes.
+  const host = view.querySelector(`[data-cap="${CSS.escape(planCapacityOpen)}"]`);
+  const hours = host?.querySelector('[data-cap-hours]')?.value;
+  const included = host?.querySelector('[data-cap-included]')?.checked;
+  const person = p.people.find((x) => x.id === planCapacityOpen);
+  if (person && hours !== undefined) { person.hoursPerWeek = Number(hours); person.included = included; }
+  const list = view.querySelector('.cap-list');
+  if (list) list.outerHTML = capacityListHtml(p);
+  return true;
+}
+
+async function mesPlanHtml() {
+  const p = await api(`/api/mes/plan${planVersion ? `?versionId=${encodeURIComponent(planVersion)}` : ''}`);
+  planCache = p;
+  if (!p.version) return '<div class="card"><p style="margin:0">There are no open releases in MES. Create the next version in Jira, with its start and release dates, and it appears here.</p></div>';
+  planVersion = p.version.id;
+  const picker = `<label>Release<select data-plan-version>${p.versions.map((v) => `<option value="${esc(v.id)}"${v.id === p.version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}</select></label>`;
+  const fitting = p.schedule.filter((s) => s.fits);
+  if (!p.canPlan) {
+    return `<div class="card">${picker}</div>
+      <h2>Your planned tickets</h2>
+      ${fitting.length || p.schedule.length ? planRowsHtml(p.schedule, p) : '<div class="card"><p style="margin:0">Nothing planned for you in this release yet.</p></div>'}`;
+  }
+  const free = p.usable - p.planned;
+  const unfit = p.schedule.filter((s) => !s.fits);
+  const unfitHours = unfit.reduce((t, s) => t + s.hours, 0);
+  const stats = `<dl class="stats">
+      <div><dt>Release</dt><dd>${shortDate(p.version.releaseDate)}<small>${p.noRelease ? 'no date in Jira, 90 days assumed' : esc(p.version.name)}</small></dd></div>
+      <div><dt>Time to plan</dt><dd>${hoursLabel(Math.round(p.usable))}<small>of ${hoursLabel(Math.round(p.capacity))}, ${Math.round(p.reserve * 100)}% kept free</small></dd></div>
+      <div><dt>Planned</dt><dd>${hoursLabel(Math.round(p.planned))}<small>${n(fitting.length)} ${fitting.length === 1 ? 'ticket' : 'tickets'}</small></dd></div>
+      ${unfit.length
+        ? `<div><dt>Doesn't fit</dt><dd class="bad">${hoursLabel(Math.round(unfitHours))}<small>${n(unfit.length)} ${unfit.length === 1 ? 'ticket' : 'tickets'} past the release</small></dd></div>`
+        : `<div><dt>Room left</dt><dd>${hoursLabel(Math.round(Math.max(0, free)))}<small>before the reserve</small></dd></div>`}</dl>`;
+  const sugg = p.suggestions.length ? `<h2>Suggested changes</h2><ul class="list approvals">${p.suggestions.map((s) => `<li>
+      <span class="title">Move ${mesLink(s.key)} ${esc(s.summary)}</span>
+      <span class="sub">${esc(s.priority)}, ${hoursLabel(Math.round(s.hours * 4) / 4)} left. To ${p.next ? esc(p.next.name) : 'no release'}, ${esc(s.reason)}.</span>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-plan-suggest="accept" data-issue="${esc(s.id)}">Move it</button>
+        <button class="btn secondary" data-plan-suggest="decline" data-issue="${esc(s.id)}">Keep it in</button></div></li>`).join('')}</ul>` : '';
+  const stuck = p.stillOut.length ? `<div class="card notice"><p style="margin:0">${p.stillOut.map((s) => mesLink(s.key)).join(', ')} still ${p.stillOut.length === 1 ? "doesn't" : "don't"} fit before the release, even with the suggested changes. Their time may need more people, a later release date, or using some of the reserve.</p></div>` : '';
+  const needs = p.needsEstimate.length ? `<h2>Needs an estimate first</h2><ul class="list mes-list">${p.needsEstimate.map((t) => `<li>
+      <span class="title">${mesLink(t.key)} ${esc(t.summary)}</span><span class="sub">${esc(t.priority)}</span>
+      <button class="chip-btn" data-mes-estimate="${esc(t.id)}" data-from="plan" style="margin-top:.4rem">Estimate</button></li>`).join('')}</ul>` : '';
+  const accepted = p.accepted.count
+    ? `Accepted ${new Date(p.accepted.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}, ${n(p.accepted.count)} tickets${p.accepted.waiting ? `, ${n(p.accepted.waiting)} still to reach Jira` : ', all in Jira'}.`
+    : 'Not accepted yet.';
+  return `<div class="card">${picker}</div>
+    ${stats}
+    ${sugg}${stuck}
+    <h2>Timeline</h2><div class="card">${planTimeline(p) || '<p style="margin:0">Nothing to plan yet. Triage tickets into this release and estimate them.</p>'}</div>
+    ${p.schedule.length ? `<h2>Tickets</h2>${planRowsHtml(p.schedule, p)}` : ''}
+    ${needs}
+    <div class="card" style="margin-top:1rem"><p style="margin-top:0">${accepted}</p>
+      <p class="help">Accepting writes each planned ticket's start and due dates to Jira for the timeline, and the suggested person where nobody is assigned.</p>
+      <button class="btn" data-plan-accept="1">Accept the plan</button><div class="result" id="plan-result" role="status"></div></div>
+    ${capacityHtml(p)}`;
+}
+
+let planCache = null;
+async function planClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const sug = t('[data-plan-suggest]');
+  if (sug) {
+    sug.disabled = true;
+    try { await api('/api/mes/suggestion', { method: 'POST', body: JSON.stringify({ issueId: sug.dataset.issue, versionId: planVersion, decision: sug.dataset.planSuggest }) }); }
+    catch (err) { toast(err.message); }
+    return render();
+  }
+  const accept = t('[data-plan-accept]');
+  if (accept) {
+    accept.disabled = true; accept.innerHTML = '<span class="spinner" aria-hidden="true"></span> Updating Jira';
+    try {
+      const r = await api('/api/mes/accept-plan', { method: 'POST', body: JSON.stringify({ versionId: planVersion }) });
+      toast(r.waiting ? `Plan accepted. ${r.waiting} more go to Jira over the next few minutes` : 'Plan accepted and in Jira');
+      if (!r.startField) toast('Due dates set. No "Start date" field was found in Jira, so start dates stay in the hub');
+      return render();
+    } catch (err) { document.getElementById('plan-result').textContent = err.message; accept.disabled = false; accept.textContent = 'Accept the plan'; }
+    return true;
+  }
+  if (t('[data-plan-reserve]')) {
+    try { await api('/api/mes/reserve', { method: 'POST', body: JSON.stringify({ percent: document.getElementById('plan-reserve').value }) }); return render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  const edit = t('[data-cap-edit]');
+  if (edit) { planCapacityOpen = planCapacityOpen === edit.dataset.capEdit ? null : edit.dataset.capEdit; return render(); }
+  const row = t('[data-cap]');
+  if (row && planCapacityOpen) {
+    const p = planCache?.people.find((x) => x.id === row.dataset.cap);
+    if (!p) return false;
+    const day = t('[data-cap-day]');
+    if (day) { const d = day.dataset.capDay; p.days = p.days.includes(d) ? p.days.replace(d, '') : [...p.days, d].sort().join(''); day.classList.toggle('on'); return true; }
+    const add = t('[data-cap-away-add]');
+    if (add) {
+      const from = row.querySelector('[data-cap-away-from]').value;
+      if (!from) { toast('Choose the first day away'); return true; }
+      p.away.push({ from, until: row.querySelector('[data-cap-away-until]').value || from, note: row.querySelector('[data-cap-away-note]').value });
+      return renderPlanFrom(planCache);
+    }
+    const rem = t('[data-cap-away-remove]');
+    if (rem) { p.away.splice(Number(rem.dataset.capAwayRemove), 1); return renderPlanFrom(planCache); }
+    if (t('[data-cap-save]')) {
+      try {
+        await api('/api/mes/capacity', { method: 'POST', body: JSON.stringify({ accountId: p.id, hoursPerWeek: row.querySelector('[data-cap-hours]').value,
+          days: p.days, away: p.away, included: row.querySelector('[data-cap-included]').checked }) });
+        planCapacityOpen = null; toast('Saved'); return render();
+      } catch (err) { toast(err.message); }
+      return true;
+    }
   }
   return false;
 }
@@ -4473,7 +4674,7 @@ const spinner = (label = 'Loading') => `<div class="card loading-card"><span cla
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : 'Loading'),
-  '#/condor': () => (condorTab === 'triage' ? 'Fetching releases from Jira' : 'Loading'),
+  '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
 };

@@ -10,7 +10,7 @@ import { DEFAULT_ELO } from './progression.js';
 
 const PROJECT = 'MES';
 const MODULE_FIELD = 'customfield_15583';
-const FIELDS = ['summary', 'issuetype', 'status', 'statuscategorychangedate', 'resolutiondate', 'aggregatetimespent', 'parent', 'created', 'updated', MODULE_FIELD];
+const FIELDS = ['summary', 'issuetype', 'status', 'assignee', 'statuscategorychangedate', 'resolutiondate', 'aggregatetimespent', 'parent', 'created', 'updated', MODULE_FIELD];
 const SCAN_BATCH = 50;
 const SETTLE_DAYS = 3;
 const MAX_QUESTIONS = 3;
@@ -45,38 +45,47 @@ function ticketRow(issue) {
   const done = f.status?.statusCategory?.key === 'done';
   return [String(issue.id), issue.key, f.summary || '', f.issuetype?.name || null, moduleOf(issue), f.status?.name || null,
     done ? 1 : 0, done ? doneDateOf(f) : null, f.aggregatetimespent || 0, f.parent?.id ? String(f.parent.id) : null,
-    (f.created || '').slice(0, 10) || null, new Date().toISOString()];
+    (f.created || '').slice(0, 10) || null, new Date().toISOString(), f.assignee?.accountId || null, f.status?.statusCategory?.key || null];
 }
 
 async function saveTickets(env, issues) {
   for (const issue of issues) {
     await env.DB.prepare(
-      `INSERT INTO mes_tickets (issue_id, issue_key, summary, type, module, status, done, done_date, actual_seconds, parent_id, created, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO mes_tickets (issue_id, issue_key, summary, type, module, status, done, done_date, actual_seconds, parent_id, created, updated_at, assignee_id, status_category)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, summary = excluded.summary, type = excluded.type,
          module = excluded.module, status = excluded.status, done = excluded.done, done_date = excluded.done_date,
-         actual_seconds = excluded.actual_seconds, parent_id = excluded.parent_id, updated_at = excluded.updated_at`
+         actual_seconds = excluded.actual_seconds, parent_id = excluded.parent_id, updated_at = excluded.updated_at,
+         assignee_id = excluded.assignee_id, status_category = excluded.status_category`
     ).bind(...ticketRow(issue)).run();
   }
 }
 
-// Works forwards through MES by last update, two years back on the first run.
-export async function scan(env) {
+// Works forwards through MES by last update, two years back on the first run,
+// a few batches per run so it never uses too many of a run's outside calls.
+export async function scan(env, { maxBatches = 5 } = {}) {
   let cursor = await getState(env, 'mes_cursor');
   if (!cursor) cursor = `${londonDate(Date.now() - 730 * 86_400_000).replace(/-/g, '/')} 00:00`;
-  const issues = await searchJql(env, `project = ${PROJECT} AND issuetype not in subTaskIssueTypes() AND updated >= "${cursor}" ORDER BY updated ASC`,
-    FIELDS, { limit: SCAN_BATCH });
-  await saveTickets(env, issues);
-  let next = cursor;
-  if (issues.length) {
-    next = String(issues[issues.length - 1].fields?.updated || '').slice(0, 16).replace('T', ' ').replace(/-/g, '/') || cursor;
-    if (issues.length >= SCAN_BATCH && next <= cursor) {
-      const t = Date.parse(`${cursor.replace(/\//g, '-').replace(' ', 'T')}:00Z`) + 60_000;
-      next = new Date(t).toISOString().slice(0, 16).replace('T', ' ').replace(/-/g, '/');
+  let read = 0, batches = 0, full = true;
+  while (full && batches < maxBatches) {
+    batches++;
+    const issues = await searchJql(env, `project = ${PROJECT} AND issuetype not in subTaskIssueTypes() AND updated >= "${cursor}" ORDER BY updated ASC`,
+      FIELDS, { limit: SCAN_BATCH });
+    await saveTickets(env, issues);
+    read += issues.length;
+    full = issues.length >= SCAN_BATCH;
+    let next = cursor;
+    if (issues.length) {
+      next = String(issues[issues.length - 1].fields?.updated || '').slice(0, 16).replace('T', ' ').replace(/-/g, '/') || cursor;
+      if (full && next <= cursor) {
+        const t = Date.parse(`${cursor.replace(/\//g, '-').replace(' ', 'T')}:00Z`) + 60_000;
+        next = new Date(t).toISOString().slice(0, 16).replace('T', ' ').replace(/-/g, '/');
+      }
     }
+    cursor = next;
+    await setState(env, 'mes_cursor', cursor);
   }
-  await setState(env, 'mes_cursor', next);
-  return { read: issues.length, cursor: next };
+  return { read, cursor, caughtUp: !full };
 }
 
 // ---------- Estimating by comparison ----------
@@ -210,7 +219,7 @@ async function syncEstimate(env, issueId) {
 
 // ---------- Lists and triage ----------
 
-async function versions(env) {
+export async function versions(env) {
   const list = await jira(env, `/rest/api/3/project/${PROJECT}/versions`);
   return (list || []).filter((v) => !v.released && !v.archived)
     .map((v) => ({ id: String(v.id), name: v.name, startDate: v.startDate || null, releaseDate: v.releaseDate || null }))
@@ -230,7 +239,12 @@ export async function outstanding(env, viewer, { filter = 'untriaged', query = '
     if (filter === 'unestimated') return r.hours == null;
     return true;
   });
+  const known = (await env.DB.prepare('SELECT COUNT(*) AS n FROM mes_tickets').first()).n;
+  const cursor = await getState(env, 'mes_cursor');
+  // Still reading history if the scan's position is more than a day behind.
+  const catchingUp = !cursor || cursor < `${londonDate(Date.now() - 86_400_000).replace(/-/g, '/')} 00:00`;
   return {
+    known, catchingUp, readUpTo: cursor ? cursor.slice(0, 10).replace(/\//g, '-') : null,
     tickets: rows.slice(0, 200), total: rows.length, versions: await versions(env).catch(() => []),
     canTriage: canTriage(viewer), canEstimate: canEstimate(viewer), priorities: PRIORITIES, tags: TAGS, hints: DIFFICULTY_HINTS,
   };
@@ -253,7 +267,7 @@ export async function triage(env, viewer, input) {
 }
 
 // The ticket's Fix Version in Jira follows the triage decision.
-async function syncPlan(env, issueId) {
+export async function syncPlan(env, issueId) {
   const p = await env.DB.prepare('SELECT * FROM mes_plan WHERE issue_id = ?').bind(issueId).first();
   if (!p || p.jira_synced) return true;
   try {
@@ -270,7 +284,7 @@ async function syncPlan(env, issueId) {
 
 // ---------- The Condor development rating ----------
 
-export async function rateStep(env, { limit = 5, worklogsFor = fetchIssueWorklogs } = {}) {
+export async function rateStep(env, { limit = 2, worklogsFor = fetchIssueWorklogs } = {}) {
   let from = await getState(env, 'mes_rating_from');
   if (!from) { from = londonDate(); await setState(env, 'mes_rating_from', from); }
   const settled = londonDate(Date.now() - SETTLE_DAYS * 86_400_000);
@@ -376,9 +390,9 @@ export async function team(env, viewer) {
 }
 
 export async function hourly(env) {
-  const { results: est } = await env.DB.prepare('SELECT issue_id FROM mes_estimates WHERE jira_synced = 0').all();
+  const { results: est } = await env.DB.prepare('SELECT issue_id FROM mes_estimates WHERE jira_synced = 0 LIMIT 10').all();
   for (const e of est) await syncEstimate(env, e.issue_id);
-  const { results: plans } = await env.DB.prepare('SELECT issue_id FROM mes_plan WHERE jira_synced = 0').all();
+  const { results: plans } = await env.DB.prepare('SELECT issue_id FROM mes_plan WHERE jira_synced = 0 LIMIT 10').all();
   for (const p of plans) await syncPlan(env, p.issue_id);
   const stuck = (await env.DB.prepare(
     "SELECT COUNT(*) AS n FROM (SELECT issue_id FROM mes_estimates WHERE jira_synced = 0 UNION ALL SELECT issue_id FROM mes_plan WHERE jira_synced = 0)"

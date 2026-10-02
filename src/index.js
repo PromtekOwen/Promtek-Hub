@@ -193,6 +193,12 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/triage') return json(await Mes.triage(env, user, body));
     if (method === 'GET' && pathname === '/api/mes/rating') return json(await Mes.ratingHistory(env, user, url.searchParams.get('accountId')));
     if (method === 'GET' && pathname === '/api/mes/team') return json({ team: await Mes.team(env, user) });
+    const Plan = await import('./mes-plan.js');
+    if (method === 'GET' && pathname === '/api/mes/plan') return json(await Plan.view(env, user, url.searchParams.get('versionId')));
+    if (method === 'POST' && pathname === '/api/mes/capacity') return json(await Plan.saveCapacity(env, user, body));
+    if (method === 'POST' && pathname === '/api/mes/reserve') return json(await Plan.saveReserve(env, user, body.percent));
+    if (method === 'POST' && pathname === '/api/mes/suggestion') return json(await Plan.decide(env, user, body));
+    if (method === 'POST' && pathname === '/api/mes/accept-plan') return json(await Plan.accept(env, user, body.versionId));
   }
 
   if (pathname.startsWith('/api/devtime')) {
