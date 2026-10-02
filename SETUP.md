@@ -269,7 +269,7 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 ## Part 14: Arranging tiles
 
-Everyone can order their own home screen. **Arrange tiles** on the dashboard turns on the controls: move a tile up or down, or hide the ones you never use. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
+Everyone can order their own home screen. **Arrange tiles** on the dashboard lets you drag tiles into place with a mouse or a finger, and hide the ones you never use. The order saves as you go. On a phone, hold a tile near the top or bottom of the screen to scroll while dragging. A focused tile can also be moved with the arrow keys. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
 
 ## Part 15: 8x8 calls
 
