@@ -476,6 +476,42 @@ The free Workers plan allows 50 outside calls (to Jira, Tempo, Bitbucket or the 
 
 A job with nothing to do passes its turn on. Long pieces of work, such as reading Bitbucket or two years of MES, carry on across runs, a capped amount at a time.
 
+## Part 23: Audit log and company chart versions
+
+### Audit log
+
+Admin has an audit log of changes made by hand. It records who made each change, when, and each field before and after. It covers:
+- employees added, changed, deactivated or removed, and Jira account IDs changed;
+- vehicles added or changed;
+- Condor capacity and the reserve;
+- settings: IT request types, quote counts and conditions, the ELO engine started or paused, ratings undone, the XP ledger started, and where employees are kept;
+- each company chart version issued.
+
+Managers are shown by name, Condor days as weekdays, and a new photo as "a photo" without storing the image. Bookings, walkaround checks, defects and time logging aren't included; they're everyday use with records of their own.
+
+The log can be filtered and searched, loads 50 entries at a time, and downloads as CSV. It's kept indefinitely. It lives in the hub's own database, so it uses none of Cloudflare's outside-call allowance.
+
+### Company chart versions (IMS2.02)
+
+The company chart is a controlled document. The chart and its page show the current reference, IMS2.02-N. Version 8 was the chart when versioning began.
+
+**Major and minor changes.** Changes collect until an admin issues the next version.
+- Major changes are people joining or leaving, reporting lines, job titles, departments and names.
+- Minor changes, such as photos, pronouns, extensions, chart order and icons, show on the chart straight away and go out with the next version.
+- Hub roles, teams and XP rates aren't on the chart, so they aren't counted.
+
+**Issuing.** Under the chart's cog, an admin reviews "N major changes, N minor changes", unticks anything that shouldn't count, and issues the next version. The admin who issues it is the approver. The hub then updates the Confluence page:
+- **Document control table:** found by its Version and Last Reviewed headings. Version becomes "Issue N" and Last Reviewed the issue date; every other cell is left alone.
+- **The hub's block,** under the table: the chart image, a link to the house-style PDF (both uploaded as attachments, which Confluence versions), what changed, the version history, and a note of who approved it and when.
+- **Anything else on the page** is kept.
+
+**If something goes wrong:**
+- If the table can't be found, the chart is still published and admins are emailed what to set by hand.
+- If Confluence can't be reached, the version is still issued in the hub, admins are emailed, and the newest version is retried every hour.
+- Major changes left waiting more than three days get a weekly reminder.
+
+The hub publishes with the same Atlassian login it uses for Jira. That account needs permission to edit the IMS2.02 page in the PIMS space and to add attachments to it.
+
 ## Adding more apps later
 
 Each app lives in its own folder under `public/apps/`, and gets one entry in `public/modules.js` with a name, description, link and icon. Set `comingSoon: true` to show a placeholder tile, or `adminOnly: true` to show it only to admins. Apps that need to save data get their own API routes in `src/index.js` and tables in the same database.

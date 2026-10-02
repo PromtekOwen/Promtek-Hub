@@ -450,3 +450,14 @@ tr.unfit td { background: #fff4f2; }
 .cap-away-add { gap: .5rem; align-items: end; flex-wrap: wrap; }
 .cap-away-add input { display: block; margin-top: .3rem; font-weight: 400; }
 .cap-away li { padding: .25rem 0; }
+
+/* Audit log and chart versions */
+.audit-list li { display: block; }
+.audit-list .title { display: block; white-space: normal; }
+.audit-list .sub { display: block; }
+.audit-changes { margin-top: .5rem; font-size: .9rem; border-collapse: collapse; }
+.audit-changes th { text-align: left; font-weight: 600; padding: .15rem .75rem .15rem 0; color: var(--muted); }
+.audit-changes td { padding: .15rem .5rem .15rem 0; overflow-wrap: anywhere; }
+.org-changes li { display: block; padding: .45rem 0; }
+.org-changes .inline-check { font-weight: 400; align-items: flex-start; }
+.jobs-tools select { flex: 0 1 12rem; }

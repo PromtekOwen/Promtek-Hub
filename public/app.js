@@ -406,6 +406,10 @@ const pages = {
 
         ${eloAdminHtml(elo, peopleData.source)}
 
+        <h2>Audit log</h2>
+        <p class="muted">Changes made by hand to employees, vehicles and settings: who changed what, when, and what it was before.</p>
+        <div id="audit-log"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading</p></div></div>
+
         <h2>Alerts</h2>
         <div class="card">
           <p class="muted" style="margin-top:0">${data.mailRelay
@@ -760,7 +764,7 @@ function layout(nodes) {
   };
 }
 
-function orgSvg(data) {
+function orgSvg(data, label = null) {
   const { placed, width, height, children } = layout(data.nodes);
   const byId = new Map(placed.map((p) => [p.id, p]));
 
@@ -828,7 +832,7 @@ function orgSvg(data) {
       <rect width="${width}" height="${total}" fill="#ffffff"/>
       ${logo}
       <text x="${ORG.pad + (logo ? 44 : 0)}" y="20" font-family="Titillium Web, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#0f2b3d">Promtek</text>
-      <text x="${ORG.pad + (logo ? 44 : 0)}" y="34" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#5b7385">Company chart, ${esc(new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }))}</text>
+      <text x="${ORG.pad + (logo ? 44 : 0)}" y="34" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#5b7385">${esc(label || (data.document ? `${data.document.reference}, issued ${new Date(data.document.issuedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : `Company chart, ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`))}</text>
       ${lines.join('')}
       ${boxes.join('')}
       ${legend}
@@ -852,7 +856,7 @@ function orgHtml(data) {
   return `
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
-        <span class="muted">${n(data.nodes.length)} people on the chart${missing ? `, ${n(missing)} without a title or team` : ''}</span>
+        <span>${data.document ? `<strong>${esc(data.document.reference)}</strong>, issued ${shortDate(data.document.issuedAt.slice(0, 10))}. ` : ''}<span class="muted">${n(data.nodes.length)} people on the chart${missing ? `, ${n(missing)} without a title or team` : ''}</span></span>
         <button class="btn" data-org="download">Download as an image</button>
       </div>
     </div>
@@ -902,6 +906,7 @@ async function renderSettings(route) {
   if (route === '#/pow') settingsData.ra = await api('/api/admin/ra-library').catch(() => ({ items: [] }));
   if (route === '#/quotes') settingsData.quoteConfig = await api('/api/admin/quote-config');
   if (route === '#/condor') settingsData.bitbucket = await api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }));
+  if (route === '#/org') settingsData.org = await api('/api/admin/org');
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
@@ -4046,6 +4051,125 @@ async function planClick(event) {
   return false;
 }
 
+// ---------- Company chart versions ----------
+
+// Draws the chart as it will be issued, with its new reference, and turns it into a JPEG.
+async function orgIssueImage(reference) {
+  await loadOrgLogo();
+  const data = await api('/api/org');
+  const label = `${reference}, issued ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`;
+  const holder = document.createElement('div');
+  holder.innerHTML = orgSvg(data, label);
+  const source = new XMLSerializer().serializeToString(holder.firstElementChild);
+  const image = new Image();
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error('The chart could not be turned into an image.'));
+    image.src = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(source)))}`;
+  });
+  // Large enough to read when printed, small enough to keep alongside the version.
+  for (const [scale, quality] of [[2, 0.9], [2, 0.75], [1.5, 0.75], [1, 0.7]]) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(image.width * scale);
+    canvas.height = Math.round(image.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const base64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+    if (base64.length < 1_800_000) return { image: base64, width: canvas.width, height: canvas.height };
+  }
+  throw new Error('The chart is too large to issue as an image.');
+}
+
+const changesLabel = (major, minor) => `${n(major)} major ${major === 1 ? 'change' : 'changes'}, ${n(minor)} minor ${minor === 1 ? 'change' : 'changes'}`;
+
+function settingsOrgHtml() {
+  const o = settingsData.org;
+  const majors = o.pending.filter((p) => p.kind === 'major');
+  const minors = o.pending.filter((p) => p.kind === 'minor');
+  const line = (p, box) => `<li>${box ? `<label class="inline-check"><input type="checkbox" data-org-count="${p.id}" checked>` : ''}
+      <span><strong>${esc(p.person_name)}</strong>: ${esc(p.label)}${p.before || p.after ? `, ${p.before ? `${esc(p.before)} to ` : ''}${esc(p.after || 'blank')}` : ''}
+      <span class="muted">${shortDate(p.at.slice(0, 10))}</span></span>${box ? '</label>' : ''}</li>`;
+  const statusText = { published: 'In Confluence', failed: 'Not in Confluence yet', pending: 'Going to Confluence', none: 'Before the hub' };
+  return `<div class="card">
+      <p style="margin-top:0"><strong>${esc(o.latest.reference)}</strong> is the current version${o.latest.n > 8 ? `, issued ${shortDate(o.latest.issued_at.slice(0, 10))} by ${esc(o.latest.issued_by_name)}` : ''}.</p>
+      <p style="margin-bottom:0"><strong>Since then: ${changesLabel(majors.length, minors.length)}.</strong></p>
+      <p class="help">Major changes are people joining or leaving, reporting lines, job titles, departments and names. Minor changes, such as photos and extensions, show on the chart straight away and go out with the next version.</p></div>
+    ${majors.length ? `<h2>Major changes</h2><div class="card"><p class="muted" style="margin-top:0">Untick anything that shouldn't count, such as a corrected spelling.</p><ul class="list plain org-changes">${majors.map((p) => line(p, true)).join('')}</ul></div>` : ''}
+    ${minors.length ? `<h2>Minor changes</h2><div class="card"><ul class="list plain org-changes">${minors.map((p) => line(p, false)).join('')}</ul></div>` : ''}
+    <div class="card" style="margin-top:1rem">
+      <button class="btn" data-org-issue="1"${majors.length ? '' : ' disabled'}>Approve and issue ${esc(o.next)}</button>
+      <p class="help">You'll be named as the approver. On the Confluence page, Version becomes Issue ${esc(String(o.latest.n + 1))} and Last Reviewed today; Owner and the rest of the table stay as they are. The chart goes underneath as an image and as a PDF in the house style, with the version history and a note of who approved it.</p>
+      <div class="result" id="org-result" role="status"></div></div>
+    <h2>Versions</h2>
+    <div class="table-wrap"><table><thead><tr><th>Reference</th><th>Issued</th><th>Approved by</th><th>Changes</th><th>Confluence</th></tr></thead><tbody>
+      ${o.history.map((h, i) => `<tr><td>${esc(h.reference)}</td><td>${shortDate(h.issued_at.slice(0, 10))}</td><td>${esc(h.issued_by_name || '')}</td>
+        <td>${esc(h.summary || '')}</td><td>${statusText[h.confluence_status] || ''}${h.confluence_status === 'failed' && i === 0 ? `<br><span class="muted">${esc(h.confluence_error || '')}</span><br><button class="linklike" data-org-publish="${h.n}">Try again</button>` : ''}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+async function orgSettingsClick(event) {
+  const issueBtn = event.target.closest('[data-org-issue]');
+  if (issueBtn) {
+    const out = document.getElementById('org-result');
+    const excluded = [...view.querySelectorAll('[data-org-count]')].filter((c) => !c.checked).map((c) => Number(c.dataset.orgCount));
+    if (!confirm(`Issue ${settingsData.org.next} with you as the approver? It goes to Confluence straight away.`)) return true;
+    issueBtn.disabled = true; out.innerHTML = '<span class="spinner" aria-hidden="true"></span> Drawing the chart and sending it to Confluence';
+    try {
+      const pic = await orgIssueImage(settingsData.org.next);
+      const r = await api('/api/admin/org-issue', { method: 'POST', body: JSON.stringify({ ...pic, excluded }) });
+      toast(r.published ? `${r.reference} issued and in Confluence` : `${r.reference} issued. Confluence will be updated shortly`);
+      settingsData.org = await api('/api/admin/org');
+      view.innerHTML = settingsOrgHtml();
+    } catch (err) { out.textContent = err.message; issueBtn.disabled = false; }
+    return true;
+  }
+  const pub = event.target.closest('[data-org-publish]');
+  if (pub) {
+    pub.disabled = true;
+    try { const r = await api('/api/admin/org-publish', { method: 'POST', body: JSON.stringify({ n: pub.dataset.orgPublish }) }); toast(r.published ? 'In Confluence' : 'Confluence still refused it'); }
+    catch (err) { toast(err.message); }
+    settingsData.org = await api('/api/admin/org');
+    view.innerHTML = settingsOrgHtml();
+    return true;
+  }
+  return false;
+}
+
+// ---------- Audit log ----------
+
+let auditFilter = { area: '', q: '' };
+let auditEntries = [];
+let auditMore = null;
+
+function auditEntryHtml(e) {
+  const when = new Date(e.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+  return `<li><span class="title">${esc(e.action)}${e.subject_label ? `: ${esc(e.subject_label)}` : ''}</span>
+    <span class="sub">${esc(e.area)}. ${esc(e.actor_name || e.actor_email || 'Unknown')}, ${when}.${e.note ? ` ${esc(e.note)}.` : ''}</span>
+    ${e.changes.length ? `<table class="audit-changes"><tbody>${e.changes.map((c) => `<tr><th>${esc(c.label)}</th><td>${esc(c.before) || '<span class="muted">blank</span>'}</td><td aria-hidden="true">→</td><td>${esc(c.after) || '<span class="muted">blank</span>'}</td></tr>`).join('')}</tbody></table>` : ''}</li>`;
+}
+
+async function loadAudit(append = false) {
+  const host = document.getElementById('audit-log');
+  if (!host) return;
+  const qs = new URLSearchParams({ area: auditFilter.area, q: auditFilter.q, ...(append && auditMore ? { before: auditMore } : {}) });
+  const r = await api(`/api/admin/audit?${qs}`).catch((err) => ({ error: err.message }));
+  if (r.error) { host.innerHTML = `<div class="card"><p class="bad">${esc(r.error)}</p></div>`; return; }
+  // The search box stays put while results change, so typing isn't interrupted.
+  if (!host.querySelector('[data-audit-q]')) {
+    host.innerHTML = `<div class="row jobs-tools">
+        <select data-audit-area aria-label="Area"><option value="">Everything</option>${r.areas.map((a) => `<option${a === auditFilter.area ? ' selected' : ''}>${esc(a)}</option>`).join('')}</select>
+        <input type="search" data-audit-q value="${esc(auditFilter.q)}" placeholder="Search people, vehicles or values" aria-label="Search the audit log">
+        <a class="btn secondary" data-audit-csv href="#">Download CSV</a></div>
+      <div id="audit-results"></div>`;
+  }
+  host.querySelector('[data-audit-csv]').href = `/api/admin/audit.csv?${new URLSearchParams(auditFilter)}`;
+  auditEntries = append ? [...auditEntries, ...r.entries] : r.entries;
+  auditMore = r.more;
+  host.querySelector('#audit-results').innerHTML = `${auditEntries.length ? `<ul class="list audit-list">${auditEntries.map(auditEntryHtml).join('')}</ul>` : '<div class="card"><p style="margin:0">Nothing recorded yet.</p></div>'}
+    ${auditMore ? '<button class="btn secondary" data-audit-more style="margin-top:.85rem">Show older</button>' : ''}`;
+}
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4610,6 +4734,8 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
+  if (settingsOpen === '#/org' && await orgSettingsClick(event)) return;
+  if (event.target.closest('[data-audit-more]')) return loadAudit(true);
   const bb = event.target.closest('[data-bb]');
   if (bb) {
     const out = document.getElementById('bb-result');
@@ -4699,6 +4825,7 @@ const TILE_SETTINGS = {
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
   '#/quotes': { label: 'Quote settings', render: () => settingsQuotesHtml() },
   '#/condor': { label: 'Condor Dev settings', render: () => bitbucketAdminHtml(settingsData.bitbucket) },
+  '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
 };
 let settingsOpen = null;
 let settingsData = null;
@@ -4733,6 +4860,7 @@ async function render() {
       view.innerHTML = html;
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
+      if (route === '#/admin' && !settingsOpen) loadAudit();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -4753,6 +4881,13 @@ let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
+  if (event.target.matches('[data-audit-q]')) {
+    clearTimeout(loadAudit.timer);
+    auditFilter.q = event.target.value;
+    loadAudit.timer = setTimeout(() => loadAudit(), 400);
+    return;
+  }
+  if (event.target.matches('[data-audit-area]')) { auditFilter.area = event.target.value; loadAudit(); return; }
   if (event.target.dataset?.jobsField && jobsDraft) { jobsDraft[event.target.dataset.jobsField] = event.target.value; return; }
   if (event.target.dataset?.modField && modDraft) { modDraft[event.target.dataset.modField] = event.target.value; return; }
   if (event.target.id === 'jobs-search') {

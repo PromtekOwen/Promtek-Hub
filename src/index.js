@@ -7,6 +7,8 @@ import * as Elo from './elo.js';
 import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Quotes from './quotes.js';
+import * as Audit from './audit.js';
+import * as OrgDocs from './orgdocs.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
@@ -22,6 +24,27 @@ import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSumm
 
 const ROLES = ['engineer', 'lead', 'admin'];
 const TEAMS = ['Projecting', 'Service', 'Condor', 'Sales'];
+
+const rowOf = (env, table, key, id) => (id ? env.DB.prepare(`SELECT * FROM ${table} WHERE ${key} = ?`).bind(id).first() : null);
+
+// Employee changes are logged, and checked against the chart for its next version.
+async function auditedPerson(env, user, id, action, run) {
+  const before = await rowOf(env, 'employees', 'account_id', id);
+  const result = await run();
+  const after = await rowOf(env, 'employees', 'account_id', result?.accountId || id);
+  const changes = Audit.diff('employees', before, after);
+  // Managers are stored by account ID; the log shows who they are.
+  for (const c of changes.filter((x) => x.field === 'manager_id')) {
+    c.before = (await rowOf(env, 'employees', 'account_id', before?.manager_id))?.name || c.before;
+    c.after = (await rowOf(env, 'employees', 'account_id', after?.manager_id))?.name || c.after;
+  }
+  if (changes.length || !after) {
+    await Audit.record(env, user, { area: 'Employees', action: action(before, after), subjectType: 'employee',
+      subjectId: after?.account_id || id, label: after?.name || before?.name, changes });
+  }
+  await OrgDocs.track(env, user, before, after);
+  return result;
+}
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -119,7 +142,10 @@ async function route(request, env, url, user) {
     return json({ ok: true });
   }
 
-  if (method === 'GET' && pathname === '/api/org') return json(await Org.chart(env));
+  if (method === 'GET' && pathname === '/api/org') {
+    const latest = await OrgDocs.current(env);
+    return json({ ...(await Org.chart(env)), document: { reference: latest.reference, issuedAt: latest.issued_at } });
+  }
 
   if (pathname.startsWith('/api/obs')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
@@ -195,8 +221,20 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/mes/team') return json({ team: await Mes.team(env, user) });
     const Plan = await import('./mes-plan.js');
     if (method === 'GET' && pathname === '/api/mes/plan') return json(await Plan.view(env, user, url.searchParams.get('versionId')));
-    if (method === 'POST' && pathname === '/api/mes/capacity') return json(await Plan.saveCapacity(env, user, body));
-    if (method === 'POST' && pathname === '/api/mes/reserve') return json(await Plan.saveReserve(env, user, body.percent));
+    if (method === 'POST' && pathname === '/api/mes/capacity') {
+      const before = await rowOf(env, 'mes_capacity', 'account_id', body.accountId);
+      const r = await Plan.saveCapacity(env, user, body);
+      const after = await rowOf(env, 'mes_capacity', 'account_id', body.accountId);
+      const who = await rowOf(env, 'employees', 'account_id', body.accountId);
+      await Audit.record(env, user, { area: 'Condor capacity', action: 'Capacity changed', subjectType: 'employee', subjectId: body.accountId,
+        label: who?.name, changes: Audit.diff('mes_capacity', before, after) });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/mes/reserve') {
+      const r = await Plan.saveReserve(env, user, body.percent);
+      await Audit.record(env, user, { area: 'Condor capacity', action: 'Reserve changed', changes: [{ label: 'Kept free', before: '', after: `${body.percent}%` }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/mes/suggestion') return json(await Plan.decide(env, user, body));
     if (method === 'POST' && pathname === '/api/mes/accept-plan') return json(await Plan.accept(env, user, body.versionId));
   }
@@ -369,15 +407,51 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/bitbucket-test') return json(await (await import('./devtime.js')).testConnection(env));
     if (method === 'POST' && pathname === '/api/admin/bitbucket-poll') return json(await (await import('./devtime.js')).poll(env, { force: true }));
     if (method === 'GET' && pathname === '/api/admin/quote-config') return json(await Quotes.config(env));
-    if (method === 'POST' && pathname === '/api/admin/quote-config') return json(await Quotes.saveConfig(env, body));
-    if (method === 'POST' && pathname === '/api/admin/elo-start') return json(await Elo.startEngine(env, body.from));
-    if (method === 'POST' && pathname === '/api/admin/elo-stop') return json(await Elo.stopEngine(env));
+    if (method === 'POST' && pathname === '/api/admin/quote-config') {
+      const r = await Quotes.saveConfig(env, body);
+      await Audit.record(env, user, { area: 'Settings', action: 'Quote counts and conditions changed' });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/admin/elo-start') {
+      const r = await Elo.startEngine(env, body.from);
+      await Audit.record(env, user, { area: 'Settings', action: 'ELO engine started', changes: [{ label: 'Rating jobs finished from', before: '', after: body.from }] });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/admin/elo-stop') {
+      const r = await Elo.stopEngine(env);
+      await Audit.record(env, user, { area: 'Settings', action: 'ELO engine paused' });
+      return json(r);
+    }
+    if (method === 'GET' && pathname === '/api/admin/audit') {
+      return json(await Audit.list(env, { area: url.searchParams.get('area') || '', q: url.searchParams.get('q') || '', before: url.searchParams.get('before') }));
+    }
+    if (method === 'GET' && pathname === '/api/admin/audit.csv') {
+      return new Response(await Audit.csv(env, { area: url.searchParams.get('area') || '', q: url.searchParams.get('q') || '' }), {
+        headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="Promtek hub audit log ${new Date().toISOString().slice(0, 10)}.csv"` },
+      });
+    }
+    if (method === 'GET' && pathname === '/api/admin/org') return json(await OrgDocs.status(env));
+    if (method === 'POST' && pathname === '/api/admin/org-issue') {
+      const r = await OrgDocs.issue(env, user, body);
+      await Audit.record(env, user, { area: 'Company chart', action: `${r.reference} issued`, note: r.published ? 'Published to Confluence' : 'Waiting to reach Confluence' });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/admin/org-publish') return json({ published: await OrgDocs.publish(env, Number(body.n)) });
     if (method === 'POST' && pathname === '/api/admin/elo-step') return json(await Elo.rateStep(env));
-    if (method === 'POST' && pathname === '/api/admin/elo-reverse') return json(await Elo.reverseEvent(env, user, body.id));
+    if (method === 'POST' && pathname === '/api/admin/elo-reverse') {
+      const ev = await rowOf(env, 'elo_events', 'id', Number(body.id));
+      const r = await Elo.reverseEvent(env, user, body.id);
+      const who = ev && await rowOf(env, 'employees', 'account_id', ev.account_id);
+      await Audit.record(env, user, { area: 'Settings', action: 'ELO rating undone', subjectType: 'employee', subjectId: ev?.account_id, label: who?.name,
+        changes: [{ label: 'ELO', before: String(Math.round(r.elo + (ev?.delta || 0))), after: String(Math.round(r.elo)) }] });
+      return json(r);
+    }
 
     if (method === 'POST' && pathname === '/api/admin/start-ledger') {
       if (body.confirm !== 'START') return json({ error: 'Type START to confirm.' }, 400);
-      return json(await startLedger(env));
+      const r = await startLedger(env);
+      await Audit.record(env, user, { area: 'Settings', action: 'XP ledger started' });
+      return json(r);
     }
     if (method === 'POST' && pathname === '/api/admin/refresh-profiles') return json(await refreshProfiles(env));
     if (method === 'POST' && pathname === '/api/admin/snapshot') return json(await snapshotWeek(env, body.week || null));
@@ -400,8 +474,22 @@ async function route(request, env, url, user) {
         ...jiraTypes,
       });
     }
-    if (method === 'POST' && pathname === '/api/admin/it-types') return json(await It.saveRequestTypeMap(env, body));
-    if (method === 'POST' && pathname === '/api/admin/vehicle') return json(await Vehicles.saveVehicle(env, body));
+    if (method === 'POST' && pathname === '/api/admin/it-types') {
+      const r = await It.saveRequestTypeMap(env, body);
+      await Audit.record(env, user, { area: 'Settings', action: 'IT request types changed' });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/admin/vehicle') {
+      const before = await rowOf(env, 'vehicles', 'id', body.id);
+      const r = await Vehicles.saveVehicle(env, body);
+      const after = await rowOf(env, 'vehicles', 'id', r.id);
+      const changes = Audit.diff('vehicles', before, after);
+      if (changes.length) {
+        await Audit.record(env, user, { area: 'Vehicles', action: before ? 'Vehicle changed' : 'Vehicle added', subjectType: 'vehicle',
+          subjectId: r.id, label: after?.registration, changes });
+      }
+      return json(r);
+    }
     if (method === 'GET' && pathname === '/api/admin/vehicles') return json(await Vehicles.listVehicles(env, { includeInactive: true }));
     if (method === 'POST' && pathname === '/api/admin/vehicle-expiries') return json(await Vehicles.checkExpiries(env));
     if (method === 'POST' && pathname === '/api/admin/test-8x8') {
@@ -431,10 +519,24 @@ async function route(request, env, url, user) {
       return json({ ok: true, kept: false });
     }
     if (method === 'GET' && pathname === '/api/admin/people') return json({ ...(await People.listPeople(env)), icons: People.ICONS.map(([id, label]) => ({ id, label })), departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
-    if (method === 'POST' && pathname === '/api/admin/person') return json(await People.savePerson(env, body));
-    if (method === 'POST' && pathname === '/api/admin/person-id') return json(await People.changeAccountId(env, body));
-    if (method === 'POST' && pathname === '/api/admin/person-remove') return json(await People.removePerson(env, body));
-    if (method === 'POST' && pathname === '/api/admin/employees-source') return json(await People.setSource(env, body.source));
+    if (method === 'POST' && pathname === '/api/admin/person') {
+      return json(await auditedPerson(env, user, body.accountId, (b) => (b ? 'Details changed' : 'Added'), () => People.savePerson(env, body)));
+    }
+    if (method === 'POST' && pathname === '/api/admin/person-id') {
+      const who = await rowOf(env, 'employees', 'account_id', body.from);
+      const r = await People.changeAccountId(env, body);
+      await Audit.record(env, user, { area: 'Employees', action: 'Jira account ID changed', subjectType: 'employee', subjectId: body.to, label: who?.name,
+        changes: [{ label: 'Jira account ID', before: body.from, after: body.to }] });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/admin/person-remove') {
+      return json(await auditedPerson(env, user, body.accountId, (b, a) => (a ? 'Deactivated' : 'Removed with their history'), () => People.removePerson(env, body)));
+    }
+    if (method === 'POST' && pathname === '/api/admin/employees-source') {
+      const r = await People.setSource(env, body.source);
+      await Audit.record(env, user, { area: 'Settings', action: `Employees now kept in ${body.source === 'hub' ? 'the hub' : 'Jira'}` });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/admin/org-person') return json(await Org.savePerson(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));

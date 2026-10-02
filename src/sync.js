@@ -428,6 +428,7 @@ export async function runScheduled(env) {
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {
       await attempt('Quotes', async () => (await import('./quotes.js')).hourly(env));
+      await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
     }),
     'mes-sync': async () => {
