@@ -135,9 +135,9 @@ const pages = {
         const detail = m.detail ? `<span class="detail">${m.detail(me)}</span>` : '';
         const inner = `<span class="tile-icon">${m.icon}</span><strong>${esc(m.name)}</strong>${detail}`;
         if (arrangeMode) {
-          return `<div class="tile arranging">${inner}<span class="arrange">
-              <button class="icon-btn" data-tile="up" data-value="${esc(m.id)}" aria-label="Move ${esc(m.name)} earlier"${i === 0 ? ' disabled' : ''}>${svgIcon('<path d="M5 15l7-7 7 7"/>')}</button>
-              <button class="icon-btn" data-tile="down" data-value="${esc(m.id)}" aria-label="Move ${esc(m.name)} later"${i === visible.length - 1 ? ' disabled' : ''}>${svgIcon('<path d="M19 9l-7 7-7-7"/>')}</button>
+          return `<div class="tile arranging" data-tile-id="${esc(m.id)}" tabindex="0" role="listitem" aria-roledescription="Movable tile"
+              aria-label="${esc(m.name)}, position ${i + 1} of ${visible.length}. Drag, or use the arrow keys, to move it.">${inner}<span class="arrange">
+              <span class="drag-grip" aria-hidden="true">${svgIcon('<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>')}</span>
               <button class="icon-btn" data-tile="hide" data-value="${esc(m.id)}" aria-label="Hide ${esc(m.name)}">${svgIcon('<path d="M4 4l16 16"/><path d="M12 6c5 0 9 6 9 6a15 15 0 01-3 3.4M7.5 7.6A15 15 0 003 12s4 6 9 6a8 8 0 003.7-.9"/>')}</button>
             </span></div>`;
         }
@@ -157,7 +157,9 @@ const pages = {
         <div class="row" style="justify-content:flex-end;margin-bottom:.75rem">
           <button class="btn secondary" data-tile="${arrangeMode ? 'done' : 'arrange'}">${arrangeMode ? 'Done arranging' : 'Arrange tiles'}</button>
         </div>
-        <div class="tiles">${tiles}</div>${hiddenBlock}
+        ${arrangeMode ? '<p class="help" style="margin-top:0">Drag tiles into the order you want. Your order is saved as you go.</p>' : ''}
+        <div class="tiles${arrangeMode ? ' arranging-grid' : ''}"${arrangeMode ? ' role="list" aria-label="Your tiles"' : ''}>${tiles}</div>
+        <div class="visually-hidden" aria-live="polite" id="tile-live"></div>${hiddenBlock}
         ${me.linked && !arrangeMode ? `<h2>Latest XP</h2>${xpList(me.recent.slice(0, 4), 'Log time in Tempo and your XP appears here within a couple of minutes.')}` : ''}`;
     },
   },
@@ -4169,6 +4171,119 @@ async function loadAudit(append = false) {
   host.querySelector('#audit-results').innerHTML = `${auditEntries.length ? `<ul class="list audit-list">${auditEntries.map(auditEntryHtml).join('')}</ul>` : '<div class="card"><p style="margin:0">Nothing recorded yet.</p></div>'}
     ${auditMore ? '<button class="btn secondary" data-audit-more style="margin-top:.85rem">Show older</button>' : ''}`;
 }
+
+// ---------- Dragging tiles ----------
+
+// Pointer events cover mouse, touch and pen alike. The tile under the pointer
+// makes room as a lifted copy follows the finger; dropping saves the order.
+let tileDrag = null;
+const TILE_DRAG_START = 6;          // pixels moved before a press becomes a drag
+const TILE_EDGE = 70;               // near the top or bottom, the page scrolls
+
+function tileOrderFromDom() {
+  return [...document.querySelectorAll('.arranging-grid [data-tile-id]')].map((t) => t.dataset.tileId);
+}
+
+// Slides the other tiles from where they were to where they now are.
+function tileFlip(grid, move) {
+  const tiles = [...grid.querySelectorAll('[data-tile-id]')];
+  const before = new Map(tiles.map((t) => [t, t.getBoundingClientRect()]));
+  move();
+  for (const t of tiles) {
+    if (t === tileDrag?.tile) continue;
+    const a = before.get(t), b = t.getBoundingClientRect();
+    const dx = a.left - b.left, dy = a.top - b.top;
+    if (!dx && !dy) continue;
+    t.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }], { duration: 180, easing: 'ease-out' });
+  }
+}
+
+function tileDragMove(x, y) {
+  const d = tileDrag;
+  d.ghost.style.transform = `translate(${x - d.offsetX}px, ${y - d.offsetY}px) scale(1.04)`;
+  const over = document.elementFromPoint(x, y)?.closest('.arranging-grid [data-tile-id]');
+  if (!over || over === d.tile) return;
+  const tiles = [...d.grid.querySelectorAll('[data-tile-id]')];
+  const from = tiles.indexOf(d.tile), to = tiles.indexOf(over);
+  tileFlip(d.grid, () => over.insertAdjacentElement(from < to ? 'afterend' : 'beforebegin', d.tile));
+}
+
+function tileAutoScroll() {
+  if (!tileDrag?.active) return;
+  const { lastY } = tileDrag;
+  const step = lastY < TILE_EDGE ? -12 : lastY > innerHeight - TILE_EDGE ? 12 : 0;
+  if (step) { scrollBy(0, step); tileDragMove(tileDrag.lastX, lastY); }
+  tileDrag.raf = requestAnimationFrame(tileAutoScroll);
+}
+
+async function tileDragEnd(cancelled = false) {
+  const d = tileDrag;
+  tileDrag = null;
+  if (!d?.active) return;
+  cancelAnimationFrame(d.raf);
+  d.ghost.remove();
+  d.tile.classList.remove('drag-placeholder');
+  document.body.classList.remove('tile-dragging');
+  if (cancelled) { render(); return; }
+  const order = tileOrderFromDom();
+  if (order.join() === d.startOrder.join()) return;
+  tilePrefs.order = order;
+  const name = d.tile.querySelector('strong')?.textContent || 'Tile';
+  document.getElementById('tile-live').textContent = `${name} moved to position ${order.indexOf(d.tile.dataset.tileId) + 1}.`;
+  await saveTilePrefs();
+}
+
+view.addEventListener('pointerdown', (event) => {
+  const tile = event.target.closest('.arranging-grid [data-tile-id]');
+  if (!tile || event.target.closest('button') || event.button > 0) return;
+  tileDrag = { tile, grid: tile.parentElement, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+    lastX: event.clientX, lastY: event.clientY, active: false, startOrder: tileOrderFromDom() };
+  // Keeps the drag going if the pointer leaves the tile; dragging still works without it.
+  try { tile.setPointerCapture(event.pointerId); } catch { /* not every pointer can be captured */ }
+});
+
+view.addEventListener('pointermove', (event) => {
+  const d = tileDrag;
+  if (!d || event.pointerId !== d.pointerId) return;
+  d.lastX = event.clientX; d.lastY = event.clientY;
+  if (!d.active) {
+    if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < TILE_DRAG_START) return;
+    const r = d.tile.getBoundingClientRect();
+    d.offsetX = d.startX - r.left; d.offsetY = d.startY - r.top;
+    d.ghost = d.tile.cloneNode(true);
+    d.ghost.classList.add('drag-ghost');
+    d.ghost.removeAttribute('data-tile-id');
+    Object.assign(d.ghost.style, { width: `${r.width}px`, height: `${r.height}px` });
+    document.body.appendChild(d.ghost);
+    d.tile.classList.add('drag-placeholder');
+    document.body.classList.add('tile-dragging');
+    d.active = true;
+    d.raf = requestAnimationFrame(tileAutoScroll);
+  }
+  event.preventDefault();
+  tileDragMove(event.clientX, event.clientY);
+});
+
+view.addEventListener('pointerup', (event) => { if (tileDrag && event.pointerId === tileDrag.pointerId) tileDragEnd(); });
+view.addEventListener('pointercancel', (event) => { if (tileDrag && event.pointerId === tileDrag.pointerId) tileDragEnd(true); });
+
+// Arrow keys move the focused tile, for anyone not using a mouse or touch.
+view.addEventListener('keydown', async (event) => {
+  const tile = event.target.closest?.('.arranging-grid [data-tile-id]');
+  if (!tile || event.target !== tile) return;
+  const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
+  if (!step) return;
+  event.preventDefault();
+  const tiles = [...tile.parentElement.querySelectorAll('[data-tile-id]')];
+  const i = tiles.indexOf(tile), j = i + step;
+  if (j < 0 || j >= tiles.length) return;
+  tileFlip(tile.parentElement, () => tiles[j].insertAdjacentElement(step > 0 ? 'afterend' : 'beforebegin', tile));
+  tile.focus();
+  const order = tileOrderFromDom();
+  tilePrefs.order = order;
+  document.getElementById('tile-live').textContent = `${tile.querySelector('strong')?.textContent || 'Tile'} moved to position ${j + 1} of ${order.length}.`;
+  await saveTilePrefs();
+});
 
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
