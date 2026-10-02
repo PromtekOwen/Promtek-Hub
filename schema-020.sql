@@ -1,0 +1,2 @@
+ALTER TABLE quotes ADD COLUMN description TEXT;
+ALTER TABLE quotes ADD COLUMN description_synced INTEGER NOT NULL DEFAULT 1;

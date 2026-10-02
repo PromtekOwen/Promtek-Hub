@@ -3346,8 +3346,22 @@ async function quoteHtml() {
       ${q.jira_error && !q.quote_key ? `<p class="help">${esc(q.jira_error)}. Everything here is saved; it goes to Jira when it can.</p>` : ''}
       ${q.handoff_error ? `<p class="help">The order's figures are waiting to go into Jira: ${esc(q.handoff_error)}</p>` : ''}
       ${actions}<div class="result" id="q-status-result" role="status"></div></div>
+    ${quoteDescriptionHtml(q)}
     ${quoteData.sections.map((s) => qSectionHtml(s, quoteData)).join('')}
     <div class="row"><button class="btn secondary" data-q-back="1">Back to quotes</button></div>`;
+}
+
+function quoteDescriptionHtml(q) {
+  const editable = quoteData.canEdit && !q.epic_key;
+  const waiting = q.description_synced === 0 ? '<p class="help">Saved here; Jira will be updated shortly.</p>' : '';
+  if (!editable) {
+    return q.description ? `<div class="card"><h3 style="margin-top:0">Description</h3><p class="pre-wrap" style="margin:0">${esc(q.description)}</p></div>` : '';
+  }
+  return `<div class="card"><label style="margin:0">Description
+      <textarea rows="6" data-q-description placeholder="What the customer wants, where, any deadlines, and anything the engineers should know">${esc(q.description || '')}</textarea></label>
+    <p class="help">This is the description on the Quote in Jira. When the quote is ready to send, the estimates are added underneath it there.</p>${waiting}
+    <div class="row"><button class="btn secondary" data-q-description-save>Save description</button></div>
+    <div class="result" id="q-description-result" role="status"></div></div>`;
 }
 
 async function quoteNewHtml() {
@@ -3360,10 +3374,12 @@ async function quoteNewHtml() {
       <ul class="list plain q-customers" ${picked ? 'hidden' : ''}>${quoteCustomers.map((c) =>
         `<li data-q-customer-row><button class="linklike" data-q-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
       <label style="margin-top:1rem">Title<input type="text" data-q-new="title" value="${esc(quoteNew.title)}" placeholder="What the customer is asking for"></label>
+      <label style="margin-top:1rem">Description
+        <textarea rows="6" data-q-new="description" placeholder="What the customer wants, where, any deadlines, and anything the engineers should know">${esc(quoteNew.description || '')}</textarea></label>
       <h3>Categories</h3>
       <div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((d) =>
         `<button class="chip${quoteNew.disciplines.includes(d) ? ' on' : ''}" data-q-new-disc="${d}">${qDisc(d)}</button>`).join('')}</div>
-      <p class="help">The quote is created in Jira under the customer's quote list, and its key is the quote number in Quoter.</p>
+      <p class="help">The quote is created in Jira under the customer's quote list, with this description, and its key is the quote number in Quoter.</p>
       <div class="row"><button class="btn" data-q-create="1">Start the quote</button><button class="btn secondary" data-q-back="1">Cancel</button></div>
       <div class="result" id="q-new-result" role="status"></div></div>`;
 }
@@ -3380,7 +3396,8 @@ async function quoteAnswerHtml() {
   }
   return `<div class="card"><p style="margin-top:0"><strong>${esc(r.requested_name || 'Someone')} would like your estimate</strong><br>
       <span class="muted">${esc(r.title)} for ${esc(r.customer || '')}, ${qDisc(r.discipline)}${r.quote_key ? `, ${esc(r.quote_key)}` : ''}.</span></p>
-      ${r.note ? `<blockquote class="dispute-words">${esc(r.note)}</blockquote>` : ''}
+      ${data.quote.description ? `<h3>About the job</h3><p class="pre-wrap">${esc(data.quote.description)}</p>` : ''}
+      ${r.note ? `<h3>From ${esc(r.requested_name || 'sales')}</h3><blockquote class="dispute-words">${esc(r.note)}</blockquote>` : ''}
       <div data-q-section="answer">${qSectionFields({ ...answerDraft, discipline: r.discipline }, data.config, true, 'answer')}</div>
       <label style="margin-top:1rem">Anything else <span class="muted">(optional)</span>
         <textarea rows="3" data-q-answer-comment="1" placeholder="What the estimate depends on, or what worries you">${esc(answerDraft.comment)}</textarea></label>
@@ -3499,6 +3516,17 @@ async function quotesClick(event) {
       if (r.jiraUpdated === false) toast('Saved. The Jira description could not be updated');
       return render();
     } catch (err) { document.getElementById('q-status-result').textContent = err.message; st.disabled = false; }
+    return true;
+  }
+  const descSave = t('[data-q-description-save]');
+  if (descSave) {
+    descSave.disabled = true;
+    const out = document.getElementById('q-description-result');
+    try {
+      const r = await api('/api/quotes/description', { method: 'POST', body: JSON.stringify({ id: quoteData.quote.id, description: view.querySelector('[data-q-description]').value }) });
+      out.textContent = r.jiraUpdated === false ? 'Saved here. Jira couldn\'t be reached, so it will be updated shortly.' : r.jiraUpdated ? 'Saved, and updated in Jira.' : 'Saved. It goes to Jira when the quote has a Jira key.';
+    } catch (err) { out.textContent = err.message; }
+    descSave.disabled = false;
     return true;
   }
   const retry = t('[data-q-retry]');

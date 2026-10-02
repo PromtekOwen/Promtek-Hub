@@ -36,7 +36,46 @@ export const DEFAULT_CONFIG = {
 const parse = (v, fallback) => { try { return v ? JSON.parse(v) : fallback; } catch { return fallback; } };
 const hoursText = (h) => `${Math.round((h || 0) * 10) / 10}h`;
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
-const adf = (text) => ({ type: 'doc', version: 1, content: text.split('\n\n').map((p) => ({ type: 'paragraph', content: p ? [{ type: 'text', text: p }] : [] })) });
+// Blank lines start new paragraphs; single line breaks stay as line breaks.
+const adf = (text) => ({
+  type: 'doc', version: 1,
+  content: String(text).replace(/\r\n/g, '\n').split(/\n{2,}/).map((p) => ({
+    type: 'paragraph',
+    content: p.split('\n').flatMap((line, i) => [...(i ? [{ type: 'hardBreak' }] : []), ...(line ? [{ type: 'text', text: line }] : [])]),
+  })),
+});
+const MAX_DESCRIPTION = 20000;
+const cleanDescription = (v) => String(v || '').replace(/\r\n/g, '\n').trim().slice(0, MAX_DESCRIPTION);
+
+// Jira's description is what sales wrote, with the hub's estimates underneath
+// once the quote is ready to send, so neither ever overwrites the other.
+async function jiraDescription(env, q) {
+  const parts = [];
+  if (q.description) parts.push(q.description);
+  if (q.status === 'ready') {
+    const { results } = await env.DB.prepare(
+      'SELECT s.*, e.name AS estimator FROM quote_sections s LEFT JOIN employees e ON e.account_id = s.estimator_id WHERE quote_id = ?'
+    ).bind(q.id).all();
+    const lines = results.sort((a, b) => DISCIPLINE_ORDER.indexOf(a.discipline) - DISCIPLINE_ORDER.indexOf(b.discipline))
+      .map((s) => `${DISCIPLINE_LABELS[s.discipline]}: ${s.quoted_hours != null ? hoursText(s.quoted_hours) : 'hours not set'}`
+        + `${s.job_elo ? `, job ELO ${Math.round(s.job_elo)}` : ''}${s.estimator ? `, estimated by ${s.estimator}` : ''}.`);
+    parts.push(`Estimates from the Promtek Hub quote builder\n${lines.join('\n')}`);
+  }
+  return parts.length ? adf(parts.join('\n\n')) : null;
+}
+
+async function syncDescription(env, q) {
+  if (!q.quote_key) return null;
+  try {
+    const description = await jiraDescription(env, q);
+    await jira(env, `/rest/api/3/issue/${encodeURIComponent(q.quote_key)}`, { method: 'PUT', body: JSON.stringify({ fields: { description } }) });
+    await env.DB.prepare('UPDATE quotes SET description_synced = 1 WHERE id = ?').bind(q.id).run();
+    return true;
+  } catch {
+    await env.DB.prepare('UPDATE quotes SET description_synced = 0 WHERE id = ?').bind(q.id).run();
+    return false;
+  }
+}
 
 export async function config(env) {
   return parse(await getState(env, 'quote_config'), DEFAULT_CONFIG);
@@ -72,6 +111,8 @@ async function canView(env, viewer, quoteId) {
 async function createInJira(env, quote, viewer) {
   const lists = await searchJql(env, `project = "${quote.project_key}" AND issuetype = "Quote List" ORDER BY created ASC`, ['summary'], { limit: 1 });
   const fields = { project: { key: quote.project_key }, issuetype: { name: 'Quote' }, summary: quote.title };
+  const description = await jiraDescription(env, quote);
+  if (description) fields.description = description;
   if (viewer?.accountId) fields.assignee = { id: viewer.accountId };
   if (lists[0]) fields.parent = { key: lists[0].key };
   let created;
@@ -109,8 +150,8 @@ export async function create(env, viewer, input) {
   if (!disciplines.length) throw new Error('Choose at least one category.');
   const now = new Date().toISOString();
   const res = await env.DB.prepare(
-    `INSERT INTO quotes (project_key, customer, title, status, created_by, created_email, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?, ?, ?)`
-  ).bind(input.projectKey, String(input.customer || '').slice(0, 120), title, viewer.accountId, viewer.email, now, now).run();
+    `INSERT INTO quotes (project_key, customer, title, description, status, created_by, created_email, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)`
+  ).bind(input.projectKey, String(input.customer || '').slice(0, 120), title, cleanDescription(input.description) || null, viewer.accountId, viewer.email, now, now).run();
   const id = res.meta.last_row_id;
   await env.DB.batch(disciplines.map((d) => env.DB.prepare(
     'INSERT INTO quote_sections (quote_id, discipline, counts, chips, updated_at) VALUES (?, ?, ?, ?, ?)'
@@ -214,17 +255,20 @@ export async function setStatus(env, viewer, input) {
   const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(input.id)).first();
   if (!q) throw new Error('That quote has gone.');
   await env.DB.prepare('UPDATE quotes SET status = ?, updated_at = ? WHERE id = ?').bind(input.status, new Date().toISOString(), q.id).run();
-  let jiraUpdated = null;
-  if (input.status === 'ready' && q.quote_key) {
-    try {
-      const { sections } = await get(env, viewer, q.id);
-      const text = sections.map((s) => `${DISCIPLINE_LABELS[s.discipline]}: ${s.quoted_hours != null ? hoursText(s.quoted_hours) : 'hours not set'}`
-        + `${s.job_elo ? `, job ELO ${Math.round(s.job_elo)}` : ''}${s.estimator ? `, estimated by ${s.estimator}` : ''}.`).join('\n\n');
-      await jira(env, `/rest/api/3/issue/${encodeURIComponent(q.quote_key)}`, { method: 'PUT', body: JSON.stringify({ fields: { description: adf(`Built in the Promtek Hub quote builder.\n\n${text}`) } }) });
-      jiraUpdated = true;
-    } catch { jiraUpdated = false; }
-  }
+  // Ready adds the estimates under the description; going back takes them off again.
+  const changesJira = input.status === 'ready' || q.status === 'ready';
+  const jiraUpdated = changesJira ? await syncDescription(env, { ...q, status: input.status }) : null;
   return { ok: true, jiraUpdated };
+}
+
+export async function saveDescription(env, viewer, input) {
+  if (!canCreate(viewer)) throw new Error('Only the sales team and team leads can change a quote.');
+  const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(input.id)).first();
+  if (!q) throw new Error('That quote has gone.');
+  if (q.epic_key) throw new Error('This quote has become an order, so it can no longer change.');
+  const description = cleanDescription(input.description) || null;
+  await env.DB.prepare('UPDATE quotes SET description = ?, updated_at = ? WHERE id = ?').bind(description, new Date().toISOString(), q.id).run();
+  return { ok: true, jiraUpdated: await syncDescription(env, { ...q, description }) };
 }
 
 export const DISCIPLINE_LABELS = { software: 'Software', hardware: 'Hardware', engineering: 'Site visit', condor: 'Condor' };
@@ -547,8 +591,10 @@ export async function checkCounts(env, viewer, input) {
 }
 
 export async function hourly(env) {
-  const { results } = await env.DB.prepare('SELECT id FROM quotes WHERE quote_key IS NULL').all();
+  const { results } = await env.DB.prepare('SELECT id FROM quotes WHERE quote_key IS NULL LIMIT 10').all();
   for (const q of results) await retryJira(env, q.id);
+  const { results: unsynced } = await env.DB.prepare('SELECT * FROM quotes WHERE description_synced = 0 AND quote_key IS NOT NULL LIMIT 10').all();
+  for (const q of unsynced) await syncDescription(env, q);
   const handed = await handOff(env);
   const checks = await queueCountChecks(env);
   return { ...handed, ...checks };

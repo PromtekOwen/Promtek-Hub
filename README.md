@@ -58,6 +58,7 @@ schema-016.sql     Condor Dev: Bitbucket activity and logged days
 schema-017.sql     Condor Dev: MES tickets, estimates, triage and Condor ratings
 schema-018.sql     Condor Dev: capacity, accepted plans and plan decisions
 schema-019.sql     Audit log and company chart versions
+schema-020.sql     A description on each quote
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

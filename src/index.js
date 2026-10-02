@@ -260,6 +260,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/quotes/create') return json(await Quotes.create(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/section') return json(await Quotes.saveSection(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/status') return json(await Quotes.setStatus(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/description') return json(await Quotes.saveDescription(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/ask') return json(await Quotes.ask(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/answer') return json(await Quotes.answer(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/use-answer') return json(await Quotes.useAnswer(env, user, body.requestId));

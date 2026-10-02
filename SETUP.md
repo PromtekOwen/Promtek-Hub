@@ -370,7 +370,7 @@ Alert emails go to each lead or supervisor's own email address through the mail 
 
 **Who uses it.** The sales team and team leads start and edit quotes. Anyone asked for an estimate can open that quote and give theirs; nobody else sees it.
 
-**Starting a quote** creates a Quote issue in the customer's Jira project, under their Quote List, assigned to whoever started it. Its key is the quote number in Quoter. If Jira can't be reached, the quote is kept in the hub and created in Jira on the next hourly run, or with Try again.
+**Starting a quote** creates a Quote issue in the customer's Jira project, under their Quote List, assigned to whoever started it. Its description is what the person starting the quote writes about the job, and it can be edited on the quote at any time; Jira is updated on each save. When the quote is ready to send, the hub's estimates are added under the description in Jira, and taken off again if it goes back to being worked on. Engineers asked for an estimate see the description as "About the job". Its key is the quote number in Quoter. If Jira can't be reached, the quote is kept in the hub and created in Jira on the next hourly run, or with Try again.
 
 **Each category** (Software, Hardware, Site visit, Condor) records:
 - counts and conditions for that kind of work, and for site visits the kind of visit;
