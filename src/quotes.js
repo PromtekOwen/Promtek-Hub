@@ -519,6 +519,12 @@ export async function handOff(env) {
         if (Object.keys(fields).length) {
           await jira(env, `/rest/api/3/issue/${encodeURIComponent(cat.key)}`, { method: 'PUT', body: JSON.stringify({ fields }) });
         }
+        if (hours) {
+          await env.DB.prepare(
+            `INSERT INTO quote_splits (category_id, category_key, quote_id, seconds, status, handed_off_at) VALUES (?, ?, ?, ?, 'pending', ?)
+             ON CONFLICT(category_id) DO UPDATE SET seconds = excluded.seconds, status = 'pending', handed_off_at = excluded.handed_off_at`
+          ).bind(String(cat.id), cat.key, q.id, Math.round(hours * 36) * 100, new Date().toISOString()).run();
+        }
         if (s.tech != null) epicFields[map.tech] = s.tech;
         if (s.risk != null) epicFields[map.risk] = s.risk;
         if (s.dep != null) epicFields[map.dep] = s.dep;
@@ -542,6 +548,110 @@ export async function handOff(env) {
     }
   }
   return { linked };
+}
+
+// ---------- Sharing a category's hours across its subtasks ----------
+
+// The weights agreed with the teams, until finished jobs show how the time
+// really divides. A subtask type not listed counts as 1.
+export const STAGE_WEIGHTS = {
+  hardware: { 'New Design': 2, 'New Purchase Order': 1, 'New Build': 2, 'New Configuration & Testing': 2, 'New Dispatch': 1 },
+  software: { 'New Software Development': 3, 'New Download Phase': 1 },
+  engineering: { 'New Order Site Visit': 1 },
+  condor: { 'New Condor Development': 3, 'New Download Phase': 1 },
+};
+const LEARNED_MIN_JOBS = 10;       // finished categories needed per subtask type before data takes over
+const SPLIT_WAIT_DAYS = 7;         // subtasks can arrive after the order
+const SPLIT_RECHECK_DAYS = 14;     // late subtasks get a share for this long
+const SPLIT_WRITES_PER_RUN = 15;        // with one search per category, a turn stays well inside 50 calls
+
+// From finished jobs: the typical share of a category's time each subtask type takes.
+export async function learnedShares(env, discipline) {
+  const { results } = await env.DB.prepare(
+    `SELECT s.stage_type, s.stage_share FROM completed_jobs s JOIN completed_jobs c ON c.issue_id = s.parent_id
+      WHERE s.kind = 'stage' AND s.discipline = ? AND s.stage_type IS NOT NULL AND s.stage_share > 0
+        AND c.kind = 'category' AND c.confidence = 'good'`
+  ).bind(discipline).all();
+  const by = new Map();
+  for (const r of results) { if (!by.has(r.stage_type)) by.set(r.stage_type, []); by.get(r.stage_type).push(r.stage_share); }
+  return new Map([...by].map(([type, shares]) => [type, { share: median(shares), jobs: shares.length }]));
+}
+
+// Shares out whole minutes so the subtasks add up to the category exactly.
+export function splitMinutes(totalMinutes, weights) {
+  const sum = weights.reduce((a, w) => a + w, 0);
+  if (!sum) return weights.map(() => 0);
+  const raw = weights.map((w) => (totalMinutes * w) / sum);
+  const out = raw.map(Math.floor);
+  let left = totalMinutes - out.reduce((a, m) => a + m, 0);
+  const order = raw.map((r, i) => [r - Math.floor(r), i]).sort((a, b) => b[0] - a[0]);
+  for (let k = 0; left > 0; k = (k + 1) % order.length, left--) out[order[k][1]]++;
+  return out;
+}
+
+export function planSplit(discipline, subtasks, seconds, learned) {
+  const types = subtasks.map((t) => t.type);
+  const useData = types.length > 0 && types.every((t) => (learned.get(t)?.jobs || 0) >= LEARNED_MIN_JOBS);
+  const fixed = STAGE_WEIGHTS[discipline] || {};
+  const weights = types.map((t) => (useData ? learned.get(t).share : fixed[t] ?? 1));
+  const minutes = splitMinutes(Math.round(seconds / 60), weights);
+  return { method: useData ? 'data' : 'weights', subtasks: subtasks.map((t, i) => ({ ...t, minutes: minutes[i] })) };
+}
+
+async function subtasksOf(env, categoryKey) {
+  const issues = await searchJql(env, `parent = ${categoryKey} ORDER BY created ASC`, ['issuetype', 'timeoriginalestimate', 'summary']);
+  return issues.map((i) => ({ id: String(i.id), key: i.key, type: i.fields?.issuetype?.name || '', current: i.fields?.timeoriginalestimate ?? null }));
+}
+
+// Pending splits are written a few at a time; categories already split are
+// rechecked once a day for a fortnight in case more subtasks have arrived.
+export async function splitStep(env, { maxWrites = SPLIT_WRITES_PER_RUN } = {}) {
+  const now = Date.now();
+  const recheckFrom = new Date(now - SPLIT_RECHECK_DAYS * 86_400_000).toISOString();
+  const dayAgo = new Date(now - 86_400_000).toISOString();
+  const { results: due } = await env.DB.prepare(
+    `SELECT * FROM quote_splits WHERE status = 'pending'
+        OR (status = 'done' AND handed_off_at >= ? AND (checked_at IS NULL OR checked_at < ?)) ORDER BY handed_off_at LIMIT 6`
+  ).bind(recheckFrom, dayAgo).all();
+  if (!due.length) return { idle: true };
+  let writes = 0;
+  for (const row of due) {
+    if (writes >= maxWrites) break;
+    const subs = await subtasksOf(env, row.category_key);
+    const stamp = new Date().toISOString();
+    if (!subs.length) {
+      const waited = now - Date.parse(row.handed_off_at) > SPLIT_WAIT_DAYS * 86_400_000;
+      await env.DB.prepare('UPDATE quote_splits SET checked_at = ?, status = ? WHERE category_id = ?')
+        .bind(stamp, waited ? 'done' : row.status, row.category_id).run();
+      continue;
+    }
+    const previous = JSON.parse(row.subtasks || '[]');
+    if (row.status === 'done') {
+      const sameSet = previous.length === subs.length && subs.every((s) => previous.some((p) => p.id === s.id));
+      // Someone has set their own figures: leave them be.
+      const untouched = subs.every((s) => { const p = previous.find((x) => x.id === s.id); return !p || s.current === p.minutes * 60; });
+      if (sameSet || !untouched) {
+        await env.DB.prepare('UPDATE quote_splits SET checked_at = ? WHERE category_id = ?').bind(stamp, row.category_id).run();
+        continue;
+      }
+    }
+    const cat = await env.DB.prepare('SELECT discipline FROM quote_sections WHERE category_id = ?').bind(row.category_id).first();
+    const plan = planSplit(cat?.discipline, subs, row.seconds, await learnedShares(env, cat?.discipline));
+    let failed = null;
+    for (const s of plan.subtasks) {
+      if (s.current === s.minutes * 60) continue;
+      if (writes >= maxWrites) { failed = 'carry on'; break; }
+      try {
+        await jira(env, `/rest/api/3/issue/${encodeURIComponent(s.key)}`, { method: 'PUT', body: JSON.stringify({ fields: { timetracking: { originalEstimate: `${s.minutes}m` } } }) });
+        writes++;
+      } catch (err) { failed = err.message.slice(0, 300); break; }
+    }
+    const finished = !failed;
+    await env.DB.prepare('UPDATE quote_splits SET status = ?, method = ?, subtasks = ?, checked_at = ?, error = ? WHERE category_id = ?')
+      .bind(finished ? 'done' : 'pending', plan.method, JSON.stringify(plan.subtasks.map(({ current, ...s }) => s)), stamp,
+        failed === 'carry on' ? null : failed, row.category_id).run();
+  }
+  return { writes };
 }
 
 // After a quoted category finishes, its team lead is asked whether the counts were right.

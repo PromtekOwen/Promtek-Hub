@@ -59,6 +59,7 @@ schema-017.sql     Condor Dev: MES tickets, estimates, triage and Condor ratings
 schema-018.sql     Condor Dev: capacity, accepted plans and plan decisions
 schema-019.sql     Audit log and company chart versions
 schema-020.sql     A description on each quote
+schema-021.sql     Category estimates including subtasks; sharing quoted hours across subtasks
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

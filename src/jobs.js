@@ -66,7 +66,7 @@ const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, 
 const BASE_FIELDS = [
   'summary', 'issuetype', 'status', 'parent', 'project', 'resolutiondate', 'updated',
   'timespent', 'aggregatetimespent', 'timeoriginalestimate', 'customfield_14562', 'customfield_15378',
-  'statuscategorychangedate',
+  'statuscategorychangedate', 'aggregatetimeoriginalestimate',
 ];
 export const ALL_FIELDS = [...BASE_FIELDS, ...Object.values(DISCIPLINES).flatMap((d) => Object.values(d))];
 
@@ -94,8 +94,8 @@ function saveRows(env, rows) {
     `INSERT INTO completed_jobs (issue_id, issue_key, kind, epic_id, epic_key, parent_id, project_key, project_name,
        team, discipline, summary, status, done_date, story_points, score_scope, score_tech, score_dep, score_risk,
        weighted_score, job_elo, estimate_seconds, actual_seconds, child_count, legacy, confidence, updated_at,
-       stage_name, stage_share)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       stage_name, stage_share, stage_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, kind = excluded.kind,
        epic_id = excluded.epic_id, epic_key = excluded.epic_key, parent_id = excluded.parent_id,
        project_key = excluded.project_key, project_name = excluded.project_name, team = excluded.team,
@@ -105,11 +105,28 @@ function saveRows(env, rows) {
        weighted_score = excluded.weighted_score, job_elo = excluded.job_elo,
        estimate_seconds = excluded.estimate_seconds, actual_seconds = excluded.actual_seconds,
        child_count = excluded.child_count, legacy = excluded.legacy, confidence = excluded.confidence,
-       updated_at = excluded.updated_at, stage_name = excluded.stage_name, stage_share = excluded.stage_share`
+       updated_at = excluded.updated_at, stage_name = excluded.stage_name, stage_share = excluded.stage_share,
+       stage_type = COALESCE(excluded.stage_type, completed_jobs.stage_type)`
   ).bind(r.issue_id, r.issue_key, r.kind, r.epic_id, r.epic_key, r.parent_id, r.project_key, r.project_name,
     r.team, r.discipline, r.summary, r.status, r.done_date, r.story_points, r.score_scope, r.score_tech,
     r.score_dep, r.score_risk, r.weighted_score, r.job_elo, r.estimate_seconds, r.actual_seconds,
-    r.child_count, r.legacy, r.confidence, r.updated_at, r.stage_name ?? null, r.stage_share ?? null));
+    r.child_count, r.legacy, r.confidence, r.updated_at, r.stage_name ?? null, r.stage_share ?? null, r.stage_type ?? null));
+}
+
+// A category's estimate is its own Original Estimate plus its stages', since
+// older jobs were quoted by stage. Where the stages simply share out the
+// category's own hours, those hours are counted once, not twice. Base sprints
+// only fill in when there's no Original Estimate anywhere.
+const SPLIT_TOLERANCE = 0.05;
+export function categoryEstimate(cf, sprints = null) {
+  const own = num(cf.timeoriginalestimate) || 0;
+  const total = num(cf.aggregatetimeoriginalestimate) || own;
+  const stages = Math.max(0, total - own);
+  let seconds;
+  if (own && stages && Math.abs(stages - own) <= own * SPLIT_TOLERANCE) seconds = own;
+  else seconds = own + stages;
+  if (seconds) return seconds;
+  return sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : null;
 }
 
 // The latest move into Done is the end of a category; reopening one means it
@@ -146,9 +163,7 @@ export function categoryRows({ epic, category, categoryStages, doneDate = null }
     story_points: num(f[map.points]),
     score_scope: scope, score_tech: tech, score_dep: dep, score_risk: risk, weighted_score: weighted,
     job_elo: num(cf.customfield_15378),
-    // Original Estimate is the estimate; base sprints only fill in for older
-    // categories that never had one.
-    estimate_seconds: num(cf.timeoriginalestimate) || (sprints ? Math.round(sprints * SPRINT_HOURS * 3600) : null),
+    estimate_seconds: categoryEstimate(cf, sprints),
     // Stage time rolls up here, which is how each category is estimated.
     actual_seconds: num(cf.aggregatetimespent) || num(cf.timespent) || 0,
     child_count: categoryStages.length,
@@ -161,6 +176,7 @@ export function categoryRows({ epic, category, categoryStages, doneDate = null }
     const stageActual = num(sf.timespent) || 0;
     out.push(row({
       stage_name: stageNameOf(sf.summary, stage.key),
+      stage_type: sf.issuetype?.name || null,
       stage_share: categoryActual > 0 ? stageActual / categoryActual : null,
       issue_id: String(stage.id), issue_key: stage.key, kind: 'stage',
       epic_id: String(epic.id), epic_key: epic.key, parent_id: String(category.id),

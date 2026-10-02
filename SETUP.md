@@ -391,7 +391,25 @@ Alongside, the hub suggests hours from the three-point estimate, adjusted by how
 
 **Settings.** Admins edit the counts, conditions and kinds of visit under the cog. Keep a count's short name the same once quotes use it, or its history stops matching.
 
-**Estimates.** A category's estimate is its Original Estimate. Base sprints and story points are no longer used; base sprints only fill in for older categories with no Original Estimate. Quoting groups jobs by the size of their estimate.
+**Estimates.** A category's estimate is its own Original Estimate plus its subtasks' Original Estimates, since older jobs were quoted by subtask. Where the subtasks add up to the category's own figure (within 5%), they're a split of it and the hours are counted once. Base sprints only fill in where there's no Original Estimate at all, and story points are no longer used. The same figure is used by the Jobs tile, estimate alerts, Quoting, disputes and the ELO engine. Quoting groups jobs by the size of their estimate.
+
+**Sharing hours across subtasks.** When a quote becomes an order, the hub shares each category's hours across its subtasks' Original Estimates. It uses these weights by subtask type, with anything unlisted counting as 1:
+
+| Category | Weights |
+|---|---|
+| Hardware | New Design 2, New Purchase Order 1, New Build 2, New Configuration & Testing 2, New Dispatch 1 |
+| Software | New Software Development 3, New Download Phase 1 |
+| Site visit | New Order Site Visit 1 |
+| Condor | New Condor Development 3, New Download Phase 1 |
+
+How the sharing works:
+- **Whole minutes:** hours are shared in whole minutes, so the subtasks always add up to the category exactly.
+- **Data first:** once every subtask type in a category has at least 10 finished jobs of that kind behind it, the share of time those types really took is used instead of the weights.
+- **Late subtasks:** subtasks can arrive after the order. The hub waits a week for the first ones, then checks daily for a fortnight and re-shares if more appear.
+- **Hand edits:** a category where someone has changed the hub's figures by hand is left alone.
+- **Pace:** the work is done a few categories at a time in the background.
+
+Jira's own splitting automation should be off for orders created from hub quotes.
 
 ## Part 22: Condor Dev
 

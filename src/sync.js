@@ -381,7 +381,7 @@ export async function snapshotWeek(env, weekStart) {
 // The free Workers plan allows 50 outside calls per run. Each run does the
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
 
 export async function runScheduled(env) {
   if (!(await getState(env, 'ledger_start'))) return;
@@ -431,6 +431,10 @@ export async function runScheduled(env) {
       await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
     }),
+    'stage-split': async () => {
+      const r = await attempt('Stage estimates', async () => (await import('./quotes.js')).splitStep(env));
+      return r?.idle ? { idle: true } : r;
+    },
     'mes-sync': async () => {
       const pending = await env.DB.prepare(
         `SELECT (SELECT COUNT(*) FROM mes_estimates WHERE jira_synced = 0) + (SELECT COUNT(*) FROM mes_plan WHERE jira_synced = 0)
