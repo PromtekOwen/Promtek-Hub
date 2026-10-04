@@ -3,8 +3,9 @@
 //   route:        a page inside the hub, e.g. '#/xp'
 //   href:         a separate app, e.g. '/apps/obsolescence/'
 //   construction: true shows a greyed-out "Under construction" tile
-//   adminOnly:    true shows the tile to admins only
-//   teams:        e.g. ['Condor'] shows the tile to those teams and to admins
+//   needs:        a permission from src/permissions.js, e.g. 'oversight', 'shop', 'admin'
+//   whenLocked:   'construction' shows it greyed out to people without it, rather than hiding it
+//   teams:        e.g. ['Condor'] shows the tile to those teams, team leads, management and admins
 //   detail(me):   optional live line of text under the name (may return HTML)
 
 const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths}</svg>`;
@@ -44,7 +45,7 @@ export const MODULES = [
     name: 'Quotes',
     route: '#/quotes',
     icon: icon('<path d="M6 3.5h9l3 3V20.5H6z"/><path d="M9 10h6M9 13.5h6M9 17h3.5"/>'),
-    detail: (me) => (me.user.team === 'Sales' || me.user.isLead ? 'Build a quote from what the job involves' : 'Estimates you have been asked for'),
+    detail: (me) => (me.user.can?.quotes ? 'Build a quote from what the job involves' : 'Estimates you have been asked for'),
   },
   {
     id: 'jobs',
@@ -65,7 +66,7 @@ export const MODULES = [
     name: 'Obsolescence',
     route: '#/obs',
     icon: icon('<path d="M5 3.5h9l5 5V20.5H5z"/><path d="M14 3.5v5h5"/><path d="M8.5 13h7M8.5 16.5h4.5"/>'),
-    detail: (me) => (me.user.team === 'Sales' ? 'Survey a site, or read one and quote' : 'Survey a site and file the report'),
+    detail: (me) => ((me.user.teams || []).includes('Sales') ? 'Survey a site, or read one and quote' : 'Survey a site and file the report'),
   },
   {
     id: 'pow',
@@ -99,7 +100,8 @@ export const MODULES = [
     id: 'shop',
     name: 'XP shop',
     route: '#/shop',
-    adminOnly: true,
+    needs: 'shop',
+    whenLocked: 'construction',
     icon: icon('<path d="M4.5 8.5h15l-1.2 11.5H5.7z"/><path d="M9 8.5V7a3 3 0 016 0v1.5"/>'),
     detail: () => 'Rewards for levels, demonstration only',
   },
@@ -114,7 +116,7 @@ export const MODULES = [
     id: 'reports',
     name: 'Reports',
     route: '#/reports',
-    leadOnly: true,
+    needs: 'oversight',
     icon: icon('<path d="M4 19.5V4.5M4 19.5h16"/><path d="M8 16V11M12.5 16V7M17 16v-3"/>'),
     detail: () => 'Effort and progress, week by week',
   },
@@ -122,7 +124,7 @@ export const MODULES = [
     id: 'admin',
     name: 'Admin',
     route: '#/admin',
-    adminOnly: true,
+    needs: ['admin', 'developer'],
     icon: icon('<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 00-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 00-2-1.2L14.2 3h-4.4l-.4 2.6a7 7 0 00-2 1.2l-2.3-.9-2 3.4 2 1.5a7 7 0 000 2.4l-2 1.5 2 3.4 2.3-.9a7 7 0 002 1.2l.4 2.6h4.4l.4-2.6a7 7 0 002-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>'),
     detail: () => 'Sync, profiles and accounts',
   },

@@ -141,7 +141,7 @@ const pages = {
               <button class="icon-btn" data-tile="hide" data-value="${esc(m.id)}" aria-label="Hide ${esc(m.name)}">${svgIcon('<path d="M4 4l16 16"/><path d="M12 6c5 0 9 6 9 6a15 15 0 01-3 3.4M7.5 7.6A15 15 0 003 12s4 6 9 6a8 8 0 003.7-.9"/>')}</button>
             </span></div>`;
         }
-        if (m.construction) return `<div class="tile construction" aria-disabled="true">${inner}<span class="badge">Under construction</span></div>`;
+        if (m.construction || tileAccess(m) === 'locked') return `<div class="tile construction" aria-disabled="true">${inner}<span class="badge">Under construction</span></div>`;
         return `<a class="tile" href="${esc(m.route || m.href)}">${inner}</a>`;
       }).join('');
 
@@ -263,7 +263,12 @@ const pages = {
         if (quotingAll) params.set('all', '1');
         return tabs + quotingHtml(await api(`/api/reports/quoting?${params}`));
       }
-      return tabs + teamReportHtml(await api(`/api/reports/team?weeks=${reportWeeks}`));
+      // A lead's report opens on the team they lead; Management and admins see everyone.
+      if (reportTeam === undefined) reportTeam = me.user.scopeTeams === null ? '' : (me.user.scopeTeams?.[0] || '');
+      const teamPicker = `<div class="row" style="margin:1rem 0 0"><label>Team <select data-report-team>
+          <option value="">Everyone</option>${(me.teamsList || []).map((t) => `<option${t === reportTeam ? ' selected' : ''}>${esc(t)}</option>`).join('')}
+        </select></label></div>`;
+      return tabs + teamPicker + teamReportHtml(await api(`/api/reports/team?weeks=${reportWeeks}${reportTeam ? `&team=${encodeURIComponent(reportTeam)}` : ''}`));
     },
   },
 
@@ -312,7 +317,7 @@ const pages = {
   '#/shop': {
     band: () => `<h1>XP shop</h1><p>A working example while the rewards are agreed.</p>`,
     async render() {
-      if (!me.user.isAdmin) return `<div class="card"><p>The shop is still being worked on.</p></div>`;
+      if (!me.user.can?.shop) return `<div class="card"><p>The shop is still being worked on.</p></div>`;
       return shopSimulation ? shopSimulationHtml() : shopHtml(await api('/api/shop'));
     },
   },
@@ -375,6 +380,7 @@ const pages = {
   '#/admin': {
     band: () => `<h1>Admin</h1><p>People, sync and alerts.</p>`,
     async render() {
+      if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
       const [data, peopleData, elo] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo')]);
       peopleCache = peopleData;
@@ -407,6 +413,9 @@ const pages = {
         </div>
 
         ${eloAdminHtml(elo, peopleData.source)}
+
+        <h2>Groups and what they can do</h2>
+        <div id="permissions-grid"><div class="card"><p class="muted" style="margin:0">Loading</p></div></div>
 
         <h2>Audit log</h2>
         <p class="muted">Changes made by hand to employees, vehicles and settings: who changed what, when, and what it was before.</p>
@@ -463,8 +472,16 @@ const pages = {
 let tilePrefs = { order: null, hidden: [] };
 let arrangeMode = false;
 
-const allowedTile = (m) => (!m.adminOnly || me.user.isAdmin) && (!m.leadOnly || me.user.isLead)
-  && (!m.teams || me.user.isAdmin || m.teams.includes(me.user.team));
+// 'open', 'locked' (shown greyed out as under construction) or false (not shown).
+function tileAccess(m) {
+  const u = me.user;
+  const needs = m.needs || (m.adminOnly ? 'admin' : m.leadOnly ? 'oversight' : null);
+  const hasNeed = !needs || u.isAdmin || [].concat(needs).some((n) => Boolean(u.can?.[n]));
+  const inTeams = !m.teams || u.isAdmin || u.isLead || m.teams.some((t) => (u.teams || []).includes(t));
+  if (hasNeed && inTeams) return 'open';
+  return m.whenLocked === 'construction' ? 'locked' : false;
+}
+const allowedTile = (m) => Boolean(tileAccess(m));
 
 function orderedTiles() {
   const allowed = MODULES.filter((m) => allowedTile(m) && !tilePrefs.hidden.includes(m.id));
@@ -532,7 +549,7 @@ function personEditHtml() {
       ${field('jobTitle', 'Job title', p.jobTitle)}
 
       <p class="muted" style="margin:1.5rem 0 0">Where they sit</p>
-      <label style="margin-top:.75rem">Team <select data-person="department">
+      <label style="margin-top:.75rem">Department <select data-person="department">
         <option value="">Not set</option>
         ${departments.map((d) => `<option value="${esc(d.name)}"${d.name === p.department ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
       </select></label>
@@ -543,16 +560,8 @@ function personEditHtml() {
       </select></label>
       <div class="row" style="margin-top:.75rem">
         <label>Order on the chart <input data-person="order" type="number" value="${p.order ?? 50}"></label>
-        <label>Role in the hub <select data-person="role">
-          ${[['engineer', 'Engineer'], ['lead', 'Team lead'], ['admin', 'Admin']].map(([key, label]) =>
-            `<option value="${key}"${(p.role || 'engineer') === key ? ' selected' : ''}>${label}</option>`).join('')}
-        </select></label>
-        <label>Alerts team <select data-person="team">
-          <option value="">Not set</option>
-          ${['Projecting', 'Service', 'Condor', 'Sales'].map((t) =>
-            `<option value="${t}"${p.team === t ? ' selected' : ''}>${t}</option>`).join('')}
-        </select></label>
       </div>
+      ${personAccessHtml(p)}
 
       <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
       <div class="row" style="margin-top:.75rem">
@@ -603,6 +612,11 @@ function collectPerson() {
   document.querySelectorAll('[data-person]').forEach((input) => {
     personEdit[input.dataset.person] = input.value.trim();
   });
+  if (document.querySelector('[data-person-group]')) {
+    personEdit.groups = [...document.querySelectorAll('[data-person-group]:checked')].map((c) => c.dataset.personGroup);
+    personEdit.teams = [...document.querySelectorAll('[data-person-team].on')].map((c) => c.dataset.personTeam);
+    personEdit.leadOf = [...document.querySelectorAll('[data-person-lead]:checked')].map((c) => c.dataset.personLead).filter((t) => personEdit.teams.includes(t));
+  }
 }
 
 async function personAction(action) {
@@ -2601,6 +2615,7 @@ async function loadStageHint() {
 let reportWeeks = 8;
 let reportAccount = null;
 let reportView = 'team';
+let reportTeam;
 let quotingDiscipline = '';
 let quotingAll = false;
 
@@ -3694,7 +3709,7 @@ let mesTriage = { versionId: null, skipped: [] };
 let mesRatingFor = null;
 
 function condorTabs() {
-  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor') ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['ratings', 'Ratings']];
+  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.can?.condorPlan ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['ratings', 'Ratings']];
   return `<div class="tabs condor-tabs">${tabs.map(([k, l]) => `<button class="tab${condorTab === k ? ' on' : ''}" data-condor-tab="${k}">${l}</button>`).join('')}</div>`;
 }
 
@@ -3798,7 +3813,7 @@ async function mesTriageHtml() {
 }
 
 async function mesRatingsHtml() {
-  const isLead = me.user.isAdmin || (me.user.isLead && me.user.team === 'Condor');
+  const isLead = Boolean(me.user.can?.condorPlan);
   const team = isLead ? (await api('/api/mes/team')).team : [];
   const teamHtml = team.length ? `<h2>The team</h2><ul class="list">${team.map((p) => `<li><button class="linklike title" data-mes-rating="${esc(p.account_id)}">${esc(p.name)}</button>
       <span class="xp">${n(Math.round(p.condor_elo))}<small>${n(p.jobs)} ${p.jobs === 1 ? 'ticket' : 'tickets'}</small></span></li>`).join('')}</ul>` : '';
@@ -4313,6 +4328,54 @@ view.addEventListener('keydown', async (event) => {
   await saveTilePrefs();
 });
 
+// ---------- Groups, teams and what they allow ----------
+
+const GROUP_LABELS = [['admin', 'Admin'], ['management', 'Management'], ['lead', 'Team lead'], ['sales', 'Sales'], ['developer', 'Developer']];
+
+function personAccessHtml(p) {
+  const groups = p.groups || [], teams = p.teams || [], leads = p.leadOf || [];
+  return `<p class="muted" style="margin:1.5rem 0 .5rem">Access</p>
+    <div class="access-groups">${GROUP_LABELS.map(([k, l]) => `<label class="inline-check"><input type="checkbox" data-person-group="${k}"${groups.includes(k) ? ' checked' : ''}> ${l}</label>`).join('')}</div>
+    <p class="help">Groups decide what someone can open and do. Admin → Groups and what they can do lists each one.</p>
+    <p class="muted" style="margin:1rem 0 .5rem">Teams</p>
+    <div class="chips">${(me.teamsList || []).map((t) => `<button type="button" class="chip${teams.includes(t) ? ' on' : ''}" data-person-team="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+    <div class="access-leads" ${groups.includes('lead') ? '' : 'hidden'}>
+      <p class="muted" style="margin:1rem 0 .5rem">Leads</p>
+      <div class="access-groups">${(me.teamsList || []).map((t) => `<label class="inline-check"${teams.includes(t) ? '' : ' hidden'} data-lead-for="${esc(t)}"><input type="checkbox" data-person-lead="${esc(t)}"${leads.includes(t) ? ' checked' : ''}> ${esc(t)}</label>`).join('')}</div>
+      <p class="help">A team lead can do everything Management can; their own lists, approvals and alerts are for the teams ticked here.</p>
+    </div>`;
+}
+
+let permissionsCache = null;
+async function loadPermissionsGrid() {
+  const host = document.getElementById('permissions-grid');
+  if (!host) return;
+  try {
+    permissionsCache = permissionsCache || await api('/api/admin/permissions');
+    const { groups, permissions } = permissionsCache;
+    const cols = Object.keys(groups);
+    host.innerHTML = `<div class="table-wrap"><table class="perm-grid"><thead><tr><th></th>${cols.map((g) => `<th>${esc(groups[g].name)}</th>`).join('')}</tr></thead>
+      <tbody>${Object.entries(permissions).map(([, p]) => `<tr><td>${esc(p.about)}</td>${cols.map((g) => `<td class="perm-cell">${g === 'admin' || p.groups.includes(g) ? '<span aria-label="Yes">✓</span>' : '<span class="muted" aria-label="No">–</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+      <div class="card" style="margin-top:.75rem">${cols.map((g) => `<p style="margin:.3rem 0"><strong>${esc(groups[g].name)}:</strong> ${esc(groups[g].about)}</p>`).join('')}
+      <p class="help" style="padding-bottom:0">Groups are set in the hub's code, so a stray tick can never open something up. Ask for a change and it's made there.</p></div>`;
+  } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; }
+}
+
+async function developerAdminHtml() {
+  const [data, bitbucket] = await Promise.all([api('/api/admin/overview'), api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }))]);
+  const s = data.state;
+  const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
+  return `${s.last_error ? `<div class="card notice error" style="margin-bottom:1rem"><p><strong>Last sync problem</strong></p><p>${esc(s.last_error)}</p></div>` : '<div class="card notice" style="margin-bottom:1rem"><p style="margin:0">No sync problems.</p></div>'}
+    <div class="card"><dl class="state">
+        <dt>Last background run</dt><dd>${when(s.last_scheduled_run)}</dd>
+        <dt>Ledger started</dt><dd>${esc(s.ledger_start || 'Not started')}</dd>
+      </dl>
+      <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button></div>
+      <div class="result" id="sync-result" role="status"></div></div>
+    ${bitbucketAdminHtml(bitbucket)}
+    <p class="help">This is the technical side of Admin. People, settings and the audit log are for admins.</p>`;
+}
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4347,7 +4410,7 @@ function renderAccount() {
         <ul class="menu">
           <li><button data-account="refresh">${svgIcon('<path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/>')}Refresh my XP</button></li>
           ${installItem}
-          ${me.user.isAdmin ? `<li><a href="#/admin" data-account="close">${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}Admin tools</a></li>` : ''}
+          ${me.user.isAdmin || me.user.can?.developer ? `<li><a href="#/admin" data-account="close">${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}Admin tools</a></li>` : ''}
         </ul>
       </section>
       <section class="acct-section">
@@ -4529,7 +4592,7 @@ async function adminAction(action, button) {
     el.className = `result ${isError ? 'bad' : ''}`;
   };
   const target = { 'sync-now': 'sync-result', snapshot: 'sync-result',
-    'start-ledger': 'start-result', link: 'link-result', 'set-role': 'role-result',
+    'start-ledger': 'start-result', link: 'link-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
@@ -4609,16 +4672,6 @@ async function adminAction(action, button) {
     } else if (action === 'recompute-stages') {
       const r = await api('/api/admin/recompute-stages', { method: 'POST', body: JSON.stringify({}) });
       out(target, `Rebuilt names and shares for ${r.stages} stages.`);
-    } else if (action === 'set-role') {
-      await api('/api/admin/set-role', {
-        method: 'POST',
-        body: JSON.stringify({
-          accountId: document.getElementById('role-account').value,
-          role: document.getElementById('role-role').value,
-          team: document.getElementById('role-team').value || null,
-        }),
-      });
-      out(target, 'Role saved.');
     } else if (action === 'link') {
       await api('/api/admin/link', {
         method: 'POST',
@@ -4728,7 +4781,7 @@ view.addEventListener('click', async (event) => {
   if (personEditBtn) {
     const id = personEditBtn.dataset.personEdit;
     personEdit = id === 'new'
-      ? { name: '', role: 'engineer', xpRate: 60, order: 50, icons: [] }
+      ? { name: '', role: 'engineer', xpRate: 60, order: 50, icons: [], groups: [], teams: [], leadOf: [] }
       : { ...(peopleCache.people.find((p) => p.accountId === id) || {}) };
     // Saving leaves the rating alone unless it was edited, so a job rated
     // while the form is open isn't overwritten.
@@ -4876,6 +4929,13 @@ view.addEventListener('click', async (event) => {
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  const teamChip = event.target.closest('[data-person-team]');
+  if (teamChip) {
+    teamChip.classList.toggle('on');
+    const lead = view.querySelector(`[data-lead-for="${CSS.escape(teamChip.dataset.personTeam)}"]`);
+    if (lead) { lead.hidden = !teamChip.classList.contains('on'); if (lead.hidden) lead.querySelector('input').checked = false; }
+    return;
+  }
   if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
   if (settingsOpen === '#/org' && await orgSettingsClick(event)) return;
   if (event.target.closest('[data-audit-more]')) return loadAudit(true);
@@ -5003,7 +5063,7 @@ async function render() {
       view.innerHTML = html;
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
-      if (route === '#/admin' && !settingsOpen) loadAudit();
+      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadPermissionsGrid(); }
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -5024,6 +5084,8 @@ let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
+  if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
+  if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
   if (event.target.matches('[data-audit-q]')) {
     clearTimeout(loadAudit.timer);
     auditFilter.q = event.target.value;

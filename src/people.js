@@ -2,6 +2,7 @@
 // the other apps need about a person is on this record.
 import { progressFor } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
+import { cleanAccess, groupsOf, teamsOf, leadOf } from './permissions.js';
 import { getState, setState } from './sync.js';
 
 // Badges mark the people to go to in an emergency, so they stand out on the
@@ -54,6 +55,9 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         order: e.org_order,
         role: e.role,
         team: e.team,
+        groups: groupsOf(e),
+        teams: teamsOf(e),
+        leadOf: leadOf(e),
         extension: e.extension,
         xpRate: e.baseline,
         elo: e.elo == null ? null : Math.round(e.elo * 10) / 10,
@@ -82,17 +86,19 @@ export async function savePerson(env, person) {
   const accountId = clean(person.accountId, 128) || newLocalId();
 
   if (person.managerId === accountId) throw new Error('Nobody reports to themselves.');
+  // Groups and teams decide what someone can do; role and team are kept in step for older parts of the hub.
+  const acc = cleanAccess(person.groups !== undefined ? person
+    : { groups: groupsOf({ role: person.role, team: person.team }), teams: person.team ? [person.team] : [], leadOf: person.role === 'lead' && person.team ? [person.team] : [] });
 
   const existing = await env.DB.prepare('SELECT account_id FROM employees WHERE account_id = ?').bind(accountId).first();
   if (!existing) {
     await env.DB.prepare(
       `INSERT INTO employees (account_id, name, email, pronouns, job_title, department, manager_id, org_order,
-         role, team, extension, baseline, elo, icons, avatar, notes, jira_xp, opening_xp, active, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
+         role, team, groups, teams, lead_of, extension, baseline, elo, icons, avatar, notes, jira_xp, opening_xp, active, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
     ).bind(accountId, name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
       clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
-      ['engineer', 'lead', 'admin'].includes(person.role) ? person.role : 'engineer',
-      clean(person.team, 40), clean(person.extension, 20),
+      acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
       Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
       cleanAvatar(person.avatar), clean(person.notes, 500), now).run();
     return { accountId, created: true };
@@ -100,12 +106,11 @@ export async function savePerson(env, person) {
 
   await env.DB.prepare(
     `UPDATE employees SET name = ?, email = ?, pronouns = ?, job_title = ?, department = ?, manager_id = ?,
-       org_order = ?, role = ?, team = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
+       org_order = ?, role = ?, team = ?, groups = ?, teams = ?, lead_of = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
        notes = ?, active = ?, updated_at = ? WHERE account_id = ?`
   ).bind(name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
     clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
-    ['engineer', 'lead', 'admin'].includes(person.role) ? person.role : 'engineer',
-    clean(person.team, 40), clean(person.extension, 20),
+    acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), person.active === false ? 0 : 1, now, accountId).run();
 

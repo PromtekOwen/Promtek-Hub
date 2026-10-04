@@ -2,6 +2,7 @@
 // while, so ELO counts that time for less. No details are recorded beyond the
 // kind; the conversation belongs between the person and their supervisor.
 import { raiseAlert, sendAlerts, londonDate } from './sync.js';
+import { managesPerson } from './permissions.js';
 
 // How much a job still counts while each applies: 1 is fully, 0 not at all.
 export const MODIFIERS = {
@@ -77,12 +78,12 @@ export async function request(env, viewer, input) {
   return { ok: true, supervisor: manager?.name || null };
 }
 
-const canDecide = (viewer, m) => m.account_id !== viewer.accountId && (viewer.isAdmin || m.manager_id === viewer.accountId);
+const canDecide = (viewer, m) => m.account_id !== viewer.accountId && managesPerson(viewer, { manager_id: m.manager_id, teams: m.teams, team: m.team });
 
 export async function pending(env, viewer) {
   if (!viewer.accountId && !viewer.isAdmin) return [];
   const { results } = await env.DB.prepare(
-    `SELECT m.*, e.name FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id
+    `SELECT m.*, e.name, e.teams, e.team FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id
       WHERE m.status = 'pending' ORDER BY m.id`
   ).all();
   return results.filter((m) => canDecide(viewer, m));
@@ -92,16 +93,16 @@ export async function pending(env, viewer) {
 export async function supervised(env, viewer) {
   if (!viewer.accountId && !viewer.isAdmin) return [];
   const { results } = await env.DB.prepare(
-    `SELECT m.*, e.name FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id
+    `SELECT m.*, e.name, e.teams, e.team FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id
       WHERE m.status = 'approved' AND (m.end_date IS NULL OR m.end_date >= ?) ORDER BY e.name`
   ).bind(londonDate()).all();
   return results.filter((m) => canDecide(viewer, m));
 }
 
 export async function decide(env, viewer, input) {
-  const m = await env.DB.prepare('SELECT * FROM modifiers WHERE id = ?').bind(Number(input.id)).first();
+  const m = await env.DB.prepare('SELECT m.*, e.teams, e.team FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id WHERE m.id = ?').bind(Number(input.id)).first();
   if (!m) throw new Error('That request has gone.');
-  if (!canDecide(viewer, m)) throw new Error('Only their supervisor or an admin can decide this.');
+  if (!canDecide(viewer, m)) throw new Error('Only their supervisor, a lead for their team, management or an admin can decide this.');
   if (m.status !== 'pending') throw new Error('That has already been decided.');
   const status = input.decision === 'approve' ? 'approved' : input.decision === 'decline' ? 'declined' : null;
   if (!status) throw new Error('Approve or decline it.');
@@ -111,7 +112,7 @@ export async function decide(env, viewer, input) {
 }
 
 export async function end(env, viewer, id) {
-  const m = await env.DB.prepare('SELECT * FROM modifiers WHERE id = ?').bind(Number(id)).first();
+  const m = await env.DB.prepare('SELECT m.*, e.teams, e.team FROM modifiers m LEFT JOIN employees e ON e.account_id = m.account_id WHERE m.id = ?').bind(Number(id)).first();
   if (!m || !(m.account_id === viewer.accountId || canDecide(viewer, m))) throw new Error('That isn\'t yours to change.');
   const today = londonDate();
   if (m.status === 'pending') {

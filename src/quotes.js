@@ -5,6 +5,7 @@ import { jira, searchJql } from './jira.js';
 import { DISCIPLINES, disciplineOf, customerFilter } from './jobs.js';
 import { raiseAlert, sendAlerts, getState, setState, londonDate } from './sync.js';
 import { quoteElo } from './progression.js';
+import { forMe } from './permissions.js';
 
 export const DISCIPLINE_ORDER = ['software', 'hardware', 'engineering', 'condor'];
 const QUOTE_NUMBER_FIELD = 'customfield_14259';
@@ -97,7 +98,7 @@ export async function saveConfig(env, input) {
 
 // ---------- Who can do what ----------
 
-const canCreate = (viewer) => viewer.isLead || viewer.team === 'Sales';
+const canCreate = (viewer) => Boolean(viewer.can?.quotes);
 
 async function canView(env, viewer, quoteId) {
   if (canCreate(viewer)) return true;
@@ -679,7 +680,7 @@ export async function pendingCountChecks(env, viewer) {
   ).all();
   const cfg = await config(env);
   return results
-    .filter((k) => viewer.isAdmin || !k.team || k.team === viewer.team)
+    .filter((k) => forMe(viewer, k.team))
     .filter((k) => Object.keys(parse(k.quoted, {})).length)
     .map((k) => ({ ...k, quoted: parse(k.quoted, {}), labels: Object.fromEntries((cfg[k.discipline]?.counts || [])) }));
 }

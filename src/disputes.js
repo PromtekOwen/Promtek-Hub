@@ -5,6 +5,7 @@ import { searchJql, getIssue, jira } from './jira.js';
 import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone } from './jobs.js';
 import { raiseAlert, recalcIssues, getState, setState, sendAlerts } from './sync.js';
 import { weightedScore, jobEloFromScore } from './progression.js';
+import { forMe, leadsOfTeam } from './permissions.js';
 
 export const DISPUTE_REASONS = [
   'Scope grew', 'Spec was unclear or wrong', 'Kit faulty or obsolete', 'Customer delays',
@@ -71,7 +72,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
   for (const c of cats) {
     const isMine = mine.has(c.issue_id);
     if (scope === 'mine' && !isMine) continue;
-    if (scope === 'team' && c.team !== viewer.team) continue;
+    if (scope === 'team' && !viewer.teams?.includes(c.team)) continue;
     const o = overrides.get(c.issue_id);
     const estimate = o?.estimate_seconds ?? c.estimate_seconds;
     if (!orders.has(c.epic_key)) {
@@ -135,10 +136,7 @@ const cleanHours = (h) => {
 };
 
 async function leadEmails(env, team) {
-  const { results } = await env.DB.prepare(
-    "SELECT email FROM employees WHERE active = 1 AND role = 'lead' AND email IS NOT NULL AND (team = ? OR ? IS NULL)"
-  ).bind(team, team).all();
-  return results.map((r) => r.email);
+  return (await leadsOfTeam(env, team)).map((r) => r.email);
 }
 
 // Alerts each lead for the team, or the general alert address when there are none.
@@ -199,8 +197,7 @@ export async function withdrawDispute(env, viewer, id) {
 
 export function canDecideDispute(viewer, dispute) {
   if (dispute.account_id === viewer.accountId) return false;
-  if (viewer.isAdmin) return true;
-  return viewer.role === 'lead' && (!dispute.team || dispute.team === viewer.team);
+  return Boolean(viewer.isLead);
 }
 
 export async function pendingDisputes(env, viewer) {
@@ -209,13 +206,14 @@ export async function pendingDisputes(env, viewer) {
     `SELECT d.*, e.name AS raised_by FROM job_disputes d LEFT JOIN employees e ON e.account_id = d.account_id
       WHERE d.status = 'pending' ORDER BY d.id`
   ).all();
-  return results.filter((d) => canDecideDispute(viewer, d)).map((d) => ({ ...d, reasons: JSON.parse(d.reasons || '[]') }));
+  // Waiting-for-you lists hold the viewer's own teams; anyone with oversight can still decide any.
+  return results.filter((d) => canDecideDispute(viewer, d) && forMe(viewer, d.team)).map((d) => ({ ...d, reasons: JSON.parse(d.reasons || '[]') }));
 }
 
 export async function decideDispute(env, viewer, input) {
   const d = await env.DB.prepare('SELECT * FROM job_disputes WHERE id = ?').bind(Number(input.id)).first();
   if (!d) throw new Error('That dispute has gone.');
-  if (!canDecideDispute(viewer, d)) throw new Error('Only a team lead for this job, other than the person who raised it, can decide this.');
+  if (!canDecideDispute(viewer, d)) throw new Error('Only a team lead, management or an admin, other than the person who raised it, can decide this.');
   if (d.status !== 'pending') throw new Error('That dispute has already been decided.');
   const note = String(input.note || '').trim().slice(0, 1000) || null;
   const now = new Date().toISOString();

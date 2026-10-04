@@ -8,6 +8,7 @@ import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
+import { access, GROUPS, PERMISSIONS, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
@@ -23,7 +24,6 @@ import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMis
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
-const TEAMS = ['Projecting', 'Service', 'Condor', 'Sales'];
 
 const rowOf = (env, table, key, id) => (id ? env.DB.prepare(`SELECT * FROM ${table} WHERE ${key} = ?`).bind(id).first() : null);
 
@@ -65,7 +65,7 @@ export default {
       return await route(request, env, url, viewer);
     } catch (err) {
       console.error(err);
-      return json({ error: err.message }, 500);
+      return json({ error: err.message }, err.status || 500);
     }
   },
 
@@ -78,17 +78,12 @@ export default {
 // The emails in ADMIN_EMAILS are always admins, so you can't lock yourself out.
 async function resolveViewer(env, user) {
   const emp = await findEmployee(env, user.email);
-  const role = user.isAdmin ? 'admin' : (emp?.role || 'engineer');
-  return {
-    ...user,
-    employee: emp,
-    accountId: emp?.account_id || null,
-    role,
-    team: emp?.team || null,
-    isAdmin: role === 'admin',
-    isLead: role === 'lead' || role === 'admin',
-  };
+  return { ...user, employee: emp, accountId: emp?.account_id || null, ...access(emp, { fallbackAdmin: user.isAdmin }) };
 }
+
+// Developers can reach the hub's technical side of Admin, and nothing else there.
+const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
+  '/api/admin/bitbucket-poll', '/api/admin/send-alerts', '/api/admin/test-8x8', '/api/admin/permissions']);
 
 async function route(request, env, url, user) {
   const { pathname } = url;
@@ -149,7 +144,7 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/obs')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
-    const sales = user.team === 'Sales' || user.isLead;
+    const sales = user.can.quotes || user.inTeam('Sales');
 
     if (method === 'GET' && pathname === '/api/obs/config') {
       return json({ sections: Obs.SECTIONS, cardTypes: Obs.CARD_TYPES, conditions: Obs.CONDITIONS, sales });
@@ -183,7 +178,7 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/shop')) {
     // Demonstration only: admins can look, and nothing here spends anything.
-    if (!user.isAdmin) return json({ error: 'The shop is still being worked on.' }, 403);
+    if (!user.can.shop) return json({ error: 'The shop is still being worked on.' }, 403);
     const totals = user.accountId
       ? await env.DB.prepare('SELECT COALESCE(SUM(xp), 0) AS xp FROM xp_ledger WHERE account_id = ?').bind(user.accountId).first()
       : { xp: 0 };
@@ -399,7 +394,10 @@ async function route(request, env, url, user) {
   }
 
   if (pathname.startsWith('/api/admin/')) {
-    if (!user.isAdmin) return json({ error: 'Only admins can do that.' }, 403);
+    if (!user.isAdmin && !(user.can.developer && DEVELOPER_ADMIN.has(pathname))) return json({ error: 'Only admins can do that.' }, 403);
+    if (method === 'GET' && pathname === '/api/admin/permissions') {
+      return json({ groups: GROUPS, permissions: PERMISSIONS, teams: ALL_TEAMS });
+    }
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
@@ -538,20 +536,13 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'Settings', action: `Employees now kept in ${body.source === 'hub' ? 'the hub' : 'Jira'}` });
       return json(r);
     }
-    if (method === 'POST' && pathname === '/api/admin/org-person') return json(await Org.savePerson(env, body));
+    if (method === 'POST' && pathname === '/api/admin/org-person') {
+      return json(await auditedPerson(env, user, body.accountId, () => 'Chart details changed', () => Org.savePerson(env, body)));
+    }
     if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
-    if (method === 'POST' && pathname === '/api/admin/set-role') {
-      const role = String(body.role || '');
-      const team = body.team ? String(body.team) : null;
-      if (!body.accountId || !ROLES.includes(role)) return json({ error: 'Choose an engineer and a role.' }, 400);
-      if (team && !TEAMS.includes(team)) return json({ error: 'Unknown team.' }, 400);
-      await env.DB.prepare('UPDATE employees SET role = ?, team = ? WHERE account_id = ?')
-        .bind(role, team, body.accountId).run();
-      return json({ ok: true });
-    }
     if (method === 'POST' && pathname === '/api/admin/sync-now') return json(await pollRecent(env, { force: true }));
 
     if (method === 'POST' && pathname === '/api/admin/link') {
@@ -601,8 +592,10 @@ function weekStart() {
 
 async function getMe(env, user) {
   const base = {
-    user: { email: user.email, role: user.role, team: user.team, isAdmin: user.isAdmin, isLead: user.isLead },
+    user: { email: user.email, role: user.role, team: user.team, teams: user.teams, leads: user.leads, groups: user.groups, can: user.can,
+      scopeTeams: user.scopeTeams, isAdmin: user.isAdmin, isLead: user.isLead },
     jiraBaseUrl: env.JIRA_BASE_URL,
+    teamsList: ALL_TEAMS,
     ledgerStart: await getState(env, 'ledger_start'),
   };
   const emp = user.employee;

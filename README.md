@@ -32,6 +32,7 @@ src/               The Worker (API and background sync)
   mes.js           Condor Dev: MES estimating by comparison, triage, Condor rating
   mes-plan.js      Condor Dev: release planning, suggestions, Jira timeline
   audit.js         The audit log of changes made by hand
+  permissions.js   Groups, teams and what each allows
   orgdocs.js       Company chart versions (IMS2.02) and publishing to Confluence
   reports.js       Team and engineer reports, leaderboard, CSV export
   jobs.js          Finished job tracking and quoting data
@@ -60,6 +61,7 @@ schema-018.sql     Condor Dev: capacity, accepted plans and plan decisions
 schema-019.sql     Audit log and company chart versions
 schema-020.sql     A description on each quote
 schema-021.sql     Category estimates including subtasks; sharing quoted hours across subtasks
+schema-022.sql     Groups, teams and team leads for each person
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

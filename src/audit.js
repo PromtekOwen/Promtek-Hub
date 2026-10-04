@@ -5,7 +5,7 @@ const LABELS = {
   employees: {
     name: 'Name', email: 'Email', pronouns: 'Pronouns', job_title: 'Job title', department: 'Department', manager_id: 'Reports to',
     org_order: 'Chart order', role: 'Hub role', team: 'Team', extension: 'Extension', baseline: 'XP rate', elo: 'ELO', icons: 'Chart icons',
-    avatar: 'Photo', notes: 'Notes', active: 'Active', account_id: 'Jira account ID',
+    avatar: 'Photo', notes: 'Notes', active: 'Active', account_id: 'Jira account ID', groups: 'Groups', teams: 'Teams', lead_of: 'Leads',
   },
   vehicles: {
     registration: 'Registration', make: 'Make', model: 'Model', kind: 'Type', mot_due: 'MOT due', insurance_due: 'Insurance due',
@@ -14,11 +14,14 @@ const LABELS = {
   },
   mes_capacity: { hours_per_week: 'Hours a week', days: 'Days', away: 'Days away', included: 'Planned for' },
 };
-const IGNORE = new Set(['updated_at', 'created_at', 'jira_xp', 'opening_xp', 'elo_week', 'condor_elo', 'condor_elo_week']);
+const IGNORE = new Set(['updated_at', 'created_at', 'jira_xp', 'opening_xp', 'elo_week', 'condor_elo', 'condor_elo_week', 'role', 'team']);
 const shown = (field, v) => {
   if (v === null || v === undefined || v === '') return '';
   if (field === 'avatar') return 'a photo';
   if (field === 'active' || field === 'included') return Number(v) ? 'Yes' : 'No';
+  if (field === 'groups' || field === 'teams' || field === 'lead_of') {
+    try { const list = JSON.parse(v); return list.length ? list.map((x) => ({ admin: 'Admin', management: 'Management', lead: 'Team lead', sales: 'Sales', developer: 'Developer' }[x] || x)).join(', ') : 'None'; } catch { return String(v); }
+  }
   if (field === 'days') return String(v).split('').map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).filter(Boolean).join(', ');
   if (field === 'away') {
     try { return JSON.parse(v).map((a) => `${a.from}${a.until && a.until !== a.from ? ` to ${a.until}` : ''}${a.note ? ` (${a.note})` : ''}`).join('; ') || 'None'; } catch { return String(v); }

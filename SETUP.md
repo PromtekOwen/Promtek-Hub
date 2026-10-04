@@ -153,17 +153,22 @@ Someone new appears on the chart once they have a title and a manager. Until the
 
 ### Roles
 
-There are three:
+Access is set with **groups** and **teams**. A person can be in any number of each. Groups are fixed in the hub's code (`src/permissions.js`), so a stray tick in Admin can never open something up; changes are made there.
 
-- **Engineer:** their own XP, time and profile, plus the leaderboard and everyone's levels and ranks.
-- **Team lead:** all of the above, plus every report, for the whole company. Leads are attached to Projecting, Service or Condor for alerts and, later, store approvals.
-- **Admin:** everything, plus sync controls and the ability to change roles.
+- **Everyone:** their own XP, time and profile, the leaderboard, and the tiles for their teams.
+- **Admin:** everything, including Admin, every settings cog, the audit log, employees, vehicles and issuing the company chart.
+- **Management:** sees and acts on every team: reports, approvals, disputes, modifiers, count checks, Condor triage and planning, quotes and the XP shop preview.
+- **Team lead:** the same as Management, but their own lists ("Waiting for you", approvals, the Reports team picker) and their team's alerts are for the teams they lead. They can still act on another team's item when needed.
+- **Sales:** starts and edits quotes.
+- **Developer:** the hub's technical side of Admin, meaning sync status, Bitbucket and connection tests, and nothing else there.
 
-Set them under **Admin → Roles**. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
+Teams are Projecting, Service, Condor, Sales and Marketing. They decide which tiles someone sees by default (for example Condor Dev for the Condor team) and whose alerts reach them. A Team lead also has the teams they lead ticked under **Leads**; they can only lead teams they're in. Modifiers can be seen and decided only by the person, their supervisor, a lead of one of their teams, Management and admins.
+
+Set all of this on each person under **Admin → Employees**. **Admin → Groups and what they can do** shows each group's permissions. Changes to anyone's groups or teams are recorded in the audit log. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
 
 ### Reports
 
-Team leads and admins get a **Reports** tile showing hours, XP, worklogs and days logged per person per week, with columns for however many weeks you pick. Hours under 20 in a week are highlighted, and the last column shows how long after doing the work people record it, which is the number to watch if the goal is better logging.
+Team leads, Management and admins get a **Reports** tile showing hours, XP, worklogs and days logged per person per week, with columns for however many weeks you pick. Hours under 20 in a week are highlighted, and the last column shows how long after doing the work people record it, which is the number to watch if the goal is better logging.
 
 Selecting a name opens that engineer: weekly hours, level and ELO history, what they spent the most time on, and their recent logs. Three CSV exports cover the raw time logs, the weekly summary and the snapshots.
 

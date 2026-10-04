@@ -6,6 +6,7 @@ import { fetchIssueWorklogs } from './tempo.js';
 import { getState, setState, londonDate, mondayOf } from './sync.js';
 import { DEFAULT_ELO, rankFor, jobEloFromScore } from './progression.js';
 import { approvedFor, factorOn } from './modifiers.js';
+import { managesPerson } from './permissions.js';
 
 export const K_FACTOR = 32;
 export const PROVISIONAL_K = 48;        // bigger steps until someone has a few jobs behind them
@@ -214,7 +215,7 @@ export function rankWithPeak(elo, peak) {
 }
 
 export async function history(env, accountId, viewer = null) {
-  const emp = await env.DB.prepare('SELECT account_id, name, elo, manager_id FROM employees WHERE account_id = ?').bind(accountId).first();
+  const emp = await env.DB.prepare('SELECT account_id, name, elo, manager_id, teams, team FROM employees WHERE account_id = ?').bind(accountId).first();
   if (!emp) return null;
   const { results } = await env.DB.prepare(
     `SELECT e.id, e.kind, e.seconds, e.share, e.expected, e.score, e.k, e.weight, e.delta, e.elo_before, e.elo_after,
@@ -225,7 +226,7 @@ export async function history(env, accountId, viewer = null) {
   ).bind(accountId).all();
   const peak = (await peakElos(env)).get(accountId) ?? null;
   // Only the person, their supervisor and admins see that a modifier applied.
-  const seesModifiers = !viewer || viewer.isAdmin || viewer.accountId === accountId || viewer.accountId === emp.manager_id;
+  const seesModifiers = !viewer || viewer.accountId === accountId || managesPerson(viewer, emp);
   if (!seesModifiers) for (const e of results) e.modifier_factor = null;
   return {
     elo: emp.elo,

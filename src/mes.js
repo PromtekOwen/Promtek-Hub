@@ -7,6 +7,7 @@ import { getState, setState, londonDate, raiseAlert, recalcIssues } from './sync
 import { outcomeScore, expectedScore, matchWeight, K_FACTOR, PROVISIONAL_K, PROVISIONAL_MATCHES } from './elo.js';
 import { approvedFor, factorOn } from './modifiers.js';
 import { DEFAULT_ELO } from './progression.js';
+import { managesPerson } from './permissions.js';
 
 const PROJECT = 'MES';
 const MODULE_FIELD = 'customfield_15583';
@@ -152,8 +153,8 @@ export async function nextQuestion(env, { issueId, answers = [] }) {
   return { ticket, poolSize: pool.length, next: ref || null, estimate: r.estimate || null, asked: answers.length, maxQuestions: MAX_QUESTIONS };
 }
 
-const canEstimate = (viewer) => viewer.isAdmin || viewer.team === 'Condor';
-const canTriage = (viewer) => viewer.isAdmin || (viewer.role === 'lead' && viewer.team === 'Condor');
+const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || viewer.teams?.includes('Condor'));
+const canTriage = (viewer) => Boolean(viewer.can?.condorPlan);
 
 export async function saveEstimate(env, viewer, input) {
   if (!canEstimate(viewer)) throw new Error('Only the Condor team can estimate MES tickets.');
@@ -251,7 +252,7 @@ export async function outstanding(env, viewer, { filter = 'untriaged', query = '
 }
 
 export async function triage(env, viewer, input) {
-  if (!canTriage(viewer)) throw new Error('Kieran, Simon or an admin decides what goes in a release.');
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin decides what goes in a release.');
   const ticket = await ticketFor(env, input.issueId);
   const priority = input.versionId ? (PRIORITIES.includes(input.priority) ? input.priority : null) : 'Not this time';
   if (input.versionId && !priority) throw new Error('Choose Must, Should or Could.');
@@ -369,13 +370,13 @@ async function rateTicket(env, t, { employees, rated, worklogsFor }) {
 export async function ratingHistory(env, viewer, accountId) {
   const target = accountId || viewer.accountId;
   if (!target) return null;
-  if (target !== viewer.accountId && !canTriage(viewer)) throw new Error('Only Condor leads and admins can see someone else\'s rating.');
-  const emp = await env.DB.prepare('SELECT account_id, name, condor_elo, manager_id FROM employees WHERE account_id = ?').bind(target).first();
+  if (target !== viewer.accountId && !canTriage(viewer)) throw new Error('Only leads, management and admins can see someone else\'s rating.');
+  const emp = await env.DB.prepare('SELECT account_id, name, condor_elo, manager_id, teams, team FROM employees WHERE account_id = ?').bind(target).first();
   const { results } = await env.DB.prepare(
     `SELECT e.*, m.issue_key, m.summary, m.done_date, m.ticket_elo AS job_elo, m.estimate_seconds, m.actual_seconds
        FROM mes_rating_events e LEFT JOIN mes_matches m ON m.issue_id = e.issue_id WHERE e.account_id = ? ORDER BY e.id`
   ).bind(target).all();
-  const seesModifiers = viewer.isAdmin || viewer.accountId === target || viewer.accountId === emp?.manager_id;
+  const seesModifiers = viewer.accountId === target || managesPerson(viewer, emp);
   if (!seesModifiers) for (const e of results) e.modifier_factor = null;
   return { name: emp?.name, elo: emp?.condor_elo ?? DEFAULT_ELO, start: results[0]?.elo_before ?? DEFAULT_ELO, events: results };
 }
@@ -384,7 +385,7 @@ export async function team(env, viewer) {
   if (!canTriage(viewer)) return [];
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.name, e.condor_elo, (SELECT COUNT(*) FROM mes_rating_events r WHERE r.account_id = e.account_id AND r.kind = 'match') AS jobs
-       FROM employees e WHERE e.active = 1 AND e.team = 'Condor' ORDER BY e.name`
+       FROM employees e WHERE e.active = 1 AND (e.teams LIKE '%"Condor"%' OR (e.teams IS NULL AND e.team = 'Condor')) ORDER BY e.name`
   ).all();
   return results.map((r) => ({ ...r, condor_elo: r.condor_elo ?? DEFAULT_ELO }));
 }

@@ -128,7 +128,7 @@ export function suggest(input, { declined = new Set() } = {}) {
 async function people(env) {
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e
-       LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND e.team = 'Condor' ORDER BY e.name`
+       LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND (e.teams LIKE '%"Condor"%' OR (e.teams IS NULL AND e.team = 'Condor')) ORDER BY e.name`
   ).all();
   return results.map((r) => ({ id: r.account_id, name: r.name, hoursPerWeek: r.hours_per_week ?? DEFAULT_HOURS, days: r.days || '12345',
     away: JSON.parse(r.away || '[]'), included: r.included == null ? true : Boolean(r.included) }));
@@ -189,7 +189,7 @@ const DAYS = /^[1-7]{1,7}$/;
 const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
 
 export async function saveCapacity(env, viewer, input) {
-  if (!canTriage(viewer)) throw new Error('Kieran, Simon or an admin sets capacity.');
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin sets capacity.');
   const hours = Number(input.hoursPerWeek);
   if (!(hours >= 0 && hours <= 60)) throw new Error('Hours a week need to be between 0 and 60.');
   const days = [...new Set(String(input.days || '').split(''))].filter((d) => '12345'.includes(d)).sort().join('');
@@ -205,7 +205,7 @@ export async function saveCapacity(env, viewer, input) {
 }
 
 export async function saveReserve(env, viewer, percent) {
-  if (!canTriage(viewer)) throw new Error('Kieran, Simon or an admin sets the reserve.');
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin sets the reserve.');
   const p = Number(percent);
   if (!(p >= 0 && p <= 50)) throw new Error('Keep between 0% and 50% free.');
   await setState(env, 'mes_reserve', String(p / 100));
@@ -213,7 +213,7 @@ export async function saveReserve(env, viewer, percent) {
 }
 
 export async function decide(env, viewer, { issueId, versionId, decision }) {
-  if (!canTriage(viewer)) throw new Error('Kieran, Simon or an admin decides this.');
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin decides this.');
   const vs = await versions(env);
   const i = vs.findIndex((v) => v.id === String(versionId));
   if (i < 0) throw new Error('That release is no longer open in Jira.');
@@ -245,7 +245,7 @@ async function startDateField(env) {
 }
 
 export async function accept(env, viewer, versionId) {
-  if (!canTriage(viewer)) throw new Error('Kieran, Simon or an admin accepts the plan.');
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin accepts the plan.');
   const v = await view(env, viewer, versionId);
   if (!v.version) throw new Error('There is no open release to plan.');
   const now = new Date().toISOString();
