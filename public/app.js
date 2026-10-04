@@ -247,28 +247,27 @@ const pages = {
     async render() {
       if (!me.user.isLead) return `<div class="card"><p>Only team leads and admins can see this page.</p></div>`;
       if (reportAccount) return engineerReportHtml(await api(`/api/reports/engineer?accountId=${encodeURIComponent(reportAccount)}`));
+      // A lead's reports open on the team they lead; Management and admins see everyone.
+      if (reportTeam === undefined) reportTeam = me.user.scopeTeams === null ? '' : (me.user.scopeTeams?.[0] || '');
       const tabs = `<div class="tabs" style="margin-bottom:1rem">
         <button class="tab${reportView === 'team' ? ' on' : ''}" data-view="team">Effort</button>
         <button class="tab${reportView === 'quoting' ? ' on' : ''}" data-view="quoting">Quoting</button>
         <button class="tab${reportView === 'stages' ? ' on' : ''}" data-view="stages">Stages</button>
-      </div>`;
+      </div>${teamPickerHtml(reportTeam, 'data-report-team')}`;
       if (reportView === 'stages') {
         const params = new URLSearchParams();
         if (quotingDiscipline) params.set('discipline', quotingDiscipline);
+        if (reportTeam) params.set('team', reportTeam);
         return tabs + stagesHtml(await api(`/api/reports/stages?${params}`));
       }
       if (reportView === 'quoting') {
         const params = new URLSearchParams();
         if (quotingDiscipline) params.set('discipline', quotingDiscipline);
         if (quotingAll) params.set('all', '1');
+        if (reportTeam) params.set('team', reportTeam);
         return tabs + quotingHtml(await api(`/api/reports/quoting?${params}`));
       }
-      // A lead's report opens on the team they lead; Management and admins see everyone.
-      if (reportTeam === undefined) reportTeam = me.user.scopeTeams === null ? '' : (me.user.scopeTeams?.[0] || '');
-      const teamPicker = `<div class="row" style="margin:1rem 0 0"><label>Team <select data-report-team>
-          <option value="">Everyone</option>${(me.teamsList || []).map((t) => `<option${t === reportTeam ? ' selected' : ''}>${esc(t)}</option>`).join('')}
-        </select></label></div>`;
-      return tabs + teamPicker + teamReportHtml(await api(`/api/reports/team?weeks=${reportWeeks}${reportTeam ? `&team=${encodeURIComponent(reportTeam)}` : ''}`));
+      return tabs + teamReportHtml(await api(`/api/reports/team?weeks=${reportWeeks}${reportTeam ? `&team=${encodeURIComponent(reportTeam)}` : ''}`));
     },
   },
 
@@ -413,9 +412,6 @@ const pages = {
         </div>
 
         ${eloAdminHtml(elo, peopleData.source)}
-
-        <h2>Groups and what they can do</h2>
-        <div id="permissions-grid"><div class="card"><p class="muted" style="margin:0">Loading</p></div></div>
 
         <h2>Audit log</h2>
         <p class="muted">Changes made by hand to employees, vehicles and settings: who changed what, when, and what it was before.</p>
@@ -2866,6 +2862,13 @@ function engineerReportHtml(data) {
 let leaderPeriod = 'week';
 let leaderExpanded = false;
 
+function teamPickerHtml(value, attr) {
+  return `<div class="row team-picker"><label>Team <select ${attr}>
+      <option value="">Everyone</option>${(me.teamsList || []).map((t) => `<option${t === value ? ' selected' : ''}>${esc(t)}</option>`).join('')}
+    </select></label></div>`;
+}
+
+let leaderTeam = '';
 function leaderboardHtml(data) {
   const rows = (leaderExpanded ? data.all : data.top);
   const youShown = rows.some((r) => r.isYou);
@@ -2885,6 +2888,7 @@ function leaderboardHtml(data) {
   return `
     <div class="tabs">${periods.map(([p, label]) =>
       `<button class="tab${p === leaderPeriod ? ' on' : ''}" data-period="${p}">${label}</button>`).join('')}</div>
+    ${teamPickerHtml(leaderTeam, 'data-leader-team')}
     <ol class="board">${list}${you}</ol>
     ${data.total > data.top.length ? `<button class="btn secondary" data-leader="toggle" style="margin-top:.85rem">
       ${leaderExpanded ? 'Show top 10 only' : `Show all ${n(data.total)}`}</button>` : ''}`;
@@ -2894,7 +2898,7 @@ async function loadLeaderboard() {
   const host = document.getElementById('leaderboard');
   if (!host) return;
   try {
-    const data = await api(`/api/leaderboard?period=${leaderPeriod}`);
+    const data = await api(`/api/leaderboard?period=${leaderPeriod}${leaderTeam ? `&team=${encodeURIComponent(leaderTeam)}` : ''}`);
     host.innerHTML = leaderboardHtml(data);
   } catch (err) {
     host.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
@@ -3789,18 +3793,40 @@ async function mesEstimateHtml() {
       <div class="result" id="mes-result" role="status"></div></div>`;
 }
 
+let mesNewRelease = null;
 async function mesTriageHtml() {
-  const data = await api('/api/mes/outstanding?filter=untriaged');
-  if (!data.versions.length) return '<div class="card"><p style="margin:0">There are no open releases in MES. Create the next version in Jira, with its start and release dates, and it appears here.</p></div>';
-  if (!mesTriage.versionId || !data.versions.some((v) => v.id === mesTriage.versionId)) mesTriage.versionId = data.versions[0].id;
-  const version = data.versions.find((v) => v.id === mesTriage.versionId);
+  const first = await api('/api/mes/outstanding?filter=none');
+  const versions = first.versions;
+  if (mesNewRelease || !versions.length) {
+    mesNewRelease = mesNewRelease || { name: '', startDate: todayIso(), releaseDate: '' };
+    return `<div class="card"><h2 style="margin-top:0">Start a new release</h2>
+        <label>Name<input type="text" data-new-release="name" value="${esc(mesNewRelease.name)}" placeholder="For example Gobi"></label>
+        <div class="row" style="margin-top:.75rem">
+          <label>Starts<input type="date" data-new-release="startDate" value="${esc(mesNewRelease.startDate)}"></label>
+          <label>Released<input type="date" data-new-release="releaseDate" value="${esc(mesNewRelease.releaseDate)}"></label></div>
+        <p class="help">The release is made in Jira as a version of MES. Triage then decides what goes in it, and its board and three sprints are made from that.</p>
+        <div class="row"><button class="btn" data-release-create>Start the release</button>${versions.length ? '<button class="btn secondary" data-release-cancel>Cancel</button>' : ''}</div>
+        <div class="result" id="mes-result" role="status"></div></div>`;
+  }
+  if (!mesTriage.versionId || !versions.some((v) => v.id === mesTriage.versionId)) mesTriage.versionId = versions[0].id;
+  const version = versions.find((v) => v.id === mesTriage.versionId);
+  const data = await api(`/api/mes/outstanding?filter=untriaged&release=${encodeURIComponent(version.id)}`);
   const queue = data.tickets.filter((t) => !mesTriage.skipped.includes(t.issue_id));
   const t = queue[0];
-  const picker = `<label>Release<select data-mes-version>${data.versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}</select></label>`;
-  if (!t && data.catchingUp) return `${mesReadingHtml(data)}<div class="card">${picker}<p style="margin-bottom:0">Tickets to triage appear here as MES is read.</p></div>`;
-  if (!t) return `<div class="card">${picker}<p style="margin-bottom:0">Everything open has been triaged.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>`;
+  const picker = `<label>Release<select data-mes-version>${versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}
+      <option value="new">Start a new release</option></select></label>`;
+  const sprints = data.release?.sprints || [];
+  const sprintCard = `<div class="card" style="margin-top:1rem">
+      ${sprints.length
+        ? `<p style="margin-top:0"><strong>${esc(version.name)}</strong> has ${sprints.length} ${sprints.length === 1 ? 'sprint' : 'sprints'}: ${sprints.map((s) => `${esc(s.name)} (${s.start ? `${shortDate(s.start)} to ${shortDate(s.end)}` : 'no dates'}${s.state === 'active' ? ', running' : s.state === 'closed' ? ', finished' : ''})`).join('; ')}.</p>
+          <p class="help">Placing the tickets again puts each one in the sprint its plan starts in. Tickets in a sprint that has started stay where they are.</p>`
+        : `<p style="margin-top:0">${n(data.inRelease)} ${data.inRelease === 1 ? 'ticket is' : 'tickets are'} in ${esc(version.name)}. When triage is done, make its board and sprints in Jira and place the tickets in them.</p>`}
+      <button class="btn${t ? ' secondary' : ''}" data-make-sprints>${sprints.length ? 'Place the tickets in the sprints' : `Make the sprints for ${esc(version.name)}`}</button>
+      <div class="result" id="sprint-result" role="status"></div></div>`;
+  if (!t && data.catchingUp) return `${mesReadingHtml(data)}<div class="card">${picker}<p style="margin-bottom:0">Tickets to triage appear here as MES is read.</p></div>${sprintCard}`;
+  if (!t) return `<div class="card">${picker}<p style="margin-bottom:0">Everything open has been triaged for ${esc(version.name)}.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>${sprintCard}`;
   return `${mesReadingHtml(data)}<div class="card">${picker}
-      <p class="muted">${n(queue.length)} left to triage${data.catchingUp ? ' so far' : ''}</p>
+      <p class="muted">${n(queue.length)} left to triage for ${esc(version.name)}${data.catchingUp ? ' so far' : ''}, ${n(data.inRelease)} in it so far</p>
       <div class="triage-ticket">
         <p style="margin-top:0"><strong>${mesLink(t.issue_key)} ${esc(t.summary)}</strong><br><span class="muted">${mesMeta(t)}</span></p>
         <p>${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated at'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}.` : 'No estimate yet.'}
@@ -3808,8 +3834,8 @@ async function mesTriageHtml() {
         <div class="row triage-actions">${data.priorities.map((p) => `<button class="btn" data-mes-triage="${p}" data-issue="${esc(t.issue_id)}">${p}</button>`).join('')}
           <button class="btn secondary" data-mes-triage="none" data-issue="${esc(t.issue_id)}">Not this time</button>
           <button class="btn secondary" data-mes-skip="${esc(t.issue_id)}">Skip for now</button></div>
-        <p class="help">Must, Should and Could put it in ${esc(version.name)} and set its Fix Version in Jira. When work has to give way, Coulds go first.</p>
-      </div><div class="result" id="mes-result" role="status"></div></div>`;
+        <p class="help">Must, Should and Could put it in ${esc(version.name)} and set its Fix Version in Jira. Not this time leaves it for the next release's triage. When work has to give way, Coulds go first.</p>
+      </div><div class="result" id="mes-result" role="status"></div></div>${sprintCard}`;
 }
 
 async function mesRatingsHtml() {
@@ -3882,10 +3908,31 @@ async function condorClick(event) {
   if (tri) {
     tri.disabled = true;
     try {
-      const r = await api('/api/mes/triage', { method: 'POST', body: JSON.stringify({ issueId: tri.dataset.issue, versionId: tri.dataset.mesTriage === 'none' ? null : mesTriage.versionId, priority: tri.dataset.mesTriage }) });
+      const r = await api('/api/mes/triage', { method: 'POST', body: JSON.stringify({ issueId: tri.dataset.issue, versionId: tri.dataset.mesTriage === 'none' ? null : mesTriage.versionId,
+        releaseId: mesTriage.versionId, priority: tri.dataset.mesTriage }) });
       if (!r.jiraSynced) toast('Saved. Jira will catch up');
       return render();
     } catch (err) { document.getElementById('mes-result').textContent = err.message; tri.disabled = false; }
+    return true;
+  }
+  if (t('[data-release-cancel]')) { mesNewRelease = null; return render(); }
+  const createRel = t('[data-release-create]');
+  if (createRel) {
+    createRel.disabled = true;
+    try {
+      const r = await api('/api/mes/release', { method: 'POST', body: JSON.stringify(mesNewRelease) });
+      mesNewRelease = null; mesTriage = { versionId: r.id, skipped: [] }; toast(`${r.name} started`); return render();
+    } catch (err) { document.getElementById('mes-result').textContent = err.message; createRel.disabled = false; }
+    return true;
+  }
+  const make = t('[data-make-sprints]');
+  if (make) {
+    make.disabled = true; make.innerHTML = '<span class="spinner" aria-hidden="true"></span> Working in Jira';
+    try {
+      const r = await api('/api/mes/make-sprints', { method: 'POST', body: JSON.stringify({ versionId: mesTriage.versionId }) });
+      toast(`${r.moved} ${r.moved === 1 ? 'ticket' : 'tickets'} placed${r.board.created ? `, on the new board ${r.board.name}` : ''}`);
+      return render();
+    } catch (err) { document.getElementById('sprint-result').textContent = err.message; make.disabled = false; make.textContent = 'Try again'; }
     return true;
   }
   if (t('[data-mes-skip]')) { mesTriage.skipped.push(t('[data-mes-skip]').dataset.mesSkip); return render(); }
@@ -3896,7 +3943,12 @@ async function condorClick(event) {
 function condorInput(event) {
   const el = event.target;
   if (el.dataset.mesField && mesEst) { mesEst[el.dataset.mesField] = el.value; return true; }
-  if (el.matches('[data-mes-version]')) { mesTriage.versionId = el.value; render(); return true; }
+  if (el.matches('[data-mes-version]')) {
+    if (el.value === 'new') mesNewRelease = { name: '', startDate: todayIso(), releaseDate: '' };
+    else mesTriage = { versionId: el.value, skipped: [] };
+    render(); return true;
+  }
+  if (el.dataset.newRelease && mesNewRelease) { mesNewRelease[el.dataset.newRelease] = el.value; return true; }
   if (el.matches('[data-plan-version]')) { planVersion = el.value; planCapacityOpen = null; render(); return true; }
   if (el.id === 'mes-search') {
     const q = el.value.toLowerCase();
@@ -3937,18 +3989,23 @@ function planTimeline(p) {
   }).join('');
   const names = rows.map((id, i) => `<text x="0" y="${top + i * rowH + 21}" font-size="12" fill="var(--ink)">${esc((p.names[id] || 'Unassigned').split(' ')[0])}</text>`).join('');
   const rel = x(p.version.releaseDate) + dw;
+  const sprintMarks = (p.sprints || []).filter((sp) => sp.start && sp.start >= start && sp.start <= end).map((sp) =>
+    `<line x1="${x(sp.start)}" x2="${x(sp.start)}" y1="${top - 6}" y2="${h}" stroke="var(--blue)" stroke-width="1.5" stroke-dasharray="2 3"/>
+     <text x="${x(sp.start) + 3}" y="${h - 4}" font-size="10.5" fill="var(--blue-deep)">${esc(sp.name.replace(`${p.version.name} `, ''))}</text>`).join('');
   return `<div class="plan-timeline"><svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" role="img" aria-label="Timeline of planned tickets">
-      ${ticks}${names}${bars}
+      ${ticks}${sprintMarks}${names}${bars}
       <line x1="${rel}" x2="${rel}" y1="${top - 6}" y2="${h}" stroke="var(--danger)" stroke-width="2" stroke-dasharray="4 3"/>
       <text x="${rel + 3}" y="${top + 4}" font-size="11" fill="var(--danger)">Release</text></svg></div>
     <p class="help">${Object.entries(PRIORITY_COLOURS).map(([k, c]) => `<span class="key-dot" style="background:${c}"></span>${k}`).join(' ')} <span class="key-dot" style="background:var(--danger)"></span>After the release</p>`;
 }
 
 function planRowsHtml(list, p) {
-  return `<div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Priority</th>${p.canPlan ? '<th>Who</th>' : ''}<th>Starts</th><th>Due</th><th class="num">Hours left</th></tr></thead>
+  const sprintCol = (p.sprints || []).length > 0;
+  return `<div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Priority</th>${p.canPlan ? '<th>Who</th>' : ''}${sprintCol ? '<th>Sprint</th>' : ''}<th>Starts</th><th>Due</th><th class="num">Hours left</th></tr></thead>
     <tbody>${list.map((s) => `<tr${s.fits ? '' : ' class="unfit"'}>
       <td>${mesLink(s.key)}<br><span class="muted">${esc(s.summary)}</span></td><td>${esc(s.priority)}</td>
       ${p.canPlan ? `<td>${esc(p.names[s.personId] || '—')}${s.plannedAssignee && s.personId ? '<br><span class="muted">suggested</span>' : ''}</td>` : ''}
+      ${sprintCol ? `<td>${esc(s.sprint ? s.sprint.replace(`${p.version.name} `, '') : '—')}</td>` : ''}
       <td>${s.start ? shortDate(s.start) : '—'}</td><td>${s.due ? shortDate(s.due) : '—'}${s.fits ? '' : '<br><span class="bad">after the release</span>'}</td>
       <td class="num">${hoursLabel(Math.round(s.hours * 4) / 4)}${s.overrun ? '<br><span class="bad">over estimate</span>' : ''}</td></tr>`).join('')}</tbody></table></div>`;
 }
@@ -4036,7 +4093,7 @@ async function mesPlanHtml() {
     ${p.schedule.length ? `<h2>Tickets</h2>${planRowsHtml(p.schedule, p)}` : ''}
     ${needs}
     <div class="card" style="margin-top:1rem"><p style="margin-top:0">${accepted}</p>
-      <p class="help">Accepting writes each planned ticket's start and due dates to Jira for the timeline, and the suggested person where nobody is assigned.</p>
+      <p class="help">Accepting writes each planned ticket's start and due dates to Jira for the timeline, puts it in the sprint it starts in, and sets the suggested person where nobody is assigned. Tickets in a sprint that has started stay where they are.</p>
       <button class="btn" data-plan-accept="1">Accept the plan</button><div class="result" id="plan-result" role="status"></div></div>
     ${capacityHtml(p)}`;
 }
@@ -4056,7 +4113,8 @@ async function planClick(event) {
     accept.disabled = true; accept.innerHTML = '<span class="spinner" aria-hidden="true"></span> Updating Jira';
     try {
       const r = await api('/api/mes/accept-plan', { method: 'POST', body: JSON.stringify({ versionId: planVersion }) });
-      toast(r.waiting ? `Plan accepted. ${r.waiting} more go to Jira over the next few minutes` : 'Plan accepted and in Jira');
+      const placed = r.sprints?.moved ? ` ${r.sprints.moved} placed in their sprints.` : r.sprints?.error ? ` Sprints weren't updated: ${r.sprints.error}` : '';
+      toast(r.waiting ? `Plan accepted. ${r.waiting} more go to Jira over the next few minutes.${placed}` : `Plan accepted and in Jira.${placed}`);
       if (!r.startField) toast('Due dates set. No "Start date" field was found in Jira, so start dates stay in the hub');
       return render();
     } catch (err) { document.getElementById('plan-result').textContent = err.message; accept.disabled = false; accept.textContent = 'Accept the plan'; }
@@ -4068,13 +4126,29 @@ async function planClick(event) {
     return true;
   }
   const edit = t('[data-cap-edit]');
-  if (edit) { planCapacityOpen = planCapacityOpen === edit.dataset.capEdit ? null : edit.dataset.capEdit; return render(); }
+  if (edit) {
+    planCapacityOpen = planCapacityOpen === edit.dataset.capEdit ? null : edit.dataset.capEdit;
+    const list = view.querySelector('.cap-list');
+    if (list && planCache) { list.outerHTML = capacityListHtml(planCache); return true; }
+    return render();
+  }
   const row = t('[data-cap]');
   if (row && planCapacityOpen) {
     const p = planCache?.people.find((x) => x.id === row.dataset.cap);
     if (!p) return false;
     const day = t('[data-cap-day]');
-    if (day) { const d = day.dataset.capDay; p.days = p.days.includes(d) ? p.days.replace(d, '') : [...p.days, d].sort().join(''); day.classList.toggle('on'); return true; }
+    if (day) {
+      // A day on or off Condor is a working day's hours, 7.5, added or taken away.
+      const d = day.dataset.capDay;
+      const removing = p.days.includes(d);
+      p.days = removing ? p.days.replace(d, '') : [...p.days, d].sort().join('');
+      day.classList.toggle('on');
+      const hours = row.querySelector('[data-cap-hours]');
+      const now = Number(hours.value) || 0;
+      hours.value = Math.max(0, Math.min(60, removing ? now - 7.5 : now + 7.5));
+      p.hoursPerWeek = Number(hours.value);
+      return true;
+    }
     const add = t('[data-cap-away-add]');
     if (add) {
       const from = row.querySelector('[data-cap-away-from]').value;
@@ -4336,7 +4410,6 @@ function personAccessHtml(p) {
   const groups = p.groups || [], teams = p.teams || [], leads = p.leadOf || [];
   return `<p class="muted" style="margin:1.5rem 0 .5rem">Access</p>
     <div class="access-groups">${GROUP_LABELS.map(([k, l]) => `<label class="inline-check"><input type="checkbox" data-person-group="${k}"${groups.includes(k) ? ' checked' : ''}> ${l}</label>`).join('')}</div>
-    <p class="help">Groups decide what someone can open and do. Admin → Groups and what they can do lists each one.</p>
     <p class="muted" style="margin:1rem 0 .5rem">Teams</p>
     <div class="chips">${(me.teamsList || []).map((t) => `<button type="button" class="chip${teams.includes(t) ? ' on' : ''}" data-person-team="${esc(t)}">${esc(t)}</button>`).join('')}</div>
     <div class="access-leads" ${groups.includes('lead') ? '' : 'hidden'}>
@@ -4344,21 +4417,6 @@ function personAccessHtml(p) {
       <div class="access-groups">${(me.teamsList || []).map((t) => `<label class="inline-check"${teams.includes(t) ? '' : ' hidden'} data-lead-for="${esc(t)}"><input type="checkbox" data-person-lead="${esc(t)}"${leads.includes(t) ? ' checked' : ''}> ${esc(t)}</label>`).join('')}</div>
       <p class="help">A team lead can do everything Management can; their own lists, approvals and alerts are for the teams ticked here.</p>
     </div>`;
-}
-
-let permissionsCache = null;
-async function loadPermissionsGrid() {
-  const host = document.getElementById('permissions-grid');
-  if (!host) return;
-  try {
-    permissionsCache = permissionsCache || await api('/api/admin/permissions');
-    const { groups, permissions } = permissionsCache;
-    const cols = Object.keys(groups);
-    host.innerHTML = `<div class="table-wrap"><table class="perm-grid"><thead><tr><th></th>${cols.map((g) => `<th>${esc(groups[g].name)}</th>`).join('')}</tr></thead>
-      <tbody>${Object.entries(permissions).map(([, p]) => `<tr><td>${esc(p.about)}</td>${cols.map((g) => `<td class="perm-cell">${g === 'admin' || p.groups.includes(g) ? '<span aria-label="Yes">✓</span>' : '<span class="muted" aria-label="No">–</span>'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-      <div class="card" style="margin-top:.75rem">${cols.map((g) => `<p style="margin:.3rem 0"><strong>${esc(groups[g].name)}:</strong> ${esc(groups[g].about)}</p>`).join('')}
-      <p class="help" style="padding-bottom:0">Groups are set in the hub's code, so a stray tick can never open something up. Ask for a change and it's made there.</p></div>`;
-  } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; }
 }
 
 async function developerAdminHtml() {
@@ -4372,8 +4430,7 @@ async function developerAdminHtml() {
       </dl>
       <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button></div>
       <div class="result" id="sync-result" role="status"></div></div>
-    ${bitbucketAdminHtml(bitbucket)}
-    <p class="help">This is the technical side of Admin. People, settings and the audit log are for admins.</p>`;
+    ${bitbucketAdminHtml(bitbucket)}`;
 }
 
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -5042,9 +5099,16 @@ function cogButton(route) {
 
 let renderToken = 0;
 
+// Redrawing the page you're already on keeps you where you were; going to a
+// different page starts at the top.
+let lastView = null;
+
 async function render() {
   const token = ++renderToken;
   const route = currentRoute();
+  const viewKey = `${route}|${settingsOpen || ''}`;
+  const samePage = lastView === viewKey;
+  const keepY = samePage ? scrollY : 0;
   const page = pages[route];
   back.hidden = route === '#/';
   avatar.textContent = initials();
@@ -5053,17 +5117,22 @@ async function render() {
     : page.band() + cogButton(route);
 
   // Anything slow gets a spinner, but only while it is still the newest render.
+  // On the same page the content stays put, dimmed, so the scroll position isn't lost.
   const slow = setTimeout(() => {
-    if (token === renderToken) view.innerHTML = spinner(WAITING_FOR[route]?.() || 'Loading');
+    if (token !== renderToken) return;
+    if (samePage) view.classList.add('refreshing');
+    else view.innerHTML = spinner(WAITING_FOR[route]?.() || 'Loading');
   }, 160);
 
   try {
     const html = settingsOpen === route ? await renderSettings(route) : await page.render();
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
+      lastView = viewKey;
+      scrollTo(0, samePage ? keepY : 0);
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
-      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadPermissionsGrid(); }
+      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) loadAudit();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -5077,6 +5146,7 @@ async function render() {
     }
   } finally {
     clearTimeout(slow);
+    if (token === renderToken) view.classList.remove('refreshing');
   }
 }
 
@@ -5086,6 +5156,7 @@ view.addEventListener('input', (event) => {
   if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
+  if (event.target.matches('[data-leader-team]')) { leaderTeam = event.target.value; loadLeaderboard(); return; }
   if (event.target.matches('[data-audit-q]')) {
     clearTimeout(loadAudit.timer);
     auditFilter.q = event.target.value;

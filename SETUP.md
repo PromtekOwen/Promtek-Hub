@@ -164,11 +164,11 @@ Access is set with **groups** and **teams**. A person can be in any number of ea
 
 Teams are Projecting, Service, Condor, Sales and Marketing. They decide which tiles someone sees by default (for example Condor Dev for the Condor team) and whose alerts reach them. A Team lead also has the teams they lead ticked under **Leads**; they can only lead teams they're in. Modifiers can be seen and decided only by the person, their supervisor, a lead of one of their teams, Management and admins.
 
-Set all of this on each person under **Admin → Employees**. **Admin → Groups and what they can do** shows each group's permissions. Changes to anyone's groups or teams are recorded in the audit log. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
+Set all of this on each person under **Admin → Employees**. Changes to anyone's groups or teams are recorded in the audit log. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
 
 ### Reports
 
-Team leads, Management and admins get a **Reports** tile showing hours, XP, worklogs and days logged per person per week, with columns for however many weeks you pick. Hours under 20 in a week are highlighted, and the last column shows how long after doing the work people record it, which is the number to watch if the goal is better logging.
+Team leads, Management and admins get a **Reports** tile showing hours, XP, worklogs and days logged per person per week, with columns for however many weeks you pick. Hours under 20 in a week are highlighted, and the last column shows how long after doing the work people record it, which is the number to watch if the goal is better logging. Reports and the XP page's leaderboard can be filtered by team; a lead's reports open on the team they lead.
 
 Selecting a name opens that engineer: weekly hours, level and ELO history, what they spent the most time on, and their recent logs. Three CSV exports cover the raw time logs, the weekly summary and the snapshots.
 
@@ -190,7 +190,17 @@ To build a starting set, open **Admin → Completed job tracking**, choose how f
 
 ### Stage-level estimating
 
-Stages almost never carry an estimate of their own, so the **Stages** tab builds one from what actually happened. It records every finished stage, tidies its summary into a common name (so "HMI graphics stage 2" and "HMI Graphics" count together), and shows how long that kind of stage usually takes and what share of its category it used.
+Stages almost never carry an estimate of their own, so the **Stages** tab builds one from what actually happened. Stages are grouped by issue type, using the types quotes use. Older orders used the same stages without "New" in front and with no category layer, and they count too:
+
+| Older order | Quote stage |
+|---|---|
+| Design, Purchase Order, Build, Configuration & Test, Dispatch | New Design, New Purchase Order, New Build, New Configuration & Testing, New Dispatch (Hardware) |
+| Storaweigh Software Development, Kestrel Software Development | New Software Development (Software) |
+| Commissioning Site Visit | New Order Site Visit (Site visit) |
+| Condor Development | New Condor Development (Condor) |
+| Download Phase | New Download Phase: Condor on an order with Condor Development, otherwise Software |
+
+Any other issue type isn't a quoted stage and is left out. The tab shows how long each stage usually takes and what share of its category it used; on older orders, the share is of that category type's time on the order. The same figures feed the shares used to split quoted hours across subtasks. Stages recorded before issue types were kept have theirs looked up in the background.
 
 That gives two ways to quote a job:
 
@@ -460,7 +470,14 @@ Anyone in the Condor team can estimate.
 
 ### Triage
 
-Condor leads and admins go through open tickets for a release, one at a time: Must, Should, Could, or Not this time. The ticket's Fix Version in Jira follows the decision. Releases are the open versions in MES, in order of release date.
+At the start of each release, Condor leads, management or admins pick the release from MES's open versions, or start a new one: a name, start date and release date, made in Jira as a version. They then go through every incomplete MES ticket, one at a time: Must, Should or Could puts it in the release and sets its Fix Version; Not this time leaves it for the next release's triage.
+
+**Sprints.** Each release has its own board, which the team works from:
+- **The board:** a board whose name contains the release's name, such as Gobi Release, is used as it is, with its sprints. Otherwise the hub creates "[Release] Release". Its Backlog shows the release's tickets and all MES work not yet in a release.
+- **The sprints:** a board with no sprints gets three, splitting the release's dates into thirds, each ending on a Friday with the next starting the Monday after.
+- **Placing tickets:** "Make the sprints", or later "Place the tickets in the sprints", puts each planned ticket in the sprint its plan starts in. Tickets already in a sprint that has started or finished are never moved.
+
+Creating boards needs permission in Jira to create filters and boards in MES.
 
 ### The Condor development rating
 
@@ -483,7 +500,7 @@ The Plan tab lays each open release's triaged tickets onto the Condor team's wor
 
 **Suggestions.** When Musts or Shoulds don't fit, lower-priority work is offered for the next release. A move is only suggested if it lets more important work finish sooner. A Should never makes way for another Should, and work in progress is never moved. Coulds that can't fit are offered too. "Move it" changes the Fix Version in Jira; "Keep it in" stops the suggestion for that release.
 
-**Accepting the plan** writes each planned ticket's start and due dates to Jira, and the planned person where nobody is assigned. The start date goes in the field named "Start date", looked up by name; if there isn't one, only due dates are written. Writes beyond the first 30 carry on in the background. Developers see their own planned tickets.
+**Accepting the plan** writes each planned ticket's start and due dates to Jira, puts it in the sprint it starts in, and sets the planned person where nobody is assigned. The timeline marks where each sprint starts, and taking a day off someone's capacity takes 7.5 hours off their week (adding one adds 7.5). The start date goes in the field named "Start date", looked up by name; if there isn't one, only due dates are written. Writes beyond the first 30 carry on in the background. Developers see their own planned tickets.
 
 ### Keeping inside Cloudflare's limits
 

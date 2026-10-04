@@ -263,6 +263,7 @@ export async function processEpics(env, epics) {
         estimate_seconds: num(cf.timeoriginalestimate),
         actual_seconds: num(cf.aggregatetimespent) || num(cf.timespent) || 0,
         child_count: 0, legacy: 1,
+        stage_type: cf.issuetype?.name || null,
       }));
     }
   }
@@ -395,11 +396,12 @@ const median = (values) => {
 // Estimates grouped by working time: a day, three days, a week, two weeks, a month.
 const SIZE_BANDS = [['Up to a day', 7.5], ['Up to 3 days', 22.5], ['Up to a week', 37.5], ['Up to 2 weeks', 75], ['Up to a month', 150], ['Over a month', Infinity]];
 
-export async function quotingSummary(env, { discipline = null, minConfidence = 'good' } = {}) {
+export async function quotingSummary(env, { discipline = null, minConfidence = 'good', team = null } = {}) {
   const params = [];
   let filter = "kind = 'category' AND actual_seconds > 0";
   if (discipline) { filter += ' AND discipline = ?'; params.push(discipline); }
   if (minConfidence === 'good') filter += " AND confidence = 'good'";
+  if (team) { filter += ' AND team = ?'; params.push(team); }
 
   const { results } = await env.DB.prepare(
     `SELECT discipline, story_points, weighted_score, estimate_seconds, actual_seconds, done_date,
@@ -465,42 +467,94 @@ export async function quotingSummary(env, { discipline = null, minConfidence = '
 
 // Stages rarely carry an estimate of their own, so their value comes from how
 // long they actually take, and from what share of their category they use.
-export async function stageLibrary(env, { discipline = null, minJobs = 2 } = {}) {
-  const params = [];
-  let filter = "kind = 'stage' AND actual_seconds > 0 AND stage_name IS NOT NULL";
-  if (discipline) { filter += ' AND discipline = ?'; params.push(discipline); }
+// The stage types used on quotes. Older orders used the same stages without
+// "New" in front, and with no category layer, so they map across here; any
+// other issue type isn't a quoted stage and is left out.
+export const STAGE_TYPES = {
+  'New Design': ['hardware', 'New Design'], 'Design': ['hardware', 'New Design'],
+  'New Purchase Order': ['hardware', 'New Purchase Order'], 'Purchase Order': ['hardware', 'New Purchase Order'],
+  'New Build': ['hardware', 'New Build'], 'Build': ['hardware', 'New Build'],
+  'New Configuration & Testing': ['hardware', 'New Configuration & Testing'], 'Configuration & Test': ['hardware', 'New Configuration & Testing'],
+  'New Dispatch': ['hardware', 'New Dispatch'], 'Dispatch': ['hardware', 'New Dispatch'],
+  'New Software Development': ['software', 'New Software Development'],
+  'Storaweigh Software Development': ['software', 'New Software Development'], 'Kestrel Software Development': ['software', 'New Software Development'],
+  'New Order Site Visit': ['engineering', 'New Order Site Visit'], 'Commissioning Site Visit': ['engineering', 'New Order Site Visit'],
+  'New Condor Development': ['condor', 'New Condor Development'], 'Condor Development': ['condor', 'New Condor Development'],
+  // Download phases belong to Software or Condor; which one comes from the job.
+  'New Download Phase': [null, 'New Download Phase'], 'Download Phase': [null, 'New Download Phase'],
+};
 
+// Every finished stage that maps to a quoted stage type, grouped the way the
+// hours were shared: by category, or for older orders by order and category type.
+export async function mappedStages(env, { team = null } = {}) {
   const { results } = await env.DB.prepare(
-    `SELECT discipline, stage_name, actual_seconds, stage_share, epic_key, issue_key, done_date
-       FROM completed_jobs WHERE ${filter}`
-  ).bind(...params).all();
-
-  const groups = new Map();
+    `SELECT s.issue_id, s.issue_key, s.stage_type, s.actual_seconds, s.parent_id, s.epic_key, s.done_date, s.team, s.legacy,
+            c.kind AS parent_kind, c.discipline AS parent_discipline, c.confidence AS parent_confidence
+       FROM completed_jobs s LEFT JOIN completed_jobs c ON c.issue_id = s.parent_id
+      WHERE s.kind = 'stage' AND s.stage_type IS NOT NULL AND s.stage_type != '' ${team ? 'AND s.team = ?' : ''}`
+  ).bind(...(team ? [team] : [])).all();
+  const condorOrders = new Set(results.filter((r) => STAGE_TYPES[r.stage_type]?.[0] === 'condor').map((r) => r.epic_key));
+  const rows = [];
   for (const r of results) {
-    const key = `${r.discipline || 'none'}|${r.stage_name}`;
-    if (!groups.has(key)) groups.set(key, { discipline: r.discipline, stage: r.stage_name, hours: [], shares: [], last: null });
+    const map = STAGE_TYPES[r.stage_type];
+    if (!map) continue;
+    let discipline = r.parent_kind === 'category' ? r.parent_discipline : map[0];
+    if (!discipline) discipline = condorOrders.has(r.epic_key) ? 'condor' : 'software';
+    if (r.parent_kind !== 'category' && map[0] && map[0] !== discipline) continue;
+    const group = r.parent_kind === 'category' ? r.parent_id : `${r.epic_key}|${discipline}`;
+    rows.push({ ...r, discipline, type: map[1], group, hours: (r.actual_seconds || 0) / 3600 });
+  }
+  const totals = new Map();
+  for (const r of rows) totals.set(r.group, (totals.get(r.group) || 0) + r.hours);
+  return rows.map((r) => ({ ...r, share: totals.get(r.group) > 0 ? r.hours / totals.get(r.group) : null }));
+}
+
+export async function stageLibrary(env, { discipline = null, minJobs = 2, team = null } = {}) {
+  const rows = (await mappedStages(env, { team })).filter((r) => r.hours > 0 && (!discipline || r.discipline === discipline));
+  const groups = new Map();
+  for (const r of rows) {
+    const key = `${r.discipline}|${r.type}`;
+    if (!groups.has(key)) groups.set(key, { discipline: r.discipline, stage: r.type, hours: [], shares: [], last: null, older: 0 });
     const g = groups.get(key);
-    g.hours.push(r.actual_seconds / 3600);
-    if (r.stage_share != null) g.shares.push(r.stage_share);
+    g.hours.push(r.hours);
+    if (r.share != null) g.shares.push(r.share);
+    if (r.legacy) g.older++;
     if (!g.last || (r.done_date || '') > g.last) g.last = r.done_date;
   }
-
   const stages = [...groups.values()]
     .filter((g) => g.hours.length >= minJobs)
     .map((g) => ({
-      discipline: g.discipline,
-      stage: g.stage,
-      times: g.hours.length,
-      medianHours: median(g.hours),
-      lowHours: Math.min(...g.hours),
-      highHours: Math.max(...g.hours),
-      medianShare: median(g.shares),
-      lastSeen: g.last,
+      discipline: g.discipline, stage: g.stage, times: g.hours.length, fromOlderOrders: g.older,
+      medianHours: median(g.hours), lowHours: Math.min(...g.hours), highHours: Math.max(...g.hours),
+      medianShare: median(g.shares), lastSeen: g.last,
     }))
     .sort((a, b) => (a.discipline || '').localeCompare(b.discipline || '') || b.times - a.times);
-
   const skipped = [...groups.values()].filter((g) => g.hours.length < minJobs).length;
   return { stages, skipped, minJobs };
+}
+
+// The typical share of a category's time each stage type takes, for sharing
+// quoted hours out once there's enough history.
+export async function stageShares(env, discipline) {
+  const by = new Map();
+  for (const r of await mappedStages(env)) {
+    if (r.discipline !== discipline || r.share == null || r.share <= 0) continue;
+    if (!by.has(r.type)) by.set(r.type, []);
+    by.get(r.type).push(r.share);
+  }
+  return new Map([...by].map(([type, shares]) => [type, { share: median(shares), jobs: shares.length }]));
+}
+
+// Stages recorded before their issue type was kept get it looked up, a batch at a time.
+export async function fillStageTypes(env, { batch = 50 } = {}) {
+  const { results } = await env.DB.prepare("SELECT issue_id FROM completed_jobs WHERE kind = 'stage' AND stage_type IS NULL LIMIT ?").bind(batch).all();
+  if (!results.length) return { idle: true };
+  const ids = results.map((r) => r.issue_id);
+  const found = await searchJql(env, `id in (${ids.join(',')})`, ['issuetype'], { limit: batch });
+  const types = new Map(found.map((i) => [String(i.id), i.fields?.issuetype?.name || '']));
+  // Issues Jira no longer has are marked empty, so they aren't looked up again.
+  await env.DB.batch(ids.map((id) => env.DB.prepare('UPDATE completed_jobs SET stage_type = ? WHERE issue_id = ?').bind(types.get(id) ?? '', id)));
+  return { filled: ids.length };
 }
 
 // Whether the difficulty scores actually predict how long work takes.

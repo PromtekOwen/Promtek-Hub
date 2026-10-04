@@ -8,7 +8,7 @@ import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
-import { access, GROUPS, PERMISSIONS, TEAMS as ALL_TEAMS } from './permissions.js';
+import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
@@ -83,7 +83,7 @@ async function resolveViewer(env, user) {
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
 const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
-  '/api/admin/bitbucket-poll', '/api/admin/send-alerts', '/api/admin/test-8x8', '/api/admin/permissions']);
+  '/api/admin/bitbucket-poll', '/api/admin/send-alerts', '/api/admin/test-8x8']);
 
 async function route(request, env, url, user) {
   const { pathname } = url;
@@ -207,7 +207,8 @@ async function route(request, env, url, user) {
     const Mes = await import('./mes.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/mes/outstanding') {
-      return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '' }));
+      return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '',
+        releaseId: url.searchParams.get('release') || null }));
     }
     if (method === 'POST' && pathname === '/api/mes/question') return json(await Mes.nextQuestion(env, body));
     if (method === 'POST' && pathname === '/api/mes/estimate') return json(await Mes.saveEstimate(env, user, body));
@@ -232,6 +233,12 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/mes/suggestion') return json(await Plan.decide(env, user, body));
     if (method === 'POST' && pathname === '/api/mes/accept-plan') return json(await Plan.accept(env, user, body.versionId));
+    if (method === 'POST' && pathname === '/api/mes/release') {
+      const r = await (await import('./mes-sprints.js')).createRelease(env, user, body);
+      await Audit.record(env, user, { area: 'Condor releases', action: `Release ${r.name} started`, changes: [{ label: 'Dates', before: '', after: `${r.startDate} to ${r.releaseDate}` }] });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
   if (pathname.startsWith('/api/devtime')) {
@@ -333,7 +340,7 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/leaderboard') {
-    return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', accountId: user.accountId }));
+    return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', accountId: user.accountId, team: url.searchParams.get('team') || null }));
   }
 
   if (method === 'GET' && pathname === '/api/elo/history') {
@@ -362,12 +369,13 @@ async function route(request, env, url, user) {
       return json(await quotingSummary(env, {
         discipline: url.searchParams.get('discipline') || null,
         minConfidence: url.searchParams.get('all') === '1' ? 'any' : 'good',
+        team: url.searchParams.get('team') || null,
       }));
     }
     if (method === 'GET' && pathname === '/api/reports/stages') {
       const discipline = url.searchParams.get('discipline') || null;
       const [stages, difficulty] = await Promise.all([
-        stageLibrary(env, { discipline, minJobs: Number(url.searchParams.get('minJobs')) || 2 }),
+        stageLibrary(env, { discipline, minJobs: Number(url.searchParams.get('minJobs')) || 2, team: url.searchParams.get('team') || null }),
         difficultyAnalysis(env, { discipline }),
       ]);
       return json({ ...stages, difficulty });
@@ -395,9 +403,6 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/admin/')) {
     if (!user.isAdmin && !(user.can.developer && DEVELOPER_ADMIN.has(pathname))) return json({ error: 'Only admins can do that.' }, 403);
-    if (method === 'GET' && pathname === '/api/admin/permissions') {
-      return json({ groups: GROUPS, permissions: PERMISSIONS, teams: ALL_TEAMS });
-    }
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));

@@ -31,6 +31,7 @@ src/               The Worker (API and background sync)
   devtime.js       Condor Dev: Bitbucket activity turned into draft worklogs
   mes.js           Condor Dev: MES estimating by comparison, triage, Condor rating
   mes-plan.js      Condor Dev: release planning, suggestions, Jira timeline
+  mes-sprints.js   Condor Dev: releases, boards and sprints in Jira
   audit.js         The audit log of changes made by hand
   permissions.js   Groups, teams and what each allows
   orgdocs.js       Company chart versions (IMS2.02) and publishing to Confluence
@@ -62,6 +63,7 @@ schema-019.sql     Audit log and company chart versions
 schema-020.sql     A description on each quote
 schema-021.sql     Category estimates including subtasks; sharing quoted hours across subtasks
 schema-022.sql     Groups, teams and team leads for each person
+schema-023.sql     Condor releases and their boards and sprints; triage per release
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

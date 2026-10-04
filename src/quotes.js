@@ -2,7 +2,7 @@
 // counts, conditions, novelty and estimates, so that once the job is done the
 // hub can learn how those things relate to the hours and difficulty it took.
 import { jira, searchJql } from './jira.js';
-import { DISCIPLINES, disciplineOf, customerFilter } from './jobs.js';
+import { DISCIPLINES, disciplineOf, customerFilter, stageShares } from './jobs.js';
 import { raiseAlert, sendAlerts, getState, setState, londonDate } from './sync.js';
 import { quoteElo } from './progression.js';
 import { forMe } from './permissions.js';
@@ -566,17 +566,8 @@ const SPLIT_WAIT_DAYS = 7;         // subtasks can arrive after the order
 const SPLIT_RECHECK_DAYS = 14;     // late subtasks get a share for this long
 const SPLIT_WRITES_PER_RUN = 15;        // with one search per category, a turn stays well inside 50 calls
 
-// From finished jobs: the typical share of a category's time each subtask type takes.
-export async function learnedShares(env, discipline) {
-  const { results } = await env.DB.prepare(
-    `SELECT s.stage_type, s.stage_share FROM completed_jobs s JOIN completed_jobs c ON c.issue_id = s.parent_id
-      WHERE s.kind = 'stage' AND s.discipline = ? AND s.stage_type IS NOT NULL AND s.stage_share > 0
-        AND c.kind = 'category' AND c.confidence = 'good'`
-  ).bind(discipline).all();
-  const by = new Map();
-  for (const r of results) { if (!by.has(r.stage_type)) by.set(r.stage_type, []); by.get(r.stage_type).push(r.stage_share); }
-  return new Map([...by].map(([type, shares]) => [type, { share: median(shares), jobs: shares.length }]));
-}
+// From finished jobs, older orders included: the typical share of a category's time each subtask type takes.
+export const learnedShares = (env, discipline) => stageShares(env, discipline);
 
 // Shares out whole minutes so the subtasks add up to the category exactly.
 export function splitMinutes(totalMinutes, weights) {

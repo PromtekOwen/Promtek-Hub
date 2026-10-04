@@ -2,6 +2,7 @@
 import { londonDate, mondayOf } from './sync.js';
 import { progressFor } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
+import { teamsOf } from './permissions.js';
 
 const STANDARD_WEEK_SECONDS = 37.5 * 3600;
 
@@ -20,7 +21,8 @@ export async function teamWeeks(env, { weeks = 8, team = null } = {}) {
   const from = weeksBack(weeks)[0];
   const params = [from];
   let filter = '';
-  if (team) { filter = ' AND e.team = ?'; params.push(team); }
+  // People can be in several teams; older records only have the one.
+  if (team) { filter = ' AND (e.teams LIKE ? OR (e.teams IS NULL AND e.team = ?))'; params.push(`%"${team}"%`, team); }
 
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.name, e.team, e.role, ${WEEK_OF} AS week_start,
@@ -35,8 +37,8 @@ export async function teamWeeks(env, { weeks = 8, team = null } = {}) {
   ).bind(...params).all();
 
   const { results: people } = await env.DB.prepare(
-    `SELECT account_id, name, team, role FROM employees${team ? ' WHERE team = ?' : ''} ORDER BY name`
-  ).bind(...(team ? [team] : [])).all();
+    `SELECT account_id, name, team, role FROM employees${team ? ' WHERE (teams LIKE ? OR (teams IS NULL AND team = ?))' : ''} ORDER BY name`
+  ).bind(...(team ? [`%"${team}"%`, team] : [])).all();
 
   const byPerson = new Map(people.map((p) => [p.account_id, { ...p, weeks: {} }]));
   for (const row of results) {
@@ -98,11 +100,11 @@ export async function engineerReport(env, accountId, { weeks = 12 } = {}) {
 }
 
 // Friendly leaderboard. period: 'week' | 'month' | 'all'
-export async function leaderboard(env, { period = 'week', accountId = null } = {}) {
+export async function leaderboard(env, { period = 'week', accountId = null, team = null } = {}) {
   let rows;
   if (period === 'all') {
     const { results } = await env.DB.prepare(
-      `SELECT e.account_id, e.name, e.opening_xp + COALESCE(SUM(l.xp), 0) AS xp
+      `SELECT e.account_id, e.name, e.teams, e.team, e.opening_xp + COALESCE(SUM(l.xp), 0) AS xp
          FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
         GROUP BY e.account_id ORDER BY xp DESC`
     ).all();
@@ -112,7 +114,7 @@ export async function leaderboard(env, { period = 'week', accountId = null } = {
       ? londonDate().slice(0, 8) + '01'
       : mondayOf(londonDate());
     const { results } = await env.DB.prepare(
-      `SELECT e.account_id, e.name, COALESCE(SUM(l.xp), 0) AS xp, COALESCE(SUM(l.seconds), 0) AS seconds
+      `SELECT e.account_id, e.name, e.teams, e.team, COALESCE(SUM(l.xp), 0) AS xp, COALESCE(SUM(l.seconds), 0) AS seconds
          FROM employees e LEFT JOIN xp_ledger l
            ON l.account_id = e.account_id AND l.work_date >= ?
         GROUP BY e.account_id ORDER BY xp DESC`
@@ -120,6 +122,7 @@ export async function leaderboard(env, { period = 'week', accountId = null } = {
     rows = results;
   }
 
+  if (team) rows = rows.filter((r) => teamsOf(r).includes(team));
   const ranked = rows.map((r, i) => ({
     position: i + 1,
     accountId: r.account_id,

@@ -4,6 +4,7 @@
 import { jira } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
 import { versions, syncPlan, canTriage } from './mes.js';
+import { ensureRelease, knownSprints, sprintFor, placeTickets } from './mes-sprints.js';
 
 const PRIORITY_ORDER = { Must: 0, Should: 1, Could: 2 };
 const DEFAULT_RESERVE = 0.2;
@@ -169,6 +170,9 @@ export async function view(env, viewer, versionId) {
     'SELECT COUNT(*) AS n, MAX(accepted_at) AS at, SUM(CASE WHEN jira_synced = 0 THEN 1 ELSE 0 END) AS waiting FROM mes_schedule WHERE version_id = ?'
   ).bind(version.id).first();
   const names = new Map(team.map((p) => [p.id, p.name]));
+  const sprintInfo = await knownSprints(env, version.id);
+  const sprints = sprintInfo?.sprints || [];
+  for (const s of current.schedule) s.sprint = s.fits && s.start && sprints.length ? sprintFor(sprints, s.start)?.name || null : null;
   const mine = viewer.accountId;
   const canPlan = canTriage(viewer);
   const visible = (s) => canPlan || s.personId === mine;
@@ -179,6 +183,7 @@ export async function view(env, viewer, versionId) {
     schedule: current.schedule.filter(visible), needsEstimate: canPlan ? current.needsEstimate : [],
     suggestions: canPlan ? suggestions : [], stillOut: canPlan ? stillOut : [],
     accepted: { count: accepted?.n || 0, at: accepted?.at || null, waiting: accepted?.waiting || 0 },
+    sprints,
     noRelease: !version.releaseDate,
   };
 }
@@ -261,8 +266,23 @@ export async function accept(env, viewer, versionId) {
     ).bind(s.id, s.key, v.version.id, s.personId, s.start, s.due, s.hours, s.plannedAssignee ? 1 : 0, viewer.email, now));
   }
   await env.DB.batch(stmts);
-  const synced = await syncSchedule(env, { max: JIRA_WRITES_INLINE });
-  return { ok: true, planned: rows.length, written: synced.written, waiting: synced.waiting, startField: synced.startField };
+  // Sprint moves come first; dates beyond what fits in this request carry on in the background.
+  let placed = null;
+  if (v.sprints.length) {
+    try { placed = await placeTickets(env, v.version.id, v.schedule); } catch (err) { placed = { error: err.message }; }
+  }
+  const synced = await syncSchedule(env, { max: v.sprints.length ? 15 : JIRA_WRITES_INLINE });
+  return { ok: true, planned: rows.length, written: synced.written, waiting: synced.waiting, startField: synced.startField, sprints: placed };
+}
+
+// Turns a triaged release into its board and three sprints, then places the tickets.
+export async function makeSprints(env, viewer, versionId) {
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin makes the sprints.');
+  const made = await ensureRelease(env, viewer, versionId);
+  const v = await view(env, viewer, versionId);
+  const placed = await placeTickets(env, versionId, v.schedule);
+  return { board: made.board, sprints: placed.sprints || made.sprints, moved: placed.moved,
+    notPlaced: v.schedule.filter((s) => !s.fits).length, needsEstimate: v.needsEstimate.length };
 }
 
 // Start date, due date and, where nobody was assigned, the planned person.

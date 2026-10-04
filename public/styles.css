@@ -481,3 +481,8 @@ body.tile-dragging, body.tile-dragging * { cursor: grabbing !important; }
 .perm-grid th:not(:first-child), .perm-cell { text-align: center; }
 .perm-cell span { font-weight: 700; color: var(--blue-deep); }
 .perm-grid { width: 100%; } .perm-grid td:first-child { white-space: normal; min-width: 0; } .perm-grid th { white-space: nowrap; }
+.team-picker { margin: .75rem 0; }
+#view.refreshing { opacity: .55; transition: opacity .15s; pointer-events: none; }
+.condor-tabs { overflow-x: auto; scrollbar-width: none; }
+.condor-tabs::-webkit-scrollbar { display: none; }
+@media (max-width: 480px) { .condor-tabs .tab { font-size: .9rem; padding: .45rem .2rem; flex: 1 0 auto; } }

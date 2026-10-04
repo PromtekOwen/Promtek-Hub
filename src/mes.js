@@ -227,16 +227,17 @@ export async function versions(env) {
     .sort((a, b) => (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999'));
 }
 
-export async function outstanding(env, viewer, { filter = 'untriaged', query = '' } = {}) {
+export async function outstanding(env, viewer, { filter = 'untriaged', query = '', releaseId = null } = {}) {
   const { results } = await env.DB.prepare(
-    `SELECT t.*, e.hours, e.low, e.high, e.difficulty, e.timebox, e.method, p.version_id, p.version_name, p.priority
+    `SELECT t.*, e.hours, e.low, e.high, e.difficulty, e.timebox, e.method, p.version_id, p.version_name, p.priority, p.decided_for
        FROM mes_tickets t LEFT JOIN mes_estimates e ON e.issue_id = t.issue_id LEFT JOIN mes_plan p ON p.issue_id = t.issue_id
       WHERE t.done = 0 AND t.type != 'Epic' ORDER BY t.created DESC LIMIT 1000`
   ).all();
   const q = query.trim().toLowerCase();
   const rows = results.filter((r) => {
     if (q && !`${r.issue_key} ${r.summary} ${r.module || ''}`.toLowerCase().includes(q)) return false;
-    if (filter === 'untriaged') return !r.priority;
+    // A "not this time" only holds for the release it was decided in.
+    if (filter === 'untriaged') return !r.priority || (!r.version_id && (!releaseId || r.decided_for !== String(releaseId)));
     if (filter === 'unestimated') return r.hours == null;
     return true;
   });
@@ -244,7 +245,10 @@ export async function outstanding(env, viewer, { filter = 'untriaged', query = '
   const cursor = await getState(env, 'mes_cursor');
   // Still reading history if the scan's position is more than a day behind.
   const catchingUp = !cursor || cursor < `${londonDate(Date.now() - 86_400_000).replace(/-/g, '/')} 00:00`;
+  const release = releaseId ? await env.DB.prepare('SELECT board_id, sprints FROM mes_releases WHERE version_id = ?').bind(String(releaseId)).first() : null;
+  const inRelease = releaseId ? results.filter((r) => r.version_id === String(releaseId)).length : 0;
   return {
+    release: release ? { boardId: release.board_id, sprints: JSON.parse(release.sprints || '[]') } : null, inRelease,
     known, catchingUp, readUpTo: cursor ? cursor.slice(0, 10).replace(/\//g, '-') : null,
     tickets: rows.slice(0, 200), total: rows.length, versions: await versions(env).catch(() => []),
     canTriage: canTriage(viewer), canEstimate: canEstimate(viewer), priorities: PRIORITIES, tags: TAGS, hints: DIFFICULTY_HINTS,
@@ -255,15 +259,16 @@ export async function triage(env, viewer, input) {
   if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin decides what goes in a release.');
   const ticket = await ticketFor(env, input.issueId);
   const priority = input.versionId ? (PRIORITIES.includes(input.priority) ? input.priority : null) : 'Not this time';
+  const decidedFor = String(input.releaseId || input.versionId || '') || null;
   if (input.versionId && !priority) throw new Error('Choose Must, Should or Could.');
   const vs = await versions(env);
   const version = input.versionId ? vs.find((v) => v.id === String(input.versionId)) : null;
   if (input.versionId && !version) throw new Error('That release is no longer open in Jira.');
   await env.DB.prepare(
-    `INSERT INTO mes_plan (issue_id, issue_key, version_id, version_name, priority, triaged_by, triaged_at, jira_synced) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    `INSERT INTO mes_plan (issue_id, issue_key, version_id, version_name, priority, decided_for, triaged_by, triaged_at, jira_synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(issue_id) DO UPDATE SET version_id = excluded.version_id, version_name = excluded.version_name, priority = excluded.priority,
-       triaged_by = excluded.triaged_by, triaged_at = excluded.triaged_at, jira_synced = 0, jira_error = NULL`
-  ).bind(ticket.issue_id, ticket.issue_key, version?.id || null, version?.name || null, priority, viewer.email, new Date().toISOString()).run();
+       decided_for = excluded.decided_for, triaged_by = excluded.triaged_by, triaged_at = excluded.triaged_at, jira_synced = 0, jira_error = NULL`
+  ).bind(ticket.issue_id, ticket.issue_key, version?.id || null, version?.name || null, priority, decidedFor, viewer.email, new Date().toISOString()).run();
   return { ok: true, jiraSynced: await syncPlan(env, ticket.issue_id) };
 }
 
