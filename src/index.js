@@ -241,6 +241,23 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
+  if (pathname.startsWith('/api/tracker')) {
+    const T = await import('./tracker.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/tracker') return json(await T.status(env, user));
+    if (method === 'GET' && pathname === '/api/tracker/poll') return json(await T.poll(env, user));
+    const actions = { start: T.start, pause: T.pause, resume: T.resume, stop: T.stop, assist: T.assist,
+      'end-interruption': T.endInterruption, call: T.answerCall, 'call-logged': T.callLogged };
+    const name = pathname.replace('/api/tracker/', '');
+    if (method === 'POST' && actions[name]) return json(await actions[name](env, user, body));
+  }
+  if (method === 'POST' && pathname === '/api/admin/test-live-calls') {
+    if (!user.isAdmin && !user.can.developer) return json({ error: 'Only admins can do that.' }, 403);
+    const { activeCalls } = await import('./calls.js');
+    const calls = await activeCalls(env);
+    return json({ ok: true, count: calls.length, sample: calls.slice(0, 3) });
+  }
+
   if (pathname.startsWith('/api/devtime')) {
     const DevTime = await import('./devtime.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

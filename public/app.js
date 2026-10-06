@@ -277,7 +277,8 @@ const pages = {
     band: () => `<h1>Log time</h1><p>Find the job, say how long, and it's in Tempo.</p>`,
     async render() {
       if (!me.linked) return notLinkedCard();
-      return logChosen ? logFormHtml() : await logPickerHtml();
+      if (!logChosen) await trackerLoad();
+      return logChosen ? logFormHtml() : `${trackerPanelHtml()}${await logPickerHtml()}`;
     },
   },
 
@@ -1008,6 +1009,7 @@ function settingsCallsHtml() {
       <h2 style="margin-top:0">8x8 connection</h2>
       <p class="muted">Calls are only fetched when someone asks for them.</p>
       <button class="btn secondary" data-action="test-8x8">Test the connection</button>
+      <button class="btn secondary" data-action="test-live-calls">Test live calls</button>
       <div class="result" id="eight8-result" role="status"></div>
     </div>
     <h2>Extensions</h2>
@@ -2567,6 +2569,7 @@ function logFormHtml() {
       <p id="log-xp" class="xp-preview"></p>
       <div class="row">
         <button class="btn" data-action="save-log">Log this time</button>
+        <button class="btn secondary" data-tracker="start-log-tracker">Start tracker instead</button>
         <button class="btn secondary" data-action="cancel-log">Pick something else</button>
       </div>
       <div class="result" id="log-result" role="status"></div>
@@ -4470,6 +4473,210 @@ view.addEventListener('toggle', (event) => {
   try { localStorage.setItem(ADMIN_OPEN_KEY, JSON.stringify([...open])); } catch { /* private browsing: just not remembered */ }
 }, true);
 
+// ---------- The active time tracker ----------
+
+let tracker = null;          // the latest from the server
+let trackerOffset = 0;       // server clock minus this device's clock
+let trackerAssist = null;    // 'team' or 'apprentice' while choosing who
+let trackerPeople = null;
+let trackerModal = null;     // { kind: 'call' | 'ended', ... }
+let trackerPollTimer = null;
+const TRACKER_POLL_MS = 20_000;
+
+const clockText = (secs) => {
+  const s = Math.max(0, Math.floor(secs));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return `${h}:${String(m).padStart(2, '0')}:${String(x).padStart(2, '0')}`;
+};
+const hhmm = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/London' });
+const elapsedSince = (iso) => (Date.now() + trackerOffset - Date.parse(iso)) / 1000;
+const assistLabel = (kind) => (kind === 'team' ? 'Assisting the team' : kind === 'apprentice' ? 'Assisting an apprentice' : kind === 'call' ? 'On a call' : '');
+
+function trackerApply(data) {
+  if (!data) return;
+  if (data.serverNow) trackerOffset = Date.parse(data.serverNow) - Date.now();
+  tracker = data;
+  trackerBar();
+  const host = document.getElementById('tracker-panel');
+  if (host) host.outerHTML = trackerPanelHtml();
+}
+
+async function trackerLoad() {
+  if (!me?.linked) return;
+  try { trackerApply(await api('/api/tracker')); } catch { /* the panel just stays as it was */ }
+}
+
+async function trackerDo(action, body = {}) {
+  try {
+    const r = await api(`/api/tracker/${action}`, { method: 'POST', body: JSON.stringify(body) });
+    trackerApply(r);
+    const waiting = (r.saved || []).find((x) => x.status === 'waiting');
+    if (waiting) toast('Saved here; Tempo will get it shortly');
+    return r;
+  } catch (err) { toast(err.message); return null; }
+}
+
+function trackerPanelHtml() {
+  const t = tracker?.timer;
+  const cur = t?.current;
+  const stretches = (tracker?.today || []).filter((x) => x.status !== 'too short');
+  const statusText = { logged: 'Logged', waiting: 'Waiting for Tempo', 'needs details': 'Needs call details' };
+  const list = stretches.length ? `<ul class="list plain tracker-list">${stretches.map((x) => `<li>
+      <span>${hhmm(x.started_at)}–${hhmm(x.ended_at)}</span> <strong>${esc(x.issue_key || 'Call')}</strong>
+      <span class="muted">${duration(x.seconds)}${x.kind !== 'job' ? `, ${assistLabel(x.kind).toLowerCase()}` : ''}</span>
+      <span class="${x.status === 'logged' ? 'good' : 'bad'}">${statusText[x.status] || esc(x.status)}</span>
+      ${x.status === 'needs details' ? `<a class="linklike" href="#/calls">Add details in 8x8 calls</a> <button class="linklike" data-tracker="call-done" data-id="${x.id}">Done</button>` : ''}
+    </li>`).join('')}</ul>` : '';
+  let body;
+  if (!t) {
+    body = '<p style="margin:0">Choose a job below, then <strong>Start tracker</strong>. Each time you pause, that stretch is logged with its real start and end.</p>';
+  } else if (cur) {
+    const interrupted = cur.kind !== 'job';
+    body = `<p class="tracker-what">${interrupted ? `<strong>${esc(assistLabel(cur.kind))}${cur.whoName ? `: ${esc(cur.whoName)}` : ''}</strong>${t.job ? `<br><span class="muted">${esc(t.job.issueKey)} is paused</span>` : ''}`
+        : `<strong>${esc(cur.issueKey)}</strong> ${esc(cur.summary || '')}`}</p>
+      <p class="tracker-clock" data-since="${esc(cur.startedAt)}">${clockText(elapsedSince(cur.startedAt))}</p>
+      <p class="muted" style="margin-top:0">Since ${hhmm(cur.startedAt)}</p>
+      <div class="row tracker-actions">${interrupted
+        ? `${t.job ? `<button class="btn" data-tracker="end-resume">Back to ${esc(t.job.issueKey)}</button>` : ''}<button class="btn secondary" data-tracker="end-stop">Finished${t.job ? `, don't carry on` : ''}</button>`
+        : `<button class="btn" data-tracker="pause">Pause</button><button class="btn secondary" data-tracker="stop">Stop</button>`}</div>
+      ${!interrupted ? `<div class="row tracker-assist"><button class="chip-btn" data-tracker="assist" data-kind="apprentice">Assisting an apprentice</button>
+        <button class="chip-btn" data-tracker="assist" data-kind="team">Assisting the team</button></div>` : ''}
+      ${trackerAssist ? trackerAssistHtml() : ''}
+      ${elapsedSince(cur.startedAt) > 10 * 3600 ? `<div class="notice card" style="margin-top:.75rem"><p style="margin-top:0">This has been running a long time. If you stopped earlier, say when:</p>
+        <div class="row"><label>Stopped at <input type="datetime-local" id="tracker-stop-at"></label><button class="btn secondary" data-tracker="stop-at">Stop it then</button></div></div>` : ''}`;
+  } else {
+    body = `<p class="tracker-what"><strong>${esc(t.job?.issueKey || '')}</strong> ${esc(t.job?.summary || '')}<br><span class="muted">Paused</span></p>
+      <div class="row tracker-actions"><button class="btn" data-tracker="resume">Carry on</button><button class="btn secondary" data-tracker="stop">Stop</button></div>`;
+  }
+  const notify = 'Notification' in window && Notification.permission === 'default'
+    ? '<p class="help" style="margin-bottom:0"><button class="linklike" data-tracker="notify">Turn on notifications</button> to hear about calls when the hub isn\'t the window in front.</p>' : '';
+  return `<div class="card tracker-panel${cur ? ' running' : ''}" id="tracker-panel">${body}${list}${notify}</div>`;
+}
+
+function trackerAssistHtml() {
+  const people = (trackerPeople || []).filter((p) => p.id !== me.employee?.accountId);
+  return `<div class="tracker-assist-form">
+      <label>Who are you helping? <select id="assist-who"><option value="">Not saying</option>${people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
+      <label>Their job, if you know it <input id="assist-job" placeholder="For example MES-412" autocomplete="off"></label>
+      <div class="row"><button class="btn" data-tracker="assist-start">Start</button><button class="btn secondary" data-tracker="assist-cancel">Cancel</button></div>
+      <p class="help">Logged to ${trackerAssist === 'team' ? 'PMB-37' : 'PMB-39'}; your job pauses until you're back.</p></div>`;
+}
+
+// A slim bar at the foot of every page while something is being timed.
+function trackerBar() {
+  let bar = document.getElementById('tracker-bar');
+  const cur = tracker?.timer?.current;
+  if (!cur || currentRoute() === '#/log') { if (bar) bar.remove(); document.body.classList.remove('has-tracker-bar'); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'tracker-bar'; document.body.appendChild(bar); }
+  document.body.classList.add('has-tracker-bar');
+  bar.innerHTML = `<a href="#/log" class="tracker-bar-what"><span class="dot" aria-hidden="true"></span>
+      ${esc(cur.kind === 'job' ? cur.issueKey : assistLabel(cur.kind))} <span class="tracker-clock-small" data-since="${esc(cur.startedAt)}">${clockText(elapsedSince(cur.startedAt))}</span></a>
+    ${cur.kind === 'job' ? '<button class="btn secondary" data-tracker="pause">Pause</button>' : `<button class="btn secondary" data-tracker="${tracker.timer.job ? 'end-resume' : 'end-stop'}">${tracker.timer.job ? 'Back to job' : 'Finished'}</button>`}`;
+}
+
+setInterval(() => {
+  document.querySelectorAll('[data-since]').forEach((el) => { el.textContent = clockText(elapsedSince(el.dataset.since)); });
+}, 1000);
+
+function trackerModalHtml() {
+  const m = trackerModal;
+  if (!m) return '';
+  if (m.kind === 'call') {
+    const c = m.call;
+    return `<div class="modal-backdrop"><div class="modal card" role="dialog" aria-modal="true" aria-labelledby="call-title">
+      <h2 id="call-title" style="margin-top:0">${c.live ? "You're on a call" : 'You had a call'}</h2>
+      <p>${esc(c.otherName || c.other || 'A call')}, ${c.live ? `since ${hhmm(new Date(c.startedAt).toISOString())}` : `${hhmm(new Date(c.startedAt).toISOString())} to ${hhmm(new Date(c.endedAt).toISOString())}`}.
+        ${tracker?.timer?.job && tracker.timer.current?.kind === 'job' ? `${esc(tracker.timer.job.issueKey)} pauses from when the call started.` : ''}</p>
+      <div class="modal-actions">
+        <button class="btn" data-call-choice="call">Log time to this call</button>
+        <button class="btn secondary" data-call-choice="team">Assisting the team</button>
+        <button class="btn secondary" data-call-choice="apprentice">Assisting an apprentice</button>
+        <button class="linklike" data-call-choice="ignore">Not this one</button></div></div></div>`;
+  }
+  return `<div class="modal-backdrop"><div class="modal card" role="dialog" aria-modal="true" aria-labelledby="ended-title">
+    <h2 id="ended-title" style="margin-top:0">${m.callKind === 'call' ? 'Call ended' : 'Call logged'}</h2>
+    <p>${m.callKind === 'call' ? 'Add its details in 8x8 calls when you\'re ready.' : 'That time has gone to Tempo.'}${m.job ? ` Carry on with ${esc(m.job.issueKey)}?` : ''}</p>
+    <div class="modal-actions">${m.job ? `<button class="btn" data-ended="resume">Carry on with ${esc(m.job.issueKey)}</button><button class="btn secondary" data-ended="no">Not now</button>` : '<button class="btn" data-ended="no">OK</button>'}</div></div></div>`;
+}
+
+function trackerShowModal(m) {
+  trackerModal = m;
+  document.getElementById('tracker-modal')?.remove();
+  if (!m) return;
+  const host = document.createElement('div');
+  host.id = 'tracker-modal';
+  host.innerHTML = trackerModalHtml();
+  document.body.appendChild(host);
+  host.querySelector('button')?.focus();
+  if (m.kind === 'call' && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(m.call.live ? "You're on a call" : 'You had a call', { body: `${m.call.otherName || m.call.other || 'A call'}. Log the time in Promtek Hub?`, tag: `call-${m.call.callId}` });
+      n.onclick = () => { window.focus(); n.close(); };
+    } catch { /* some browsers only allow notifications from an installed app */ }
+  }
+}
+
+async function trackerPoll() {
+  if (!me?.linked || trackerModal) return;
+  try {
+    const r = await api('/api/tracker/poll');
+    trackerApply(r);
+    if (r.callEnded) trackerShowModal({ kind: 'ended', callKind: r.callEnded.kind, job: r.callEnded.job });
+    else if (r.call) trackerShowModal({ kind: 'call', call: r.call });
+  } catch { /* try again next time */ }
+}
+
+function trackerInit() {
+  trackerLoad();
+  clearInterval(trackerPollTimer);
+  trackerPollTimer = setInterval(trackerPoll, TRACKER_POLL_MS);
+}
+
+document.addEventListener('click', async (event) => {
+  const t = (sel) => event.target.closest(sel);
+  const choice = t('[data-call-choice]');
+  if (choice) {
+    const c = trackerModal.call;
+    trackerShowModal(null);
+    await trackerDo('call', { callId: c.callId, choice: choice.dataset.callChoice, startedAt: c.startedAt, endedAt: c.endedAt || null });
+    return;
+  }
+  const ended = t('[data-ended]');
+  if (ended) { trackerShowModal(null); if (ended.dataset.ended === 'resume') await trackerDo('resume'); return; }
+  const b = t('[data-tracker]');
+  if (!b) return;
+  const a = b.dataset.tracker;
+  if (a === 'pause' || a === 'resume' || a === 'stop') { b.disabled = true; await trackerDo(a); return; }
+  if (a === 'stop-at') {
+    const v = document.getElementById('tracker-stop-at').value;
+    if (!v) { toast('Choose when you stopped'); return; }
+    await trackerDo('stop', { endedAt: new Date(v).toISOString() }); return;
+  }
+  if (a === 'end-resume' || a === 'end-stop') { b.disabled = true; await trackerDo('end-interruption', { resume: a === 'end-resume' }); return; }
+  if (a === 'assist') {
+    trackerAssist = b.dataset.kind;
+    if (!trackerPeople) {
+      try { trackerPeople = (await api('/api/org')).nodes.map((n) => ({ id: n.id, name: n.name })).sort((x, y) => x.name.localeCompare(y.name)); } catch { trackerPeople = []; }
+    }
+    trackerApply(tracker); return;
+  }
+  if (a === 'assist-cancel') { trackerAssist = null; trackerApply(tracker); return; }
+  if (a === 'assist-start') {
+    const who = document.getElementById('assist-who');
+    const kind = trackerAssist; trackerAssist = null;
+    await trackerDo('assist', { kind, whoId: who.value || null, whoName: who.value ? who.selectedOptions[0].textContent : null,
+      theirKey: document.getElementById('assist-job').value.trim().toUpperCase() || null });
+    return;
+  }
+  if (a === 'call-done') { await trackerDo('call-logged', { stretchId: b.dataset.id }); await trackerLoad(); return; }
+  if (a === 'notify') { try { await Notification.requestPermission(); } catch { /* ignored */ } trackerApply(tracker); return; }
+  if (a === 'start-log-tracker' && logChosen) {
+    b.disabled = true;
+    const r = await trackerDo('start', { issueId: logChosen.issueId, issueKey: logChosen.label, summary: logChosen.title || '' });
+    if (r) { logChosen = null; logNode = null; window.scrollTo(0, 0); render(); toast(`Tracking ${r.timer.current.issueKey}`); }
+  }
+});
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4689,7 +4896,7 @@ async function adminAction(action, button) {
     'start-ledger': 'start-result', link: 'link-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
-    'test-8x8': 'eight8-result', 'lib-list': 'lib-result',
+    'test-8x8': 'eight8-result', 'test-live-calls': 'eight8-result', 'lib-list': 'lib-result',
     'elo-start': 'elo-result', 'elo-stop': 'elo-result', 'elo-step': 'elo-result',
  }[action];
   button.disabled = true;
@@ -4712,6 +4919,11 @@ async function adminAction(action, button) {
       const months = document.getElementById('backfill-months').value;
       const r = await api('/api/admin/backfill-start', { method: 'POST', body: JSON.stringify({ months }) });
       out(target, `Backfill started, working back to ${r.until}. It runs in the background, a batch every couple of minutes.`);
+    } else if (action === 'test-live-calls') {
+      const r = await api('/api/admin/test-live-calls', { method: 'POST', body: JSON.stringify({}) });
+      out(target, r.count
+        ? `Live calls work: ${r.count} ${r.count === 1 ? 'call is' : 'calls are'} in progress now. First: ${r.sample.map((c) => `${c.callId}, extensions and numbers seen ${c.parties.slice(0, 6).join(', ')}`).join('; ')}.`
+        : 'Live calls work. Nobody is on a call right now; try again while someone is, to check their extension shows up.');
     } else if (action === 'test-8x8') {
       const r = await api('/api/admin/test-8x8', { method: 'POST', body: JSON.stringify({}) });
       out('eight8-result', r.ok
@@ -5320,6 +5532,7 @@ view.addEventListener('change', async (event) => {
 });
 
 window.addEventListener('hashchange', () => {
+  setTimeout(trackerBar, 0);
   settingsOpen = null;
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
@@ -5365,12 +5578,13 @@ async function start() {
   try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   await render();
   syncAndRefresh();
+  trackerInit();
   powFlushQueue();
   window.addEventListener('online', () => powFlushQueue());
 
   // Refresh when the app comes back to the foreground.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') syncAndRefresh();
+    if (document.visibilityState === 'visible') { syncAndRefresh(); trackerPoll(); }
   });
 }
 

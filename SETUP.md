@@ -286,6 +286,26 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 Everyone can order their own home screen. **Arrange tiles** on the dashboard lets you drag tiles into place with a mouse or a finger, and hide the ones you never use. The order saves as you go. On a phone, hold a tile near the top or bottom of the screen to scroll while dragging. A focused tile can also be moved with the arrow keys. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
 
+## Part 14b: The active time tracker
+
+On **Log time**, an engineer picks a job and chooses **Start tracker instead**. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
+
+**Stretches.** Every stretch between starting and pausing is sent to Tempo the moment it ends, as its own worklog with its real start time and length:
+- stretches under a minute are dropped;
+- a stretch over midnight is split into each day's worklog;
+- if Tempo can't be reached, the stretch is kept and sent in the background with its original times.
+
+**Assisting.** "Assisting an apprentice" (logged to PMB-39) and "Assisting the team" (logged to PMB-37) pause the job and time the assist. The person helped and their job, if given, go in the worklog description. Going back to the job starts a new stretch.
+
+**8x8 calls.** While the hub is open, it checks every 20 seconds whether the engineer's extension is on a live call, through 8x8's Active Calls API. All open hubs share one request to 8x8 every 15 seconds. A pop-up offers "Log time to this call", "Assisting the team", "Assisting an apprentice" or "Not this one":
+- the job is cut at the moment the call started, so nothing overlaps;
+- when the call ends, assisting time goes to Tempo and the engineer is asked whether to carry on with their job;
+- a customer call is listed as needing details, and is marked done when it's logged in the 8x8 calls tile.
+
+If live calls aren't available, the call records are checked every few minutes instead, and finished calls inside a running stretch are offered the same way. "Test live calls" under the 8x8 cog shows what 8x8 reports for calls in progress. Engineers' extensions must be set under Admin → Employees.
+
+**Reminders.** At 5pm, anyone with a timer still running is emailed. A timer running more than 10 hours asks when it actually stopped. Engineers can turn on browser notifications so call pop-ups reach them when the hub isn't the window in front.
+
 ## Part 15: 8x8 calls
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.

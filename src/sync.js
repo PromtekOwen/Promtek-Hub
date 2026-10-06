@@ -381,7 +381,7 @@ export async function snapshotWeek(env, weekStart) {
 // The free Workers plan allows 50 outside calls per run. Each run does the
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
 
 export async function runScheduled(env) {
   if (!(await getState(env, 'ledger_start'))) return;
@@ -423,6 +423,7 @@ export async function runScheduled(env) {
     'hourly-scan': () => onceAnHour('hourly-scan', async () => {
       await attempt('Profile refresh', () => refreshProfiles(env));
       await attempt('Day reminders', async () => (await import('./devtime.js')).reminders(env));
+      await attempt('Timer reminders', async () => (await import('./tracker.js')).eveningReminder(env));
       await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));
     }),
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
@@ -431,6 +432,10 @@ export async function runScheduled(env) {
       await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
     }),
+    tracker: async () => {
+      const r = await attempt('Timer stretches', async () => (await import('./tracker.js')).retry(env));
+      return r?.idle ? { idle: true } : r;
+    },
     'stage-types': async () => {
       const r = await attempt('Stage types', async () => (await import('./jobs.js')).fillStageTypes(env));
       return r?.idle ? { idle: true } : r;

@@ -19,11 +19,11 @@ export function normalisePhone(value) {
 }
 
 const isExtension = (value) => /^\d{1,6}$/.test(String(value || ''));
-const base = (env) => env.EIGHT8_BASE_URL || 'https://api.8x8.com/analytics/work';
+export const base = (env) => env.EIGHT8_BASE_URL || 'https://api.8x8.com/analytics/work';
 
 let cachedToken = { value: null, expires: 0 };
 
-async function accessToken(env) {
+export async function accessToken(env) {
   if (cachedToken.value && cachedToken.expires > Date.now() + 60_000) return cachedToken.value;
   if (!env.EIGHT8_API_KEY || !env.EIGHT8_USERNAME || !env.EIGHT8_PASSWORD) {
     throw new Error('8x8 is not set up yet. An admin needs to add the API key and account details.');
@@ -168,6 +168,9 @@ export async function markHandled(env, viewer, { callId, action, issueKey, workl
      ON CONFLICT(call_id, account_id) DO UPDATE SET action = excluded.action, issue_key = excluded.issue_key,
        worklog_id = excluded.worklog_id, created_at = excluded.created_at`
   ).bind(String(callId), viewer.accountId, action, issueKey || null, worklogId || null, new Date().toISOString()).run();
+  // A call the tracker timed is done once its details are in.
+  await env.DB.prepare("UPDATE tracker_stretches SET status = 'logged', worklog_id = COALESCE(?, worklog_id) WHERE call_id = ? AND account_id = ? AND status = 'needs details'")
+    .bind(worklogId || null, String(callId), viewer.accountId).run().catch(() => {});
   return { ok: true };
 }
 
@@ -224,4 +227,36 @@ export async function testConnection(env) {
       callee: c.callee, calleeName: c.calleeName, talkTime: c.talkTime, startTime: c.startTime,
     })),
   };
+}
+
+// Calls in progress across the phone system, for spotting a call as it happens.
+// Each call's caller and callee are searched for extensions, since the order and
+// names of 8x8's fields aren't relied on.
+export async function activeCalls(env) {
+  if (!env.EIGHT8_PBX_ID) throw new Error('Live calls need EIGHT8_PBX_ID set to your PBX name.');
+  const token = await accessToken(env);
+  const res = await fetch(`${base(env)}/v2/pbxes/${encodeURIComponent(env.EIGHT8_PBX_ID)}/calls/active?paging=0,100&sorting=startTime,desc`, {
+    headers: { Authorization: `Bearer ${token}`, '8x8-apikey': env.EIGHT8_API_KEY, Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`8x8 live calls ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  const list = Array.isArray(data) ? data : data.calls || data.content || [];
+  const values = (o, out = []) => {
+    if (o == null) return out;
+    if (typeof o !== 'object') { out.push(String(o)); return out; }
+    for (const v of Object.values(o)) values(v, out);
+    return out;
+  };
+  return list.map((c) => {
+    const parties = [c.caller, c.latestCallee, c.callee].filter(Boolean);
+    const seen = parties.flatMap((p) => values(p));
+    const other = parties.flatMap((p) => values(p)).find((v) => normalisePhone(v).length > 7) || null;
+    return {
+      callId: String(c.callId ?? c.id ?? ''),
+      startedAt: Date.parse(c.startTime || c.startTimeUTC || '') || (Number(c.startTimeUTC) || Date.now()),
+      parties: seen.map(String),
+      other: other ? normalisePhone(other) : null,
+      otherName: c.caller?.name || c.callerName || null,
+    };
+  }).filter((c) => c.callId);
 }
