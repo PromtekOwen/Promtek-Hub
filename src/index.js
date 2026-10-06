@@ -375,7 +375,8 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/reports/stages') {
       const discipline = url.searchParams.get('discipline') || null;
       const [stages, difficulty] = await Promise.all([
-        stageLibrary(env, { discipline, minJobs: Number(url.searchParams.get('minJobs')) || 2, team: url.searchParams.get('team') || null }),
+        stageLibrary(env, { discipline, minJobs: Number(url.searchParams.get('minJobs')) || 2, team: url.searchParams.get('team') || null,
+          customer: url.searchParams.get('customer') || null, groupBy: url.searchParams.get('group') || 'type' }),
         difficultyAnalysis(env, { discipline }),
       ]);
       return json({ ...stages, difficulty });
@@ -386,6 +387,8 @@ async function route(request, env, url, user) {
     }
     if (method === 'GET' && pathname === '/api/reports/export') {
       const { filename, csv } = await exportCsv(env, {
+        stageOptions: { discipline: url.searchParams.get('discipline') || null, team: url.searchParams.get('team') || null,
+          customer: url.searchParams.get('customer') || null, groupBy: url.searchParams.get('group') || 'type' },
         type: url.searchParams.get('type') || 'ledger',
         from: url.searchParams.get('from'),
         to: url.searchParams.get('to'),

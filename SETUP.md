@@ -200,7 +200,7 @@ Stages almost never carry an estimate of their own, so the **Stages** tab builds
 | Condor Development | New Condor Development (Condor) |
 | Download Phase | New Download Phase: Condor on an order with Condor Development, otherwise Software |
 
-Any other issue type isn't a quoted stage and is left out. The tab shows how long each stage usually takes and what share of its category it used; on older orders, the share is of that category type's time on the order. The same figures feed the shares used to split quoted hours across subtasks. Stages recorded before issue types were kept have theirs looked up in the background.
+Any other issue type isn't a quoted stage and is left out. Stages are listed in the order the work happens, and can be filtered by customer and team, or grouped by customer or team to compare them. The CSV download matches what's on screen. The tab shows how long each stage usually takes and what share of its category it used; on older orders, the share is of that category type's time on the order. The same figures feed the shares used to split quoted hours across subtasks. Stages recorded before issue types were kept have theirs looked up in the background.
 
 That gives two ways to quote a job:
 

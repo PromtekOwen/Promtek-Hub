@@ -488,7 +488,7 @@ export const STAGE_TYPES = {
 // hours were shared: by category, or for older orders by order and category type.
 export async function mappedStages(env, { team = null } = {}) {
   const { results } = await env.DB.prepare(
-    `SELECT s.issue_id, s.issue_key, s.stage_type, s.actual_seconds, s.parent_id, s.epic_key, s.done_date, s.team, s.legacy,
+    `SELECT s.issue_id, s.issue_key, s.stage_type, s.actual_seconds, s.parent_id, s.epic_key, s.done_date, s.team, s.legacy, s.project_name,
             c.kind AS parent_kind, c.discipline AS parent_discipline, c.confidence AS parent_confidence
        FROM completed_jobs s LEFT JOIN completed_jobs c ON c.issue_id = s.parent_id
       WHERE s.kind = 'stage' AND s.stage_type IS NOT NULL AND s.stage_type != '' ${team ? 'AND s.team = ?' : ''}`
@@ -509,12 +509,22 @@ export async function mappedStages(env, { team = null } = {}) {
   return rows.map((r) => ({ ...r, share: totals.get(r.group) > 0 ? r.hours / totals.get(r.group) : null }));
 }
 
-export async function stageLibrary(env, { discipline = null, minJobs = 2, team = null } = {}) {
-  const rows = (await mappedStages(env, { team })).filter((r) => r.hours > 0 && (!discipline || r.discipline === discipline));
+// The order stages happen in, so the library reads like a job.
+const DISCIPLINE_ORDER = ['hardware', 'software', 'engineering', 'condor'];
+const STAGE_ORDER = ['New Design', 'New Purchase Order', 'New Build', 'New Configuration & Testing', 'New Dispatch',
+  'New Software Development', 'New Condor Development', 'New Download Phase', 'New Order Site Visit'];
+
+// Grouped by stage type, optionally split by customer or team, and filterable by either.
+export async function stageLibrary(env, { discipline = null, minJobs = 2, team = null, customer = null, groupBy = 'type' } = {}) {
+  const all = (await mappedStages(env, { team })).filter((r) => r.hours > 0 && (!discipline || r.discipline === discipline));
+  const customers = [...new Set(all.map((r) => r.project_name).filter(Boolean))].sort();
+  const rows = customer ? all.filter((r) => r.project_name === customer) : all;
+  const split = groupBy === 'customer' ? (r) => r.project_name || 'No customer' : groupBy === 'team' ? (r) => r.team || 'No team' : () => null;
   const groups = new Map();
   for (const r of rows) {
-    const key = `${r.discipline}|${r.type}`;
-    if (!groups.has(key)) groups.set(key, { discipline: r.discipline, stage: r.type, hours: [], shares: [], last: null, older: 0 });
+    const by = split(r);
+    const key = `${r.discipline}|${r.type}|${by ?? ''}`;
+    if (!groups.has(key)) groups.set(key, { discipline: r.discipline, stage: r.type, by, hours: [], shares: [], last: null, older: 0 });
     const g = groups.get(key);
     g.hours.push(r.hours);
     if (r.share != null) g.shares.push(r.share);
@@ -524,13 +534,15 @@ export async function stageLibrary(env, { discipline = null, minJobs = 2, team =
   const stages = [...groups.values()]
     .filter((g) => g.hours.length >= minJobs)
     .map((g) => ({
-      discipline: g.discipline, stage: g.stage, times: g.hours.length, fromOlderOrders: g.older,
+      discipline: g.discipline, stage: g.stage, by: g.by, times: g.hours.length, fromOlderOrders: g.older,
       medianHours: median(g.hours), lowHours: Math.min(...g.hours), highHours: Math.max(...g.hours),
       medianShare: median(g.shares), lastSeen: g.last,
     }))
-    .sort((a, b) => (a.discipline || '').localeCompare(b.discipline || '') || b.times - a.times);
+    .sort((a, b) => DISCIPLINE_ORDER.indexOf(a.discipline) - DISCIPLINE_ORDER.indexOf(b.discipline)
+      || STAGE_ORDER.indexOf(a.stage) - STAGE_ORDER.indexOf(b.stage)
+      || String(a.by ?? '').localeCompare(String(b.by ?? '')));
   const skipped = [...groups.values()].filter((g) => g.hours.length < minJobs).length;
-  return { stages, skipped, minJobs };
+  return { stages, skipped, minJobs, customers, groupBy };
 }
 
 // The typical share of a category's time each stage type takes, for sharing

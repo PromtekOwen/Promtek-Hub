@@ -144,7 +144,7 @@ const csvCell = (v) => {
 const toCsv = (headers, rows) =>
   [headers.join(','), ...rows.map((r) => r.map(csvCell).join(','))].join('\n');
 
-export async function exportCsv(env, { type, from, to, accountId }) {
+export async function exportCsv(env, { type, from, to, accountId, stageOptions = null }) {
   const start = from || '2000-01-01';
   const end = to || londonDate();
 
@@ -216,21 +216,17 @@ export async function exportCsv(env, { type, from, to, accountId }) {
     };
   }
 
+  // The same stage library as the screen, with the same filters.
   if (type === 'stages') {
-    const { results } = await env.DB.prepare(
-      `SELECT discipline, stage_name, COUNT(*) AS times,
-              AVG(actual_seconds) / 3600.0 AS mean_hours, MIN(actual_seconds) / 3600.0 AS low_hours,
-              MAX(actual_seconds) / 3600.0 AS high_hours, AVG(stage_share) AS mean_share, MAX(done_date) AS last_seen
-         FROM completed_jobs
-        WHERE kind = 'stage' AND actual_seconds > 0 AND stage_name IS NOT NULL
-        GROUP BY discipline, stage_name ORDER BY discipline, times DESC`
-    ).all();
+    const { stageLibrary } = await import('./jobs.js');
+    const lib = await stageLibrary(env, { ...(stageOptions || {}), minJobs: 1 });
+    const split = lib.groupBy === 'customer' ? 'Customer' : lib.groupBy === 'team' ? 'Team' : null;
     return {
       filename: 'promtek-hub-stage-library.csv',
       csv: toCsv(
-        ['Discipline', 'Stage', 'Times done', 'Average hours', 'Shortest', 'Longest', 'Average share of category', 'Last seen'],
-        results.map((r) => [r.discipline, r.stage_name, r.times, r.mean_hours?.toFixed(2), r.low_hours?.toFixed(2),
-          r.high_hours?.toFixed(2), r.mean_share == null ? '' : (r.mean_share * 100).toFixed(1) + '%', r.last_seen])
+        ['Category', 'Stage', ...(split ? [split] : []), 'Times done', 'From older orders', 'Typical hours', 'Shortest', 'Longest', 'Typical share of category', 'Last seen'],
+        lib.stages.map((r) => [r.discipline, r.stage, ...(split ? [r.by] : []), r.times, r.fromOlderOrders, r.medianHours.toFixed(2),
+          r.lowHours.toFixed(2), r.highHours.toFixed(2), r.medianShare == null ? '' : (r.medianShare * 100).toFixed(1) + '%', r.lastSeen])
       ),
     };
   }

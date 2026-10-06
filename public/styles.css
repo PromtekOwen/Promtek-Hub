@@ -486,3 +486,14 @@ body.tile-dragging, body.tile-dragging * { cursor: grabbing !important; }
 .condor-tabs { overflow-x: auto; scrollbar-width: none; }
 .condor-tabs::-webkit-scrollbar { display: none; }
 @media (max-width: 480px) { .condor-tabs .tab { font-size: .9rem; padding: .45rem .2rem; flex: 1 0 auto; } }
+
+/* Admin sections */
+.admin-section { margin-top: 1rem; border-radius: 14px; background: var(--card, #fff); box-shadow: var(--shadow); }
+.admin-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 1.1rem; border-radius: 14px; }
+.admin-section > summary::-webkit-details-marker { display: none; }
+.admin-section > summary h2 { margin: 0; font-size: 1.1rem; }
+.admin-section > summary::after { content: ''; width: .6rem; height: .6rem; border-right: 2px solid var(--blue-deep); border-bottom: 2px solid var(--blue-deep); transform: rotate(45deg); transition: transform .15s; margin-right: .25rem; flex: none; }
+.admin-section[open] > summary::after { transform: rotate(-135deg); }
+.admin-section > summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.admin-section-body { padding: 0 1.1rem 1.1rem; }
+.admin-section-body > .card:first-child { margin-top: 0; }

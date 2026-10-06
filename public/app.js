@@ -258,6 +258,8 @@ const pages = {
         const params = new URLSearchParams();
         if (quotingDiscipline) params.set('discipline', quotingDiscipline);
         if (reportTeam) params.set('team', reportTeam);
+        if (stageCustomer) params.set('customer', stageCustomer);
+        params.set('group', stageGroup);
         return tabs + stagesHtml(await api(`/api/reports/stages?${params}`));
       }
       if (reportView === 'quoting') {
@@ -2740,10 +2742,13 @@ function disciplinePicker() {
     </select></label>`;
 }
 
+let stageCustomer = '';
+let stageGroup = 'type';
 function stagesHtml(data) {
+  const splitLabel = stageGroup === 'customer' ? 'Customer' : stageGroup === 'team' ? 'Team' : null;
   const stages = data.stages.map((st) => `<tr>
-      <td>${esc(DISCIPLINE_NAMES[st.discipline] || 'Legacy')}</td>
-      <td>${esc(st.stage)}</td>
+      <td>${esc(DISCIPLINE_NAMES[st.discipline] || st.discipline)}</td>
+      <td>${esc(st.stage)}</td>${splitLabel ? `<td>${esc(st.by || '')}</td>` : ''}
       <td class="num">${n(st.times)}</td>
       <td class="num">${st.medianHours.toFixed(1)}</td>
       <td class="num muted">${st.lowHours.toFixed(1)}–${st.highHours.toFixed(1)}</td>
@@ -2766,7 +2771,10 @@ function stagesHtml(data) {
     <div class="card">
       <div class="row" style="justify-content:space-between">
         ${disciplinePicker()}
-        <a class="btn secondary" href="/api/reports/export?type=stages">Stage library CSV</a>
+        <label>Customer <select data-stage-customer><option value="">All customers</option>${(data.customers || []).map((c) => `<option${c === stageCustomer ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+        <span class="segment" role="group" aria-label="Group by">${[['type', 'By stage'], ['customer', 'By customer'], ['team', 'By team']].map(([k, l]) =>
+          `<button class="seg${stageGroup === k ? ' on' : ''}" data-stage-group="${k}">${l}</button>`).join('')}</span>
+        <a class="btn secondary" href="/api/reports/export?${new URLSearchParams({ type: 'stages', ...(quotingDiscipline ? { discipline: quotingDiscipline } : {}), ...(reportTeam ? { team: reportTeam } : {}), ...(stageCustomer ? { customer: stageCustomer } : {}), group: stageGroup })}">Stage library CSV</a>
       </div>
       <p class="muted" style="margin:.85rem 0 0">How long each kind of stage actually takes, built from finished work.
       Stages don't carry their own estimates, so this is the closest thing to one: quote a category, then split it by
@@ -2776,7 +2784,7 @@ function stagesHtml(data) {
 
     <h2>Stage library</h2>
     ${data.stages.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>Discipline</th><th>Stage</th><th class="num">Times done</th><th class="num">Typical hours</th>
+      <thead><tr><th>Discipline</th><th>Stage</th>${splitLabel ? `<th>${splitLabel}</th>` : ''}<th class="num">Times done</th><th class="num">Typical hours</th>
         <th class="num">Range</th><th class="num">Share of category</th><th>Last seen</th></tr></thead>
       <tbody>${stages}</tbody>
     </table></div>` : `<div class="card"><p class="muted">No repeated stages recorded yet. This fills up as work finishes, and the historical backfill gives it a head start.</p></div>`}
@@ -4433,6 +4441,35 @@ async function developerAdminHtml() {
     ${bitbucketAdminHtml(bitbucket)}`;
 }
 
+// ---------- Admin sections that open and close ----------
+
+// Each heading on Admin becomes a section that opens and closes. Which ones are
+// open is remembered on this device; everything starts closed so the page is short.
+const ADMIN_OPEN_KEY = 'promtek-hub-admin-open';
+function adminOpenSections() {
+  try { return new Set(JSON.parse(localStorage.getItem(ADMIN_OPEN_KEY) || '[]')); } catch { return new Set(); }
+}
+function adminSections(html) {
+  const parts = html.split(/(?=<h2>)/);
+  const head = parts[0].startsWith('<h2>') ? '' : parts.shift();
+  const open = adminOpenSections();
+  return head + parts.map((part) => {
+    const m = part.match(/^<h2>([\s\S]*?)<\/h2>/);
+    if (!m) return part;
+    const title = m[1].replace(/<[^>]+>/g, '').trim();
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    return `<details class="admin-section" data-section="${slug}"${open.has(slug) ? ' open' : ''}>
+      <summary><h2>${m[1]}</h2></summary><div class="admin-section-body">${part.slice(m[0].length)}</div></details>`;
+  }).join('');
+}
+view.addEventListener('toggle', (event) => {
+  const d = event.target;
+  if (!d.matches?.('details.admin-section')) return;
+  const open = adminOpenSections();
+  if (d.open) open.add(d.dataset.section); else open.delete(d.dataset.section);
+  try { localStorage.setItem(ADMIN_OPEN_KEY, JSON.stringify([...open])); } catch { /* private browsing: just not remembered */ }
+}, true);
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4986,6 +5023,8 @@ view.addEventListener('click', async (event) => {
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  const stageGroupBtn = event.target.closest('[data-stage-group]');
+  if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
   const teamChip = event.target.closest('[data-person-team]');
   if (teamChip) {
     teamChip.classList.toggle('on');
@@ -5125,7 +5164,8 @@ async function render() {
   }, 160);
 
   try {
-    const html = settingsOpen === route ? await renderSettings(route) : await page.render();
+    let html = settingsOpen === route ? await renderSettings(route) : await page.render();
+    if (route === '#/admin' && settingsOpen !== route && me.user.isAdmin) html = adminSections(html);
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
       lastView = viewKey;
@@ -5156,6 +5196,7 @@ view.addEventListener('input', (event) => {
   if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
+  if (event.target.matches('[data-stage-customer]')) { stageCustomer = event.target.value; render(); return; }
   if (event.target.matches('[data-leader-team]')) { leaderTeam = event.target.value; loadLeaderboard(); return; }
   if (event.target.matches('[data-audit-q]')) {
     clearTimeout(loadAudit.timer);
