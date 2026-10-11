@@ -55,13 +55,6 @@ export const MODULES = [
     detail: () => 'Difficulty and time on your open jobs',
   },
   {
-    id: 'log',
-    name: 'Log time',
-    route: '#/log',
-    icon: icon('<path d="M12 6.5v11M6.5 12h11"/><circle cx="12" cy="12" r="9"/>'),
-    detail: () => 'Find the job and log it in seconds',
-  },
-  {
     id: 'obsolescence',
     name: 'Obsolescence',
     route: '#/obs',

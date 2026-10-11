@@ -277,8 +277,9 @@ const pages = {
     band: () => `<h1>Log time</h1><p>Find the job, say how long, and it's in Tempo.</p>`,
     async render() {
       if (!me.linked) return notLinkedCard();
-      if (!logChosen) await trackerLoad();
-      return logChosen ? logFormHtml() : `${trackerPanelHtml()}${await logPickerHtml()}`;
+      if (!logChosen || !logMode) await trackerLoad();
+      if (logChosen) return logMode === 'manual' || pendingCall ? logFormHtml() : logChoiceHtml();
+      return `${trackerPanelHtml()}${await logPickerHtml()}`;
     },
   },
 
@@ -2464,6 +2465,7 @@ async function powFlushQueue() {
 let logNode = null;            // where we are in the tree, null = the front screen
 let logTrail = [];             // breadcrumb of {node, label}
 let logChosen = null;          // the item picked
+let logMode = null;            // 'manual' once they've chosen to log time already done
 let logSearch = '';
 let logResults = null;
 let logPscProject = null;
@@ -2569,7 +2571,6 @@ function logFormHtml() {
       <p id="log-xp" class="xp-preview"></p>
       <div class="row">
         <button class="btn" data-action="save-log">Log this time</button>
-        <button class="btn secondary" data-tracker="start-log-tracker">Start tracker instead</button>
         <button class="btn secondary" data-action="cancel-log">Pick something else</button>
       </div>
       <div class="result" id="log-result" role="status"></div>
@@ -4529,7 +4530,7 @@ function trackerPanelHtml() {
     </li>`).join('')}</ul>` : '';
   let body;
   if (!t) {
-    body = '<p style="margin:0">Choose a job below, then <strong>Start tracker</strong>. Each time you pause, that stretch is logged with its real start and end.</p>';
+    body = '<p style="margin:0">Choose a job below, then <strong>Start the timer</strong>. Each time you pause, that stretch is logged with its real start and end.</p>';
   } else if (cur) {
     const interrupted = cur.kind !== 'job';
     body = `<p class="tracker-what">${interrupted ? `<strong>${esc(assistLabel(cur.kind))}${cur.whoName ? `: ${esc(cur.whoName)}` : ''}</strong>${t.job ? `<br><span class="muted">${esc(t.job.issueKey)} is paused</span>` : ''}`
@@ -4566,7 +4567,8 @@ function trackerAssistHtml() {
 function trackerBar() {
   let bar = document.getElementById('tracker-bar');
   const cur = tracker?.timer?.current;
-  if (!cur || currentRoute() === '#/log') { if (bar) bar.remove(); document.body.classList.remove('has-tracker-bar'); return; }
+  logFab();
+  if (!cur || currentRoute() === '#/log' || currentRoute() === '#/') { if (bar) bar.remove(); document.body.classList.remove('has-tracker-bar'); return; }
   if (!bar) { bar = document.createElement('div'); bar.id = 'tracker-bar'; document.body.appendChild(bar); }
   document.body.classList.add('has-tracker-bar');
   bar.innerHTML = `<a href="#/log" class="tracker-bar-what"><span class="dot" aria-hidden="true"></span>
@@ -4643,6 +4645,15 @@ document.addEventListener('click', async (event) => {
   }
   const ended = t('[data-ended]');
   if (ended) { trackerShowModal(null); if (ended.dataset.ended === 'resume') await trackerDo('resume'); return; }
+  const mode = t('[data-log-mode]');
+  if (mode && logChosen) {
+    if (mode.dataset.logMode === 'manual') { logMode = 'manual'; await render(); updateXpPreview(); return loadStageHint(); }
+    mode.disabled = true;
+    const r = await trackerDo('start', { issueId: logChosen.issueId, issueKey: logChosen.label, summary: logChosen.title || '' });
+    if (r) { logChosen = null; logMode = null; logNode = null; window.scrollTo(0, 0); render(); toast(`Timing ${r.timer.current.issueKey}`); }
+    else mode.disabled = false;
+    return;
+  }
   const b = t('[data-tracker]');
   if (!b) return;
   const a = b.dataset.tracker;
@@ -4670,12 +4681,46 @@ document.addEventListener('click', async (event) => {
   }
   if (a === 'call-done') { await trackerDo('call-logged', { stretchId: b.dataset.id }); await trackerLoad(); return; }
   if (a === 'notify') { try { await Notification.requestPermission(); } catch { /* ignored */ } trackerApply(tracker); return; }
-  if (a === 'start-log-tracker' && logChosen) {
-    b.disabled = true;
-    const r = await trackerDo('start', { issueId: logChosen.issueId, issueKey: logChosen.label, summary: logChosen.title || '' });
-    if (r) { logChosen = null; logNode = null; window.scrollTo(0, 0); render(); toast(`Tracking ${r.timer.current.issueKey}`); }
-  }
+
 });
+
+// After choosing a job: time already done, or time it as you go.
+function logChoiceHtml() {
+  const running = tracker?.timer?.current;
+  const switching = running && running.kind === 'job' && running.issueKey !== logChosen.label;
+  return `<div class="card">
+      <p class="muted" style="margin:0 0 .35rem">You chose</p>
+      <h3 style="margin:0">${esc(logChosen.label)} ${esc(logChosen.title || '')}</h3>
+      <p class="muted" style="margin:.25rem 0 0">${esc(logChosen.sublabel || '')}</p>
+    </div>
+    <div class="log-choices">
+      <button class="log-choice" data-log-mode="manual">
+        <span class="log-choice-icon" aria-hidden="true">${svgIcon('<path d="M4 5h16v15H4zM4 9h16M9 3v4M15 3v4"/>')}</span>
+        <span><strong>Add time already done</strong><span class="muted">Say when you started and how long it took.</span></span>
+      </button>
+      <button class="log-choice" data-log-mode="timer">
+        <span class="log-choice-icon" aria-hidden="true">${svgIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>')}</span>
+        <span><strong>Start the timer</strong><span class="muted">${switching
+          ? `Your timer on ${esc(running.issueKey)} logs what it has so far and moves to this job.`
+          : 'Times it as you work; each time you pause is logged with its start and end.'}</span></span>
+      </button>
+    </div>
+    <div class="row" style="margin-top:1rem"><button class="btn secondary" data-action="cancel-log">Pick something else</button></div>`;
+}
+
+// The Log time button on the home screen. While a timer runs it shows the job and clock instead.
+function logFab() {
+  let fab = document.getElementById('log-fab');
+  if (currentRoute() !== '#/') { if (fab) fab.remove(); document.body.classList.remove('has-log-fab'); return; }
+  if (!fab) { fab = document.createElement('a'); fab.id = 'log-fab'; fab.href = '#/log'; document.body.appendChild(fab); }
+  document.body.classList.add('has-log-fab');
+  const cur = tracker?.timer?.current;
+  fab.className = `log-fab${cur ? ' running' : ''}`;
+  fab.setAttribute('aria-label', cur ? `Timer running on ${cur.kind === 'job' ? cur.issueKey : assistLabel(cur.kind)}. Open Log time.` : 'Log time');
+  fab.innerHTML = cur
+    ? `<span class="dot" aria-hidden="true"></span><span>${esc(cur.kind === 'job' ? cur.issueKey : assistLabel(cur.kind))}</span><span class="tracker-clock-small" data-since="${esc(cur.startedAt)}">${clockText(elapsedSince(cur.startedAt))}</span>`
+    : `${svgIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>')}<span>Log time</span>`;
+}
 
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -4768,7 +4813,7 @@ async function logAction(action, button) {
   };
   button.disabled = true;
   try {
-    if (action === 'cancel-log') { logChosen = null; return render(); }
+    if (action === 'cancel-log') { logChosen = null; logMode = null; return render(); }
     if (action === 'cancel-psc') {
       logPscProject = null;
       // Coming from a call, step back to the list it came from rather than
@@ -4822,6 +4867,7 @@ async function logAction(action, button) {
         }),
       });
       logChosen = { label: created.key, issueId: created.id, title: document.getElementById('psc-summary').value, sublabel: 'New service item, assigned to you', rate: 1, jobElo: null };
+      logMode = 'manual';
       logPscProject = null;
       if (callFlow) { callFlow = null; location.hash = '#/log'; return; }
       await render();
@@ -5016,13 +5062,16 @@ view.addEventListener('click', async (event) => {
     if (callFlow) {
       callFlow = null;
       logChosen = picked;
+      logMode = 'manual';
       location.hash = '#/log';
       return;
     }
     logChosen = picked;
+    // Logging a call's time goes straight to the form; otherwise ask which way first.
+    logMode = pendingCall ? 'manual' : null;
     await render();
-    updateXpPreview();
-    return loadStageHint();
+    if (logMode) { updateXpPreview(); return loadStageHint(); }
+    return;
   }
   const crumbBtn = event.target.closest('[data-crumb]');
   if (crumbBtn) {
@@ -5577,6 +5626,7 @@ async function start() {
   }
   try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   await render();
+  logFab();
   syncAndRefresh();
   trackerInit();
   powFlushQueue();

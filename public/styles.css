@@ -518,3 +518,35 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(9, 30, 45, .45); display: grid; place-items: center; padding: 1rem; }
 .modal { max-width: 28rem; width: 100%; }
 .modal-actions { display: grid; gap: .5rem; margin-top: 1rem; }
+
+/* Log time: the choice after picking a job */
+.log-choices { display: grid; gap: .75rem; margin-top: 1rem; }
+@media (min-width: 640px) { .log-choices { grid-template-columns: 1fr 1fr; } }
+.log-choice { display: flex; gap: .9rem; align-items: flex-start; text-align: left; padding: 1.1rem 1.15rem; border: 2px solid var(--line); border-radius: 14px;
+  background: #fff; cursor: pointer; font: inherit; color: inherit; box-shadow: var(--shadow); }
+.log-choice:hover, .log-choice:focus-visible { border-color: var(--blue); outline: none; }
+.log-choice strong { display: block; font-size: 1.05rem; color: var(--blue-deep); margin-bottom: .2rem; }
+.log-choice .muted { display: block; }
+.log-choice-icon { flex: none; width: 2.6rem; height: 2.6rem; border-radius: 12px; display: grid; place-items: center; background: var(--tint); color: var(--blue-deep); }
+.log-choice-icon svg { width: 1.4rem; height: 1.4rem; }
+
+/* The Log time button on the home screen */
+.log-fab { position: fixed; z-index: 45; display: inline-flex; align-items: center; justify-content: center; gap: .55rem; font-weight: 700; font-size: 1.05rem;
+  color: #fff; text-decoration: none; background: linear-gradient(135deg, var(--blue-deep), var(--blue)); box-shadow: 0 10px 28px rgba(14, 98, 147, .35);
+  border-radius: 999px; padding: .9rem 1.5rem; }
+.log-fab svg { width: 1.35rem; height: 1.35rem; }
+.log-fab:hover { filter: brightness(1.06); }
+.log-fab:focus-visible { outline: 3px solid #fff; box-shadow: 0 0 0 6px var(--blue); }
+.log-fab.running { background: var(--blue-deep); }
+.log-fab .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #4ade80; animation: tracker-pulse 1.6s infinite; }
+/* Phones: centred at the bottom, like a home button, within thumb reach. */
+@media (max-width: 719px) {
+  .log-fab { left: 50%; transform: translateX(-50%); bottom: calc(1rem + env(safe-area-inset-bottom, 0px)); min-width: 62%; }
+  body.has-log-fab { padding-bottom: 6rem; }
+}
+/* Larger screens: the bottom-right corner. */
+@media (min-width: 720px) {
+  .log-fab { right: 1.75rem; bottom: 1.75rem; }
+  body.has-log-fab { padding-bottom: 5.5rem; }
+}
+.log-fab svg, .log-choice-icon svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }

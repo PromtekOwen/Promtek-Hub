@@ -288,7 +288,7 @@ Everyone can order their own home screen. **Arrange tiles** on the dashboard let
 
 ## Part 14b: The active time tracker
 
-On **Log time**, an engineer picks a job and chooses **Start tracker instead**. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
+**Log time** is the button at the bottom of the home screen: centred on a phone, bottom-right on a larger screen. While a timer runs, it shows the job and the running clock. After picking a job, the engineer chooses **Add time already done** (the usual form) or **Start the timer**. Logging an 8x8 call's time goes straight to the form. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
 
 **Stretches.** Every stretch between starting and pausing is sent to Tempo the moment it ends, as its own worklog with its real start time and length:
 - stretches under a minute are dropped;
