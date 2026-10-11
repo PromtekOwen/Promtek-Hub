@@ -306,6 +306,12 @@ If live calls aren't available, the call records are checked every few minutes i
 
 **Reminders.** At 5pm, anyone with a timer still running is emailed. A timer running more than 10 hours asks when it actually stopped. Engineers can turn on browser notifications so call pop-ups reach them when the hub isn't the window in front.
 
+## Part 14c: Requests
+
+The **Requests** tile lets anyone ask for a new tile or a change to one, or report something that isn't working: what kind it is, which part of the hub, a title and the details. People see their own requests with their status and any reply.
+
+Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead, with an optional reply. Developers are emailed about each new request, and the person who sent one is emailed when its status changes. Emails go through the alert relay.
+
 ## Part 15: 8x8 calls
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.

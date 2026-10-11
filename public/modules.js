@@ -83,6 +83,13 @@ export const MODULES = [
     detail: () => 'Report a problem or ask for kit',
   },
   {
+    id: 'requests',
+    name: 'Requests',
+    route: '#/requests',
+    icon: icon('<path d="M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3zM9.5 19h5M10.5 21.5h3"/>'),
+    detail: (me) => (me.user.can?.developer || me.user.isAdmin ? 'Ideas and problems people have sent' : 'Ask for a new tile, a change, or report a problem'),
+  },
+  {
     id: 'vehicles',
     name: 'Vehicles',
     route: '#/vehicles',

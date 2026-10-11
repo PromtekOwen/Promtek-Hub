@@ -550,3 +550,23 @@ body.has-tracker-bar { padding-bottom: 4rem; }
   body.has-log-fab { padding-bottom: 5.5rem; }
 }
 .log-fab svg, .log-choice-icon svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Requests */
+.req-form { display: grid; gap: .75rem; margin-bottom: 1rem; }
+.req-form label { margin: 0; }
+.req-form textarea, .req-form input, .req-form select { display: block; width: 100%; margin-top: .3rem; font-weight: 400; }
+.req-kinds { display: flex; flex-wrap: wrap; gap: .5rem; }
+.req-list li { display: block; }
+.req-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .75rem; }
+.req-head .title { white-space: normal; }
+.req-list .sub { display: block; }
+.req-details { margin: .5rem 0 0; }
+.req-status { flex: none; font-size: .82rem; font-weight: 700; padding: .2rem .6rem; border-radius: 999px; background: var(--tint); color: var(--blue-deep); }
+.req-status.working { background: #fff4d6; color: #8a5a00; }
+.req-status.good { background: #e3f4ea; color: #1f7a4d; }
+.req-status.muted { background: #eef0f2; color: var(--muted); }
+.req-reply { display: block; margin-top: .75rem; font-size: .9rem; }
+.req-reply textarea { display: block; width: 100%; margin-top: .3rem; font-weight: 400; }
+.req-actions { gap: .4rem; flex-wrap: wrap; margin-top: .5rem; }
+.req-actions .btn { padding: .4rem .8rem; font-size: .9rem; }
+.req-filters { flex-wrap: wrap; }

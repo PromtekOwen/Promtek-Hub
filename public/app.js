@@ -343,6 +343,13 @@ const pages = {
     },
   },
 
+  '#/requests': {
+    band: () => (me.user.isAdmin || me.user.can?.developer
+      ? '<h1>Requests</h1><p>Ideas and problems people have sent about the hub.</p>'
+      : '<h1>Requests</h1><p>Ask for a new tile or a change, or tell us about something that isn\'t working.</p>'),
+    render: () => requestsHtml(),
+  },
+
   '#/condor': {
     band: () => '<h1>Condor Dev</h1><p>Logging, estimating and planning work on Condor.</p>',
     render: () => condorHtml(),
@@ -4722,6 +4729,97 @@ function logFab() {
     : `${svgIcon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>')}<span>Log time</span>`;
 }
 
+// ---------- Requests ----------
+
+let reqFilter = 'open';
+let reqDraft = { kind: '', tile: '', title: '', details: '' };
+let reqFormOpen = false;
+const REQ_STATUS_CLASS = { new: '', working: 'working', complete: 'good', rejected: 'muted' };
+
+function reqFormHtml(data) {
+  const tiles = MODULES.filter((m) => allowedTile(m)).map((m) => m.name);
+  return `<div class="card req-form">
+      <h2 style="margin-top:0">Send a request</h2>
+      <p class="muted" style="margin-top:0">What is it?</p>
+      <div class="req-kinds">${Object.entries(data.kinds).map(([k, l]) => `<button type="button" class="chip${reqDraft.kind === k ? ' on' : ''}" data-req-kind="${k}">${esc(l)}</button>`).join('')}</div>
+      <label>Which part of the hub? <select data-req="tile"><option value="">The hub in general</option>${[...tiles, 'Log time'].sort().map((t) => `<option${t === reqDraft.tile ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+      <label>Title <input data-req="title" maxlength="140" value="${esc(reqDraft.title)}" placeholder="For example: show my hours for the month on My time"></label>
+      <label>Details <textarea data-req="details" rows="6" maxlength="5000" placeholder="What would you like, or what happened? For a problem: what you did, what you expected, and what you saw.">${esc(reqDraft.details)}</textarea></label>
+      <div class="row"><button class="btn" data-req-send>Send</button>${data.developer ? '<button class="btn secondary" data-req-cancel>Cancel</button>' : ''}</div>
+      <div class="result" id="req-result" role="status"></div></div>`;
+}
+
+function reqItemHtml(r, data) {
+  const when = new Date(r.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const status = `<span class="req-status ${REQ_STATUS_CLASS[r.status] || ''}">${esc(data.statuses[r.status] || r.status)}</span>`;
+  const head = `<div class="req-head"><span class="title">${esc(r.title)}</span>${status}</div>
+    <span class="sub">${esc(data.kinds[r.kind] || r.kind)}${r.tile ? `, ${esc(r.tile)}` : ''}. ${data.developer ? `${esc(r.name || r.email)}, ` : ''}${when}.</span>`;
+  const details = `<p class="pre-wrap req-details">${esc(r.details)}</p>`;
+  if (!data.developer) {
+    return `<li>${head}${details}${r.reply ? `<blockquote class="dispute-words"><strong>${esc(r.updated_by || 'Reply')}:</strong> ${esc(r.reply)}</blockquote>` : ''}</li>`;
+  }
+  return `<li data-req-id="${r.id}">${head}${details}
+      <label class="req-reply">Reply to ${esc((r.name || 'them').split(' ')[0])}, optional<textarea rows="2" data-req-reply maxlength="2000" placeholder="They'll see this with the status">${esc(r.reply || '')}</textarea></label>
+      <div class="row req-actions">${Object.entries(data.statuses).map(([k, l]) => `<button class="btn${k === r.status ? '' : ' secondary'}" data-req-status="${k}">${esc(l)}</button>`).join('')}</div></li>`;
+}
+
+async function requestsHtml() {
+  const data = await api(`/api/requests${reqFilter ? `?status=${reqFilter}` : ''}`);
+  if (!data.developer) {
+    return `${reqFormHtml(data)}<h2>Your requests</h2>
+      ${data.requests.length ? `<ul class="list req-list">${data.requests.map((r) => reqItemHtml(r, data)).join('')}</ul>`
+        : '<div class="card"><p style="margin:0">Nothing sent yet. Anything you send appears here, with where it has got to.</p></div>'}`;
+  }
+  const c = data.counts || {};
+  const filters = [['open', `Open (${(c.new || 0) + (c.working || 0)})`], ['new', `New (${c.new || 0})`], ['working', `Working on it (${c.working || 0})`],
+    ['complete', `Complete (${c.complete || 0})`], ['rejected', `Not going ahead (${c.rejected || 0})`], ['', 'All']];
+  return `<div class="row jobs-tools"><span class="segment req-filters">${filters.map(([k, l]) => `<button class="seg${reqFilter === k ? ' on' : ''}" data-req-filter="${k}">${l}</button>`).join('')}</span>
+      ${reqFormOpen ? '' : '<button class="btn secondary" data-req-new>Send a request</button>'}</div>
+    ${reqFormOpen ? reqFormHtml(data) : ''}
+    ${data.requests.length ? `<ul class="list req-list">${data.requests.map((r) => reqItemHtml(r, data)).join('')}</ul>`
+      : '<div class="card"><p style="margin:0">Nothing here.</p></div>'}`;
+}
+
+function reqReadDraft() {
+  view.querySelectorAll('[data-req]').forEach((el) => { reqDraft[el.dataset.req] = el.value; });
+}
+
+async function requestsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const kind = t('[data-req-kind]');
+  if (kind) {
+    reqDraft.kind = kind.dataset.reqKind;
+    kind.parentElement.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === kind));
+    return true;
+  }
+  if (t('[data-req-filter]')) { reqFilter = t('[data-req-filter]').dataset.reqFilter; return render(); }
+  if (t('[data-req-new]')) { reqFormOpen = true; return render(); }
+  if (t('[data-req-cancel]')) { reqFormOpen = false; return render(); }
+  const send = t('[data-req-send]');
+  if (send) {
+    reqReadDraft();
+    send.disabled = true;
+    try {
+      await api('/api/requests', { method: 'POST', body: JSON.stringify(reqDraft) });
+      reqDraft = { kind: '', tile: '', title: '', details: '' }; reqFormOpen = false;
+      toast('Sent'); return render();
+    } catch (err) { document.getElementById('req-result').textContent = err.message; send.disabled = false; }
+    return true;
+  }
+  const st = t('[data-req-status]');
+  if (st) {
+    const item = st.closest('[data-req-id]');
+    st.disabled = true;
+    try {
+      await api('/api/requests/update', { method: 'POST', body: JSON.stringify({ id: item.dataset.reqId, status: st.dataset.reqStatus,
+        reply: item.querySelector('[data-req-reply]').value }) });
+      toast('Updated'); return render();
+    } catch (err) { toast(err.message); st.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -5283,6 +5381,7 @@ view.addEventListener('click', async (event) => {
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
+  if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }

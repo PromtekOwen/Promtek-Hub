@@ -34,6 +34,7 @@ src/               The Worker (API and background sync)
   mes-sprints.js   Condor Dev: releases, boards and sprints in Jira
   audit.js         The audit log of changes made by hand
   tracker.js       The active time tracker: stretches to Tempo, assisting, 8x8 calls
+  requests.js      Requests: ideas and problems sent about the hub
   permissions.js   Groups, teams and what each allows
   orgdocs.js       Company chart versions (IMS2.02) and publishing to Confluence
   reports.js       Team and engineer reports, leaderboard, CSV export
@@ -66,6 +67,7 @@ schema-021.sql     Category estimates including subtasks; sharing quoted hours a
 schema-022.sql     Groups, teams and team leads for each person
 schema-023.sql     Condor releases and their boards and sprints; triage per release
 schema-024.sql     The active time tracker
+schema-025.sql     Requests
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

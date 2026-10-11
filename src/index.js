@@ -241,6 +241,14 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
+  if (pathname.startsWith('/api/requests')) {
+    const Req = await import('./requests.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/requests') return json(await Req.list(env, user, { status: url.searchParams.get('status') || '' }));
+    if (method === 'POST' && pathname === '/api/requests') return json(await Req.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/requests/update') return json(await Req.update(env, user, body));
+  }
+
   if (pathname.startsWith('/api/tracker')) {
     const T = await import('./tracker.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
