@@ -18,7 +18,8 @@
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.5 var(--font); min-height: 100vh; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 400 17px/1.5 var(--font); min-height: 100vh;
+  overflow-wrap: break-word; overflow-x: clip; }
 a { color: var(--blue-deep); }
 button { font: inherit; }
 :focus-visible { outline: 3px solid #7FD0F0; outline-offset: 2px; }
@@ -196,7 +197,7 @@ dialog#account::backdrop { background: rgba(9, 32, 48, .45); }
 /* Toast */
 .toast { position: fixed; left: 50%; bottom: calc(1.25rem + env(safe-area-inset-bottom)); transform: translate(-50%, 150%);
   background: var(--ink); color: #fff; padding: .65rem 1.1rem; border-radius: 12px; font-weight: 600; z-index: 60;
-  transition: transform .25s ease, opacity .25s ease; pointer-events: none; max-width: calc(100% - 2rem); opacity: 0; }
+  transition: transform .25s ease, opacity .25s ease; pointer-events: none; width: max-content; max-width: calc(100% - 2rem); opacity: 0; }
 .toast.show { transform: translate(-50%, 0); opacity: 1; }
 
 @media (max-width: 420px) {
@@ -243,13 +244,14 @@ label.inline input { width: 18px; height: 18px; }
 .two-up p { margin: .6rem 0 0; font-size: .92rem; }
 
 /* Log time */
-.options { display: grid; gap: .6rem; }
+.options { display: grid; grid-template-columns: minmax(0, 1fr); gap: .6rem; }
 .option { display: flex; align-items: center; gap: .85rem; width: 100%; text-align: left; cursor: pointer;
   background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .85rem 1rem; color: var(--ink); }
 .option:hover { border-color: var(--blue); }
 .option-main { display: flex; flex-direction: column; gap: .15rem; min-width: 0; flex: 1; }
-.option-main strong { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.option-main .muted { font-size: .88rem; }
+.option-main strong { font-weight: 600; overflow-wrap: anywhere; }
+.option-main .muted { font-size: .88rem; overflow-wrap: anywhere; }
+.option .badge, .option .chev { flex-shrink: 0; }
 .option .chev { color: var(--muted); font-size: 1.4rem; line-height: 1; }
 .quick { gap: .5rem; }
 .chip-btn { border: 1px solid var(--line); background: #fff; color: var(--blue-deep); font-weight: 600;
