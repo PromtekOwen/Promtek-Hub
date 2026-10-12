@@ -312,6 +312,14 @@ The **Requests** tile lets anyone ask for a new tile or a change to one, or repo
 
 Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead, with an optional reply. Developers are emailed about each new request, and the person who sent one is emailed when its status changes. Emails go through the alert relay.
 
+## Part 14d: Page guides
+
+The first time someone signs in, the home screen walks them through the hub in a few steps: their level and rank, the tiles, arranging tiles, the Log time button and the **?** button. Each tile has its own short guide the first time it's opened. Each step highlights the part of the page it's describing, with Next, Back and Skip guide.
+
+The **?** in each page header shows that page's guide again. Which guides someone has seen is kept with their account, so they don't repeat on another device. Steps about things a person can't open, such as a Condor tab they don't have, are left out for them.
+
+The wording of every guide is in `public/tours.js`.
+
 ## Part 15: 8x8 calls
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.

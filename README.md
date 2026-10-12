@@ -14,8 +14,9 @@ Setup instructions are in [SETUP.md](SETUP.md).
 
 ```
 public/            The web app (plain HTML, CSS and JavaScript, no build step)
-  app.js           Pages: dashboard, XP & rank, My time, Admin, account panel
+  app.js           Pages: dashboard, XP & rank, My time, Admin, account panel, page guides
   modules.js       The dashboard tiles
+  tours.js         The guide shown on each page the first time it's opened
   sw.js            Service worker (installable app, offline shell)
   manifest.webmanifest, *.png   App name, icons and Promtek logo
   apps/<name>/     Each tool lives in its own folder
@@ -68,6 +69,7 @@ schema-022.sql     Groups, teams and team leads for each person
 schema-023.sql     Condor releases and their boards and sprints; triage per release
 schema-024.sql     The active time tracker
 schema-025.sql     Requests
+schema-026.sql     Which page guides each person has seen
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

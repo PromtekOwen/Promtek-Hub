@@ -1,4 +1,5 @@
 import { MODULES } from './modules.js';
+import { TOURS } from './tours.js';
 
 const view = document.getElementById('view');
 const band = document.getElementById('band');
@@ -4820,6 +4821,141 @@ async function requestsClick(event) {
   return false;
 }
 
+// ---------- guides ----------
+// Each page's guide runs the first time someone opens it, and again from the ?
+// in the page header. Who has seen which is kept with their account, so it
+// doesn't repeat on another phone or computer.
+
+let toursSeen = null;          // null until loaded, so nothing starts before we know
+let tour = null;               // { route, steps, i, el, root }
+
+function tourButton(route) {
+  if (!TOURS[route] || settingsOpen === route) return '';
+  const beside = me?.user?.isAdmin && TILE_SETTINGS[route] ? ' beside-cog' : '';
+  return `<button class="help-tour${beside}" data-tour="${route}" aria-label="Show the guide for this page" title="Show the guide for this page">?</button>`;
+}
+
+const tourTarget = (step) => {
+  for (const sel of step.target || []) {
+    const el = [...document.querySelectorAll(sel)].find((x) => {
+      const r = x.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+    if (el) return el;
+  }
+  return null;
+};
+
+function maybeTour(route) {
+  if (!toursSeen || toursSeen.has(route) || tour || !TOURS[route] || settingsOpen) return;
+  setTimeout(() => {
+    if (tour || toursSeen.has(route) || currentRoute() !== route || settingsOpen) return;
+    if (document.querySelector('.modal-backdrop') || accountDialog.open) return;
+    startTour(route);
+  }, 450);
+}
+
+function startTour(route) {
+  const steps = (TOURS[route] || []).filter((s) => !s.optional || tourTarget(s));
+  if (!steps.length) return;
+  endTour(false);
+  const root = document.createElement('div');
+  root.className = 'tour';
+  root.innerHTML = `<div class="tour-spot" aria-hidden="true"></div>
+    <div class="tour-card card" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-text"></div>`;
+  document.body.appendChild(root);
+  tour = { route, steps, i: 0, el: null, root };
+  root.addEventListener('click', tourClick);
+  showStep();
+}
+
+function showStep() {
+  const { steps, i, root } = tour;
+  const step = steps[i];
+  const el = step.target ? tourTarget(step) : null;
+  tour.el = el;
+  const last = i === steps.length - 1;
+  root.querySelector('.tour-card').innerHTML = `
+    <p class="tour-count">${i + 1} of ${steps.length}</p>
+    <h2 id="tour-title">${esc(step.title)}</h2>
+    <p id="tour-text">${esc(step.text)}</p>
+    <div class="tour-actions">
+      ${last ? '<span></span>' : '<button class="tour-skip" data-tour-act="skip">Skip guide</button>'}
+      <span class="tour-nav">
+        ${i ? '<button class="btn secondary" data-tour-act="back">Back</button>' : ''}
+        <button class="btn" data-tour-act="next">${last ? 'Done' : 'Next'}</button>
+      </span>
+    </div>`;
+  if (el) {
+    // Bring it into view below the app bar; a tall one shows from its top.
+    const bar = document.querySelector('.appbar')?.offsetHeight || 0;
+    const r = el.getBoundingClientRect();
+    const room = innerHeight - bar;
+    const y = r.height > room * 0.5 ? r.top - bar - 16 : r.top - bar - (room - r.height) / 2;
+    scrollBy({ top: y, behavior: 'instant' });
+  }
+  placeTour();
+  root.querySelector('[data-tour-act="next"]').focus({ preventScroll: true });
+}
+
+function placeTour() {
+  if (!tour) return;
+  if (tour.el && !tour.el.isConnected) tour.el = tourTarget(tour.steps[tour.i]);   // the page redrew underneath
+  const { root, el } = tour;
+  const spot = root.querySelector('.tour-spot');
+  const card = root.querySelector('.tour-card');
+  root.classList.toggle('no-target', !el);
+  const vw = innerWidth, vh = innerHeight, gap = 12, pad = 6;
+  if (!el) {
+    card.style.left = `${Math.max(16, (vw - card.offsetWidth) / 2)}px`;
+    card.style.top = `${Math.max(16, (vh - card.offsetHeight) / 2)}px`;
+    return;
+  }
+  const r = el.getBoundingClientRect();
+  // A target taller than the screen is cropped to what's in view.
+  const ch = card.offsetHeight, cw = card.offsetWidth;
+  const top = Math.max(r.top - pad, 8);
+  let bottom = Math.min(r.bottom + pad, vh - 8);
+  // If neither side has room for the card, light up only the top of the target
+  // so the card sits under it rather than covering it.
+  if (bottom + gap + ch > vh - 8 && top - gap - ch < 8) bottom = Math.max(top + 48, vh - ch - gap - 16);
+  Object.assign(spot.style, { left: `${r.left - pad}px`, top: `${top}px`, width: `${r.width + pad * 2}px`, height: `${Math.max(0, bottom - top)}px` });
+  let y;
+  if (bottom + gap + ch <= vh - 8) y = bottom + gap;
+  else if (top - gap - ch >= 8) y = top - gap - ch;
+  else y = vh - ch - 16;                       // no room either side: sit at the bottom
+  const x = Math.min(Math.max(16, r.left + r.width / 2 - cw / 2), vw - cw - 16);
+  card.style.left = `${x}px`;
+  card.style.top = `${Math.max(8, y)}px`;
+}
+
+function tourClick(event) {
+  const act = event.target.closest('[data-tour-act]')?.dataset.tourAct;
+  if (act === 'next') return tour.i < tour.steps.length - 1 ? (tour.i++, showStep()) : endTour(true);
+  if (act === 'back' && tour.i > 0) { tour.i--; return showStep(); }
+  if (act === 'skip') return endTour(true);
+}
+
+function endTour(markSeen) {
+  if (!tour) return;
+  const { route, root } = tour;
+  root.remove();
+  tour = null;
+  if (markSeen && toursSeen && !toursSeen.has(route)) {
+    toursSeen.add(route);
+    api('/api/prefs/tours', { method: 'POST', body: JSON.stringify({ seen: [...toursSeen] }) }).catch(() => {});
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (!tour) return;
+  if (event.key === 'Escape') { event.preventDefault(); endTour(true); }
+  else if (event.key === 'ArrowRight') tourClick({ target: tour.root.querySelector('[data-tour-act="next"]') });
+  else if (event.key === 'ArrowLeft') tourClick({ target: tour.root.querySelector('[data-tour-act="back"]') || document.body });
+});
+addEventListener('resize', () => placeTour());
+addEventListener('scroll', () => placeTour(), { passive: true });
+
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
@@ -4867,6 +5003,8 @@ function renderAccount() {
 
 // The cog lives in the header, outside the main view, so it needs its own listener.
 band.addEventListener('click', (event) => {
+  const tourBtn = event.target.closest('[data-tour]');
+  if (tourBtn) return startTour(tourBtn.dataset.tour);
   const settingsBtn = event.target.closest('[data-settings]');
   if (!settingsBtn) return;
   settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
@@ -5513,7 +5651,7 @@ async function render() {
   avatar.textContent = initials();
   band.innerHTML = settingsOpen === route
     ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>Admin only.</p>`
-    : page.band() + cogButton(route);
+    : page.band() + tourButton(route) + cogButton(route);
 
   // Anything slow gets a spinner, but only while it is still the newest render.
   // On the same page the content stays put, dimmed, so the scroll position isn't lost.
@@ -5530,6 +5668,7 @@ async function render() {
       view.innerHTML = html;
       lastView = viewKey;
       scrollTo(0, samePage ? keepY : 0);
+      if (!settingsOpen) maybeTour(route);
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
       if (route === '#/admin' && !settingsOpen && me.user.isAdmin) loadAudit();
@@ -5680,6 +5819,7 @@ view.addEventListener('change', async (event) => {
 });
 
 window.addEventListener('hashchange', () => {
+  endTour(false);
   setTimeout(trackerBar, 0);
   settingsOpen = null;
   if (currentRoute() !== '#/time') weekOffset = 0;
@@ -5724,6 +5864,7 @@ async function start() {
     return;
   }
   try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
+  try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
   await render();
   logFab();
   syncAndRefresh();

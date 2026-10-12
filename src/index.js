@@ -137,6 +137,21 @@ async function route(request, env, url, user) {
     return json({ ok: true });
   }
 
+  // Which guides this person has seen, so each runs once wherever they sign in.
+  if (method === 'GET' && pathname === '/api/prefs/tours') {
+    const row = await env.DB.prepare('SELECT tours_seen FROM user_prefs WHERE account_id = ?').bind(user.accountId || user.email).first();
+    return json({ seen: row?.tours_seen ? JSON.parse(row.tours_seen) : [] });
+  }
+  if (method === 'POST' && pathname === '/api/prefs/tours') {
+    const body = await request.json().catch(() => ({}));
+    const seen = [...new Set((Array.isArray(body.seen) ? body.seen : []).map((x) => String(x).slice(0, 40)))].slice(0, 100);
+    await env.DB.prepare(
+      `INSERT INTO user_prefs (account_id, tours_seen, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET tours_seen = excluded.tours_seen, updated_at = excluded.updated_at`
+    ).bind(user.accountId || user.email, JSON.stringify(seen), new Date().toISOString()).run();
+    return json({ ok: true });
+  }
+
   if (method === 'GET' && pathname === '/api/org') {
     const latest = await OrgDocs.current(env);
     return json({ ...(await Org.chart(env)), document: { reference: latest.reference, issuedAt: latest.issued_at } });

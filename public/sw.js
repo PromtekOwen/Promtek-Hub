@@ -2,7 +2,7 @@
 // cached shell when the connection drops. API data is never cached.
 const CACHE = 'promtek-hub-v1';
 const SHELL = [
-  '/', '/index.html', '/styles.css', '/app.js', '/modules.js', '/manifest.webmanifest',
+  '/', '/index.html', '/styles.css', '/app.js', '/modules.js', '/tours.js', '/manifest.webmanifest',
   '/logo-white.png', '/icon-192.png', '/icon-512.png', '/favicon-32.png',
 ];
 
