@@ -7,7 +7,7 @@
 // tile itself never waits on Jira. Changes to Jira are made by the background
 // job, kept to a fixed number of calls per run, and picked up again on the next
 // run if they don't finish.
-import { jira } from './jira.js';
+import { jira, searchPage, isExcludedProject } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam, groupsOf } from './permissions.js';
 
@@ -48,6 +48,7 @@ const CHASE_DAYS = 14;
 const SYNC_EVERY_MS = 20 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
 const LOOKBACK_DAYS = 90;
+const TIME_DAYS = 30;
 const RUN_CALLS = 35;                                               // of the 50 a run may make; Tempo uses some first
 const MAX_ATTEMPTS = 8;
 
@@ -98,9 +99,9 @@ async function search(b, jql, fields, pageSize = 100) {
   const out = [];
   let token = null;
   do {
-    const params = new URLSearchParams({ jql, fields: fields.join(','), maxResults: String(pageSize) });
-    if (token) params.set('nextPageToken', token);
-    const data = await b.call(`/rest/api/3/search/jql?${params}`);
+    const params = { fields: fields.join(','), maxResults: String(pageSize) };
+    if (token) params.nextPageToken = token;
+    const data = await searchPage((path) => b.call(path), jql, params);
     out.push(...(data.issues || []));
     token = data.nextPageToken || null;
   } while (token);
@@ -353,13 +354,16 @@ async function worklogsSince(env, from) {
 
 // What a worklog counts towards: a contract, or a reason it doesn't.
 export function placeWorklog(w, st) {
+  // Time on the contract or its tokens after the contract has ended belongs to no contract.
+  const ended = (c, issue) => (c.end_date && w.work_date > c.end_date ? { skip: 'no-contract', project: c.project_key, issue } : null);
   const contract = st.contracts.find((c) => c.issue_id === String(w.issue_id));
-  if (contract) return { contract, via: 'contract' };
+  if (contract) return ended(contract, { issue_key: contract.issue_key, summary: 'Time on the service contract' }) || { contract, via: 'contract' };
   const token = st.items.find((i) => i.issue_id === String(w.issue_id));
   if (token) {
     if (token.kind !== 'token') return { skip: 'visit' };
     const c = st.contracts.find((x) => x.issue_key === token.contract_key);
-    return c ? { contract: c, via: 'token' } : { skip: 'unknown' };
+    if (!c) return { skip: 'unknown' };
+    return ended(c, { issue_key: token.issue_key, summary: token.summary }) || { contract: c, via: 'token' };
   }
   const issue = st.issues.get(String(w.issue_id));
   if (!issue?.issue_key || !/^PSC-/i.test(issue.issue_key)) return { skip: 'other' };
@@ -768,6 +772,7 @@ export async function run(env, { force = false } = {}) {
   const out = { calls: 0 };
   try {
     if (force || Date.now() - last >= SYNC_EVERY_MS) {
+      await refreshHolidays(env);
       out.contracts = await syncContracts(env, b);
       const fullAt = Number((await getState(env, 'contracts_full_at')) || 0);
       const cursor = Number((await getState(env, 'contracts_full_cursor')) || 0);
@@ -863,7 +868,10 @@ export async function overview(env, viewer) {
     `SELECT f.*, c.customer FROM contract_flags f LEFT JOIN contracts c ON c.issue_key = f.contract_key
       WHERE f.resolved_at IS NULL ORDER BY f.id DESC LIMIT 100`
   ).all();
-  return { ...head, contracts, flags, canInsights: canInsights(viewer), isAdmin: Boolean(viewer.isAdmin), today: londonDate() };
+  const today = londonDate();
+  const holidays = await holidaysFor(env);
+  const bankHoliday = { today: holidays.find((h) => h.date === today) || null, next: holidays.find((h) => h.date > today) || null };
+  return { ...head, contracts, flags, canInsights: canInsights(viewer), isAdmin: Boolean(viewer.isAdmin), today, bankHoliday };
 }
 
 export async function detail(env, viewer, key) {
@@ -1020,6 +1028,30 @@ export function bankHolidays(year) {
   return out.map(([name, date]) => ({ name, date: iso(date.getTime()) })).sort((x, y) => x.date.localeCompare(y.date));
 }
 
+// England's bank holidays: gov.uk's list (fetched weekly, so one-off holidays are
+// included), with the regular ones worked out for any year it doesn't cover.
+async function refreshHolidays(env) {
+  const at = Number((await getState(env, 'bank_holidays_at')) || 0);
+  if (Date.now() - at < 7 * FULL_EVERY_MS) return;
+  await setState(env, 'bank_holidays_at', Date.now());
+  try {
+    const res = await fetch('https://www.gov.uk/bank-holidays.json');
+    if (!res.ok) return;
+    const data = await res.json();
+    const events = (data['england-and-wales']?.events || []).map((e) => ({ name: e.title, date: e.date })).filter((e) => isDate(e.date));
+    if (events.length) await setState(env, 'bank_holidays', JSON.stringify(events));
+  } catch { /* the worked-out list does */ }
+}
+
+export async function holidaysFor(env) {
+  let listed = [];
+  try { listed = JSON.parse((await getState(env, 'bank_holidays')) || '[]'); } catch { /* none */ }
+  const years = new Set(listed.map((h) => h.date.slice(0, 4)));
+  const y = Number(londonDate().slice(0, 4));
+  const worked = [y - 1, y, y + 1, y + 2].filter((yr) => !years.has(String(yr))).flatMap((yr) => bankHolidays(yr));
+  return [...listed, ...worked].sort((a, b) => a.date.localeCompare(b.date));
+}
+
 export async function insights(env, viewer) {
   mustSee(viewer, true);
   const today = londonDate();
@@ -1070,30 +1102,41 @@ export async function insights(env, viewer) {
   }
   behind.sort((a, b) => a.weeksLeft - b.weeksLeft);
 
-  // Time that isn't reaching a contract, and where service time goes (last 90 days)
+  // Time that isn't reaching a contract (last 90 days), and where service time went (last 30)
   const from = addDays(today, -LOOKBACK_DAYS);
+  const recent = addDays(today, -TIME_DAYS);
   const logs = await worklogsSince(env, from);
   const { results: emps } = await env.DB.prepare('SELECT account_id, name FROM employees').all();
   const names = new Map(emps.map((e) => [e.account_id, e.name]));
   const noOrg = new Map(), noContract = new Map(), unmatched = new Map(), byCustomer = new Map(), byPerson = new Map();
-  const add = (m, k, s, extra = {}) => { const r = m.get(k) || { ...extra, seconds: 0 }; r.seconds += s; m.set(k, r); };
+  const line = (w, p) => {
+    const issue = p.issue || st.issues.get(String(w.issue_id));
+    const item = st.items.find((i) => i.issue_id === String(w.issue_id));
+    const key = issue?.issue_key || item?.issue_key || p.contract?.issue_key || '';
+    const summary = issue?.summary || item?.summary || (p.via === 'contract' ? 'Time on the service contract' : '');
+    return { date: w.work_date, key, summary, customer: p.contract?.customer || null, who: names.get(w.account_id) || 'Someone without a profile', seconds: w.seconds };
+  };
+  const add = (m, k, w, p, extra = {}) => {
+    const r = m.get(k) || { ...extra, seconds: 0, logs: [] };
+    r.seconds += w.seconds;
+    r.logs.push(line(w, p));
+    m.set(k, r);
+  };
   const customerName = new Map(st.contracts.map((c) => [c.project_key, c.customer]));
   for (const w of logs) {
     const p = placeWorklog(w, st);
     if (p.contract) {
-      add(byCustomer, p.contract.project_key, w.seconds, { customer: p.contract.customer });
-      add(byPerson, w.account_id, w.seconds, { name: names.get(w.account_id) || 'Someone without a profile' });
-    } else if (p.skip === 'no-org') add(noOrg, p.issue.issue_key, w.seconds, { key: p.issue.issue_key, summary: p.issue.summary });
-    else if (p.skip === 'no-contract') add(noContract, p.project, w.seconds, { customer: customerName.get(p.project) || p.project });
-    else if (p.skip === 'unmatched') add(unmatched, p.org, w.seconds, { org: p.org });
+      if (w.work_date < recent) continue;
+      add(byCustomer, p.contract.project_key, w, p, { customer: p.contract.customer });
+      add(byPerson, w.account_id, w, p, { name: names.get(w.account_id) || 'Someone without a profile' });
+    } else if (p.skip === 'no-org') add(noOrg, p.issue.issue_key, w, p, { key: p.issue.issue_key, summary: p.issue.summary });
+    else if (p.skip === 'no-contract') add(noContract, p.project, w, p, { customer: customerName.get(p.project) || p.project });
+    else if (p.skip === 'unmatched') add(unmatched, p.org, w, p, { org: p.org });
   }
-  const top = (m, n = 10) => [...m.values()].sort((a, b) => b.seconds - a.seconds).slice(0, n);
+  const top = (m, n = 10) => [...m.values()].sort((a, b) => b.seconds - a.seconds).slice(0, n)
+    .map((r) => ({ ...r, logs: r.logs.sort((a, b) => b.date.localeCompare(a.date) || b.seconds - a.seconds).slice(0, 300) }));
 
-  // Bank holidays
-  const holidays = [...bankHolidays(year), ...bankHolidays(year + 1)].filter((h) => h.date >= today).slice(0, 3).map((h) => ({
-    ...h, covered: st.contracts.filter((c) => c.bank_holiday && [STATUS.confirmed, STATUS.inContract, STATUS.renewal].includes(c.status) && c.start_date <= h.date && c.end_date >= h.date)
-      .map((c) => c.customer).sort(),
-  }));
+  const holidays = (await holidaysFor(env)).filter((h) => h.date >= today).slice(0, 3);
 
   return {
     today,
@@ -1101,7 +1144,7 @@ export async function insights(env, viewer) {
     pace,
     behind,
     leaks: { noOrg: top(noOrg, 15), noContract: top(noContract), unmatched: top(unmatched) },
-    time: { customers: top(byCustomer), people: top(byPerson) },
+    time: { days: TIME_DAYS, customers: top(byCustomer), people: top(byPerson) },
     holidays,
   };
 }

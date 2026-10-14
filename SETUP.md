@@ -334,9 +334,17 @@ The **Service contracts** tile shows each customer's Service Contract item from 
 - Each contract's Available, Tokens used and Overdraft fields are kept up to date. Tokens in Token Allocated count as used in Jira; in the hub they're shown separately.
 - Time logged to a PSC item with no Organization emails the person who logged it and the contract alert list, at most once a day per item.
 
-**Alerts** go to the Service team leads, plus anyone ticked under the settings cog. Anything Jira refuses is retried, and after three tries appears in Needs attention and is emailed.
+**Bank holidays.** The Contracts tab says whether today is a bank holiday in England, and which is next. The dates come from gov.uk's England and Wales list, checked weekly, so one-off holidays are included; the regular ones are worked out if gov.uk can't be reached.
+
+**Insights** show renewals, token use against each contract's progress, visits falling behind, time that can't reach a contract (last 90 days), and where service time went by customer and engineer (last 30 days). Each total opens to the time logs behind it.
+
+**Alerts** go to the Service team leads, plus anyone added under the settings cog. Anything Jira refuses is retried, and after three tries appears in Needs attention and is emailed.
 
 **Logging time** to a Service Contract item first asks whether it was really a contracted visit, and offers that customer's visits instead.
+
+## Part 14f: Projects the hub leaves out
+
+The testing and special customer-access projects CSIMS, CSIMSB, CSIMST, TEST and TPB are left out of everything the hub searches Jira for, and out of its customer lists. The list is `EXCLUDED_PROJECTS` at the top of `src/jira.js`. Looking up a particular item by its key still works, so TEST is a safe place to try things out.
 
 ## Part 15: 8x8 calls
 

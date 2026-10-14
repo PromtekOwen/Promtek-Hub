@@ -1,5 +1,5 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
-import { jira, searchJql } from './jira.js';
+import { jira, searchJql, isExcludedProject } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { stageNameOf } from './jobs.js';
 
@@ -62,7 +62,7 @@ async function customerProjects(env, region) {
   let startAt = 0;
   for (let page = 0; page < 10; page++) {
     const data = await jira(env, `/rest/api/3/project/search?categoryId=${CUSTOMER_CATEGORY_IDS[region]}&status=live&orderBy=name&maxResults=50&startAt=${startAt}`);
-    projects.push(...(data.values || []));
+    projects.push(...(data.values || []).filter((p) => !isExcludedProject(p.key)));
     if (data.isLast || !data.values?.length) break;
     startAt += data.values.length;
   }

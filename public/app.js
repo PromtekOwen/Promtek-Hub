@@ -4933,6 +4933,16 @@ function conTrackingLine(data) {
   return `<p class="help con-tracking">Token clocks count time logged from ${fullDate(data.clockStart)}. Last clock change ${whenText(data.clockChanged)}; read from Jira ${whenText(data.syncedAt)}.</p>`;
 }
 
+function conBankHolidayHtml(bh, contracts) {
+  if (!bh) return '';
+  if (bh.today) {
+    const covered = contracts.filter((c) => c.bankHoliday && ['In Contract', 'Required Renewal'].includes(c.status)).length;
+    return `<div class="card notice con-bh-today"><p>${bankHolidayIcon()} <strong>Today is a bank holiday: ${esc(bh.today.name)}.</strong>
+      Only contracts showing the bank holiday badge are covered today${covered ? ` (${covered} live)` : ''}.</p></div>`;
+  }
+  return `<p class="help con-bh-line">${bankHolidayIcon()} Today isn't a bank holiday.${bh.next ? ` Next: ${esc(bh.next.name)}, ${longDate(bh.next.date)}.` : ''}</p>`;
+}
+
 async function contractsHtml() {
   if (conOpen) return contractDetailHtml();
   const data = await api('/api/contracts');
@@ -4944,6 +4954,7 @@ async function contractsHtml() {
   const list = data.contracts.filter(filter[2]).filter((c) => !conTier || c.tier === conTier);
   return `${conTabsHtml(data)}
     ${conTrackingLine(data)}
+    ${conBankHolidayHtml(data.bankHoliday, data.contracts)}
     ${conFlagsHtml(data.flags)}
     <dl class="stats con-stats">
       <div><dt>In contract</dt><dd>${count((c) => c.status === 'In Contract')}</dd></div>
@@ -4999,11 +5010,18 @@ async function contractInsightsHtml() {
   const r = s.renewals;
   const decided = r.renewed + r.lost;
   const rate = decided ? Math.round((r.renewed / decided) * 100) : null;
-  const hBar = (rows, label, value) => {
+  const logTable = (logs, { showWho = true, showCustomer = false } = {}) => `<ul class="con-logs">${logs.map((l) => `<li>
+      <span class="con-log-date">${shortDate(l.date)}</span>
+      <span class="con-log-what">${l.key ? jiraLink(l.key) : ''} ${esc(l.summary || '')}
+        <span class="muted">${[showCustomer && l.customer ? esc(l.customer) : '', showWho ? esc(l.who) : ''].filter(Boolean).join(' · ')}</span></span>
+      <span class="con-log-time">${duration(l.seconds)}</span></li>`).join('')}</ul>`;
+  const hBar = (rows, label, opts) => {
     const max = Math.max(1, ...rows.map((x) => x.seconds));
-    return rows.length ? `<ul class="con-bars">${rows.map((x) => `<li><span class="con-bar-label">${esc(label(x))}</span>
-      <span class="con-bar"><span style="width:${(x.seconds / max) * 100}%"></span></span><span class="con-bar-value">${value(x)}</span></li>`).join('')}</ul>`
-      : '<p class="muted">Nothing in the last 90 days.</p>';
+    return rows.length ? `<div class="con-bars">${rows.map((x) => `<details class="con-bar-row">
+      <summary><span class="con-bar-label">${esc(label(x))}</span>
+        <span class="con-bar"><span style="width:${(x.seconds / max) * 100}%"></span></span><span class="con-bar-value">${duration(x.seconds)}</span></summary>
+      ${logTable(x.logs, opts)}</details>`).join('')}</div>`
+      : `<p class="muted">Nothing in the last ${s.time.days} days.</p>`;
   };
   return `
     <h2>Renewals</h2>
@@ -5033,24 +5051,25 @@ async function contractInsightsHtml() {
       : '<div class="card"><p class="muted" style="margin:0">Every contract is on track for its visits.</p></div>'}
 
     <h2>Time not reaching a contract</h2>
-    <p class="help">The last 90 days of PSC time that can't count towards a contract's tokens.</p>
+    <p class="help">The last 90 days of time that can't count towards a contract's tokens. Tap a customer to see the time logs.</p>
     <div class="two-up con-two">
       <section class="card"><h3>PSC items with no Organization</h3>
         ${s.leaks.noOrg.length ? `<ul class="con-rows">${s.leaks.noOrg.map((x) => `<li><span>${jiraLink(x.key)} ${esc(x.summary || '')}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
       <section class="card"><h3>Customers with no live contract</h3>
-        ${s.leaks.noContract.length ? `<ul class="con-rows">${s.leaks.noContract.map((x) => `<li><span>${esc(x.customer)}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}
+        ${s.leaks.noContract.length ? `<div class="con-expand">${s.leaks.noContract.map((x) => `<details>
+            <summary><span>${esc(x.customer)}</span><span class="muted">${duration(x.seconds)}</span></summary>
+            ${logTable(x.logs)}</details>`).join('')}</div>` : '<p class="muted">None.</p>'}
         ${s.leaks.unmatched.length ? `<h3 style="margin-top:1rem">Organizations matching no customer</h3><ul class="con-rows">${s.leaks.unmatched.map((x) => `<li><span>${esc(x.org)}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : ''}</section>
     </div>
 
     <h2>Bank holidays coming up</h2>
-    <div class="con-holidays">${s.holidays.map((h) => `<section class="card"><h3>${esc(h.name)}</h3><p class="muted" style="margin:0 0 .5rem">${longDate(h.date)}</p>
-      ${h.covered.length ? `<p style="margin:0"><b>${h.covered.length}</b> covered: ${h.covered.map(esc).join(', ')}</p>` : '<p class="muted" style="margin:0">No contracts cover it.</p>'}</section>`).join('')}</div>
+    <div class="con-holidays">${s.holidays.map((h) => `<section class="card"><h3>${esc(h.name)}</h3><p class="muted" style="margin:0">${longDate(h.date)}${h.date.slice(0, 4) !== s.today.slice(0, 4) ? ` ${h.date.slice(0, 4)}` : ''}</p></section>`).join('')}</div>
 
     <h2>Where service time went</h2>
-    <p class="help">Time that counted towards contracts in the last 90 days.</p>
+    <p class="help">Time logged to live contracts and their customers' PSC items in the last ${s.time.days} days. Tap a row to see the time logs behind it.</p>
     <div class="two-up con-two">
-      <section class="card"><h3>By customer</h3>${hBar(s.time.customers, (x) => x.customer, (x) => duration(x.seconds))}</section>
-      <section class="card"><h3>By engineer</h3>${hBar(s.time.people, (x) => x.name, (x) => duration(x.seconds))}</section>
+      <section class="card"><h3>By customer</h3>${hBar(s.time.customers, (x) => x.customer)}</section>
+      <section class="card"><h3>By engineer</h3>${hBar(s.time.people, (x) => x.name, { showWho: false, showCustomer: true })}</section>
     </div>`;
 }
 
@@ -5105,8 +5124,19 @@ function settingsContractsHtml() {
     <section class="card" style="margin-top:1rem">
       <h2 style="margin-top:0">Who gets contract alerts</h2>
       <p>${leads.length ? `The Service team ${leads.length === 1 ? 'lead always gets them' : 'leads always get them'}: ${leads.map((p) => esc(p.name)).join(', ')}.` : 'No one leads the Service team yet, so alerts go to the hub\'s alert address.'} Also send them to:</p>
-      <div class="con-people">${others.map((p) => `<label class="inline-check"><input type="checkbox" data-con-person value="${esc(p.email)}"${s.extra.includes(p.email) ? ' checked' : ''}> ${esc(p.name)}</label>`).join('')}</div>
-      <p><button class="btn" data-con-recipients="1">Save</button></p>
+      <div class="con-chosen">${s.extra.length ? s.extra.map((email) => {
+        const p = s.people.find((x) => x.email === email);
+        return `<span class="con-person">${esc(p?.name || email)}<button data-con-remove="${esc(email)}" aria-label="Stop sending alerts to ${esc(p?.name || email)}">×</button></span>`;
+      }).join('') : '<span class="muted">No one else yet.</span>'}</div>
+      <div class="con-picker">
+        <input id="con-person-search" type="search" placeholder="Type a name to add someone" autocomplete="off"
+          role="combobox" aria-expanded="false" aria-controls="con-person-list" aria-autocomplete="list">
+        <div class="con-drop" id="con-person-list" role="listbox" hidden>
+          ${others.filter((p) => !s.extra.includes(p.email)).map((p) => `<button class="con-drop-item" role="option" data-con-add="${esc(p.email)}"
+              data-search="${esc(`${p.name} ${p.email}`.toLowerCase())}"><strong>${esc(p.name)}</strong><span class="muted">${esc(p.email)}</span></button>`).join('')}
+          <p class="muted con-drop-none" hidden>No one matches.</p>
+        </div>
+      </div>
     </section>
     <section class="card" style="margin-top:1rem">
       <h2 style="margin-top:0">Organizations</h2>
@@ -5131,13 +5161,65 @@ async function contractsSettingsClick(event) {
     try { const r = await api('/api/contracts/refresh', { method: 'POST', body: '{}' }); toast(r.partial ? 'Read part of it; the rest follows shortly' : 'Up to date with Jira'); } catch (err) { toast(err.message); }
     render(); return true;
   }
-  if (t('[data-con-recipients]')) {
-    const emails = [...view.querySelectorAll('[data-con-person]:checked')].map((x) => x.value);
-    try { await api('/api/contracts/recipients', { method: 'POST', body: JSON.stringify({ emails }) }); toast('Saved'); } catch (err) { toast(err.message); }
+  const add = t('[data-con-add]'), remove = t('[data-con-remove]');
+  if (add || remove) {
+    const s = settingsData.contracts;
+    const emails = add ? [...s.extra, add.dataset.conAdd] : s.extra.filter((e) => e !== remove.dataset.conRemove);
+    try {
+      await api('/api/contracts/recipients', { method: 'POST', body: JSON.stringify({ emails }) });
+      toast(add ? 'Added' : 'Removed');
+    } catch (err) { return toast(err.message), true; }
+    await render();
+    if (add) document.getElementById('con-person-search')?.focus();
     return true;
   }
   return false;
 }
+
+// The type-to-filter list of people for contract alerts.
+function conPicker(open, query = '') {
+  const list = document.getElementById('con-person-list');
+  const input = document.getElementById('con-person-search');
+  if (!list || !input) return;
+  let shown = 0;
+  for (const item of list.querySelectorAll('[data-con-add]')) {
+    item.hidden = Boolean(query) && !item.dataset.search.includes(query);
+    if (!item.hidden) shown++;
+  }
+  list.querySelector('.con-drop-none').hidden = shown > 0;
+  list.hidden = !open;
+  input.setAttribute('aria-expanded', String(open));
+}
+
+function contractsSettingsInput(event) {
+  if (event.target.id !== 'con-person-search') return false;
+  conPicker(true, event.target.value.trim().toLowerCase());
+  return true;
+}
+
+view.addEventListener('focusin', (event) => {
+  if (settingsOpen === '#/contracts' && event.target.id === 'con-person-search') conPicker(true, event.target.value.trim().toLowerCase());
+});
+document.addEventListener('click', (event) => {
+  if (settingsOpen === '#/contracts' && !event.target.closest('.con-picker')) conPicker(false);
+});
+view.addEventListener('keydown', (event) => {
+  if (settingsOpen !== '#/contracts' || event.target.id !== 'con-person-search') return;
+  if (event.key === 'Escape') conPicker(false);
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    [...document.querySelectorAll('#con-person-list [data-con-add]')].find((b) => !b.hidden)?.click();
+  }
+  if (event.key === 'ArrowDown') { event.preventDefault(); [...document.querySelectorAll('#con-person-list [data-con-add]')].find((b) => !b.hidden)?.focus(); }
+});
+document.addEventListener('keydown', (event) => {
+  const item = event.target.closest?.('#con-person-list [data-con-add]');
+  if (!item || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+  event.preventDefault();
+  const items = [...document.querySelectorAll('#con-person-list [data-con-add]')].filter((b) => !b.hidden);
+  const i = items.indexOf(item) + (event.key === 'ArrowDown' ? 1 : -1);
+  if (i < 0) document.getElementById('con-person-search').focus(); else items[Math.min(i, items.length - 1)].focus();
+});
 
 async function contractsSettingsChange(event) {
   const sel = event.target.closest('[data-con-org]');
@@ -6066,6 +6148,7 @@ let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
+  if (currentRoute() === '#/contracts' && settingsOpen === '#/contracts' && contractsSettingsInput(event)) return;
   if (currentRoute() === '#/contracts' && contractsInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
