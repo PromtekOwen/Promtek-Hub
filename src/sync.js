@@ -381,7 +381,7 @@ export async function snapshotWeek(env, weekStart) {
 // The free Workers plan allows 50 outside calls per run. Each run does the
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'alerts'];
 
 export async function runScheduled(env) {
   if (!(await getState(env, 'ledger_start'))) return;
@@ -452,6 +452,10 @@ export async function runScheduled(env) {
       if (!pending?.n) return { idle: true };
       await attempt('MES to Jira', async () => (await import('./mes.js')).hourly(env));
       await attempt('MES timeline', async () => (await import('./mes-plan.js')).syncSchedule(env, { max: 20 }));
+    },
+    contracts: async () => {
+      const r = await attempt('Service contracts', async () => (await import('./contracts.js')).run(env));
+      return r?.idle ? { idle: true } : r;
     },
     alerts: async () => {
       const waiting = await env.DB.prepare('SELECT COUNT(*) AS n FROM alerts WHERE sent_at IS NULL').first();

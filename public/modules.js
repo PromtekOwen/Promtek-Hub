@@ -69,6 +69,14 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'contracts',
+    name: 'Service contracts',
+    route: '#/contracts',
+    teams: ['Service'],
+    icon: icon('<path d="M6 3.5h9l3 3V20.5H6z"/><path d="M9 9.5h6M9 13h3"/><circle cx="15" cy="16.5" r="2.5"/><path d="M13.6 18.6l-.6 2.4 2-1 2 1-.6-2.4"/>'),
+    detail: () => 'Contracts, visits and tokens',
+  },
+  {
     id: 'calls',
     name: '8x8 calls',
     route: '#/calls',

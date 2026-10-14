@@ -68,6 +68,13 @@ export const TOURS = {
     { target: ['[data-view="team"]', '#view .tabs'], title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, and Stages shows how long each stage usually takes.' },
     { optional: true, target: ['[data-report-team]'], title: 'Choose a team', text: 'Look at one team or everyone. Your own team is chosen to start with.' },
   ],
+  '#/contracts': [
+    { target: ['.con-card', '#view'], title: 'Each contract', text: 'Its status and tier, the dates it covers, and how many service, calibration and obsolescence visits are done. The calendar badge means it covers bank holidays. Tap a contract for everything behind it.' },
+    { optional: true, target: ['.con-tokens'], title: 'Tokens', text: 'Available tokens, tokens allocated to jobs that aren\'t finished yet, and tokens used. In Jira, allocated tokens count as used, so nobody spends them on something else.' },
+    { optional: true, target: ['.con-clock'], title: 'The token clock', text: 'Time on the contract and on the customer\'s PSC items adds up on one clock. Every 4 hours uses a token, however many items the time is spread across.' },
+    { optional: true, target: ['.con-flags'], title: 'Needs attention', text: 'Dates that look wrong, contracts not accepted by their start date, and PSC items missing their Organization. Mark one resolved once it\'s sorted.' },
+    { optional: true, target: ['[data-con-tab="insights"]'], title: 'Insights', text: 'Renewals coming up, customers using tokens faster than their contract, visits falling behind, and time that isn\'t reaching a contract.' },
+  ],
   '#/requests': [
     { target: ['.req-form', '#view'], title: 'Ask for something', text: 'Ask for a new tile or a change, or tell us about something that isn\'t working. The more detail, the better.' },
     { title: 'Following it up', text: 'Your requests are listed here with where they\'ve got to, and any reply. You\'ll get an email when one moves on.' },

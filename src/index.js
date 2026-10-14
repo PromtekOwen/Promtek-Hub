@@ -256,6 +256,46 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
+  if (pathname.startsWith('/api/contracts')) {
+    const Con = await import('./contracts.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/contracts') return json(await Con.overview(env, user));
+    if (method === 'GET' && pathname === '/api/contracts/detail') return json(await Con.detail(env, user, url.searchParams.get('key') || ''));
+    if (method === 'GET' && pathname === '/api/contracts/insights') return json(await Con.insights(env, user));
+    if (method === 'GET' && pathname === '/api/contracts/check') return json(await Con.check(env, user, url.searchParams.get('issueId') || ''));
+    if (method === 'POST' && pathname === '/api/contracts/resolve') {
+      const r = await Con.resolveFlag(env, user, body.id);
+      await Audit.record(env, user, { area: 'Service contracts', action: 'Alert marked resolved', subjectType: 'contract', subjectId: r.flag.contract_key || r.flag.ref_key,
+        label: r.flag.contract_key || r.flag.ref_key, changes: [{ label: 'Alert', before: r.flag.detail, after: 'Resolved' }] });
+      return json({ ok: true });
+    }
+    if (method === 'GET' && pathname === '/api/contracts/settings') return json(await Con.settings(env, user));
+    if (method === 'POST' && pathname === '/api/contracts/recipients') {
+      const r = await Con.saveRecipients(env, user, body.emails);
+      await Audit.record(env, user, { area: 'Service contracts', action: 'Alert recipients changed',
+        changes: [{ label: 'Also alerted', before: r.before.join(', '), after: r.after.join(', ') }] });
+      return json({ ok: true });
+    }
+    if (method === 'POST' && pathname === '/api/contracts/org') {
+      const before = await env.DB.prepare('SELECT project_key FROM contract_org_map WHERE org = ?').bind(String(body.org || '')).first();
+      const r = await Con.saveOrgMatch(env, user, body);
+      await Audit.record(env, user, { area: 'Service contracts', action: 'Organization matched', label: body.org,
+        changes: [{ label: body.org, before: before?.project_key || '', after: body.projectKey || '' }] });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/contracts/start') {
+      const r = await Con.start(env, user);
+      await Audit.record(env, user, { area: 'Service contracts', action: 'Contract tracking started', changes: [{ label: 'Started', before: '', after: r.started }] });
+      let run = null;
+      try { run = await Con.run(env, { force: true }); } catch (err) { run = { error: err.message }; }
+      return json({ ...r, run });
+    }
+    if (method === 'POST' && pathname === '/api/contracts/refresh') {
+      if (!user.isAdmin) return json({ error: 'Admin only.' }, 403);
+      return json(await Con.run(env, { force: true }));
+    }
+  }
+
   if (pathname.startsWith('/api/requests')) {
     const Req = await import('./requests.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

@@ -279,7 +279,7 @@ const pages = {
     async render() {
       if (!me.linked) return notLinkedCard();
       if (!logChosen || !logMode) await trackerLoad();
-      if (logChosen) return logMode === 'manual' || pendingCall ? logFormHtml() : logChoiceHtml();
+      if (logChosen) return logChosen.contractCheck ? logChoiceHtml() + contractWarnHtml() : logMode === 'manual' || pendingCall ? logFormHtml() : logChoiceHtml();
       return `${trackerPanelHtml()}${await logPickerHtml()}`;
     },
   },
@@ -342,6 +342,11 @@ const pages = {
       if (quotesView?.kind === 'answer') return quoteAnswerHtml();
       return quotesHomeHtml();
     },
+  },
+
+  '#/contracts': {
+    band: () => '<h1>Service contracts</h1><p>Each customer\'s contract: its dates, visits and tokens.</p>',
+    render: () => contractsHtml(),
   },
 
   '#/requests': {
@@ -931,6 +936,7 @@ async function renderSettings(route) {
   if (route === '#/quotes') settingsData.quoteConfig = await api('/api/admin/quote-config');
   if (route === '#/condor') settingsData.bitbucket = await api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }));
   if (route === '#/org') settingsData.org = await api('/api/admin/org');
+  if (route === '#/contracts') settingsData.contracts = await api('/api/contracts/settings').catch((err) => ({ error: err.message }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
@@ -4821,6 +4827,360 @@ async function requestsClick(event) {
   return false;
 }
 
+// ---------- service contracts ----------
+
+let conTab = 'contracts';      // contracts, insights
+let conFilter = 'active';
+let conTier = '';
+let conOpen = null;            // the contract opened, by key
+let conAllFlags = false;
+
+const CON_FILTERS = [
+  ['active', 'Active', (c) => ['Contract Confirmed', 'In Contract', 'Required Renewal'].includes(c.status)],
+  ['renewal', 'Renewal due', (c) => c.status === 'Required Renewal'],
+  ['pending', 'Not yet accepted', (c) => ['New', 'Contract Sent', 'Needs Chasing'].includes(c.status)],
+  ['expired', 'Expired', (c) => c.status === 'Contract Expired'],
+  ['all', 'All', () => true],
+];
+const CON_STATUS_CLASS = {
+  'New': 'grey', 'Contract Sent': 'grey', 'Needs Chasing': 'amber', 'Contract Confirmed': 'blue',
+  'In Contract': 'green', 'Required Renewal': 'amber', 'Contract Expired': 'red',
+};
+const FLAG_TITLES = {
+  dates: 'Dates look wrong', 'start-passed': 'Start date passed, not accepted', 'psc-org': 'PSC with no Organization',
+  'org-map': 'Organization matches no customer', write: 'Jira didn\'t take a change', clock: 'Clock and tokens disagree',
+};
+const fullDate = (iso) => (iso ? dateOf(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const whenText = (isoTime) => (isoTime ? new Date(isoTime).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'not yet');
+const jiraLink = (key, label = key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+const bankHolidayIcon = () => `<span class="con-bh" title="Covers bank holidays">${svgIcon('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><path d="M12 12.5l1 2 2.2.3-1.6 1.5.4 2.2-2-1.1-2 1.1.4-2.2-1.6-1.5 2.2-.3z"/>')}<span class="visually-hidden">Covers bank holidays</span></span>`;
+
+function conStatus(status) {
+  return `<span class="con-status ${CON_STATUS_CLASS[status] || 'grey'}">${esc(status)}</span>`;
+}
+
+function conPeriodBar(c, today) {
+  if (!c.start || !c.end) return '';
+  const span = Math.max(1, (dateOf(c.end) - dateOf(c.start)));
+  const pct = (d) => Math.min(100, Math.max(0, ((dateOf(d) - dateOf(c.start)) / span) * 100));
+  return `<div class="con-period" aria-hidden="true"><span style="width:${pct(today)}%"></span>
+    ${c.renewal ? `<i style="left:${pct(c.renewal)}%" title="Renewal"></i>` : ''}</div>`;
+}
+
+function conCount(label, x) {
+  if (!x) return '';
+  return `<div><b>${x.done} of ${x.total}</b><span>${label}</span></div>`;
+}
+
+function conTokensHtml(t) {
+  if (!t || !t.total) return '<p class="muted con-none">No tokens on this contract.</p>';
+  const w = (v) => `${(v / Math.max(1, t.total)) * 100}%`;
+  return `<div class="con-tokens">
+      <div class="con-token-bar" aria-hidden="true"><span class="u" style="width:${w(t.spent)}"></span><span class="x" style="width:${w(t.expired)}"></span><span class="a" style="width:${w(t.allocated)}"></span></div>
+      <p><b>${t.free}</b> available · <b>${t.allocated}</b> allocated to jobs · <b>${t.spent}</b> used${t.expired ? ` · ${t.expired} expired` : ''} <span class="muted">of ${t.total}</span>
+        ${t.overdraft ? `<span class="con-od">${t.overdraft} overdraft</span>` : ''}</p>
+    </div>`;
+}
+
+function conClockHtml(clock, big = false) {
+  if (!clock) return '';
+  const pct = (clock.towardsNext / (4 * 3600)) * 100;
+  return `<div class="con-clock${big ? ' big' : ''}">
+      <div class="con-clock-bar" aria-hidden="true"><span style="width:${pct}%"></span></div>
+      <p><b>${duration(clock.towardsNext)}</b> towards the next token <span class="muted">· ${duration(clock.seconds)} on the clock</span></p>
+    </div>`;
+}
+
+function conCardHtml(c, today) {
+  const search = `${c.customer} ${c.key} ${c.project} ${c.tier || ''} ${c.status}`.toLowerCase();
+  return `<article class="card con-card" data-con-open="${esc(c.key)}" data-search="${esc(search)}" tabindex="0" role="button" aria-label="${esc(c.customer)}, ${esc(c.status)}">
+      <div class="con-head">
+        <div class="con-name"><h3>${esc(c.customer)}</h3><p class="muted">${esc(c.key)}${c.tier ? ` · ${esc(c.tier)}` : ''}</p></div>
+        <div class="con-tags">${c.bankHoliday ? bankHolidayIcon() : ''}${conStatus(c.status)}</div>
+      </div>
+      <p class="con-dates">${fullDate(c.start)} to ${fullDate(c.end)} <span class="muted">· renewal ${fullDate(c.renewal)}</span></p>
+      ${conPeriodBar(c, today)}
+      ${c.live ? `<div class="con-figs">${conCount('Service visits', c.visits)}${conCount('Calibration', c.calibration)}${conCount('Obsolescence', c.obsolescence)}</div>
+        ${conTokensHtml(c.tokens)}${conClockHtml(c.clock)}`
+        : '<p class="muted con-none">Visits and tokens show once the contract is confirmed.</p>'}
+    </article>`;
+}
+
+function conFlagsHtml(flags) {
+  if (!flags.length) return '';
+  const shown = conAllFlags ? flags : flags.slice(0, 4);
+  return `<section class="card con-flags notice">
+      <h2>Needs attention <span class="muted">(${flags.length})</span></h2>
+      <ul class="con-flag-list">${shown.map((f) => `<li>
+          <div><strong>${esc(FLAG_TITLES[f.kind] || 'Alert')}</strong>
+            <span class="muted">${f.contract_key ? `${esc(f.customer || '')} ${jiraLink(f.contract_key)}` : f.ref_key ? jiraLink(f.ref_key) : ''}</span>
+            <p>${esc(f.detail)}</p></div>
+          <button class="btn secondary" data-con-resolve="${f.id}">Mark resolved</button></li>`).join('')}</ul>
+      ${flags.length > 4 ? `<button class="linklike" data-con-flags="1">${conAllFlags ? 'Show fewer' : `Show all ${flags.length}`}</button>` : ''}
+    </section>`;
+}
+
+function conTabsHtml(data) {
+  if (!data.canInsights) return '';
+  return `<div class="tabs con-tabs">${[['contracts', 'Contracts'], ['insights', 'Insights']].map(([k, l]) =>
+    `<button class="tab${conTab === k ? ' on' : ''}" data-con-tab="${k}">${l}</button>`).join('')}</div>`;
+}
+
+function conTrackingLine(data) {
+  if (!data.started) {
+    return `<div class="card notice"><p><strong>Contract tracking hasn't started.</strong> Contracts are shown as they are in Jira; statuses, tokens and alerts are handled once an admin starts tracking${data.isAdmin ? ' from the settings cog above' : ''}.</p></div>`;
+  }
+  return `<p class="help con-tracking">Token clocks count time logged from ${fullDate(data.clockStart)}. Last clock change ${whenText(data.clockChanged)}; read from Jira ${whenText(data.syncedAt)}.</p>`;
+}
+
+async function contractsHtml() {
+  if (conOpen) return contractDetailHtml();
+  const data = await api('/api/contracts');
+  if (conTab === 'insights' && data.canInsights) return conTabsHtml(data) + await contractInsightsHtml();
+  const today = data.today;
+  const count = (fn) => data.contracts.filter(fn).length;
+  const tiers = [...new Set(data.contracts.map((c) => c.tier).filter(Boolean))].sort();
+  const filter = CON_FILTERS.find((f) => f[0] === conFilter) || CON_FILTERS[0];
+  const list = data.contracts.filter(filter[2]).filter((c) => !conTier || c.tier === conTier);
+  return `${conTabsHtml(data)}
+    ${conTrackingLine(data)}
+    ${conFlagsHtml(data.flags)}
+    <dl class="stats con-stats">
+      <div><dt>In contract</dt><dd>${count((c) => c.status === 'In Contract')}</dd></div>
+      <div><dt>Renewal due</dt><dd>${count((c) => c.status === 'Required Renewal')}</dd></div>
+      <div><dt>Needs chasing</dt><dd>${count((c) => c.status === 'Needs Chasing')}</dd></div>
+      <div><dt>Confirmed, not started</dt><dd>${count((c) => c.status === 'Contract Confirmed')}</dd></div>
+    </dl>
+    <div class="row con-tools">
+      <span class="segment">${CON_FILTERS.map(([k, l]) => `<button class="seg${conFilter === k ? ' on' : ''}" data-con-filter="${k}">${l}</button>`).join('')}</span>
+      ${tiers.length > 1 ? `<label class="con-tier">Tier <select data-con-tier>${['', ...tiers].map((t) => `<option value="${esc(t)}"${t === conTier ? ' selected' : ''}>${t ? esc(t) : 'All tiers'}</option>`).join('')}</select></label>` : ''}
+      <input type="search" id="con-search" placeholder="Search customers or keys" aria-label="Search contracts">
+    </div>
+    <div class="con-grid">${list.map((c) => conCardHtml(c, today)).join('') || '<div class="card"><p style="margin:0">No contracts here.</p></div>'}</div>`;
+}
+
+async function contractDetailHtml() {
+  const d = await api(`/api/contracts/detail?key=${encodeURIComponent(conOpen)}`);
+  const c = d.contract;
+  const today = todayIso();
+  const kindLabel = { visit: 'Service visit', calibration: 'Calibration visit', obsolescence: 'Obsolescence survey', token: 'Token' };
+  const visits = d.items.filter((i) => i.kind !== 'token');
+  const tokens = d.items.filter((i) => i.kind === 'token');
+  const itemRow = (i) => `<li><span class="title">${jiraLink(i.key)} ${esc(i.summary)}</span>
+      <span class="xp${i.done ? ' con-done' : ''}">${esc(i.status)}</span><span class="sub">${kindLabel[i.kind]}</span></li>`;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-con-back="1">All contracts</button></div>
+    <section class="card con-detail-head">
+      <div class="con-head">
+        <div class="con-name"><h2>${esc(c.customer)}</h2><p class="muted">${jiraLink(c.key)}${c.tier ? ` · ${esc(c.tier)}` : ''}${c.bankHoliday ? ' · covers bank holidays' : ''}</p></div>
+        <div class="con-tags">${c.bankHoliday ? bankHolidayIcon() : ''}${conStatus(c.status)}</div>
+      </div>
+      <p class="con-dates">${fullDate(c.start)} to ${fullDate(c.end)} <span class="muted">· renewal ${fullDate(c.renewal)}${c.renewalSet ? '' : ' (worked out: not set in Jira)'}</span></p>
+      ${conPeriodBar(c, today)}
+      ${d.problems.length ? `<div class="notice con-problem"><p><strong>The dates look wrong.</strong> ${esc(d.problems.join(' '))}</p></div>` : ''}
+      ${c.live ? `<div class="con-figs">${conCount('Service visits', c.visits)}${conCount('Calibration', c.calibration)}${conCount('Obsolescence', c.obsolescence)}</div>${conTokensHtml(c.tokens)}` : ''}
+    </section>
+    ${c.clock ? `<h2>Token clock</h2>
+      <section class="card">${conClockHtml(c.clock, true)}
+        <p class="muted" style="margin:.4rem 0 0">Time on the contract item, its tokens and this customer's PSC items (not Snags) since ${fullDate(d.clockStart)}. Every 4 hours uses a token; at the end of the contract, an hour or more left over uses one more.</p>
+      </section>
+      ${d.contributions.length ? `<ul class="list con-list">${d.contributions.map((x) => `<li><span class="title">${x.key ? jiraLink(x.key) : ''} ${esc(x.summary || '')}</span>
+        <span class="xp">${duration(x.seconds)}</span></li>`).join('')}</ul>` : ''}` : ''}
+    ${d.charges.length ? `<h2>Tokens used by the clock</h2><ul class="list con-list">${d.charges.map((x) => `<li>
+        <span class="title">${x.token ? jiraLink(x.token) : 'Choosing a token'}${x.overdraft ? ' <span class="con-od">overdraft</span>' : ''}</span>
+        <span class="xp">${x.done ? 'Used' : 'Waiting for Jira'}</span>
+        <span class="sub">${x.reason === 'end' ? 'Time left when the contract ended' : `Clock passed ${x.seq * 4}h${x.trigger ? ` on ${esc(x.trigger)}` : ''}`} · ${whenText(x.at)}${x.error ? ` · ${esc(x.error)}` : ''}</span></li>`).join('')}</ul>` : ''}
+    ${visits.length ? `<h2>Visits</h2><ul class="list con-list">${visits.map(itemRow).join('')}</ul>` : ''}
+    ${tokens.length ? `<h2>Tokens</h2><ul class="list con-list">${tokens.map(itemRow).join('')}</ul>` : ''}
+    ${d.events.length ? `<h2>Changes made in Jira</h2><ul class="list con-list">${d.events.map((e) => `<li><span class="title">${esc(e.text)}</span><span class="sub">${whenText(e.at)}</span></li>`).join('')}</ul>` : ''}`;
+}
+
+async function contractInsightsHtml() {
+  const s = await api('/api/contracts/insights');
+  const r = s.renewals;
+  const decided = r.renewed + r.lost;
+  const rate = decided ? Math.round((r.renewed / decided) * 100) : null;
+  const hBar = (rows, label, value) => {
+    const max = Math.max(1, ...rows.map((x) => x.seconds));
+    return rows.length ? `<ul class="con-bars">${rows.map((x) => `<li><span class="con-bar-label">${esc(label(x))}</span>
+      <span class="con-bar"><span style="width:${(x.seconds / max) * 100}%"></span></span><span class="con-bar-value">${value(x)}</span></li>`).join('')}</ul>`
+      : '<p class="muted">Nothing in the last 90 days.</p>';
+  };
+  return `
+    <h2>Renewals</h2>
+    <dl class="stats con-stats">
+      <div><dt>Renewal rate, last 12 months</dt><dd>${rate === null ? '—' : `${rate}%`}<small>${r.renewed} renewed, ${r.lost} lost</small></dd></div>
+      <div><dt>Ended, no decision yet</dt><dd>${r.undecided}</dd></div>
+    </dl>
+    <div class="two-up con-two">
+      <section class="card"><h3>Ending in the next 90 days</h3>
+        ${r.upcoming.length ? `<ul class="con-rows">${r.upcoming.map((u) => `<li><span>${esc(u.customer)} ${jiraLink(u.key)}</span><span class="muted">${fullDate(u.end)} · ${u.days} days</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
+      <section class="card"><h3>Waiting to be accepted</h3>
+        ${r.chasing.length ? `<ul class="con-rows">${r.chasing.map((u) => `<li><span>${esc(u.customer)} ${jiraLink(u.key)}</span><span class="${u.late ? 'con-late' : 'muted'}">${u.late ? 'Start date passed' : `Starts ${fullDate(u.start)}`}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
+    </div>
+
+    <h2>Tokens</h2>
+    <p class="help">How far through each contract is against how many tokens are used. A token bar ahead of the time bar means tokens are going faster than the contract.</p>
+    ${s.pace.length ? `<ul class="list con-pace">${s.pace.map((p) => `<li>
+        <span class="title">${esc(p.customer)} ${jiraLink(p.key)} ${p.overdraft ? `<span class="con-od">${p.overdraft} overdraft</span>` : ''}</span>
+        <span class="xp">${p.used} of ${p.total}${p.allocated ? `<small>+${p.allocated} allocated</small>` : ''}</span>
+        <span class="sub con-pace-bars"><span class="con-mini"><span style="width:${Math.round(p.timeShare * 100)}%"></span></span> time
+          <span class="con-mini tok${p.tokenShare > p.timeShare + 0.1 ? ' ahead' : ''}"><span style="width:${Math.round(p.tokenShare * 100)}%"></span></span> tokens
+          ${p.left <= 0 ? '<b class="con-late">No tokens left</b>' : p.early ? `<b class="con-late">Runs out about ${fullDate(p.runsOut)}, before the contract ends</b>` : ''}</span></li>`).join('')}</ul>` : '<div class="card"><p class="muted" style="margin:0">No live contracts with tokens.</p></div>'}
+
+    <h2>Visits falling behind</h2>
+    ${s.behind.length ? `<ul class="list">${s.behind.map((b) => `<li><span class="title">${esc(b.customer)} ${jiraLink(b.key)}</span>
+        <span class="xp">${b.done} of ${b.total}</span><span class="sub">${esc(b.label)} · ${b.weeksLeft} ${b.weeksLeft === 1 ? 'week' : 'weeks'} left</span></li>`).join('')}</ul>`
+      : '<div class="card"><p class="muted" style="margin:0">Every contract is on track for its visits.</p></div>'}
+
+    <h2>Time not reaching a contract</h2>
+    <p class="help">The last 90 days of PSC time that can't count towards a contract's tokens.</p>
+    <div class="two-up con-two">
+      <section class="card"><h3>PSC items with no Organization</h3>
+        ${s.leaks.noOrg.length ? `<ul class="con-rows">${s.leaks.noOrg.map((x) => `<li><span>${jiraLink(x.key)} ${esc(x.summary || '')}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
+      <section class="card"><h3>Customers with no live contract</h3>
+        ${s.leaks.noContract.length ? `<ul class="con-rows">${s.leaks.noContract.map((x) => `<li><span>${esc(x.customer)}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}
+        ${s.leaks.unmatched.length ? `<h3 style="margin-top:1rem">Organizations matching no customer</h3><ul class="con-rows">${s.leaks.unmatched.map((x) => `<li><span>${esc(x.org)}</span><span class="muted">${duration(x.seconds)}</span></li>`).join('')}</ul>` : ''}</section>
+    </div>
+
+    <h2>Bank holidays coming up</h2>
+    <div class="con-holidays">${s.holidays.map((h) => `<section class="card"><h3>${esc(h.name)}</h3><p class="muted" style="margin:0 0 .5rem">${longDate(h.date)}</p>
+      ${h.covered.length ? `<p style="margin:0"><b>${h.covered.length}</b> covered: ${h.covered.map(esc).join(', ')}</p>` : '<p class="muted" style="margin:0">No contracts cover it.</p>'}</section>`).join('')}</div>
+
+    <h2>Where service time went</h2>
+    <p class="help">Time that counted towards contracts in the last 90 days.</p>
+    <div class="two-up con-two">
+      <section class="card"><h3>By customer</h3>${hBar(s.time.customers, (x) => x.customer, (x) => duration(x.seconds))}</section>
+      <section class="card"><h3>By engineer</h3>${hBar(s.time.people, (x) => x.name, (x) => duration(x.seconds))}</section>
+    </div>`;
+}
+
+async function contractsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('a')) return false;
+  const tab = t('[data-con-tab]');
+  if (tab) { conTab = tab.dataset.conTab; conOpen = null; return render(); }
+  const f = t('[data-con-filter]');
+  if (f) { conFilter = f.dataset.conFilter; return render(); }
+  if (t('[data-con-flags]')) { conAllFlags = !conAllFlags; return render(); }
+  if (t('[data-con-back]')) { conOpen = null; return render(); }
+  const res = t('[data-con-resolve]');
+  if (res) {
+    res.disabled = true;
+    try { await api('/api/contracts/resolve', { method: 'POST', body: JSON.stringify({ id: Number(res.dataset.conResolve) }) }); toast('Marked resolved'); }
+    catch (err) { toast(err.message); }
+    return render();
+  }
+  const card = t('[data-con-open]');
+  if (card) { conOpen = card.dataset.conOpen; return render(); }
+  return false;
+}
+
+function contractsInput(event) {
+  if (event.target.id === 'con-search') {
+    const q = event.target.value.trim().toLowerCase();
+    for (const card of view.querySelectorAll('.con-card')) card.hidden = Boolean(q) && !card.dataset.search.includes(q);
+    return true;
+  }
+  if (event.target.matches('[data-con-tier]')) { conTier = event.target.value; render(); return true; }
+  return false;
+}
+
+// Settings, under the cog.
+function settingsContractsHtml() {
+  const s = settingsData.contracts;
+  if (s.error) return `<div class="card notice error"><p>${esc(s.error)}</p></div>`;
+  const leads = s.people.filter((p) => p.lead);
+  const others = s.people.filter((p) => !p.lead);
+  return `<section class="card">
+      <h2 style="margin-top:0">Tracking</h2>
+      ${s.started
+        ? `<p>Started ${whenText(s.started)}. Token clocks count time logged from ${fullDate(s.clockStart)}.</p>
+           <p class="muted">Read from Jira ${whenText(s.syncedAt)}. Last clock change ${whenText(s.clockChanged)}. ${n(s.tokens.used)} ${s.tokens.used === 1 ? 'token' : 'tokens'} used by the clocks${s.tokens.waiting ? `, ${s.tokens.waiting} waiting for Jira` : ''}.</p>`
+        : `<p>Once started, the hub moves contracts between statuses as their dates arrive, keeps each contract's token clock, uses and expires tokens, keeps the token counts on each contract up to date, and sends contract alerts.</p>
+           <p>The clocks count time logged from the day tracking starts. Turn off the matching Jira automations at the same time, so nothing happens twice.</p>
+           <p><button class="btn" data-con-start="1">Start tracking</button></p>`}
+      ${s.error ? `<div class="notice error" style="margin-top:.75rem"><p>${esc(s.error)}</p></div>` : ''}
+      <p><button class="btn secondary" data-con-refresh="1">Read from Jira now</button></p>
+    </section>
+    <section class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Who gets contract alerts</h2>
+      <p>${leads.length ? `The Service team ${leads.length === 1 ? 'lead always gets them' : 'leads always get them'}: ${leads.map((p) => esc(p.name)).join(', ')}.` : 'No one leads the Service team yet, so alerts go to the hub\'s alert address.'} Also send them to:</p>
+      <div class="con-people">${others.map((p) => `<label class="inline-check"><input type="checkbox" data-con-person value="${esc(p.email)}"${s.extra.includes(p.email) ? ' checked' : ''}> ${esc(p.name)}</label>`).join('')}</div>
+      <p><button class="btn" data-con-recipients="1">Save</button></p>
+    </section>
+    <section class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Organizations</h2>
+      <p>PSC items name their customer in the Organization field. Each is matched to the customer's project by name; choose the customer for any that don't match, or that match the wrong one.</p>
+      ${s.orgs.length ? `<ul class="con-orgs">${s.orgs.map((o) => `<li><span>${esc(o.org)}</span>
+          <select data-con-org="${esc(o.org)}"><option value="">${o.project && !o.manual ? `Matched: ${esc(s.projects.find((p) => p.key === o.project)?.name || o.project)}` : 'No customer'}</option>
+            ${s.projects.map((p) => `<option value="${esc(p.key)}"${o.manual === p.key ? ' selected' : ''}>${esc(p.name)} (${esc(p.key)})</option>`).join('')}</select></li>`).join('')}</ul>`
+        : '<p class="muted">No PSC time has been looked at yet.</p>'}
+    </section>`;
+}
+
+async function contractsSettingsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-con-start]')) {
+    if (!confirm('Start contract tracking now? Turn off the Jira automations for service contracts at the same time.')) return true;
+    try { await api('/api/contracts/start', { method: 'POST', body: '{}' }); toast('Contract tracking started'); } catch (err) { toast(err.message); }
+    render(); return true;
+  }
+  const refresh = t('[data-con-refresh]');
+  if (refresh) {
+    refresh.disabled = true;
+    try { const r = await api('/api/contracts/refresh', { method: 'POST', body: '{}' }); toast(r.partial ? 'Read part of it; the rest follows shortly' : 'Up to date with Jira'); } catch (err) { toast(err.message); }
+    render(); return true;
+  }
+  if (t('[data-con-recipients]')) {
+    const emails = [...view.querySelectorAll('[data-con-person]:checked')].map((x) => x.value);
+    try { await api('/api/contracts/recipients', { method: 'POST', body: JSON.stringify({ emails }) }); toast('Saved'); } catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}
+
+async function contractsSettingsChange(event) {
+  const sel = event.target.closest('[data-con-org]');
+  if (!sel) return false;
+  try { await api('/api/contracts/org', { method: 'POST', body: JSON.stringify({ org: sel.dataset.conOrg, projectKey: sel.value }) }); toast('Saved'); }
+  catch (err) { toast(err.message); }
+  return true;
+}
+
+// Logging time to a Service Contract item: ask first whether it was really a contracted visit.
+async function contractCheck() {
+  if (!logChosen?.issueId) return;
+  try {
+    const c = await api(`/api/contracts/check?issueId=${encodeURIComponent(logChosen.issueId)}`);
+    if (c.contract) logChosen.contractCheck = { ...c, step: 'warn' };
+  } catch { /* no warning rather than no logging */ }
+}
+
+function contractWarnHtml() {
+  const c = logChosen.contractCheck;
+  const body = c.step === 'visits'
+    ? `<h2 id="con-warn-title">Which visit?</h2>
+       ${c.visits.length ? `<div class="options">${c.visits.map(optionRow).join('')}</div>` : `<p>${esc(c.contract.customer)} has no contracted visits in Jira.</p>`}
+       <div class="modal-actions"><button class="btn secondary" data-con-warn="back">Back</button></div>`
+    : `<h2 id="con-warn-title">Is this a contracted visit?</h2>
+       <p>Do not assign time to this item if you are logging time for a contracted Service, Calibration or Obsolescence Survey visit.</p>
+       <div class="modal-actions"><button class="btn" data-con-warn="visits">Log time to contracted visit</button>
+         <button class="btn secondary" data-con-warn="continue">Continue</button></div>`;
+  return `<div class="modal-backdrop"><div class="modal card con-warn" role="dialog" aria-modal="true" aria-labelledby="con-warn-title">${body}</div></div>`;
+}
+
+async function contractWarnClick(event) {
+  const b = event.target.closest('[data-con-warn]');
+  if (!b || !logChosen?.contractCheck) return false;
+  const act = b.dataset.conWarn;
+  if (act === 'visits') logChosen.contractCheck.step = 'visits';
+  if (act === 'back') logChosen.contractCheck.step = 'warn';
+  if (act === 'continue') delete logChosen.contractCheck;
+  await render();
+  if (act === 'continue' && logMode) { updateXpPreview(); loadStageHint(); }
+  return true;
+}
+
 // ---------- guides ----------
 // Each page's guide runs the first time someone opens it, and again from the ?
 // in the page header. Who has seen which is kept with their account, so it
@@ -5279,6 +5639,7 @@ async function adminAction(action, button) {
 
 view.addEventListener('click', async (event) => {
   const onPow = currentRoute() === '#/pow';
+  if (currentRoute() === '#/log' && await contractWarnClick(event)) return;
 
   const nodeBtn = event.target.closest('[data-node]');
   if (nodeBtn) {
@@ -5299,14 +5660,16 @@ view.addEventListener('click', async (event) => {
       callFlow = null;
       logChosen = picked;
       logMode = 'manual';
+      await contractCheck();
       location.hash = '#/log';
       return;
     }
     logChosen = picked;
     // Logging a call's time goes straight to the form; otherwise ask which way first.
     logMode = pendingCall ? 'manual' : null;
+    await contractCheck();
     await render();
-    if (logMode) { updateXpPreview(); return loadStageHint(); }
+    if (logMode && !logChosen.contractCheck) { updateXpPreview(); return loadStageHint(); }
     return;
   }
   const crumbBtn = event.target.closest('[data-crumb]');
@@ -5519,6 +5882,7 @@ view.addEventListener('click', async (event) => {
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
+  if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
@@ -5532,6 +5896,7 @@ view.addEventListener('click', async (event) => {
   }
   if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
   if (settingsOpen === '#/org' && await orgSettingsClick(event)) return;
+  if (settingsOpen === '#/contracts' && await contractsSettingsClick(event)) return;
   if (event.target.closest('[data-audit-more]')) return loadAudit(true);
   const bb = event.target.closest('[data-bb]');
   if (bb) {
@@ -5600,6 +5965,7 @@ const WAITING_FOR = {
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
+  '#/contracts': () => (conOpen ? 'Loading the contract' : 'Loading contracts'),
 };
 
 // Settings live with the app they configure. The cog appears in the header of
@@ -5622,6 +5988,7 @@ const TILE_SETTINGS = {
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
   '#/quotes': { label: 'Quote settings', render: () => settingsQuotesHtml() },
   '#/condor': { label: 'Condor Dev settings', render: () => bitbucketAdminHtml(settingsData.bitbucket) },
+  '#/contracts': { label: 'Service contract settings', render: () => settingsContractsHtml() },
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
 };
 let settingsOpen = null;
@@ -5689,10 +6056,17 @@ async function render() {
   }
 }
 
+// Contract cards open with Enter or Space too.
+view.addEventListener('keydown', (event) => {
+  const card = event.target.closest?.('[data-con-open]');
+  if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
+});
+
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
+  if (currentRoute() === '#/contracts' && contractsInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
   if (event.target.matches('[data-stage-customer]')) { stageCustomer = event.target.value; render(); return; }
@@ -5757,6 +6131,7 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -5830,6 +6205,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/obs') { obsSurvey = null; obsSection = 0; obsReading = null; obsView = null; }
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
+  if (currentRoute() !== '#/contracts') conOpen = null;
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }

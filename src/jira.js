@@ -21,7 +21,9 @@ export async function jira(env, path, init = {}) {
     throw err;
   }
   if (res.status === 204) return null;
-  return res.json();
+  // Some calls, such as linking two issues, answer 201 with nothing in the body.
+  const body = await res.text();
+  return body ? JSON.parse(body) : null;
 }
 
 export async function searchJql(env, jql, fields, { limit = Infinity, pageSize = 100 } = {}) {

@@ -320,6 +320,24 @@ The **?** in each page header shows that page's guide again. Which guides someon
 
 The wording of every guide is in `public/tours.js`.
 
+## Part 14e: Service contracts
+
+The **Service contracts** tile shows each customer's Service Contract item from Jira: its status, tier, bank holiday cover, dates, service, calibration and obsolescence visits done, and its tokens. The Service team, team leads, Management and admins see it. The Insights tab is for Service team leads, Management and admins.
+
+**Where it reads from.** Service Contract items, with their Service Visit, Calibration Visit and Service Token subtasks. A Service Visit called "Obsolescence Report" counts as the obsolescence survey rather than a service visit. The customer is the project the contract is in. PSC items name their customer in the Organization field, matched to the project by name; any that don't match can be matched under the tile's settings cog. Everything is read every 20 minutes or so by the background job, and straight away with **Read from Jira now**.
+
+**What the hub does once tracking has started** (settings cog, **Start tracking**):
+- Contract Sent moves to Needs Chasing when the start date is two weeks away. If the start date passes before it's accepted, it stays in Needs Chasing and an alert says so.
+- Contract Confirmed moves to In Contract on the start date; In Contract moves to Required Renewal on the renewal date; In Contract or Required Renewal moves to Contract Expired after the end date. Archived and Contract Lost are never changed.
+- Dates that don't add up (not a whole number of years, a renewal date not a month before the end, or what looks like a day and month swapped) raise an alert, and that contract's status is left alone until the dates are fixed or the alert is marked resolved.
+- **Token clock.** Each contract has one running clock of the time logged to the contract item, its tokens, and the customer's PSC items (not Snags or Sub-Snags) from the day tracking started, within the contract's dates. Every 4 hours uses the next Available token: it's renamed "Token used for …", linked to the PSC that took the clock over ("implements"), and moved to Token Used. With no Available token left, an "[OVERDRAFT]" token is created instead. When a contract expires, an hour or more left on the clock uses one more token, then any tokens still Available are moved to Token Expired through Admin.
+- Each contract's Available, Tokens used and Overdraft fields are kept up to date. Tokens in Token Allocated count as used in Jira; in the hub they're shown separately.
+- Time logged to a PSC item with no Organization emails the person who logged it and the contract alert list, at most once a day per item.
+
+**Alerts** go to the Service team leads, plus anyone ticked under the settings cog. Anything Jira refuses is retried, and after three tries appears in Needs attention and is emailed.
+
+**Logging time** to a Service Contract item first asks whether it was really a contracted visit, and offers that customer's visits instead.
+
 ## Part 15: 8x8 calls
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.
