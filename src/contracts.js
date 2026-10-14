@@ -7,7 +7,7 @@
 // tile itself never waits on Jira. Changes to Jira are made by the background
 // job, kept to a fixed number of calls per run, and picked up again on the next
 // run if they don't finish.
-import { jira, searchPage, isExcludedProject } from './jira.js';
+import { jira, searchPage, customerProjects, projectFilter } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam, groupsOf } from './permissions.js';
 
@@ -85,6 +85,7 @@ class OutOfCalls extends Error {}
 function budget(env, max) {
   let used = 0;
   return {
+    env,
     async call(path, init) {
       if (used >= max) throw new OutOfCalls('Call budget used');
       used++;
@@ -101,7 +102,7 @@ async function search(b, jql, fields, pageSize = 100) {
   do {
     const params = { fields: fields.join(','), maxResults: String(pageSize) };
     if (token) params.nextPageToken = token;
-    const data = await searchPage((path) => b.call(path), jql, params);
+    const data = await searchPage(b.env, (path) => b.call(path), jql, params);
     out.push(...(data.issues || []));
     token = data.nextPageToken || null;
   } while (token);
@@ -217,8 +218,10 @@ async function syncContracts(env, b) {
   ).bind(c.issue_key, c.issue_id, c.project_key, c.customer, c.summary, c.status, c.tier, c.bank_holiday, c.start_date, c.renewal_date,
     c.end_date, c.f_available, c.f_used, c.f_overdraft, c.synced_at));
   for (const part of chunk(stmts, 50)) await env.DB.batch(part);
-  // Gone from the search: deleted, or finished long ago.
+  // Gone from the search: deleted, finished long ago, or not in a customer project.
   await env.DB.prepare('DELETE FROM contracts WHERE synced_at < ?').bind(now).run();
+  const allowed = await projectFilter(env);
+  for (const c of rows.filter((r) => !allowed(r.project_key))) await env.DB.prepare('DELETE FROM contracts WHERE issue_key = ?').bind(c.issue_key).run();
   return rows.length;
 }
 
@@ -309,15 +312,17 @@ async function lookupIssues(env, b, windowStart) {
 const norm = (s) => String(s || '').toLowerCase().replace(/&/g, ' and ')
   .replace(/\b(ltd|limited|plc|llp|uk|the|group|co|company|and)\b/g, ' ').replace(/[^a-z0-9]/g, '');
 
-export function orgMatcher(contracts, manual) {
-  const projects = new Map();
-  for (const c of contracts) if (!projects.has(c.project_key)) projects.set(c.project_key, c.customer);
-  const byNorm = [...projects].map(([key, name]) => ({ key, n: norm(name), k: key.toLowerCase() }));
+// Every customer project, not only those with a contract, so time for a customer
+// without one still finds them. An Organization is named exactly as its project.
+export function orgMatcher(projectList, manual) {
+  const byNorm = projectList.map((p) => ({ key: p.key, name: String(p.name).trim().toLowerCase(), n: norm(p.name), k: p.key.toLowerCase() }));
   const map = new Map(manual.map((m) => [m.org.toLowerCase(), m.project_key]));
   return (org) => {
     if (!org) return null;
     const hand = map.get(org.toLowerCase());
     if (hand) return hand;
+    const same = byNorm.find((p) => p.name === org.trim().toLowerCase());
+    if (same) return same.key;
     const n = norm(org);
     if (!n) return null;
     const exact = byNorm.find((p) => p.n === n || p.k === n);
@@ -330,13 +335,19 @@ export function orgMatcher(contracts, manual) {
 // ---------- the token clock ----------
 
 async function loadState(env) {
-  const [{ results: contracts }, { results: items }, { results: issues }, { results: manual }] = await Promise.all([
+  const [{ results: all }, { results: items }, { results: issues }, { results: manual }] = await Promise.all([
     env.DB.prepare('SELECT * FROM contracts').all(),
     env.DB.prepare('SELECT * FROM contract_items').all(),
     env.DB.prepare('SELECT * FROM contract_issues').all(),
     env.DB.prepare('SELECT * FROM contract_org_map').all(),
   ]);
-  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), match: orgMatcher(contracts, manual) };
+  const allowed = await projectFilter(env);
+  const contracts = all.filter((c) => allowed(c.project_key));
+  // Customer projects from Jira; if Jira can't be reached, the ones with contracts.
+  let projects;
+  try { projects = await customerProjects(env); } catch { projects = null; }
+  if (!projects?.length) projects = [...new Map(contracts.map((c) => [c.project_key, { key: c.project_key, name: c.customer }])).values()];
+  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), projects, match: orgMatcher(projects, manual) };
 }
 
 async function worklogsSince(env, from) {
@@ -956,7 +967,7 @@ export async function settings(env, viewer) {
     }
   }
   for (const m of mapped) if (![...orgs.keys()].some((o) => o.toLowerCase() === m.org.toLowerCase())) orgs.set(m.org, { org: m.org, project: m.project_key, manual: m.project_key });
-  const projects = [...new Map(st.contracts.map((c) => [c.project_key, c.customer])).entries()].map(([key, name]) => ({ key, name }))
+  const projects = st.projects.map((p) => ({ key: p.key, name: p.name }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const { results: counts } = await env.DB.prepare('SELECT COUNT(*) AS n, SUM(step < 3) AS waiting FROM contract_charges').all();
   return {
@@ -1122,7 +1133,7 @@ export async function insights(env, viewer) {
     r.logs.push(line(w, p));
     m.set(k, r);
   };
-  const customerName = new Map(st.contracts.map((c) => [c.project_key, c.customer]));
+  const customerName = new Map(st.projects.map((p) => [p.key, p.name]));
   for (const w of logs) {
     const p = placeWorklog(w, st);
     if (p.contract) {

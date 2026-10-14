@@ -342,9 +342,11 @@ The **Service contracts** tile shows each customer's Service Contract item from 
 
 **Logging time** to a Service Contract item first asks whether it was really a contracted visit, and offers that customer's visits instead.
 
-## Part 14f: Projects the hub leaves out
+## Part 14f: Which Jira projects the hub uses
 
-The testing and special customer-access projects CSIMS, CSIMSB, CSIMST, TEST and TPB are left out of everything the hub searches Jira for, and out of its customer lists. The list is `EXCLUDED_PROJECTS` at the top of `src/jira.js`. Looking up a particular item by its key still works, so TEST is a safe place to try things out.
+The hub only lists and searches customer projects, the ones in the **Promtek UK Customers** and **Promtek SA Customers** categories, plus its own working projects: MES (Condor Dev), PSC (service items), PMB (general tasks and assisting), PROMTEKIT and ASSET (IT support) and the ten IMS projects (internal time). Any other project, such as CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST or TPB, is left out without needing to be listed, so a new testing project stays out as long as it isn't put in a customer category. CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST and TPB are also blocked outright, in case one is ever put in a customer category by mistake. Both lists are at the top of `src/jira.js`.
+
+Looking up a particular item by its key still works, so TEST is a safe place to try things out. The list of customer projects is read from Jira every six hours.
 
 ## Part 15: 8x8 calls
 

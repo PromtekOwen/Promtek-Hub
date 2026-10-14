@@ -1,6 +1,6 @@
 // Point of work risk assessments: picking the job, keeping drafts, and
 // delivering the finished PDF to Jira and Google Drive.
-import { jira, searchJql, isExcludedProject } from './jira.js';
+import { jira, searchJql, customerProjects } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { buildPowPdf } from './pow-pdf.js';
 import { SITE_VISIT_TYPES, DEFAULT_RA_LIBRARY, BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, RISK_LEVELS } from './pow-data.js';
@@ -66,16 +66,8 @@ export async function saveRa(env, { id, title, active, sortOrder }) {
 
 // ---------- Finding the visit ----------
 
-async function customerProjects(env, region) {
-  const categoryId = region === 'sa' ? '10300' : '10333';
-  const projects = [];
-  let startAt = 0;
-  for (let page = 0; page < 10; page++) {
-    const data = await jira(env, `/rest/api/3/project/search?categoryId=${categoryId}&status=live&orderBy=name&maxResults=50&startAt=${startAt}`);
-    projects.push(...(data.values || []).filter((p) => !isExcludedProject(p.key)));
-    if (data.isLast || !data.values?.length) break;
-    startAt += data.values.length;
-  }
+async function customerProjectOptions(env, region) {
+  const projects = (await customerProjects(env)).filter((p) => p.region === (region === 'sa' ? 'sa' : 'uk'));
   return projects.map((p) => ({ id: p.key, label: p.name, sublabel: p.key, next: `${region}:${p.key}` }));
 }
 
@@ -145,7 +137,7 @@ export async function browseVisits(env, node = 'root') {
     };
   }
   const [region, projectKey, branch] = parts;
-  if (!projectKey) return { title: 'Which customer?', options: await customerProjects(env, region) };
+  if (!projectKey) return { title: 'Which customer?', options: await customerProjectOptions(env, region) };
   if (!branch) {
     return {
       title: projectKey,

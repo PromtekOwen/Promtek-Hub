@@ -26,39 +26,97 @@ export async function jira(env, path, init = {}) {
   return body ? JSON.parse(body) : null;
 }
 
-// Testing and special customer-access projects, left out of everything the hub
-// looks through. Searches for particular keys, ids or children are left as they are.
-export const EXCLUDED_PROJECTS = ['CSIMS', 'CSIMSB', 'CSIMST', 'TEST', 'TPB'];
-export const isExcludedProject = (keyOrIssueKey) => EXCLUDED_PROJECTS.includes(String(keyOrIssueKey || '').split('-')[0].toUpperCase());
+// ---------- which projects the hub works with ----------
+// Customer projects are the ones in the two customer categories. Any project
+// outside them (testing, archive, special access) is left out of everything
+// the hub lists or searches, except the hub's own working projects below.
+export const CUSTOMER_CATEGORIES = ['Promtek UK Customers', 'Promtek SA Customers'];
+export const CUSTOMER_CATEGORY_IDS = { uk: '10333', sa: '10300' };
+// MES for Condor Dev, PSC for service items, PMB for general tasks and assisting,
+// PROMTEKIT and ASSET for IT support, and the ten IMS projects for internal time.
+export const HUB_PROJECTS = ['MES', 'PSC', 'PMB', 'PROMTEKIT', 'ASSET',
+  'GOALS', 'LEGAL', 'HEALTH', 'COMPLIANCE', 'FINANCE', 'INNOV', 'IS', 'MARKETING', 'SUGGEST', 'QA'];
+// Never shown, even if one is ever put in a customer category by mistake.
+export const BLOCKED_PROJECTS = ['CSIMS', 'CSIMSB', 'CSIMST', 'ARCHIVE', 'TEST', 'TPB'];
 
-// If Jira ever rejects the list (say one of the projects is renamed), the
-// projects are left out of the results instead, so searches keep working.
-let excludeInJql = true;
+const projectOf = (keyOrIssueKey) => String(keyOrIssueKey || '').split('-')[0].toUpperCase();
+const PROJECT_LIST_MS = 6 * 3600 * 1000;
+let listCache = null;
 
+// Every customer project, with its name and region, kept for six hours.
+export async function customerProjects(env, { fresh = false } = {}) {
+  if (!fresh && listCache && Date.now() - listCache.at < PROJECT_LIST_MS) return listCache.list;
+  if (!fresh && env.DB) {
+    const row = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'customer_projects'").first().catch(() => null);
+    const saved = row ? JSON.parse(row.value) : null;
+    if (saved && Date.now() - saved.at < PROJECT_LIST_MS) { listCache = saved; return saved.list; }
+  }
+  const list = [];
+  for (const [region, categoryId] of Object.entries(CUSTOMER_CATEGORY_IDS)) {
+    let startAt = 0;
+    for (let page = 0; page < 10; page++) {
+      const data = await jira(env, `/rest/api/3/project/search?categoryId=${categoryId}&status=live&orderBy=name&maxResults=50&startAt=${startAt}`);
+      for (const p of data.values || []) {
+        if (!BLOCKED_PROJECTS.includes(p.key.toUpperCase())) list.push({ key: p.key, name: p.name, region, id: String(p.id) });
+      }
+      if (data.isLast || !data.values?.length) break;
+      startAt += data.values.length;
+    }
+  }
+  listCache = { at: Date.now(), list };
+  if (env.DB) {
+    await env.DB.prepare(`INSERT INTO sync_state (key, value) VALUES ('customer_projects', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value`).bind(JSON.stringify(listCache)).run().catch(() => {});
+  }
+  return list;
+}
+
+// A test for whether an issue or project key is one the hub works with.
+export async function projectFilter(env) {
+  let keys = null;
+  try { keys = new Set((await customerProjects(env)).map((p) => p.key.toUpperCase())); } catch { /* fall back to the blocked list */ }
+  return (keyOrIssueKey) => {
+    const k = projectOf(keyOrIssueKey);
+    if (BLOCKED_PROJECTS.includes(k)) return false;
+    if (HUB_PROJECTS.includes(k)) return true;
+    return keys ? keys.has(k) : true;
+  };
+}
+
+// Searches for particular keys, ids or children are left as they are; anything
+// broader only looks in customer and hub projects. If Jira ever rejects the
+// clause (a hub project renamed, say), results are filtered instead.
+let scopeInJql = true;
 const targeted = (jql) => /^(key|id|issuekey|parent)\s*(=|in\b)/i.test(String(jql).trim());
 
 export function scopeJql(jql) {
   const text = String(jql).trim();
-  if (!excludeInJql || targeted(text)) return text;
+  if (!scopeInJql || targeted(text)) return text;
   const at = text.search(/\bORDER\s+BY\b/i);
   const where = (at < 0 ? text : text.slice(0, at)).trim();
   const order = at < 0 ? '' : ` ${text.slice(at)}`;
-  const not = `project NOT IN (${EXCLUDED_PROJECTS.join(', ')})`;
-  return where ? `${not} AND (${where})${order}` : `${not}${order}`;
+  const scope = `(category in (${CUSTOMER_CATEGORIES.map((c) => `"${c}"`).join(', ')}) OR project in (${HUB_PROJECTS.join(', ')}))`
+    + ` AND project not in (${BLOCKED_PROJECTS.join(', ')})`;
+  return where ? `${scope} AND (${where})${order}` : `${scope}${order}`;
 }
 
-// One page of a search, with the excluded projects left out either way.
-export async function searchPage(call, jql, params) {
+// One page of a search, keeping to the projects above either way.
+export async function searchPage(env, call, jql, params) {
   const run = (q) => call(`/rest/api/3/search/jql?${new URLSearchParams({ ...params, jql: q })}`);
   let data;
+  let scoped = scopeInJql && !targeted(jql);
   try {
     data = await run(scopeJql(jql));
   } catch (err) {
-    if (!excludeInJql || targeted(jql) || err.status !== 400 || !/project/i.test(err.message)) throw err;
-    excludeInJql = false;
+    if (!scoped || err.status !== 400 || !/project|category/i.test(err.message)) throw err;
+    scopeInJql = false; scoped = false;
     data = await run(String(jql).trim());
   }
-  if (!targeted(jql)) data.issues = (data.issues || []).filter((i) => !isExcludedProject(i.key));
+  if (!targeted(jql)) {
+    // The JQL clause already did this when it worked; checking again costs nothing once the list is held.
+    const ok = scoped ? (key) => !BLOCKED_PROJECTS.includes(projectOf(key)) : await projectFilter(env);
+    data.issues = (data.issues || []).filter((i) => ok(i.key));
+  }
   return data;
 }
 
@@ -69,7 +127,7 @@ export async function searchJql(env, jql, fields, { limit = Infinity, pageSize =
   do {
     const params = { fields: fields.join(','), maxResults: String(Math.min(pageSize, limit - issues.length)) };
     if (token) params.nextPageToken = token;
-    const data = await searchPage((path) => jira(env, path), jql, params);
+    const data = await searchPage(env, (path) => jira(env, path), jql, params);
     issues.push(...(data.issues || []));
     token = data.nextPageToken || null;
     pages++;

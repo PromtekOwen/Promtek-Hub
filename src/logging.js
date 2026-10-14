@@ -1,5 +1,5 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
-import { jira, searchJql, isExcludedProject } from './jira.js';
+import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { stageNameOf } from './jobs.js';
 
@@ -19,7 +19,7 @@ export const IMS_PROJECTS = [
 ];
 
 export const PMB_CATEGORIES = ['Non-Work', 'General Service', 'Admin', 'Dev Ops', 'Housekeeping', 'Management', 'Training'];
-export const CUSTOMER_CATEGORY_IDS = { uk: '10333', sa: '10300' };
+export const CUSTOMER_CATEGORY_IDS = CATEGORY_IDS;
 const PSC_TYPES = ['Snag', 'Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request'];
 const PSC_CLOSED = ['Resolved [Promtek]', 'Verified [Customer]'];
 const TEAM_FIELD = 'customfield_14562';
@@ -57,15 +57,8 @@ async function issuesFor(env, jql, { next = null, limit = 60 } = {}) {
   return issues.map((i) => asOption(i, { next: next ? `${next}:${i.key}` : null }));
 }
 
-async function customerProjects(env, region) {
-  const projects = [];
-  let startAt = 0;
-  for (let page = 0; page < 10; page++) {
-    const data = await jira(env, `/rest/api/3/project/search?categoryId=${CUSTOMER_CATEGORY_IDS[region]}&status=live&orderBy=name&maxResults=50&startAt=${startAt}`);
-    projects.push(...(data.values || []).filter((p) => !isExcludedProject(p.key)));
-    if (data.isLast || !data.values?.length) break;
-    startAt += data.values.length;
-  }
+async function customerProjectOptions(env, region) {
+  const projects = (await customerProjects(env)).filter((p) => p.region === region);
   return projects.map((p) => ({ id: p.key, label: p.name, sublabel: p.key, loggable: false, next: `customer:${region}:${p.key}` }));
 }
 
@@ -131,7 +124,7 @@ export async function browse(env, node = 'root') {
       };
     }
     const [region, projectKey, branch, ...tail] = rest;
-    if (!projectKey) return { title: 'Which customer?', options: await customerProjects(env, region) };
+    if (!projectKey) return { title: 'Which customer?', options: await customerProjectOptions(env, region) };
 
     if (!branch) {
       return {

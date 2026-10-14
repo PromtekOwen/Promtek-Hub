@@ -1,6 +1,6 @@
 // 8x8 Work calls: fetched only when someone asks for them, matched to the
 // engineer who took them, and turned into time logs or service items.
-import { searchJql, isExcludedProject } from './jira.js';
+import { searchJql, customerProjects } from './jira.js';
 import { londonDate } from './sync.js';
 
 const PSC_TYPES = ['Snag', 'Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request'];
@@ -199,17 +199,7 @@ export async function openPscs(env, projectKey) {
 
 // Customer projects, for picking who an unknown number belongs to.
 export async function customerList(env) {
-  const projects = [];
-  for (const categoryId of ['10333', '10300']) {
-    let startAt = 0;
-    for (let page = 0; page < 10; page++) {
-      const { jira } = await import('./jira.js');
-      const data = await jira(env, `/rest/api/3/project/search?categoryId=${categoryId}&status=live&orderBy=name&maxResults=50&startAt=${startAt}`);
-      projects.push(...(data.values || []).filter((p) => !isExcludedProject(p.key)).map((p) => ({ key: p.key, name: p.name })));
-      if (data.isLast || !data.values?.length) break;
-      startAt += data.values.length;
-    }
-  }
+  const projects = (await customerProjects(env)).map((p) => ({ key: p.key, name: p.name }));
   const seen = new Set();
   return { customers: projects.filter((p) => (seen.has(p.key) ? false : seen.add(p.key))) };
 }
