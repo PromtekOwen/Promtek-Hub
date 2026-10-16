@@ -8,14 +8,39 @@
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam } from './permissions.js';
-import { orgMatcher, holidaysFor, tokenCounts } from './contracts.js';
+import { orgMatcher, tokenCounts, holidaysFor } from './contracts.js';
 
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
 export const ORDER_TYPES = ['Snag', 'Sub-Snag'];                        // order work, shown only when asked for
 export const RESOLVED_STATUSES = ['Resolved [Promtek]', 'Verified [Customer]'];
 const ORG_FIELD = 'customfield_12900';
 const PSC_PROJECT = 'PSC';
-export const DEFAULTS = { responseHours: 4, staleDays: 2, dayStart: 8, dayEnd: 17 };
+export const DEFAULTS = { targets: { platinum: 1, gold: 2, silver: 4, none: 8 }, shiftStart: 8, shiftEnd: 17, staleDays: 2 };
+
+// What each contract promises, from the Maintenance Level Agreements. The rank
+// sets the order items are looked at in; the cover decides when the clock for a
+// first look starts; the rest is shown to whoever picks the item up.
+export const TIERS = {
+  platinum: { name: 'Platinum', rank: 0, cover: 'anytime', coverText: '1 to 3 shifts, any day', callout: 'Same day',
+    calloutRate: 90, mileage: 0.9, tmRate: 80, tokens: 15, remote: true, portal: true, line: true, rollover: true, serviceItems: true,
+    visits: 'Two service and two calibration visits a year', obsolescence: true },
+  gold: { name: 'Gold', rank: 1, cover: 'weekdays', coverText: '1 to 3 shifts, weekdays', callout: '1 working day',
+    calloutRate: 100, mileage: 1.0, tmRate: 90, tokens: 10, remote: true, portal: true, line: true, rollover: false, serviceItems: false,
+    visits: 'One service and one calibration visit a year', obsolescence: true },
+  silver: { name: 'Silver', rank: 2, cover: 'shift', coverText: '1 shift, weekdays', callout: '2 working days',
+    calloutRate: 110, mileage: 1.1, tmRate: 100, tokens: 5, remote: true, portal: false, line: false, rollover: false, serviceItems: false,
+    visits: 'One service visit a year', obsolescence: true },
+  none: { name: 'No contract', rank: 3, cover: 'shift', coverText: 'Office hours, weekdays', callout: 'By arrangement', chargeable: true },
+};
+// The days no contract covers: Christmas Eve, Christmas Day, Boxing Day, New Year's Eve and New Year's Day.
+const NEVER_COVERED = ['12-24', '12-25', '12-26', '12-31', '01-01'];
+export const OUT_OF_HOURS_SURCHARGE = 750;
+
+export function tierOf(contract) {
+  if (!contract) return 'none';
+  const t = String(contract.tier || '').toLowerCase();
+  return t.includes('platinum') ? 'platinum' : t.includes('gold') ? 'gold' : t.includes('silver') ? 'silver' : 'none';
+}
 
 const SYNC_EVERY_MS = 10 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
@@ -49,42 +74,48 @@ function budget(env, max) {
 // ---------- settings ----------
 
 export async function loadSettings(env) {
-  try { return { ...DEFAULTS, ...JSON.parse((await getState(env, 'psc_settings')) || '{}') }; } catch { return { ...DEFAULTS }; }
+  let saved = {};
+  try { saved = JSON.parse((await getState(env, 'psc_settings')) || '{}'); } catch { /* defaults */ }
+  return {
+    targets: { ...DEFAULTS.targets, ...(saved.targets || {}) },
+    shiftStart: saved.shiftStart ?? DEFAULTS.shiftStart,
+    shiftEnd: saved.shiftEnd ?? DEFAULTS.shiftEnd,
+    staleDays: saved.staleDays ?? DEFAULTS.staleDays,
+  };
 }
 
-// ---------- working hours ----------
-
-// London's offset from UTC on a date, in minutes (60 in summer, 0 in winter).
-const offsets = new Map();
-function londonOffset(date) {
-  if (offsets.has(date)) return offsets.get(date);
-  const noon = Date.UTC(...date.split('-').map((x, i) => Number(x) - (i === 1 ? 1 : 0)), 12);
-  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', hourCycle: 'h23' }).format(new Date(noon)));
-  const off = (hour - 12) * 60;
-  offsets.set(date, off);
-  return off;
+// ---------- time ----------
+// The team covers support around the clock, so waits are counted in real time.
+export function elapsedMs(fromIso, toIso) {
+  const d = ms(toIso) - ms(fromIso);
+  return d > 0 ? d : 0;
 }
 
-// Working time between two moments: weekdays between the day's start and end
-// hours in London, leaving out bank holidays.
-export function workingMs(fromIso, toIso, settings, holidays = new Set()) {
-  const from = ms(fromIso), to = ms(toIso);
-  if (!(to > from)) return 0;
-  const day = (t) => londonDate(t);
-  let d = day(from);
-  const last = day(to);
-  let total = 0;
-  for (let guard = 0; guard < 800 && d <= last; guard++) {
-    const dow = new Date(`${d}T12:00:00Z`).getUTCDay();
-    if (dow !== 0 && dow !== 6 && !holidays.has(d)) {
-      const off = londonOffset(d) * 60000;
-      const base = Date.parse(`${d}T00:00:00Z`) - off;
-      const open = base + settings.dayStart * 3600000, close = base + settings.dayEnd * 3600000;
-      total += Math.max(0, Math.min(close, to) - Math.max(open, from));
-    }
-    d = new Date(Date.parse(`${d}T12:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  }
-  return total;
+const londonParts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', weekday: 'short', hourCycle: 'h23' });
+function london(t) {
+  const p = Object.fromEntries(londonParts.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, md: `${p.month}-${p.day}`, hour: Number(p.hour), weekday: !['Sat', 'Sun'].includes(p.weekday) };
+}
+
+// Whether a customer on this tier is covered at a moment.
+export function inCover(tier, t, { settings, bankHolidays = new Set(), bankHolidayCover = false }) {
+  const l = london(t);
+  if (NEVER_COVERED.includes(l.md)) return false;
+  if (bankHolidays.has(l.date) && !bankHolidayCover) return false;
+  const cover = TIERS[tier]?.cover || 'shift';
+  if (cover === 'anytime') return true;
+  if (!l.weekday) return false;
+  if (cover === 'weekdays') return true;
+  return l.hour >= settings.shiftStart && l.hour < settings.shiftEnd;
+}
+
+// When the clock for a first look starts: when it was raised, or when the customer's cover next begins.
+export function coverStart(tier, iso, opts) {
+  let t = ms(iso);
+  if (inCover(tier, t, opts)) return new Date(t).toISOString();
+  t = Math.ceil(t / 3600000) * 3600000;
+  for (let i = 0; i < 24 * 21; i++, t += 3600000) if (inCover(tier, t, opts)) return new Date(t).toISOString();
+  return iso;
 }
 
 // ---------- reading an item from Jira ----------
@@ -262,19 +293,20 @@ async function context(env) {
     env.DB.prepare(`SELECT l.issue_id, l.account_id, l.seconds, COALESCE(l.logged_at, l.created_at) AS at, e.name FROM xp_ledger l
       LEFT JOIN employees e ON e.account_id = l.account_id WHERE l.issue_id IN (SELECT issue_id FROM psc_items) ORDER BY at`).all(),
     env.DB.prepare('SELECT * FROM contract_org_map').all().catch(() => ({ results: [] })),
-    env.DB.prepare("SELECT * FROM contracts WHERE status IN ('Contract Confirmed', 'In Contract', 'Required Renewal')").all().catch(() => ({ results: [] })),
+    env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Required Renewal')").all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contract_items WHERE kind = 'token'").all().catch(() => ({ results: [] })),
     env.DB.prepare('SELECT account_id, name, email, teams, team FROM employees WHERE active = 1').all(),
   ]);
   let projects = [];
   try { projects = await customerProjects(env); } catch { /* names fall back to keys */ }
-  const holidays = new Set((await holidaysFor(env)).map((h) => h.date));
-  return { settings, items, actions, logs, match: orgMatcher(projects, manual), projects, contracts, tokens, emps, holidays };
+  let bankHolidays = new Set();
+  try { bankHolidays = new Set((await holidaysFor(env)).map((h) => h.date)); } catch { /* none known */ }
+  return { settings, items, actions, logs, match: orgMatcher(projects, manual), projects, contracts, tokens, emps, bankHolidays };
 }
 
 // Everything the tile shows about one item, worked out now.
 export function describe(row, ctx, now = new Date().toISOString()) {
-  const { settings, holidays } = ctx;
+  const { settings } = ctx;
   const logs = ctx.logs.filter((l) => l.issue_id === row.issue_id);
   const acts = ctx.actions.filter((a) => a.issue_id === row.issue_id);
   const touches = [
@@ -291,18 +323,27 @@ export function describe(row, ctx, now = new Date().toISOString()) {
   const lastTeam = lastCandidates[0] || null;
   const resolved = Boolean(row.done) || RESOLVED_STATUSES.includes(row.status);
   const hour = 3600000;
-  const target = settings.responseHours * hour;
-  const waitMs = first ? workingMs(row.created_at, first.at, settings, holidays) : workingMs(row.created_at, now, settings, holidays);
-  const customerWaiting = !resolved && first && row.customer_last_at && ms(row.customer_last_at) > ms(lastTeam?.at || 0) + 1000;
-  const customerWaitMs = customerWaiting ? workingMs(row.customer_last_at, now, settings, holidays) : 0;
-  const quietMs = !resolved && lastTeam ? workingMs(lastTeam.at, now, settings, holidays) : 0;
-  const stale = !resolved && first && !customerWaiting && quietMs > settings.staleDays * (settings.dayEnd - settings.dayStart) * hour;
 
-  // Which customer: the project, or for the PSC project, its Organization.
+  // Which customer: the project, or for the PSC project, its Organization; and the live contract they're on.
   const isPsc = row.project_key === PSC_PROJECT;
   const customerKey = isPsc ? (row.org ? row.org.split(' | ').map(ctx.match).find(Boolean) || null : null) : row.project_key;
   const customerName = customerKey ? (ctx.projects.find((p) => p.key === customerKey)?.name || customerKey) : (row.org || null);
-  const contract = customerKey ? ctx.contracts.filter((c) => c.project_key === customerKey).sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)))[0] : null;
+  const contract = customerKey ? ctx.contracts.filter((c) => c.project_key === customerKey)
+    .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)))[0] || null : null;
+  const tier = tierOf(contract);
+  const coverOpts = { settings, bankHolidays: ctx.bankHolidays || new Set(), bankHolidayCover: Boolean(contract?.bank_holiday) };
+
+  // The first look is due a set time after the customer's cover starts; from then the clock runs around the clock.
+  const target = (settings.targets[tier] ?? DEFAULTS.targets[tier]) * hour;
+  const raisedInCover = inCover(tier, ms(row.created_at), coverOpts);
+  const clockFrom = coverStart(tier, row.created_at, coverOpts);
+  const dueAt = new Date(ms(clockFrom) + target).toISOString();
+  const waitMs = elapsedMs(row.created_at, first ? first.at : now);
+  const lateNow = first ? ms(first.at) > ms(dueAt) : ms(now) > ms(dueAt);
+  const customerWaiting = !resolved && first && row.customer_last_at && ms(row.customer_last_at) > ms(lastTeam?.at || 0) + 1000;
+  const customerWaitMs = customerWaiting ? elapsedMs(row.customer_last_at, now) : 0;
+  const quietMs = !resolved && lastTeam ? elapsedMs(lastTeam.at, now) : 0;
+  const stale = !resolved && first && !customerWaiting && quietMs > settings.staleDays * 24 * hour;
   const missing = [];
   if (!resolved && isPsc && !row.org) missing.push('org');
   if (!resolved && !row.assignee_id) missing.push('assignee');
@@ -310,7 +351,7 @@ export function describe(row, ctx, now = new Date().toISOString()) {
 
   let state = 'active';
   if (resolved) state = 'resolved';
-  else if (!first) state = waitMs > target ? 'late' : 'new';
+  else if (!first) state = lateNow ? 'late' : 'new';
   else if (customerWaiting) state = 'waiting';
   else if (stale) state = 'quiet';
   const rank = { late: 0, waiting: 1, new: 2, quiet: 3, active: 4, resolved: 5 }[state];
@@ -321,15 +362,26 @@ export function describe(row, ctx, now = new Date().toISOString()) {
     created: row.created_at, resolvedAt: row.resolved_at, org: row.org, customer: customerName, customerKey,
     orderWork: ORDER_TYPES.includes(row.issuetype),
     contract: contract ? { key: contract.issue_key, tier: contract.tier, status: contract.status, bankHoliday: Boolean(contract.bank_holiday),
-      tokensFree: tokenCounts(ctx.tokens.filter((t) => t.contract_key === contract.issue_key)).free } : null,
+      end: contract.end_date, tokensFree: tokenCounts(ctx.tokens.filter((t) => t.contract_key === contract.issue_key)).free } : null,
+    tier, tierName: TIERS[tier].name, tierRank: TIERS[tier].rank,
+    cover: { raisedInCover, inCoverNow: inCover(tier, ms(now), coverOpts), clockFrom },
     raisedByTeam: Boolean(row.reporter_team),
-    response: first ? { at: first.at, by: first.by, how: first.how, workingMs: waitMs, late: waitMs > target }
-      : { at: null, workingMs: waitMs, late: waitMs > target, targetMs: target },
+    response: first ? { at: first.at, by: first.by, how: first.how, waitMs, late: lateNow, dueAt, targetMs: target }
+      : { at: null, waitMs, late: lateNow, dueAt, targetMs: target, leftMs: ms(dueAt) - ms(now) },
     lastTeam, customerLast: row.customer_last_at ? { at: row.customer_last_at, by: row.customer_last_by } : null,
     customerWaiting: Boolean(customerWaiting), customerWaitMs, quietMs, stale: Boolean(stale),
     logged: logs.reduce((a, l) => a + l.seconds, 0),
     missing, state, rank,
   };
+}
+
+// Late first, then new items due within the hour, then customers waiting, then other new items by when
+// they're due; within each, the higher contract first.
+const urgency = (d) => (d.state === 'new' && d.response.leftMs < 3600000 ? 0.5 : d.rank);
+export function byAttention(a, b) {
+  if (urgency(a) !== urgency(b)) return urgency(a) - urgency(b);
+  if (a.state === 'new') return ms(a.response.dueAt) - ms(b.response.dueAt) || a.tierRank - b.tierRank;
+  return a.tierRank - b.tierRank || ms(a.created) - ms(b.created);
 }
 
 const canSee = (viewer) => Boolean(viewer.isAdmin || viewer.can?.oversight || viewer.teams?.includes('Service'));
@@ -341,13 +393,12 @@ export async function overview(env, viewer) {
   mustSee(viewer);
   const ctx = await context(env);
   const now = new Date().toISOString();
-  const items = ctx.items.map((r) => describe(r, ctx, now))
-    .sort((a, b) => a.rank - b.rank || ms(a.created) - ms(b.created));
+  const items = ctx.items.map((r) => describe(r, ctx, now)).sort(byAttention);
   const people = ctx.emps.filter((e) => e.account_id).map((e) => ({ id: e.account_id, name: e.name,
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
   const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
   return {
-    items, people, pending, settings: ctx.settings, me: viewer.accountId,
+    items, people, pending, settings: ctx.settings, me: viewer.accountId, tiers: TIERS, surcharge: OUT_OF_HOURS_SURCHARGE,
     syncedAt: Number((await getState(env, 'psc_items_at')) || 0) ? new Date(Number(await getState(env, 'psc_items_at'))).toISOString() : null,
     isAdmin: Boolean(viewer.isAdmin),
   };
@@ -451,16 +502,16 @@ async function alerts(env, ctx) {
     if (d.state === 'late') {
       for (const to of await serviceLeads(env)) {
         await raiseAlert(env, { kind: 'psc-response', dedupe: `psc-response:${d.key}:${to || 'default'}`, recipient: to,
-          subject: `${d.key} has waited ${hoursText(d.response.workingMs)} for a first response`,
-          body: `${d.key}: ${d.summary}\nCustomer: ${d.customer || 'not set'}${d.contract ? ` (${d.contract.tier || 'contract'})` : ''}\nRaised by ${d.reporter || 'unknown'} at ${new Date(d.created).toLocaleString('en-GB', { timeZone: 'Europe/London' })}.\n\nNo one from the team has looked at it yet. Open PSC in the hub to pick it up.` });
+          subject: `${d.tier !== 'none' ? `${d.tierName}: ` : ''}${d.key} has waited ${hoursText(d.response.waitMs)} for a first response`,
+          body: `${d.key}: ${d.summary}\nCustomer: ${d.customer || 'not set'} (${d.tierName}${d.tier !== 'none' ? `, callout ${TIERS[d.tier].callout.toLowerCase()}` : ', chargeable'})\nRaised by ${d.reporter || 'unknown'} at ${new Date(d.created).toLocaleString('en-GB', { timeZone: 'Europe/London' })}.\n\nNo one from the team has looked at it yet. Open PSC in the hub to pick it up.` });
       }
     }
-    if (d.customerWaiting && d.customerWaitMs > ctx.settings.responseHours * 3600000) {
+    if (d.customerWaiting && d.customerWaitMs > d.response.targetMs) {
       const owner = d.assigneeId ? ctx.emps.find((e) => e.account_id === d.assigneeId)?.email : null;
       for (const to of owner ? [owner] : await serviceLeads(env)) {
         await raiseAlert(env, { kind: 'psc-waiting', dedupe: `psc-waiting:${d.key}:${d.customerLast.at}:${to || 'default'}`, recipient: to,
           subject: `${d.customer || 'A customer'} is waiting on ${d.key}`,
-          body: `${d.customerLast.by} replied on ${d.key} (${d.summary}) ${hoursText(d.customerWaitMs)} of working time ago, and the team hasn't answered since.\n\nOpen PSC in the hub to see it.` });
+          body: `${d.customerLast.by} replied on ${d.key} (${d.summary}) ${hoursText(d.customerWaitMs)} ago, and the team hasn't answered since.\n\nOpen PSC in the hub to see it.` });
       }
     }
   }
@@ -495,10 +546,15 @@ export async function insights(env, viewer) {
   const since = Date.now() - RECENT_DAYS * 86400000;
   // Items the team raised itself (from a call, say) were answered before they existed, so they're left out of response times.
   const recent = all.filter((d) => ms(d.created) >= since && d.response.at && !d.raisedByTeam);
-  const waits = recent.map((d) => d.response.workingMs).sort((a, b) => a - b);
+  const waits = recent.map((d) => d.response.waitMs).sort((a, b) => a - b);
   const median = waits.length ? waits[Math.floor(waits.length / 2)] : null;
-  const target = ctx.settings.responseHours * 3600000;
   const open = all.filter((d) => d.state !== 'resolved');
+  const byTier = Object.keys(TIERS).map((t) => {
+    const r = recent.filter((d) => d.tier === t);
+    const w = r.map((d) => d.response.waitMs).sort((a, b) => a - b);
+    return { tier: t, name: TIERS[t].name, target: ctx.settings.targets[t], count: r.length, inTarget: r.filter((d) => !d.response.late).length,
+      medianMs: w.length ? w[Math.floor(w.length / 2)] : null, open: open.filter((d) => d.tier === t).length };
+  });
   const count = (list, key) => { const m = new Map(); for (const d of list) { const k = key(d); m.set(k, (m.get(k) || 0) + 1); } return [...m].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n); };
   const ageDays = (d) => (Date.now() - ms(d.created)) / 86400000;
   const weeks = [];
@@ -507,12 +563,13 @@ export async function insights(env, viewer) {
     const inWeek = all.filter((d) => ms(d.created) >= start && ms(d.created) < end);
     const answered = inWeek.filter((d) => d.response.at && !d.raisedByTeam);
     weeks.push({ start: new Date(start).toISOString().slice(0, 10), raised: inWeek.length,
-      inTarget: answered.filter((d) => d.response.workingMs <= target).length, answered: answered.length,
+      inTarget: answered.filter((d) => !d.response.late).length, answered: answered.length,
       resolved: all.filter((d) => d.resolvedAt && ms(d.resolvedAt) >= start && ms(d.resolvedAt) < end).length });
   }
   return {
     settings: ctx.settings,
-    response: { count: waits.length, medianMs: median, inTarget: waits.filter((x) => x <= target).length, unanswered: open.filter((d) => !d.response.at).length },
+    response: { count: waits.length, medianMs: median, inTarget: recent.filter((d) => !d.response.late).length, unanswered: open.filter((d) => !d.response.at).length },
+    byTier,
     weeks,
     states: { late: open.filter((d) => d.state === 'late').length, waiting: open.filter((d) => d.state === 'waiting').length,
       quiet: open.filter((d) => d.state === 'quiet').length, open: open.length },
@@ -529,20 +586,21 @@ export async function insights(env, viewer) {
 
 export async function getSettings(env, viewer) {
   if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
-  return { settings: await loadSettings(env), defaults: DEFAULTS, error: (await getState(env, 'psc_error')) || null,
+  return { settings: await loadSettings(env), defaults: DEFAULTS, tiers: TIERS, error: (await getState(env, 'psc_error')) || null,
     syncedAt: Number((await getState(env, 'psc_items_at')) || 0) || null };
 }
 
 export async function saveSettings(env, viewer, input) {
   if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
   const n = (v, lo, hi, d) => { const x = Number(v); return Number.isFinite(x) ? Math.min(hi, Math.max(lo, x)) : d; };
+  const t = input.targets || {};
   const s = {
-    responseHours: n(input.responseHours, 0.5, 80, DEFAULTS.responseHours),
+    targets: Object.fromEntries(Object.keys(DEFAULTS.targets).map((k) => [k, n(t[k], 0.25, 200, DEFAULTS.targets[k])])),
+    shiftStart: n(input.shiftStart, 0, 23, DEFAULTS.shiftStart),
+    shiftEnd: n(input.shiftEnd, 1, 24, DEFAULTS.shiftEnd),
     staleDays: n(input.staleDays, 0.5, 30, DEFAULTS.staleDays),
-    dayStart: n(input.dayStart, 0, 23, DEFAULTS.dayStart),
-    dayEnd: n(input.dayEnd, 1, 24, DEFAULTS.dayEnd),
   };
-  if (s.dayEnd <= s.dayStart) throw new Error('The working day has to end after it starts.');
+  if (s.shiftEnd <= s.shiftStart) throw new Error('The day shift has to end after it starts.');
   const before = await loadSettings(env);
   await setState(env, 'psc_settings', JSON.stringify(s));
   return { ok: true, before, after: s };

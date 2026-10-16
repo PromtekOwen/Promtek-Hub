@@ -270,9 +270,11 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/psc/settings') return json(await Psc.getSettings(env, user));
     if (method === 'POST' && pathname === '/api/psc/settings') {
       const r = await Psc.saveSettings(env, user, body);
-      const label = { responseHours: 'First response target (working hours)', staleDays: 'Quiet after (working days)', dayStart: 'Working day starts', dayEnd: 'Working day ends' };
+      const flat = (x) => ({ ...Object.fromEntries(Object.entries(x.targets || {}).map(([k, v]) => [`First look, ${Psc.TIERS[k]?.name || k} (hours)`, v])),
+        'Day shift starts': x.shiftStart, 'Day shift ends': x.shiftEnd, 'Quiet after (days)': x.staleDays });
+      const before = flat(r.before), after = flat(r.after);
       await Audit.record(env, user, { area: 'PSC', action: 'Settings changed',
-        changes: Object.keys(label).filter((k) => r.before[k] !== r.after[k]).map((k) => ({ label: label[k], before: String(r.before[k]), after: String(r.after[k]) })) });
+        changes: Object.keys(after).filter((k) => before[k] !== after[k]).map((k) => ({ label: k, before: String(before[k] ?? ''), after: String(after[k]) })) });
       return json({ ok: true });
     }
   }

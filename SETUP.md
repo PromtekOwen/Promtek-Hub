@@ -348,15 +348,28 @@ The **PSC** tile shows every support request: the PSC issue types (Incident, Fur
 
 **Who it's for.** An item in a customer project belongs to that customer. An item on the PSC board belongs to the customer its Organization names, matched the same way as for service contracts. The customer's live contract, tier, free tokens and bank holiday cover show on the item.
 
-**First look.** Timed in working hours (weekdays between the hours set under the cog, leaving out bank holidays) from when the item was raised until the first of: a comment, status change or assignment by a Promtek person in Jira; time logged to it; or **I'm on it** in the hub. Jira's automatic replies don't count. Items raised by the team themselves count as looked at from the start, and are left out of the response figures.
+**Contract tiers.** Each item takes the tier of the customer's live service contract (In Contract or Required Renewal). Bronze, an expired contract or no contract counts as no contract: lowest priority and chargeable. The tiers' terms, from the Maintenance Level Agreements, are at the top of `src/psc.js` and shown on each item:
+
+| Tier | Cover | Callout response | Callout rates | T&M |
+|---|---|---|---|---|
+| Platinum | 1 to 3 shifts, any day | Same day | £90/hour, £0.90/mile | £80/hour |
+| Gold | 1 to 3 shifts, weekdays | 1 working day | £100/hour, £1.00/mile | £90/hour |
+| Silver | 1 shift, weekdays (the day shift) | 2 working days | £110/hour, £1.10/mile | £100/hour |
+| No contract | Office hours, weekdays (the day shift) | By arrangement | Chargeable | Chargeable |
+
+No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve or New Year's Day; other bank holidays are covered only for contracts with bank holiday cover. Callouts out of office hours carry the £750 breakdown surcharge.
+
+**First look.** Each item is due a first look a set time (by tier, under the cog) after the customer's cover starts: straight away if it was raised in cover, otherwise when their cover next begins. From then it counts around the clock. The first look is the first of: a comment, status change or assignment by a Promtek person in Jira; time logged to it; or **I'm on it** in the hub. Jira's automatic replies don't count. Items raised by the team themselves count as looked at from the start, and are left out of the response figures.
 
 **After that.** Each item shows the team's last update (who and what), and flags when the customer has replied since the team last did anything, or when it has gone quiet for longer than the setting.
 
 **Triage** lists items with no first look, no owner, or (on the PSC board) no Organization. **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
 
-**Emails.** The Service team lead hears when an item passes the first-look target. The owner (or the lead, if no one has it) hears when a customer has been waiting longer than that.
+**Order.** Late items first, then new items due within the hour, then customers waiting on us, then other new items by when they're due; within each, Platinum, Gold, Silver, then no contract.
 
-**Settings** (cog, admin only): the first-look target, how long before an item is quiet, and the working day.
+**Emails.** The Service team lead hears when an item passes its first-look deadline. The owner (or the lead, if no one has it) hears when a customer has been waiting longer than that.
+
+**Settings** (cog, admin only): the first-look target for each tier (Platinum 1 hour, Gold 2, Silver 4, no contract 8 to start with), the day shift (08:00 to 17:00), and how many days without an update before an item is quiet.
 
 ## Part 14f: Which Jira projects the hub uses
 

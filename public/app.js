@@ -5278,6 +5278,7 @@ let pscWho = 'all';             // all, mine, unassigned
 let pscShow = 'open';           // open, resolved
 let pscSnags = false;
 let pscSort = 'attention';
+let pscTier = '';
 let pscOrgs = null;             // the service desk's Organizations, once loaded
 let pscData = null;
 
@@ -5289,6 +5290,8 @@ const HOW_TEXT = { comment: 'commented', status: 'moved it on', assignee: 'assig
 
 function agoText(iso) {
   if (!iso) return '';
+  const ahead = Math.round((Date.parse(iso) - Date.now()) / 60000);
+  if (ahead >= 1) return ahead < 60 ? `in ${ahead}m` : ahead < 1440 ? `in ${Math.round(ahead / 60)}h` : `in ${Math.round(ahead / 1440)}d`;
   const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
@@ -5304,18 +5307,28 @@ function pscStatePill(d) {
   return `<span class="con-status ${cls === 'late' ? 'red' : cls}">${label}</span>`;
 }
 
-function pscContractChip(d) {
-  if (!d.customerKey) return '';
-  if (!d.contract) return '<span class="psc-chip plain">No contract</span>';
-  return `<span class="psc-chip contract" title="${esc(d.contract.key)}">${esc(d.contract.tier || 'Contract')}${d.contract.tokensFree != null ? ` · ${d.contract.tokensFree} tokens free` : ''}</span>${d.contract.bankHoliday ? bankHolidayIcon() : ''}`;
+function pscTierBadge(d) {
+  if (d.tier === 'none') return `<span class="psc-tier t-none" title="Chargeable: support is paid for as needed">${d.contract ? esc(d.contract.tier || 'Bronze') : 'No contract'} · chargeable</span>`;
+  return `<span class="psc-tier t-${d.tier}" title="${esc(d.contract?.key || '')}">${esc(d.tierName)}</span>${d.contract?.tokensFree != null ? `<span class="psc-chip plain">${d.contract.tokensFree} ${d.contract.tokensFree === 1 ? 'token' : 'tokens'} free</span>` : ''}${d.contract?.bankHoliday ? bankHolidayIcon() : ''}`;
 }
+
+const timeOf = (iso) => {
+  const t = new Date(iso);
+  const sameDay = t.toDateString() === new Date().toDateString();
+  return t.toLocaleString('en-GB', sameDay ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+};
 
 function pscResponseChip(d) {
   if (d.state === 'resolved') return '';
   const r = d.response;
-  if (!r.at) return `<span class="psc-chip ${r.late ? 'bad' : 'warn'}">${svgIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>')} Waiting ${workText(r.workingMs)} for a first look</span>`;
+  const clock = svgIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>');
+  if (!r.at && r.late) return `<span class="psc-chip bad">${clock} First look was due ${timeOf(r.dueAt)}, waiting ${workText(r.waitMs)}</span>`;
+  if (!r.at) {
+    const out = `<span class="psc-chip ${r.leftMs < 3600000 ? 'warn' : 'plain'}">${clock} First look due ${timeOf(r.dueAt)} (${workText(Math.max(0, r.leftMs))} left)</span>`;
+    return out + (d.cover.raisedInCover ? '' : `<span class="psc-chip plain" title="Raised outside ${esc(d.tierName)} cover; the clock started when cover began">Raised outside cover</span>`);
+  }
   if (r.how === 'raised by the team') return `<span class="psc-chip">Raised by ${esc((r.by || 'the team').split(' ')[0])}</span>`;
-  return `<span class="psc-chip${r.late ? ' bad' : ''}">First look ${r.late ? 'took' : 'in'} ${workText(r.workingMs)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}</span>`;
+  return `<span class="psc-chip${r.late ? ' bad' : ''}">First look ${r.late ? 'took' : 'in'} ${workText(r.waitMs)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}</span>`;
 }
 
 function pscUpdateChips(d) {
@@ -5331,7 +5344,7 @@ function pscCardHtml(d, { triage = false } = {}) {
   return `<article class="card psc-card s-${d.state}" data-psc-open="${esc(d.key)}" data-search="${esc(search)}" tabindex="0" role="button" aria-label="${esc(d.key)} ${esc(d.summary)}">
       <div class="psc-top"><span class="psc-key">${esc(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
       <h3>${esc(d.summary)}</h3>
-      <p class="psc-meta"><span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>${pscContractChip(d)}
+      <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>
         <span class="muted">· ${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'} · ${esc(d.status)} · raised ${agoText(d.created)}</span></p>
       <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}</div>
       ${triage ? pscTriageActions(d) : ''}
@@ -5371,7 +5384,7 @@ function pscTabsHtml(data) {
 }
 
 function pscHeadLine(data) {
-  return `<div class="psc-headline"><p class="help">Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}. Times count working hours, ${data.settings.dayStart}:00 to ${data.settings.dayEnd}:00 on weekdays.</p>
+  return `<div class="psc-headline"><p class="help">Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.</p>
       <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
     ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}`;
 }
@@ -5391,25 +5404,27 @@ async function pscHtml() {
   const base = data.items.filter((d) => (pscSnags || !d.orderWork) && (pscShow === 'resolved' ? d.state === 'resolved' : d.state !== 'resolved'));
   const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
   let list = base.filter((d) => !pscCustomer || (d.customer || 'No customer') === pscCustomer)
+    .filter((d) => !pscTier || d.tier === pscTier)
     .filter((d) => pscWho === 'all' || (pscWho === 'mine' ? d.assigneeId === data.me : !d.assigneeId));
   const order = {
-    attention: (a, b) => a.rank - b.rank || Date.parse(a.created) - Date.parse(b.created),
+    attention: null,                   // the order the hub works out: late, waiting, then due soonest, higher contracts first
     oldest: (a, b) => Date.parse(a.created) - Date.parse(b.created),
     quiet: (a, b) => Date.parse(a.lastTeam?.at || a.created) - Date.parse(b.lastTeam?.at || b.created),
     customer: (a, b) => String(a.customer || '~').localeCompare(String(b.customer || '~')) || a.rank - b.rank,
   };
-  list = [...list].sort(order[pscSort] || order.attention);
+  if (order[pscSort]) list = [...list].sort(order[pscSort]);
   const open = data.items.filter((d) => !d.orderWork && d.state !== 'resolved');
   const n = (fn) => open.filter(fn).length;
   return `${pscTabsHtml(data)}${pscHeadLine(data)}
     <dl class="stats con-stats">
-      <div><dt>Waiting for a first look</dt><dd>${n((d) => !d.response.at)}<small>${n((d) => d.state === 'late')} past ${data.settings.responseHours}h</small></dd></div>
+      <div><dt>Waiting for a first look</dt><dd>${n((d) => !d.response.at)}<small>${n((d) => d.state === 'late')} late</small></dd></div>
       <div><dt>Customer waiting on us</dt><dd>${n((d) => d.customerWaiting)}</dd></div>
       <div><dt>Quiet for ${data.settings.staleDays}+ days</dt><dd>${n((d) => d.stale)}</dd></div>
       <div><dt>Unassigned</dt><dd>${n((d) => !d.assigneeId)}</dd></div>
     </dl>
     <div class="row con-tools psc-tools">
       <span class="segment">${[['all', 'Everyone\'s'], ['mine', 'Mine'], ['unassigned', 'Unassigned']].map(([k, l]) => `<button class="seg${pscWho === k ? ' on' : ''}" data-psc-who="${k}">${l}</button>`).join('')}</span>
+      <label class="con-tier">Contract <select data-psc-tier><option value="">All</option>${Object.entries(data.tiers).map(([k, t]) => `<option value="${k}"${pscTier === k ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
       <label class="con-tier">Customer <select data-psc-customer><option value="">All customers</option>${customers.map((c) => `<option${c === pscCustomer ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
       <label class="con-tier">Sort <select data-psc-sort>${[['attention', 'Needs attention'], ['oldest', 'Oldest first'], ['quiet', 'Longest without an update'], ['customer', 'Customer']].map(([k, l]) => `<option value="${k}"${pscSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       <input type="search" id="psc-search" placeholder="Search keys, summaries or people" aria-label="Search PSCs">
@@ -5429,16 +5444,18 @@ async function pscItemHtml() {
     <section class="card psc-detail">
       <div class="psc-top"><span class="psc-key">${jiraLink(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
       <h2>${esc(d.summary)}</h2>
-      <p class="psc-meta"><span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>${pscContractChip(d)}<span class="muted">· ${esc(d.status)}</span></p>
+      <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span><span class="muted">· ${esc(d.status)}</span></p>
       <dl class="psc-facts">
         <div><dt>Raised</dt><dd>${when(d.created)}${d.reporter ? ` by ${esc(d.reporter)}` : ''}</dd></div>
-        <div><dt>First look</dt><dd>${d.response.at ? `${when(d.response.at)} by ${esc(d.response.by || 'the team')}, who ${HOW_TEXT[d.response.how] || d.response.how}. ${workText(d.response.workingMs)} of working time.`
-          : `<b class="${d.response.late ? 'con-late' : ''}">Not yet: waiting ${workText(d.response.workingMs)} of working time.</b>`}</dd></div>
+        <div><dt>First look</dt><dd>${d.response.at ? `${when(d.response.at)} by ${esc(d.response.by || 'the team')}, who ${HOW_TEXT[d.response.how] || d.response.how}, ${workText(d.response.waitMs)} after it was raised.`
+          : `<b class="${d.response.late ? 'con-late' : ''}">Not yet: waiting ${workText(d.response.waitMs)}.</b>`}</dd></div>
         <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
         <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
         <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
         <div><dt>Time logged</dt><dd>${d.logged ? duration(d.logged) : 'None yet'}</dd></div>
+        <div><dt>First look due</dt><dd>${when(d.response.dueAt)}, ${workText(d.response.targetMs)} after ${d.cover.raisedInCover ? 'it was raised' : `${esc(d.tierName)} cover began`}</dd></div>
       </dl>
+      ${pscTermsHtml(d)}
       <div class="psc-actions">
         ${d.state !== 'resolved' ? `<button class="btn" data-psc-pickup="${esc(d.key)}">I'm on it</button>` : ''}
         <button class="btn secondary" data-psc-log="${esc(d.key)}">Log time</button>
@@ -5453,9 +5470,34 @@ async function pscItemHtml() {
         <span class="sub pre-wrap">${esc(e.text || '')}</span></li>`).join('')}</ul>`;
 }
 
+// What the customer's contract gives them, for whoever picks the item up.
+function pscTermsHtml(d) {
+  const t = pscData?.tiers?.[d.tier];
+  if (!t) return '';
+  const yes = (v) => (v ? 'Included' : 'Not included');
+  const surcharge = pscData?.surcharge || 750;
+  if (d.tier === 'none') {
+    return `<div class="psc-terms none"><h3>No contract: chargeable</h3>
+      <p>${d.customer ? esc(d.customer) : 'This customer'} has no live service contract${d.contract ? ` (${esc(d.contract.tier || 'Bronze')})` : ''}, so support is lowest priority and paid for as needed. Agree the cost before going ahead with any work or callout.</p>
+      ${d.cover.raisedInCover ? '' : `<p class="psc-out">Raised outside office hours. A callout out of office hours carries the £${surcharge} breakdown surcharge.</p>`}</div>`;
+  }
+  return `<div class="psc-terms t-${d.tier}"><h3>${esc(t.name)} contract${d.contract?.end ? ` <span class="muted">until ${fullDate(d.contract.end)}</span>` : ''}</h3>
+    <dl>
+      <div><dt>Cover</dt><dd>${esc(t.coverText)}${d.contract?.bankHoliday ? ', bank holidays included' : ''}</dd></div>
+      <div><dt>Callout response</dt><dd>${esc(t.callout)}</dd></div>
+      <div><dt>Callout rates</dt><dd>£${t.calloutRate}/hour, £${t.mileage.toFixed(2)}/mile</dd></div>
+      <div><dt>Time and materials</dt><dd>£${t.tmRate}/hour</dd></div>
+      <div><dt>Tokens</dt><dd>${d.contract?.tokensFree != null ? `${d.contract.tokensFree} free of ${t.tokens} a year` : `${t.tokens} a year`}${t.rollover ? ', rollover included' : ''}</dd></div>
+      <div><dt>Remote access</dt><dd>${yes(t.remote)} where applicable</dd></div>
+      <div><dt>Support portal</dt><dd>${yes(t.portal)}</dd></div>
+      <div><dt>Dedicated service line</dt><dd>${yes(t.line)}</dd></div>
+    </dl>
+    ${d.cover.raisedInCover ? '' : `<p class="psc-out">Raised outside ${esc(t.name)} cover. The first-look clock started when cover began, and a callout out of office hours carries the £${surcharge} breakdown surcharge.</p>`}
+    <p class="muted psc-terms-note">Software modifications of up to 4 tokens can be done under tokens; anything bigger is quoted at time and materials.</p></div>`;
+}
+
 async function pscInsightsHtml() {
   const s = await api('/api/psc/insights');
-  const target = s.settings.responseHours;
   const pct = s.response.count ? Math.round((s.response.inTarget / s.response.count) * 100) : null;
   const bars = (rows, label = (x) => x.name) => {
     const max = Math.max(1, ...rows.map((x) => x.n));
@@ -5464,13 +5506,17 @@ async function pscInsightsHtml() {
   };
   return `<h2>First response</h2>
     <dl class="stats con-stats">
-      <div><dt>Typical first look, last 30 days</dt><dd>${s.response.medianMs == null ? '—' : workText(s.response.medianMs)}<small>median, working time</small></dd></div>
-      <div><dt>Within ${target} working hours</dt><dd>${pct == null ? '—' : `${pct}%`}<small>${s.response.inTarget} of ${s.response.count}</small></dd></div>
+      <div><dt>Typical first look, last 30 days</dt><dd>${s.response.medianMs == null ? '—' : workText(s.response.medianMs)}<small>median</small></dd></div>
+      <div><dt>On time for their contract</dt><dd>${pct == null ? '—' : `${pct}%`}<small>${s.response.inTarget} of ${s.response.count}</small></dd></div>
       <div><dt>Waiting for a first look now</dt><dd>${s.response.unanswered}</dd></div>
       <div><dt>Customers waiting on us</dt><dd>${s.states.waiting}</dd></div>
     </dl>
-    <div class="table-wrap"><table class="psc-weeks"><thead><tr><th>Week starting</th><th>Raised</th><th>First look within ${target}h</th><th>Resolved</th></tr></thead>
+    <div class="table-wrap"><table class="psc-weeks"><thead><tr><th>Week starting</th><th>Raised</th><th>First look on time</th><th>Resolved</th></tr></thead>
       <tbody>${s.weeks.map((w) => `<tr><td>${shortDate(w.start)}</td><td>${w.raised}</td><td>${w.answered ? `${w.inTarget} of ${w.answered}` : '—'}</td><td>${w.resolved}</td></tr>`).join('')}</tbody></table></div>
+    <h2>By contract</h2>
+    <div class="table-wrap"><table class="psc-weeks"><thead><tr><th>Contract</th><th>First look target</th><th>Typical first look</th><th>On time</th><th>Open now</th></tr></thead>
+      <tbody>${s.byTier.map((t) => `<tr><td><span class="psc-tier t-${t.tier}">${esc(t.name)}</span></td><td>${t.target}h</td><td>${t.medianMs == null ? '—' : workText(t.medianMs)}</td>
+        <td>${t.count ? `${t.inTarget} of ${t.count}` : '—'}</td><td>${t.open}</td></tr>`).join('')}</tbody></table></div>
     <h2>Open items</h2>
     <div class="two-up con-two">
       <section class="card"><h3>How old they are</h3>${bars(s.ages, (x) => x.label)}</section>
@@ -5526,6 +5572,7 @@ async function pscChange(event) {
   if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
   if (el.matches('[data-psc-org]') && el.value) { await send('/api/psc/org', { key: el.dataset.pscOrg, orgId: el.value }, 'Organization saved'); return true; }
   if (el.matches('[data-psc-customer]')) { pscCustomer = el.value; render(); return true; }
+  if (el.matches('[data-psc-tier]')) { pscTier = el.value; render(); return true; }
   if (el.matches('[data-psc-sort]')) { pscSort = el.value; render(); return true; }
   if (el.matches('[data-psc-resolved]')) { pscShow = el.checked ? 'resolved' : 'open'; render(); return true; }
   if (el.matches('[data-psc-snags]')) { pscSnags = el.checked; render(); return true; }
@@ -5553,12 +5600,20 @@ function settingsPscHtml() {
   const field = (id, label, value, hint, step = '0.5') => `<label>${label}<small class="muted" style="display:block;font-weight:400">${hint}</small>
     <input type="number" step="${step}" min="0" data-psc-setting="${id}" value="${esc(value)}"></label>`;
   return `<section class="card">
-      <h2 style="margin-top:0">Targets</h2>
+      <h2 style="margin-top:0">First look, by contract</h2>
+      <p class="muted">Hours from when the customer's cover starts. Past this, an item shows as late and the Service team lead is emailed.</p>
       <div class="psc-settings">
-        ${field('responseHours', 'First look within (working hours)', v.responseHours, 'Past this, an item shows as late and the Service team lead is emailed.')}
-        ${field('staleDays', 'Quiet after (working days)', v.staleDays, 'An item with no update from the team for this long shows as quiet.')}
-        ${field('dayStart', 'Working day starts (hour)', v.dayStart, 'Weekdays only; bank holidays are left out.', '1')}
-        ${field('dayEnd', 'Working day ends (hour)', v.dayEnd, '', '1')}
+        ${Object.entries(s.tiers).map(([k, t]) => field(`targets.${k}`, `${t.name} (hours)`, v.targets[k], t.coverText)).join('')}
+      </div>
+      <h2>Day shift</h2>
+      <p class="muted">Silver cover and customers with no contract are covered during the day shift on weekdays.</p>
+      <div class="psc-settings">
+        ${field('shiftStart', 'Starts (hour)', v.shiftStart, '', '1')}
+        ${field('shiftEnd', 'Ends (hour)', v.shiftEnd, '', '1')}
+      </div>
+      <h2>Quiet items</h2>
+      <div class="psc-settings">
+        ${field('staleDays', 'Quiet after (days)', v.staleDays, 'An item with no update from the team for this long shows as quiet.')}
       </div>
       <p><button class="btn" data-psc-save-settings="1">Save</button></p>
       <p class="muted">Read from Jira ${s.syncedAt ? whenText(new Date(s.syncedAt).toISOString()) : 'not yet'}.</p>
@@ -5568,7 +5623,11 @@ function settingsPscHtml() {
 
 async function pscSettingsClick(event) {
   if (!event.target.closest('[data-psc-save-settings]')) return false;
-  const body = Object.fromEntries([...view.querySelectorAll('[data-psc-setting]')].map((i) => [i.dataset.pscSetting, Number(i.value)]));
+  const body = { targets: {} };
+  for (const i of view.querySelectorAll('[data-psc-setting]')) {
+    const [a, b] = i.dataset.pscSetting.split('.');
+    if (b) body[a][b] = Number(i.value); else body[a] = Number(i.value);
+  }
   try { await api('/api/psc/settings', { method: 'POST', body: JSON.stringify(body) }); toast('Saved'); } catch (err) { toast(err.message); }
   render();
   return true;

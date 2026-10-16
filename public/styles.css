@@ -759,3 +759,20 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .psc-settings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
 @media (min-width: 720px) { .psc-settings { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .psc-headline { align-items: flex-start; } }
+.psc-tier { display: inline-block; padding: .1rem .55rem; border-radius: 6px; font-size: .8rem; font-weight: 700; letter-spacing: .02em; }
+.psc-tier.t-platinum { background: #2B3A47; color: #fff; }
+.psc-tier.t-gold { background: #F3D27A; color: #5A4000; }
+.psc-tier.t-silver { background: #DDE3E8; color: #34444F; }
+.psc-tier.t-none { background: #F6E3D6; color: #7A3E12; }
+.psc-terms { margin-top: 1rem; padding: .9rem 1rem; border-radius: 12px; background: var(--bg); }
+.psc-terms h3 { margin: 0 0 .5rem; font-size: 1.02rem; }
+.psc-terms dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: .45rem 1rem; margin: 0; }
+.psc-terms dt { color: var(--muted); font-size: .8rem; }
+.psc-terms dd { margin: 0; font-size: .92rem; font-weight: 600; }
+.psc-terms p { margin: .6rem 0 0; font-size: .92rem; }
+.psc-terms.t-platinum { border-left: 4px solid #2B3A47; }
+.psc-terms.t-gold { border-left: 4px solid #E0B43E; }
+.psc-terms.t-silver { border-left: 4px solid #A9B5BE; }
+.psc-terms.none { border-left: 4px solid #D9895A; background: #FFF6EF; }
+.psc-out { color: #8A5A00; font-weight: 600; }
+.psc-terms-note { font-size: .85rem !important; }
