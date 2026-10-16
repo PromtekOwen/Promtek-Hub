@@ -5384,7 +5384,7 @@ function pscTabsHtml(data) {
 }
 
 function pscHeadLine(data) {
-  return `<div class="psc-headline"><p class="help">Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.</p>
+  return `<div class="psc-headline"><p class="help">${data.reading ? `Reading everything from Jira: ${data.reading.count} items so far. The rest follows over the next few minutes.` : `Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.`}</p>
       <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
     ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}`;
 }
@@ -5537,7 +5537,7 @@ async function pscClick(event) {
   if (t('[data-psc-back]')) { pscOpen = null; return render(); }
   if (t('[data-psc-refresh]')) {
     const b = t('[data-psc-refresh]'); b.disabled = true;
-    try { const r = await api('/api/psc/refresh', { method: 'POST', body: '{}' }); toast(r.skipped ? 'Read from Jira under a minute ago' : 'Up to date with Jira'); } catch (err) { toast(err.message); }
+    try { const r = await api('/api/psc/refresh', { method: 'POST', body: '{}' }); toast(r.skipped ? 'Read from Jira under a minute ago' : r.reading ? `${r.count} read so far; the rest follows shortly` : 'Up to date with Jira'); } catch (err) { toast(err.message); }
     return render();
   }
   if (t('[data-psc-load-orgs]')) { pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }

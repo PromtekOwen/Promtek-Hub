@@ -199,35 +199,65 @@ async function saveItems(env, rows) {
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
 }
 
-async function searchItems(b, jql) {
-  const out = [];
-  let token = null;
-  do {
-    const params = { fields: FIELDS.join(','), expand: 'changelog', maxResults: '50' };
+export const BASE_JQL = `issuetype in (${quoted(PSC_TYPES)}) AND (statusCategory != Done OR resolved >= -${RECENT_DAYS}d)`;
+
+// Reads a search a page at a time, saving each page as it comes. A full read
+// can be bigger than one run's calls, so it remembers where it got to and the
+// next run carries on from there.
+async function readPages(env, b, jql, { resumeKey = null, started }) {
+  let token = resumeKey ? (await getState(env, resumeKey)) || null : null;
+  let count = 0;
+  for (;;) {
+    const params = { fields: FIELDS.join(','), expand: 'changelog', maxResults: '100' };
     if (token) params.nextPageToken = token;
-    const data = await searchPage(b.env, (path) => b.call(path), jql, params);
-    out.push(...(data.issues || []));
+    let data;
+    try {
+      data = await searchPage(b.env, (path) => b.call(path), jql, params);
+    } catch (err) {
+      // A remembered place Jira no longer recognises: start the read again.
+      if (token && resumeKey && err.status === 400) { await setState(env, resumeKey, ''); token = null; continue; }
+      throw err;
+    }
+    const rows = (data.issues || []).map((i) => deriveItem(i, started));
+    await saveItems(env, rows);
+    count += rows.length;
     token = data.nextPageToken || null;
-  } while (token);
-  return out;
+    if (resumeKey) {
+      await setState(env, resumeKey, token || '');
+      await setState(env, 'psc_full_count', Number((await getState(env, 'psc_full_count')) || 0) + rows.length);
+    }
+    if (!token) return { count, done: true };
+  }
 }
 
 export async function sync(env, b, { full = false } = {}) {
   const last = Number((await getState(env, 'psc_items_at')) || 0);
-  const isFull = full || !last || Date.now() - Number((await getState(env, 'psc_full_at')) || 0) >= FULL_EVERY_MS;
-  const since = isFull ? '' : ` AND updated >= -${Math.ceil((Date.now() - last) / 60000) + 5}m`;
-  const jql = `issuetype in (${quoted(PSC_TYPES)}) AND (statusCategory != Done OR resolved >= -${RECENT_DAYS}d)${since} ORDER BY updated DESC`;
-  const started = new Date().toISOString();
-  const issues = await searchItems(b, jql);
-  const rows = issues.map((i) => deriveItem(i, started));
-  await saveItems(env, rows);
-  if (isFull) {
+  const fullAt = Number((await getState(env, 'psc_full_at')) || 0);
+  let fullStarted = (await getState(env, 'psc_full_started')) || '';
+  const fullDue = full || !fullAt || Date.now() - fullAt >= FULL_EVERY_MS;
+
+  // Start (or carry on with) a full read.
+  if (fullStarted || fullDue) {
+    if (!fullStarted) {
+      fullStarted = new Date().toISOString();
+      await setState(env, 'psc_full_started', fullStarted);
+      await setState(env, 'psc_full_token', '');
+      await setState(env, 'psc_full_count', 0);
+    }
+    const r = await readPages(env, b, `${BASE_JQL} ORDER BY created ASC`, { resumeKey: 'psc_full_token', started: fullStarted });
     // Items no longer found (deleted, moved out, or closed long ago) leave the list.
-    await env.DB.prepare('DELETE FROM psc_items WHERE synced_at < ?').bind(started).run();
+    await env.DB.prepare('DELETE FROM psc_items WHERE synced_at < ?').bind(fullStarted).run();
+    await setState(env, 'psc_full_started', '');
     await setState(env, 'psc_full_at', Date.now());
+    await setState(env, 'psc_items_at', Date.now());
+    return r.count;
   }
+
+  // Otherwise just what has changed since the last read.
+  const since = ` AND updated >= -${Math.ceil((Date.now() - last) / 60000) + 5}m`;
+  const r = await readPages(env, b, `${BASE_JQL}${since} ORDER BY updated ASC`, { started: new Date().toISOString() });
   await setState(env, 'psc_items_at', Date.now());
-  return rows.length;
+  return r.count;
 }
 
 async function refreshOne(env, b, key) {
@@ -399,6 +429,7 @@ export async function overview(env, viewer) {
   const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
   return {
     items, people, pending, settings: ctx.settings, me: viewer.accountId, tiers: TIERS, surcharge: OUT_OF_HOURS_SURCHARGE,
+    reading: (await getState(env, 'psc_full_started')) ? { count: Number((await getState(env, 'psc_full_count')) || 0) } : null,
     syncedAt: Number((await getState(env, 'psc_items_at')) || 0) ? new Date(Number(await getState(env, 'psc_items_at'))).toISOString() : null,
     isAdmin: Boolean(viewer.isAdmin),
   };
@@ -480,9 +511,10 @@ export async function refresh(env, viewer) {
   const last = Number((await getState(env, 'psc_refresh_at')) || 0);
   if (Date.now() - last < REFRESH_GAP_MS) return { ok: true, skipped: true };
   await setState(env, 'psc_refresh_at', Date.now());
-  const b = budget(env, 20);
+  const b = budget(env, 35);
   try { await sync(env, b); } catch (err) { if (!(err instanceof OutOfCalls)) throw err; }
-  return { ok: true };
+  const reading = Boolean(await getState(env, 'psc_full_started'));
+  return { ok: true, reading, count: reading ? Number((await getState(env, 'psc_full_count')) || 0) : null };
 }
 
 // ---------- background job ----------
@@ -520,12 +552,13 @@ async function alerts(env, ctx) {
 export async function run(env, { force = false } = {}) {
   const last = Number((await getState(env, 'psc_items_at')) || 0);
   const { results } = await env.DB.prepare('SELECT COUNT(*) AS n FROM psc_writes WHERE done_at IS NULL AND attempts < 10').all();
-  if (!force && Date.now() - last < SYNC_EVERY_MS && !results[0]?.n) return { idle: true };
+  const reading = Boolean(await getState(env, 'psc_full_started'));
+  if (!force && !reading && Date.now() - last < SYNC_EVERY_MS && !results[0]?.n) return { idle: true };
   const b = budget(env, RUN_CALLS);
   const out = {};
   try {
     await retryWrites(env, b);
-    if (force || Date.now() - last >= SYNC_EVERY_MS) out.read = await sync(env, b);
+    if (force || reading || Date.now() - last >= SYNC_EVERY_MS) out.read = await sync(env, b);
     await alerts(env, await context(env));
     await setState(env, 'psc_error', '');
   } catch (err) {
