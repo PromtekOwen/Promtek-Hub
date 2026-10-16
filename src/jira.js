@@ -95,8 +95,10 @@ export function scopeJql(jql) {
   const at = text.search(/\bORDER\s+BY\b/i);
   const where = (at < 0 ? text : text.slice(0, at)).trim();
   const order = at < 0 ? '' : ` ${text.slice(at)}`;
-  const scope = `(category in (${CUSTOMER_CATEGORIES.map((c) => `"${c}"`).join(', ')}) OR project in (${HUB_PROJECTS.join(', ')}))`
-    + ` AND project not in (${BLOCKED_PROJECTS.join(', ')})`;
+  // Keys are quoted: some, such as IS, are also words JQL keeps for itself.
+  const q = (xs) => xs.map((x) => `"${x}"`).join(', ');
+  const scope = `(category in (${q(CUSTOMER_CATEGORIES)}) OR project in (${q(HUB_PROJECTS)}))`
+    + ` AND project not in (${q(BLOCKED_PROJECTS)})`;
   return where ? `${scope} AND (${where})${order}` : `${scope}${order}`;
 }
 
@@ -108,9 +110,11 @@ export async function searchPage(env, call, jql, params) {
   try {
     data = await run(scopeJql(jql));
   } catch (err) {
-    if (!scoped || err.status !== 400 || !/project|category/i.test(err.message)) throw err;
+    // Any problem with the scoped search: try it as written, so one bad clause never stops the hub.
+    if (!scoped || err.status !== 400) throw err;
+    data = await run(String(jql).trim());      // if this fails too, the search itself is wrong, and that error is the one to see
+    console.warn('Project scope rejected by Jira, filtering results instead:', err.message);
     scopeInJql = false; scoped = false;
-    data = await run(String(jql).trim());
   }
   if (!targeted(jql)) {
     // The JQL clause already did this when it worked; checking again costs nothing once the list is held.
