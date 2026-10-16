@@ -342,6 +342,22 @@ The **Service contracts** tile shows each customer's Service Contract item from 
 
 **Logging time** to a Service Contract item first asks whether it was really a contracted visit, and offers that customer's visits instead.
 
+## Part 14e2: PSC
+
+The **PSC** tile shows every support request: the PSC issue types (Incident, Further Investigation, PSC, Problem, Change, Service Request, plus Snag and Sub-Snag when asked for) in the PSC project and the customer projects. The Service team, team leads, Management and admins see it. It's read from Jira every 10 minutes by the background job, and straight away with **Refresh**.
+
+**Who it's for.** An item in a customer project belongs to that customer. An item on the PSC board belongs to the customer its Organization names, matched the same way as for service contracts. The customer's live contract, tier, free tokens and bank holiday cover show on the item.
+
+**First look.** Timed in working hours (weekdays between the hours set under the cog, leaving out bank holidays) from when the item was raised until the first of: a comment, status change or assignment by a Promtek person in Jira; time logged to it; or **I'm on it** in the hub. Jira's automatic replies don't count. Items raised by the team themselves count as looked at from the start, and are left out of the response figures.
+
+**After that.** Each item shows the team's last update (who and what), and flags when the customer has replied since the team last did anything, or when it has gone quiet for longer than the setting.
+
+**Triage** lists items with no first look, no owner, or (on the PSC board) no Organization. **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
+
+**Emails.** The Service team lead hears when an item passes the first-look target. The owner (or the lead, if no one has it) hears when a customer has been waiting longer than that.
+
+**Settings** (cog, admin only): the first-look target, how long before an item is quiet, and the working day.
+
 ## Part 14f: Which Jira projects the hub uses
 
 The hub only lists and searches customer projects, the ones in the **Promtek UK Customers** and **Promtek SA Customers** categories, plus its own working projects: MES (Condor Dev), PSC (service items), PMB (general tasks and assisting), PROMTEKIT and ASSET (IT support) and the ten IMS projects (internal time). Any other project, such as CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST or TPB, is left out without needing to be listed, so a new testing project stays out as long as it isn't put in a customer category. CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST and TPB are also blocked outright, in case one is ever put in a customer category by mistake. Both lists are at the top of `src/jira.js`.

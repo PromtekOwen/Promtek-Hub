@@ -256,6 +256,27 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
+  if (pathname.startsWith('/api/psc')) {
+    const Psc = await import('./psc.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/psc') return json(await Psc.overview(env, user));
+    if (method === 'GET' && pathname === '/api/psc/item') return json(await Psc.item(env, user, url.searchParams.get('key') || ''));
+    if (method === 'GET' && pathname === '/api/psc/insights') return json(await Psc.insights(env, user));
+    if (method === 'GET' && pathname === '/api/psc/orgs') return json(await Psc.orgOptions(env, user));
+    if (method === 'POST' && pathname === '/api/psc/refresh') return json(await Psc.refresh(env, user));
+    if (method === 'POST' && pathname === '/api/psc/pickup') return json(await Psc.pickUp(env, user, body.key));
+    if (method === 'POST' && pathname === '/api/psc/assign') return json(await Psc.assign(env, user, body.key, body.accountId));
+    if (method === 'POST' && pathname === '/api/psc/org') return json(await Psc.setOrg(env, user, body.key, body.orgId));
+    if (method === 'GET' && pathname === '/api/psc/settings') return json(await Psc.getSettings(env, user));
+    if (method === 'POST' && pathname === '/api/psc/settings') {
+      const r = await Psc.saveSettings(env, user, body);
+      const label = { responseHours: 'First response target (working hours)', staleDays: 'Quiet after (working days)', dayStart: 'Working day starts', dayEnd: 'Working day ends' };
+      await Audit.record(env, user, { area: 'PSC', action: 'Settings changed',
+        changes: Object.keys(label).filter((k) => r.before[k] !== r.after[k]).map((k) => ({ label: label[k], before: String(r.before[k]), after: String(r.after[k]) })) });
+      return json({ ok: true });
+    }
+  }
+
   if (pathname.startsWith('/api/contracts')) {
     const Con = await import('./contracts.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

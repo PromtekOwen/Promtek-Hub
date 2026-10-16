@@ -344,6 +344,11 @@ const pages = {
     },
   },
 
+  '#/psc': {
+    band: () => '<h1>PSC</h1><p>Every support request across the customers and the PSC board.</p>',
+    render: () => pscHtml(),
+  },
+
   '#/contracts': {
     band: () => '<h1>Service contracts</h1><p>Each customer\'s contract: its dates, visits and tokens.</p>',
     render: () => contractsHtml(),
@@ -936,6 +941,7 @@ async function renderSettings(route) {
   if (route === '#/quotes') settingsData.quoteConfig = await api('/api/admin/quote-config');
   if (route === '#/condor') settingsData.bitbucket = await api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }));
   if (route === '#/org') settingsData.org = await api('/api/admin/org');
+  if (route === '#/psc') settingsData.psc = await api('/api/psc/settings').catch((err) => ({ error: err.message }));
   if (route === '#/contracts') settingsData.contracts = await api('/api/contracts/settings').catch((err) => ({ error: err.message }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
@@ -5263,6 +5269,311 @@ async function contractWarnClick(event) {
   return true;
 }
 
+// ---------- service items (PSCs) ----------
+
+let pscTab = 'open';            // triage, open, insights
+let pscOpen = null;             // the item opened, by key
+let pscCustomer = '';
+let pscWho = 'all';             // all, mine, unassigned
+let pscShow = 'open';           // open, resolved
+let pscSnags = false;
+let pscSort = 'attention';
+let pscOrgs = null;             // the service desk's Organizations, once loaded
+let pscData = null;
+
+const PSC_STATE = {
+  late: ['late', 'Late'], waiting: ['amber', 'Customer waiting'], new: ['blue', 'New'],
+  quiet: ['amber', 'Quiet'], active: ['green', 'In hand'], resolved: ['grey', 'Resolved'],
+};
+const HOW_TEXT = { comment: 'commented', status: 'moved it on', assignee: 'assigned it', 'raised by the team': 'raised it', 'logged time': 'logged time', 'picked it up': 'picked it up' };
+
+function agoText(iso) {
+  if (!iso) return '';
+  const mins = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return days < 14 ? `${days}d ago` : new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+const workText = (msv) => duration(Math.round((msv || 0) / 1000));
+
+function pscStatePill(d) {
+  const [cls, label] = PSC_STATE[d.state] || PSC_STATE.active;
+  return `<span class="con-status ${cls === 'late' ? 'red' : cls}">${label}</span>`;
+}
+
+function pscContractChip(d) {
+  if (!d.customerKey) return '';
+  if (!d.contract) return '<span class="psc-chip plain">No contract</span>';
+  return `<span class="psc-chip contract" title="${esc(d.contract.key)}">${esc(d.contract.tier || 'Contract')}${d.contract.tokensFree != null ? ` · ${d.contract.tokensFree} tokens free` : ''}</span>${d.contract.bankHoliday ? bankHolidayIcon() : ''}`;
+}
+
+function pscResponseChip(d) {
+  if (d.state === 'resolved') return '';
+  const r = d.response;
+  if (!r.at) return `<span class="psc-chip ${r.late ? 'bad' : 'warn'}">${svgIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>')} Waiting ${workText(r.workingMs)} for a first look</span>`;
+  if (r.how === 'raised by the team') return `<span class="psc-chip">Raised by ${esc((r.by || 'the team').split(' ')[0])}</span>`;
+  return `<span class="psc-chip${r.late ? ' bad' : ''}">First look ${r.late ? 'took' : 'in'} ${workText(r.workingMs)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}</span>`;
+}
+
+function pscUpdateChips(d) {
+  const out = [];
+  if (d.customerWaiting) out.push(`<span class="psc-chip warn">${esc((d.customerLast.by || 'Customer').split(' ')[0])} replied ${agoText(d.customerLast.at)}, waiting on us</span>`);
+  if (d.lastTeam && d.response.at) out.push(`<span class="psc-chip${d.stale ? ' warn' : ''}">Last update ${agoText(d.lastTeam.at)}: ${esc((d.lastTeam.by || '').split(' ')[0])} ${esc(d.lastTeam.what || '')}</span>`);
+  if (d.logged) out.push(`<span class="psc-chip plain">${duration(d.logged)} logged</span>`);
+  return out.join('');
+}
+
+function pscCardHtml(d, { triage = false } = {}) {
+  const search = `${d.key} ${d.summary} ${d.customer || ''} ${d.org || ''} ${d.assignee || ''} ${d.type}`.toLowerCase();
+  return `<article class="card psc-card s-${d.state}" data-psc-open="${esc(d.key)}" data-search="${esc(search)}" tabindex="0" role="button" aria-label="${esc(d.key)} ${esc(d.summary)}">
+      <div class="psc-top"><span class="psc-key">${esc(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
+      <h3>${esc(d.summary)}</h3>
+      <p class="psc-meta"><span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>${pscContractChip(d)}
+        <span class="muted">· ${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'} · ${esc(d.status)} · raised ${agoText(d.created)}</span></p>
+      <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}</div>
+      ${triage ? pscTriageActions(d) : ''}
+    </article>`;
+}
+
+function pscPeopleSelect(d) {
+  const people = pscData?.people || [];
+  return `<select data-psc-assign="${esc(d.key)}" aria-label="Assign ${esc(d.key)}"><option value="">${d.assignee ? `Assigned to ${esc(d.assignee)}` : 'Assign to…'}</option>
+    ${people.map((p) => `<option value="${esc(p.id)}"${p.id === d.assigneeId ? ' disabled' : ''}>${esc(p.name)}${p.service ? '' : ' (not Service)'}</option>`).join('')}</select>`;
+}
+
+function pscOrgSelect(d) {
+  if (!pscOrgs) return `<button class="btn secondary" data-psc-load-orgs="1">Set the Organization</button>`;
+  if (pscOrgs.error) return `<span class="muted">${esc(pscOrgs.error)}</span>`;
+  return `<select data-psc-org="${esc(d.key)}" aria-label="Organization for ${esc(d.key)}"><option value="">${d.org ? esc(d.org) : 'Choose the Organization…'}</option>
+    ${pscOrgs.orgs.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select>`;
+}
+
+function pscTriageActions(d) {
+  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it' };
+  return `<div class="psc-triage">
+      <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${need[m]}</span>`).join('')}</p>
+      <div class="psc-actions">
+        ${d.missing.includes('response') || d.assigneeId !== pscData?.me ? '<button class="btn" data-psc-pickup="KEY">I\'m on it</button>'.replace('KEY', esc(d.key)) : ''}
+        ${pscPeopleSelect(d)}
+        ${d.missing.includes('org') ? pscOrgSelect(d) : ''}
+      </div>
+    </div>`;
+}
+
+function pscTabsHtml(data) {
+  const triage = data.items.filter((d) => !d.orderWork && d.missing.length).length;
+  const open = data.items.filter((d) => !d.orderWork && d.state !== 'resolved').length;
+  return `<div class="tabs con-tabs psc-tabs">${[['triage', `Triage${triage ? ` (${triage})` : ''}`], ['open', `Open (${open})`], ['insights', 'Insights']].map(([k, l]) =>
+    `<button class="tab${pscTab === k ? ' on' : ''}" data-psc-tab="${k}">${l}</button>`).join('')}</div>`;
+}
+
+function pscHeadLine(data) {
+  return `<div class="psc-headline"><p class="help">Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}. Times count working hours, ${data.settings.dayStart}:00 to ${data.settings.dayEnd}:00 on weekdays.</p>
+      <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
+    ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}`;
+}
+
+async function pscHtml() {
+  if (pscOpen) return pscItemHtml();
+  pscData = await api('/api/psc');
+  const data = pscData;
+  if (pscTab === 'insights') return pscTabsHtml(data) + await pscInsightsHtml();
+  if (pscTab === 'triage') {
+    const list = data.items.filter((d) => !d.orderWork && d.missing.length);
+    if (list.some((d) => d.missing.includes('org')) && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
+    return `${pscTabsHtml(data)}${pscHeadLine(data)}
+      <p class="help">New items, and any missing an Organization or an owner. Each leaves this list once it has all three.</p>
+      <div class="psc-list">${list.map((d) => pscCardHtml(d, { triage: true })).join('') || '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner and a first look.</p></div>'}</div>`;
+  }
+  const base = data.items.filter((d) => (pscSnags || !d.orderWork) && (pscShow === 'resolved' ? d.state === 'resolved' : d.state !== 'resolved'));
+  const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
+  let list = base.filter((d) => !pscCustomer || (d.customer || 'No customer') === pscCustomer)
+    .filter((d) => pscWho === 'all' || (pscWho === 'mine' ? d.assigneeId === data.me : !d.assigneeId));
+  const order = {
+    attention: (a, b) => a.rank - b.rank || Date.parse(a.created) - Date.parse(b.created),
+    oldest: (a, b) => Date.parse(a.created) - Date.parse(b.created),
+    quiet: (a, b) => Date.parse(a.lastTeam?.at || a.created) - Date.parse(b.lastTeam?.at || b.created),
+    customer: (a, b) => String(a.customer || '~').localeCompare(String(b.customer || '~')) || a.rank - b.rank,
+  };
+  list = [...list].sort(order[pscSort] || order.attention);
+  const open = data.items.filter((d) => !d.orderWork && d.state !== 'resolved');
+  const n = (fn) => open.filter(fn).length;
+  return `${pscTabsHtml(data)}${pscHeadLine(data)}
+    <dl class="stats con-stats">
+      <div><dt>Waiting for a first look</dt><dd>${n((d) => !d.response.at)}<small>${n((d) => d.state === 'late')} past ${data.settings.responseHours}h</small></dd></div>
+      <div><dt>Customer waiting on us</dt><dd>${n((d) => d.customerWaiting)}</dd></div>
+      <div><dt>Quiet for ${data.settings.staleDays}+ days</dt><dd>${n((d) => d.stale)}</dd></div>
+      <div><dt>Unassigned</dt><dd>${n((d) => !d.assigneeId)}</dd></div>
+    </dl>
+    <div class="row con-tools psc-tools">
+      <span class="segment">${[['all', 'Everyone\'s'], ['mine', 'Mine'], ['unassigned', 'Unassigned']].map(([k, l]) => `<button class="seg${pscWho === k ? ' on' : ''}" data-psc-who="${k}">${l}</button>`).join('')}</span>
+      <label class="con-tier">Customer <select data-psc-customer><option value="">All customers</option>${customers.map((c) => `<option${c === pscCustomer ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+      <label class="con-tier">Sort <select data-psc-sort>${[['attention', 'Needs attention'], ['oldest', 'Oldest first'], ['quiet', 'Longest without an update'], ['customer', 'Customer']].map(([k, l]) => `<option value="${k}"${pscSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <input type="search" id="psc-search" placeholder="Search keys, summaries or people" aria-label="Search PSCs">
+      <label class="inline-check psc-check"><input type="checkbox" data-psc-resolved${pscShow === 'resolved' ? ' checked' : ''}> Resolved</label>
+      <label class="inline-check psc-check"><input type="checkbox" data-psc-snags${pscSnags ? ' checked' : ''}> Include Snags</label>
+    </div>
+    <div class="psc-list">${list.map((d) => pscCardHtml(d)).join('') || `<div class="card"><p style="margin:0">${pscShow === 'resolved' ? 'Nothing resolved in the last 30 days here.' : 'Nothing open here.'}</p></div>`}</div>`;
+}
+
+async function pscItemHtml() {
+  const { item: d, timeline } = await api(`/api/psc/item?key=${encodeURIComponent(pscOpen)}`);
+  if (!pscData) pscData = await api('/api/psc');
+  if (d.project === 'PSC' && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
+  const when = (iso) => (iso ? `${new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} (${agoText(iso)})` : '—');
+  const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub' };
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-back="1">All items</button></div>
+    <section class="card psc-detail">
+      <div class="psc-top"><span class="psc-key">${jiraLink(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
+      <h2>${esc(d.summary)}</h2>
+      <p class="psc-meta"><span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>${pscContractChip(d)}<span class="muted">· ${esc(d.status)}</span></p>
+      <dl class="psc-facts">
+        <div><dt>Raised</dt><dd>${when(d.created)}${d.reporter ? ` by ${esc(d.reporter)}` : ''}</dd></div>
+        <div><dt>First look</dt><dd>${d.response.at ? `${when(d.response.at)} by ${esc(d.response.by || 'the team')}, who ${HOW_TEXT[d.response.how] || d.response.how}. ${workText(d.response.workingMs)} of working time.`
+          : `<b class="${d.response.late ? 'con-late' : ''}">Not yet: waiting ${workText(d.response.workingMs)} of working time.</b>`}</dd></div>
+        <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
+        <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
+        <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
+        <div><dt>Time logged</dt><dd>${d.logged ? duration(d.logged) : 'None yet'}</dd></div>
+      </dl>
+      <div class="psc-actions">
+        ${d.state !== 'resolved' ? `<button class="btn" data-psc-pickup="${esc(d.key)}">I'm on it</button>` : ''}
+        <button class="btn secondary" data-psc-log="${esc(d.key)}">Log time</button>
+        ${pscPeopleSelect(d)}
+        ${d.project === 'PSC' ? pscOrgSelect(d) : ''}
+      </div>
+    </section>
+    <h2>History</h2>
+    <ul class="list psc-timeline">${timeline.map((e) => `<li class="${e.team ? 'team' : 'customer'}${e.internal ? ' internal' : ''}">
+        <span class="title"><span class="psc-kind k-${esc(e.kind)}">${kindText[e.kind] || ''}</span> ${esc(e.by || '')}${e.team ? '' : ' <span class="psc-chip plain">customer</span>'}${e.internal ? ' <span class="psc-chip plain">internal note</span>' : ''}</span>
+        <span class="xp"><small>${agoText(e.at)}</small></span>
+        <span class="sub pre-wrap">${esc(e.text || '')}</span></li>`).join('')}</ul>`;
+}
+
+async function pscInsightsHtml() {
+  const s = await api('/api/psc/insights');
+  const target = s.settings.responseHours;
+  const pct = s.response.count ? Math.round((s.response.inTarget / s.response.count) * 100) : null;
+  const bars = (rows, label = (x) => x.name) => {
+    const max = Math.max(1, ...rows.map((x) => x.n));
+    return rows.length ? `<div class="con-bars">${rows.map((x) => `<div class="psc-bar-row"><span class="con-bar-label">${esc(label(x))}</span>
+      <span class="con-bar"><span style="width:${(x.n / max) * 100}%"></span></span><span class="con-bar-value">${x.n}</span></div>`).join('')}</div>` : '<p class="muted">None.</p>';
+  };
+  return `<h2>First response</h2>
+    <dl class="stats con-stats">
+      <div><dt>Typical first look, last 30 days</dt><dd>${s.response.medianMs == null ? '—' : workText(s.response.medianMs)}<small>median, working time</small></dd></div>
+      <div><dt>Within ${target} working hours</dt><dd>${pct == null ? '—' : `${pct}%`}<small>${s.response.inTarget} of ${s.response.count}</small></dd></div>
+      <div><dt>Waiting for a first look now</dt><dd>${s.response.unanswered}</dd></div>
+      <div><dt>Customers waiting on us</dt><dd>${s.states.waiting}</dd></div>
+    </dl>
+    <div class="table-wrap"><table class="psc-weeks"><thead><tr><th>Week starting</th><th>Raised</th><th>First look within ${target}h</th><th>Resolved</th></tr></thead>
+      <tbody>${s.weeks.map((w) => `<tr><td>${shortDate(w.start)}</td><td>${w.raised}</td><td>${w.answered ? `${w.inTarget} of ${w.answered}` : '—'}</td><td>${w.resolved}</td></tr>`).join('')}</tbody></table></div>
+    <h2>Open items</h2>
+    <div class="two-up con-two">
+      <section class="card"><h3>How old they are</h3>${bars(s.ages, (x) => x.label)}</section>
+      <section class="card"><h3>Who has them</h3>${bars(s.byAssignee)}</section>
+      <section class="card"><h3>By customer</h3>${bars(s.byCustomer)}</section>
+      <section class="card"><h3>Longest without an update</h3>
+        ${s.oldestQuiet.length ? `<ul class="con-rows">${s.oldestQuiet.map((x) => `<li><span>${jiraLink(x.key)} ${esc(x.summary)}<span class="muted" style="display:block;font-size:.85rem">${esc(x.customer || 'No customer')} · ${esc(x.lastTeam.by || '')}</span></span><span class="muted">${agoText(x.lastTeam.at)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
+    </div>`;
+}
+
+async function pscClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('a') || t('select') || t('input') || t('label')) return false;
+  const tab = t('[data-psc-tab]');
+  if (tab) { pscTab = tab.dataset.pscTab; pscOpen = null; return render(); }
+  const who = t('[data-psc-who]');
+  if (who) { pscWho = who.dataset.pscWho; return render(); }
+  if (t('[data-psc-back]')) { pscOpen = null; return render(); }
+  if (t('[data-psc-refresh]')) {
+    const b = t('[data-psc-refresh]'); b.disabled = true;
+    try { const r = await api('/api/psc/refresh', { method: 'POST', body: '{}' }); toast(r.skipped ? 'Read from Jira under a minute ago' : 'Up to date with Jira'); } catch (err) { toast(err.message); }
+    return render();
+  }
+  if (t('[data-psc-load-orgs]')) { pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
+  const pick = t('[data-psc-pickup]');
+  if (pick) {
+    pick.disabled = true;
+    try { const r = await api('/api/psc/pickup', { method: 'POST', body: JSON.stringify({ key: pick.dataset.pscPickup }) }); toast(r.saved ? 'It\'s yours' : r.message); } catch (err) { toast(err.message); }
+    return render();
+  }
+  const log = t('[data-psc-log]');
+  if (log) {
+    const d = pscData?.items.find((x) => x.key === log.dataset.pscLog);
+    if (!d) return true;
+    logChosen = { issueId: d.id, label: d.key, title: d.summary, sublabel: d.customer || '', rate: 1, jobElo: null };
+    logMode = null;
+    pscOpen = null;
+    location.hash = '#/log';
+    return true;
+  }
+  const card = t('[data-psc-open]');
+  if (card) { pscOpen = card.dataset.pscOpen; return render(); }
+  return false;
+}
+
+async function pscChange(event) {
+  const el = event.target;
+  const send = async (path, body, done) => {
+    el.disabled = true;
+    try { const r = await api(path, { method: 'POST', body: JSON.stringify(body) }); toast(r.saved ? done : r.message); } catch (err) { toast(err.message); }
+    render();
+  };
+  if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
+  if (el.matches('[data-psc-org]') && el.value) { await send('/api/psc/org', { key: el.dataset.pscOrg, orgId: el.value }, 'Organization saved'); return true; }
+  if (el.matches('[data-psc-customer]')) { pscCustomer = el.value; render(); return true; }
+  if (el.matches('[data-psc-sort]')) { pscSort = el.value; render(); return true; }
+  if (el.matches('[data-psc-resolved]')) { pscShow = el.checked ? 'resolved' : 'open'; render(); return true; }
+  if (el.matches('[data-psc-snags]')) { pscSnags = el.checked; render(); return true; }
+  return false;
+}
+
+function pscInput(event) {
+  if (event.target.id !== 'psc-search') return false;
+  const q = event.target.value.trim().toLowerCase();
+  for (const card of view.querySelectorAll('.psc-card')) card.hidden = Boolean(q) && !card.dataset.search.includes(q);
+  return true;
+}
+
+// The list keeps itself current while it's open.
+setInterval(() => {
+  if (currentRoute() !== '#/psc' || settingsOpen || document.visibilityState !== 'visible') return;
+  if (document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
+  render();
+}, 120000);
+
+function settingsPscHtml() {
+  const s = settingsData.psc;
+  if (s.error && !s.settings) return `<div class="card notice error"><p>${esc(s.error)}</p></div>`;
+  const v = s.settings;
+  const field = (id, label, value, hint, step = '0.5') => `<label>${label}<small class="muted" style="display:block;font-weight:400">${hint}</small>
+    <input type="number" step="${step}" min="0" data-psc-setting="${id}" value="${esc(value)}"></label>`;
+  return `<section class="card">
+      <h2 style="margin-top:0">Targets</h2>
+      <div class="psc-settings">
+        ${field('responseHours', 'First look within (working hours)', v.responseHours, 'Past this, an item shows as late and the Service team lead is emailed.')}
+        ${field('staleDays', 'Quiet after (working days)', v.staleDays, 'An item with no update from the team for this long shows as quiet.')}
+        ${field('dayStart', 'Working day starts (hour)', v.dayStart, 'Weekdays only; bank holidays are left out.', '1')}
+        ${field('dayEnd', 'Working day ends (hour)', v.dayEnd, '', '1')}
+      </div>
+      <p><button class="btn" data-psc-save-settings="1">Save</button></p>
+      <p class="muted">Read from Jira ${s.syncedAt ? whenText(new Date(s.syncedAt).toISOString()) : 'not yet'}.</p>
+      ${s.error ? `<div class="notice error"><p>${esc(s.error)}</p></div>` : ''}
+    </section>`;
+}
+
+async function pscSettingsClick(event) {
+  if (!event.target.closest('[data-psc-save-settings]')) return false;
+  const body = Object.fromEntries([...view.querySelectorAll('[data-psc-setting]')].map((i) => [i.dataset.pscSetting, Number(i.value)]));
+  try { await api('/api/psc/settings', { method: 'POST', body: JSON.stringify(body) }); toast('Saved'); } catch (err) { toast(err.message); }
+  render();
+  return true;
+}
+
 // ---------- guides ----------
 // Each page's guide runs the first time someone opens it, and again from the ?
 // in the page header. Who has seen which is kept with their account, so it
@@ -5964,6 +6275,7 @@ view.addEventListener('click', async (event) => {
   if (leaderBtn) { leaderExpanded = !leaderExpanded; return loadLeaderboard(); }
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
+  if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
@@ -5979,6 +6291,7 @@ view.addEventListener('click', async (event) => {
   if (event.target.closest('[data-qcfg-save]')) return saveQuoteSettings(event.target.closest('[data-qcfg-save]'));
   if (settingsOpen === '#/org' && await orgSettingsClick(event)) return;
   if (settingsOpen === '#/contracts' && await contractsSettingsClick(event)) return;
+  if (settingsOpen === '#/psc' && await pscSettingsClick(event)) return;
   if (event.target.closest('[data-audit-more]')) return loadAudit(true);
   const bb = event.target.closest('[data-bb]');
   if (bb) {
@@ -6048,6 +6361,7 @@ const WAITING_FOR = {
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
   '#/contracts': () => (conOpen ? 'Loading the contract' : 'Loading contracts'),
+  '#/psc': () => (pscOpen ? 'Loading the PSC' : 'Loading PSCs'),
 };
 
 // Settings live with the app they configure. The cog appears in the header of
@@ -6071,6 +6385,7 @@ const TILE_SETTINGS = {
   '#/quotes': { label: 'Quote settings', render: () => settingsQuotesHtml() },
   '#/condor': { label: 'Condor Dev settings', render: () => bitbucketAdminHtml(settingsData.bitbucket) },
   '#/contracts': { label: 'Service contract settings', render: () => settingsContractsHtml() },
+  '#/psc': { label: 'PSC settings', render: () => settingsPscHtml() },
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
 };
 let settingsOpen = null;
@@ -6140,7 +6455,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 
@@ -6150,6 +6465,7 @@ view.addEventListener('input', (event) => {
   if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (currentRoute() === '#/contracts' && settingsOpen === '#/contracts' && contractsSettingsInput(event)) return;
   if (currentRoute() === '#/contracts' && contractsInput(event)) return;
+  if (currentRoute() === '#/psc' && pscInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
   if (event.target.matches('[data-stage-customer]')) { stageCustomer = event.target.value; render(); return; }
@@ -6215,6 +6531,7 @@ view.addEventListener('input', (event) => {
 
 view.addEventListener('change', async (event) => {
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
+  if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -6289,6 +6606,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
+  if (currentRoute() !== '#/psc') pscOpen = null;
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }

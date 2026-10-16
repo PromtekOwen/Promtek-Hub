@@ -68,6 +68,12 @@ export const TOURS = {
     { target: ['[data-view="team"]', '#view .tabs'], title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, and Stages shows how long each stage usually takes.' },
     { optional: true, target: ['[data-report-team]'], title: 'Choose a team', text: 'Look at one team or everyone. Your own team is chosen to start with.' },
   ],
+  '#/psc': [
+    { optional: true, target: ['.psc-tabs'], title: 'PSC', text: 'Every support request from the customer projects and the PSC board. Triage holds anything new or missing a customer or an owner; Open is everything still being worked on.' },
+    { optional: true, target: ['.psc-card'], title: 'Each item', text: 'Who it\'s for and their contract, who has it, how long it waited for a first look, and the team\'s last update. A red edge means late, amber means the customer is waiting or it has gone quiet.' },
+    { optional: true, target: ['.psc-tools'], title: 'Find what matters', text: 'Show your own items or unassigned ones, pick a customer, and sort by what needs attention or what has gone longest without an update.' },
+    { title: 'Picking one up', text: 'Open an item and select I\'m on it: it\'s assigned to you and counts as its first look straight away. Log time to it from there too.' },
+  ],
   '#/contracts': [
     { target: ['.con-card', '#view'], title: 'Each contract', text: 'Its status and tier, the dates it covers, and how many service, calibration and obsolescence visits are done. The calendar badge means it covers bank holidays. Tap a contract for everything behind it.' },
     { optional: true, target: ['.con-tokens'], title: 'Tokens', text: 'Available tokens, tokens allocated to jobs that aren\'t finished yet, and tokens used. In Jira, allocated tokens count as used, so nobody spends them on something else.' },

@@ -69,6 +69,14 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'psc',
+    name: 'PSC',
+    route: '#/psc',
+    teams: ['Service'],
+    icon: icon('<path d="M4 6.5A2.5 2.5 0 016.5 4h11A2.5 2.5 0 0120 6.5v8a2.5 2.5 0 01-2.5 2.5H10l-4.5 3.5V17h0A2.5 2.5 0 014 14.5z"/><path d="M12 7.5v4M12 14h.01"/>'),
+    detail: () => 'Support requests, triage and response times',
+  },
+  {
     id: 'contracts',
     name: 'Service contracts',
     route: '#/contracts',
