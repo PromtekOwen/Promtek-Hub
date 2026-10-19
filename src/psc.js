@@ -48,7 +48,7 @@ const REFRESH_GAP_MS = 60 * 1000;
 const RECENT_DAYS = 30;
 const RUN_CALLS = 30;
 const ORGS_FOR_MS = 6 * 3600 * 1000;
-const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, 'comment', 'parent'];
+const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, 'comment', 'parent', 'issuelinks'];
 
 const placeholders = (n) => Array(n).fill('?').join(',');
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
@@ -186,6 +186,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
     customer_last_at: lastCustomer?.at || null,
     customer_last_by: lastCustomer?.by || null,
     timeline: JSON.stringify(events.slice(-25).reverse()),
+    links: JSON.stringify((f.issuelinks || []).map((l) => l.outwardIssue?.key || l.inwardIssue?.key).filter(Boolean)),
     synced_at: now,
   };
 }
@@ -193,7 +194,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
 async function saveItems(env, rows) {
   const cols = ['issue_id', 'issue_key', 'project_key', 'org', 'summary', 'issuetype', 'status', 'done', 'priority', 'assignee_id', 'assignee_name',
     'reporter_name', 'reporter_team', 'created_at', 'updated_at', 'resolved_at', 'team_first_at', 'team_first_by', 'team_first_how', 'team_last_at',
-    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'synced_at'];
+    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'synced_at'];
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
@@ -331,14 +332,82 @@ async function context(env) {
   try { projects = await customerProjects(env); } catch { /* names fall back to keys */ }
   let bankHolidays = new Set();
   try { bankHolidays = new Set((await holidaysFor(env)).map((h) => h.date)); } catch { /* none known */ }
-  return { settings, items, actions, logs, match: orgMatcher(projects, manual), projects, contracts, tokens, emps, bankHolidays };
+  const match = orgMatcher(projects, manual);
+  return { settings, items: pairCopies(items, match), actions, logs, match, projects, contracts, tokens, emps, bankHolidays };
+}
+
+// A PSC board item with an Organization is copied into the customer's project
+// (by a Jira app that keeps the two in step). The copy is the one shown; the
+// original is hidden, and lends the copy its raised time, reporter and history.
+// They're paired by an issue link, or failing that by customer and summary.
+const sameText = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+export function pairCopies(items, match) {
+  const byKey = new Map(items.map((r) => [r.issue_key, r]));
+  const taken = new Set();
+  const out = items.map((r) => ({ ...r }));
+  const outByKey = new Map(out.map((r) => [r.issue_key, r]));
+  for (const r of out) {
+    if (r.project_key !== PSC_PROJECT || !r.org) continue;
+    const customer = r.org.split(' | ').map(match).find(Boolean) || null;
+    let links = [];
+    try { links = JSON.parse(r.links || '[]'); } catch { /* none */ }
+    let copy = links.map((k) => outByKey.get(k)).find((c) => c && c.project_key !== PSC_PROJECT && !taken.has(c.issue_key));
+    if (!copy) {
+      // The copy's own links can point back at the original too.
+      copy = out.find((c) => c.project_key !== PSC_PROJECT && !taken.has(c.issue_key) && (() => {
+        try { return JSON.parse(c.links || '[]').includes(r.issue_key); } catch { return false; }
+      })());
+    }
+    if (!copy && customer) copy = out.find((c) => c.project_key === customer && !taken.has(c.issue_key) && sameText(c.summary) === sameText(r.summary));
+    if (copy) {
+      taken.add(copy.issue_key);
+      copy.source = byKey.get(r.issue_key);
+      r.copiedTo = copy.issue_key;
+    }
+    r.hidden = true;
+    r.uncopied = !copy;
+  }
+  return out;
+}
+
+// The copy's details, with the original's raised time, reporter and history folded in.
+function merged(row) {
+  const src = row.source;
+  if (!src) return row;
+  const earliest = (...xs) => xs.filter(Boolean).sort((a, b) => ms(a.at) - ms(b.at))[0] || null;
+  const latest = (...xs) => xs.filter(Boolean).sort((a, b) => ms(b.at) - ms(a.at))[0] || null;
+  const copyFirst = row.team_first_at && row.team_first_how !== 'raised by the team' ? { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how } : null;
+  const srcFirst = src.team_first_at ? { at: src.team_first_at, by: src.team_first_by, how: src.team_first_how } : null;
+  const first = earliest(srcFirst, copyFirst);
+  const copyLast = row.team_last_at && row.team_last_what !== 'raised it' ? { at: row.team_last_at, by: row.team_last_by, what: row.team_last_what } : null;
+  const last = latest(src.team_last_at && { at: src.team_last_at, by: src.team_last_by, what: src.team_last_what }, copyLast);
+  const cust = latest(src.customer_last_at && { at: src.customer_last_at, by: src.customer_last_by }, row.customer_last_at && !row.reporter_team && { at: row.customer_last_at, by: row.customer_last_by });
+  // Comments and status changes come through on both; keep one of each.
+  const events = [...JSON.parse(src.timeline || '[]'), ...JSON.parse(row.timeline || '[]').filter((e) => e.kind !== 'created')];
+  const kept = [];
+  for (const e of events.sort((a, b) => ms(a.at) - ms(b.at))) {
+    if (kept.some((k) => k.kind === e.kind && sameText(k.text) === sameText(e.text) && Math.abs(ms(k.at) - ms(e.at)) < 15 * 60000)) continue;
+    kept.push(e);
+  }
+  return {
+    ...row,
+    created_at: ms(src.created_at) < ms(row.created_at) ? src.created_at : row.created_at,
+    reporter_name: src.reporter_name, reporter_team: src.reporter_team,
+    team_first_at: first?.at || null, team_first_by: first?.by || null, team_first_how: first?.how || null,
+    team_last_at: last?.at || null, team_last_by: last?.by || null, team_last_what: last?.what || null,
+    customer_last_at: cust?.at || null, customer_last_by: cust?.by || null,
+    timeline: JSON.stringify(kept.reverse().slice(0, 30)),
+    ids: [row.issue_id, src.issue_id],
+  };
 }
 
 // Everything the tile shows about one item, worked out now.
-export function describe(row, ctx, now = new Date().toISOString()) {
+export function describe(original, ctx, now = new Date().toISOString()) {
+  const row = merged(original);
+  const ids = row.ids || [row.issue_id];
   const { settings } = ctx;
-  const logs = ctx.logs.filter((l) => l.issue_id === row.issue_id);
-  const acts = ctx.actions.filter((a) => a.issue_id === row.issue_id);
+  const logs = ctx.logs.filter((l) => ids.includes(l.issue_id));
+  const acts = ctx.actions.filter((a) => ids.includes(a.issue_id));
   const touches = [
     row.team_first_at && { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how },
     logs[0] && { at: logs[0].at, by: logs[0].name, how: 'logged time' },
@@ -402,6 +471,8 @@ export function describe(row, ctx, now = new Date().toISOString()) {
     customerWaiting: Boolean(customerWaiting), customerWaitMs, quietMs, stale: Boolean(stale),
     logged: logs.reduce((a, l) => a + l.seconds, 0),
     missing, state, rank,
+    copyOf: row.source?.issue_key || null,
+    uncopied: Boolean(original.uncopied),
   };
 }
 
@@ -423,7 +494,7 @@ export async function overview(env, viewer) {
   mustSee(viewer);
   const ctx = await context(env);
   const now = new Date().toISOString();
-  const items = ctx.items.map((r) => describe(r, ctx, now)).sort(byAttention);
+  const items = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).sort(byAttention);
   const people = ctx.emps.filter((e) => e.account_id).map((e) => ({ id: e.account_id, name: e.name,
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
   const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
@@ -441,9 +512,11 @@ export async function item(env, viewer, key) {
   const row = ctx.items.find((r) => r.issue_key === key);
   if (!row) throw new Error('That item isn\'t in the list any more.');
   const d = describe(row, ctx);
-  const timeline = JSON.parse(row.timeline || '[]');
-  for (const l of ctx.logs.filter((x) => x.issue_id === row.issue_id)) timeline.push({ at: l.at, by: l.name || 'Someone', team: true, kind: 'time', text: `Logged ${Math.round(l.seconds / 60)} minutes` });
-  for (const a of ctx.actions.filter((x) => x.issue_id === row.issue_id)) timeline.push({ at: a.at, by: a.name, team: true, kind: 'hub', text: 'Picked it up in the hub' });
+  const m = merged(row);
+  const ids = m.ids || [row.issue_id];
+  const timeline = JSON.parse(m.timeline || '[]');
+  for (const l of ctx.logs.filter((x) => ids.includes(x.issue_id))) timeline.push({ at: l.at, by: l.name || 'Someone', team: true, kind: 'time', text: `Logged ${Math.round(l.seconds / 60)} minutes` });
+  for (const a of ctx.actions.filter((x) => ids.includes(x.issue_id))) timeline.push({ at: a.at, by: a.name, team: true, kind: 'hub', text: 'Picked it up in the hub' });
   timeline.sort((a, b) => ms(b.at) - ms(a.at));
   return { item: d, timeline: timeline.slice(0, 40) };
 }
@@ -528,7 +601,7 @@ const hoursText = (msv) => { const m = Math.round(msv / 60000); return m >= 60 ?
 
 async function alerts(env, ctx) {
   const now = new Date().toISOString();
-  for (const row of ctx.items) {
+  for (const row of ctx.items.filter((r) => !r.hidden || r.uncopied)) {
     const d = describe(row, ctx, now);
     if (d.orderWork || d.state === 'resolved') continue;
     if (d.state === 'late') {
@@ -575,7 +648,7 @@ export async function insights(env, viewer) {
   mustSee(viewer);
   const ctx = await context(env);
   const now = new Date().toISOString();
-  const all = ctx.items.map((r) => describe(r, ctx, now)).filter((d) => !d.orderWork);
+  const all = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).filter((d) => !d.orderWork);
   const since = Date.now() - RECENT_DAYS * 86400000;
   // Items the team raised itself (from a call, say) were answered before they existed, so they're left out of response times.
   const recent = all.filter((d) => ms(d.created) >= since && d.response.at && !d.raisedByTeam);

@@ -1,96 +1,445 @@
-// Guides for each page: shown the first time someone opens it, and again from
-// the ? in the page header. A step whose target isn't on screen is shown centred.
-// `target` is a list of selectors; the first one found is highlighted. An
-// `optional` step is left out when its target isn't there, such as a tab the
-// person can't open.
+// Guides for each page. Most are walkthroughs (practice: true): the page reloads
+// with example data from practice.js and each step asks the person to do the
+// next thing themselves. The rest are a short look round the real page.
+//
+// A step has a title and text, and usually a target: a selector, a list of them
+// (the first one showing wins), or a function that finds the element.
+//   act: 'click'   the person taps the target (or `click`, something inside it)
+//   act: 'type'    they type into the target; `value` is what "Type it for me" enters
+//   act: 'pick'    they choose from the target select; `value` is the choice made for them
+//   act: 'until'   they do something in the target until until() is true;
+//                  doIt(help) does it for them
+//   until          on a typing step, moves on by itself once it's true
+//   when(me)       only include the step for some people, such as team leads
+//   optional       leave the step out if its target doesn't show
+// A step with no act just explains, with Next.
+
+const shown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+const all = (sel) => [...document.querySelectorAll(sel)].filter(shown);
+const withText = (sel, text) => () => all(sel).find((el) => el.textContent.includes(text));
+const within = (sel, text, inner) => () => withText(sel, text)()?.querySelector(inner);
+const card = (sel) => () => document.querySelector(sel)?.closest('.card');
+const lead = (me) => Boolean(me?.user?.isLead || me?.user?.isAdmin);
+
+// Answers every question in a list of rows, one tap at a time, as a person would.
+const answerAll = (rows, choice) => async (help) => {
+  for (let i = 0; i < 40; i++) {
+    const row = all(rows).find((r) => !r.querySelector('.seg.on'));
+    if (!row) return;
+    await help.click(row.querySelector(choice));
+  }
+};
+const answered = (rows) => () => all(rows).length > 0 && all(rows).every((r) => r.querySelector('.seg.on'));
+const tapUntil = (sel, count) => async (help) => {
+  for (let i = 0; i < count; i++) {
+    const chip = all(sel).find((c) => !c.classList.contains('on'));
+    if (!chip || all(`${sel}.on`).length >= count) return;
+    await help.click(chip);
+  }
+};
+
 export const TOURS = {
-  '#/': [
-    { title: 'Welcome to the hub', text: 'Everything you need day to day is here: logging time, jobs, quotes, site paperwork and more. This quick guide shows you around.' },
-    { target: ['#band .summary'], title: 'Your level and rank', text: 'Time you log earns XP. Your level, title and ELO rank show here; tap to see where your XP came from.' },
-    { target: ['.tiles'], title: 'Your tiles', text: 'Each tile opens a part of the hub. You see the ones that fit your job and team.' },
-    { target: ['[data-tile="arrange"]'], title: 'Make it yours', text: 'Arrange tiles lets you drag them into the order you want and hide any you don\'t use.' },
-    { target: ['#log-fab'], title: 'Log time', text: 'Add time you\'ve already done, or start a timer on a job. While a timer is running, this shows the job and its clock.' },
-    { target: ['.help-tour'], title: 'Help on every page', text: 'Each page has its own short guide the first time you open it. Tap ? at any time to see it again.' },
-  ],
-  '#/log': [
-    { target: ['#log-search'], title: 'Find the job', text: 'Search by Jira key or by words from the summary. Your recent jobs are listed underneath.' },
-    { target: ['[data-node]'], title: 'Or browse to it', text: 'Step down from the customer to the order, category and stage. Logging against the stage is worth the most XP.' },
-    { title: 'Two ways to log', text: 'After choosing a job, pick Add time already done to enter a start time and how long, or Start the timer to time it as you go.' },
-    { target: ['#tracker-panel'], title: 'The timer', text: 'Pause and carry on as you need: each stretch goes to Tempo with its own start and end. If a colleague needs you, use Assisting so that time is logged separately and your job picks up where it left off.' },
-  ],
-  '#/xp': [
-    { target: ['#band'], title: 'Your progress', text: 'Your level and title come from the XP you\'ve earned. Your ELO rank reflects how you do on jobs against how hard they are.' },
-    { target: ['#leaderboard'], title: 'Leaderboard', text: 'See how you compare this week, this month or all time, and filter by team.' },
-  ],
-  '#/time': [
-    { target: ['.week-nav'], title: 'Week by week', text: 'Your Tempo time for the week, day by day. Use the arrows to look back at earlier weeks.' },
-  ],
-  '#/jobs': [
-    { target: ['#view .card', '#view'], title: 'Your open jobs', text: 'Each order and its categories, how hard each part is, and how the time logged compares with the estimate.' },
-    { title: 'If an estimate looks wrong', text: 'When a category is running close to or past its estimate, you can raise a dispute with what changed. A team lead reviews it.' },
-  ],
-  '#/quotes': [
-    { optional: true, target: ['[data-q-new-open]'], title: 'Start a quote', text: 'Pick the customer, give it a title and description, and choose the categories. The quote is made in Jira straight away.' },
-    { title: 'Estimating each category', text: 'Add the counts and conditions, best, likely and worst hours, and how hard it is. Similar finished jobs are shown to compare against, and you can ask an engineer for their view.' },
-    { title: 'Asked for an estimate?', text: 'Requests for your view appear on this page. Give your hours and difficulty; they go to the quote and to Jira.' },
-  ],
-  '#/condor': [
-    { target: ['.condor-tabs'], title: 'Condor Dev', text: 'Everything for MES development is here, under these tabs.' },
-    { optional: true, target: ['[data-condor-tab="day"]'], title: 'My day', text: 'Your Bitbucket work turned into draft time. Check the hours and log the day to Tempo in one go.' },
-    { optional: true, target: ['[data-condor-tab="estimate"]'], title: 'Estimate', text: 'Estimate a ticket by comparing it with finished ones: is it smaller, about the same, or bigger?' },
-    { optional: true, target: ['[data-condor-tab="triage"]'], title: 'Triage', text: 'At the start of a release, go through open tickets: Must, Should, Could, or not this time. Then make the release\'s sprints in Jira.' },
-    { optional: true, target: ['[data-condor-tab="plan"]'], title: 'Plan', text: 'Who is doing what and when, against everyone\'s capacity, with suggestions when work won\'t fit.' },
-    { optional: true, target: ['[data-condor-tab="ratings"]'], title: 'Ratings', text: 'Your Condor development rating and how it has changed ticket by ticket.' },
-  ],
-  '#/pow': [
-    { target: ['#view .card', '#view'], title: 'Before you start on site', text: 'Fill in the risk assessment for the visit. It works without signal and sends when you\'re back online.' },
-    { title: 'When you finish', text: 'The assessment becomes a PDF, attached to the Jira item and filed in the shared drive.' },
-  ],
-  '#/obs': [
-    { target: ['#view .card', '#view'], title: 'Site surveys', text: 'Record the equipment on site and its condition. The finished survey is saved as a PDF and filed for sales to quote from.' },
-  ],
-  '#/calls': [
-    { target: ['#calls-date', '#view .card'], title: 'Your calls', text: 'Choose a day to load the calls you took through 8x8.' },
-    { title: 'Turn a call into time', text: 'Log a call\'s time against the job it was about, or raise a new service ticket from it, in a couple of taps.' },
-  ],
-  '#/it': [
-    { target: ['#view .card', '#view'], title: 'IT support', text: 'Report a problem or ask for something you need. It\'s raised in your name, and you can add the equipment and photos.' },
-  ],
-  '#/vehicles': [
-    { target: ['#view .card', '#view'], title: 'Booking a vehicle', text: 'Book a vehicle by the hour for when you need it.' },
-    { title: 'Before you drive', text: 'Do the walkaround check. Anything that fails is reported as a defect so it can be fixed.' },
-  ],
-  '#/org': [
-    { target: ['.org-scroll', '#view'], title: 'The company chart', text: 'Who reports to whom, and each person\'s role. Scroll sideways on a small screen.' },
-    { optional: true, target: ['[data-org="download"]'], title: 'Save a copy', text: 'Download the chart as an image.' },
-  ],
-  '#/reports': [
-    { target: ['[data-view="team"]', '#view .tabs'], title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, and Stages shows how long each stage usually takes.' },
-    { optional: true, target: ['[data-report-team]'], title: 'Choose a team', text: 'Look at one team or everyone. Your own team is chosen to start with.' },
-  ],
-  '#/psc': [
-    { optional: true, target: ['.psc-tabs'], title: 'PSC', text: 'Every support request from the customer projects and the PSC board. Triage holds anything new or missing a customer or an owner; Open is everything still being worked on.' },
-    { optional: true, target: ['.psc-card'], title: 'Each item', text: 'Who it\'s for and their contract, who has it, how long it waited for a first look, and the team\'s last update. A red edge means late, amber means the customer is waiting or it has gone quiet.' },
-    { optional: true, target: ['.psc-tools'], title: 'Find what matters', text: 'Show your own items or unassigned ones, pick a customer, and sort by what needs attention or what has gone longest without an update.' },
-    { title: 'Picking one up', text: 'Open an item and select I\'m on it: it\'s assigned to you and counts as its first look straight away. Log time to it from there too.' },
-  ],
-  '#/contracts': [
-    { target: ['.con-card', '#view'], title: 'Each contract', text: 'Its status and tier, the dates it covers, and how many service, calibration and obsolescence visits are done. The calendar badge means it covers bank holidays. Tap a contract for everything behind it.' },
-    { optional: true, target: ['.con-tokens'], title: 'Tokens', text: 'Available tokens, tokens allocated to jobs that aren\'t finished yet, and tokens used. In Jira, allocated tokens count as used, so nobody spends them on something else.' },
-    { optional: true, target: ['.con-clock'], title: 'The token clock', text: 'Time on the contract and on the customer\'s PSC items adds up on one clock. Every 4 hours uses a token, however many items the time is spread across.' },
-    { optional: true, target: ['.con-flags'], title: 'Needs attention', text: 'Dates that look wrong, contracts not accepted by their start date, and PSC items missing their Organization. Mark one resolved once it\'s sorted.' },
-    { optional: true, target: ['[data-con-tab="insights"]'], title: 'Insights', text: 'Renewals coming up, customers using tokens faster than their contract, visits falling behind, and time that isn\'t reaching a contract.' },
-  ],
-  '#/requests': [
-    { target: ['.req-form', '#view'], title: 'Ask for something', text: 'Ask for a new tile or a change, or tell us about something that isn\'t working. The more detail, the better.' },
-    { title: 'Following it up', text: 'Your requests are listed here with where they\'ve got to, and any reply. You\'ll get an email when one moves on.' },
-  ],
-  '#/shop': [
-    { target: ['#view .card', '#view'], title: 'The XP shop', text: 'Rewards you\'ll be able to spend your levels on, and what each would cost.' },
-  ],
-  '#/admin': [
-    { target: ['details.admin-section', '#view'], title: 'Admin sections', text: 'Each section opens and closes. The ones you open stay open next time.' },
-    { target: ['details[data-section="employees"]'], title: 'Employees', text: 'Each person\'s details, groups, teams and extension.' },
-    { target: ['details[data-section="audit-log"]'], title: 'Audit log', text: 'Every change made by hand, who made it and what it was before.' },
-  ],
+  '#/': {
+    practice: true,
+    intro: 'A look round the hub: your level, your tiles, and how to log time from anywhere.',
+    steps: [
+      { target: ['#band .summary', '#band'], title: 'Your level and rank', text: 'Time you log earns XP. Your level, title and ELO rank show here. Tap it any time to see where your XP came from.' },
+      { target: '.tiles', title: 'Your tiles', text: 'Each tile opens a part of the hub. You see the ones that fit your job and team.' },
+      { act: 'click', target: '[data-tile="arrange"]', title: 'Put them in your order', text: 'Tap Arrange tiles.' },
+      { target: '.arranging-grid', title: 'Drag them round', text: 'Drag a tile by its handle to move it, or use the arrow keys. The crossed-out eye hides a tile you never use; it waits under Hidden until you show it again.' },
+      { act: 'click', target: '[data-tile="done"]', title: 'Done', text: 'Tap Done arranging. Your order is kept on every phone and computer you use.' },
+      { target: '#log-fab', title: 'Log time from here', text: 'This button takes you to Log time. While a timer is running, it shows the job and the clock instead.' },
+      { target: '.help-tour', title: 'A walkthrough on every page', text: 'Each tile has its own walkthrough like this one. Tap ? at the top of any page to go through it again.' },
+    ],
+  },
+
+  '#/log': {
+    practice: true,
+    intro: 'Log time you have already done, or time a job as you work on it.',
+    steps: [
+      { target: '#log-search', title: 'Find the job', text: 'Search by Jira key or by words from the summary. Jobs you logged recently, and anything assigned to you, are listed underneath.' },
+      { act: 'type', target: '#log-search', value: 'recipe', until: withText('[data-pick]', 'NGB-121'), title: 'Search for it', text: 'Type recipe into the search box. Matching jobs appear as you type.' },
+      { act: 'click', target: withText('[data-pick]', 'NGB-121'), title: 'Choose the job', text: 'Tap NGB-121, the recipe download testing stage. Stages earn the full XP for your time.' },
+      { target: '.log-choices', title: 'Two ways to log', text: 'Add time already done when you know how long something took. Start the timer to time it as you go.' },
+      { act: 'click', target: '[data-log-mode="manual"]', title: 'Add time already done', text: 'Tap Add time already done.' },
+      { target: () => document.getElementById('log-date')?.closest('.row'), title: 'When you did it', text: 'The date and start time start at today, 9:00. Change them if the work was another day or time.' },
+      { act: 'click', target: '[data-mins="90"]', title: 'How long', text: 'Tap 1½h. The quick buttons fill in the hours and minutes for you, or type them in the boxes underneath.' },
+      { act: 'type', target: '#log-note', value: 'Tested recipe download on line 2', title: 'What you did', text: 'Add a short note about the work. It goes on the worklog in Tempo.' },
+      { target: '#log-xp', title: 'What it\'s worth', text: 'The XP this time earns, worked out from how hard the job is against your own ELO.' },
+      { act: 'click', target: '[data-action="save-log"]', title: 'Log it', text: 'Tap Log this time. It goes straight to Tempo.' },
+      { target: withText('.list li', 'NGB-121'), title: 'There it is', text: 'You land on My time, with the time you just logged and the XP it earned.' },
+      { act: 'click', target: 'a.btn[href="#/log"]', title: 'Now time a job', text: 'Tap Log time to go back and try the timer.' },
+      { act: 'click', target: '[data-node="root"]', title: 'Find it step by step', text: 'If you don\'t know the key, browse to it instead. Tap Find it step by step.' },
+      { act: 'click', target: withText('[data-node]', 'Customers'), title: 'Customer work', text: 'Tap Customers. Internal is for training, meetings and the workshop.' },
+      { act: 'click', target: withText('[data-node]', 'Harbour Mills'), title: 'The customer', text: 'Tap Harbour Mills.' },
+      { act: 'click', target: withText('[data-node]', 'HBM-204'), title: 'The order', text: 'Tap HBM-204, the intake weigher replacement. The customer\'s open service items are listed under their orders.' },
+      { act: 'click', target: withText('[data-node]', 'HBM-205'), title: 'The part of the job', text: 'Tap HBM-205, the site visit.' },
+      { act: 'click', target: withText('[data-pick]', 'HBM-207'), title: 'The stage', text: 'Tap HBM-207, commissioning.' },
+      { act: 'click', target: '[data-log-mode="timer"]', title: 'Start the timer', text: 'Tap Start the timer.' },
+      { target: '#tracker-panel', title: 'The timer is running', text: 'In this example it has been running for an hour and a half. On other pages, a bar along the bottom shows the job and the clock.' },
+      { act: 'click', target: '[data-tracker="assist"][data-kind="apprentice"]', title: 'Someone needs a hand', text: 'An apprentice asks for help. Tap Assisting an apprentice, so that time is logged on its own.' },
+      { act: 'pick', target: '#assist-who', title: 'Who you\'re helping', text: 'Choose who you\'re helping. It\'s optional, but it helps their team lead.' },
+      { act: 'click', target: '[data-tracker="assist-start"]', title: 'Start helping', text: 'Tap Start. Your job pauses while you help.' },
+      { target: '#tracker-panel', title: 'Your job is paused', text: 'The time on HBM-207 so far has gone to Tempo, and the time helping is being timed on its own.' },
+      { act: 'click', target: '[data-tracker="end-resume"]', title: 'Back to your job', text: 'Tap Back to HBM-207 when you\'re done helping. The job carries on timing.' },
+      { act: 'click', target: '[data-tracker="pause"]', title: 'Take a break', text: 'Tap Pause for lunch, or when you leave site. That stretch goes to Tempo with its real start and end.' },
+      { target: '.tracker-list', title: 'Every stretch is logged', text: 'Each stretch shows its times and whether Tempo has it. Carry on picks the job up again.' },
+      { act: 'click', target: '[data-tracker="stop"]', title: 'Finish with it', text: 'Tap Stop once you\'re done with the job.' },
+      { title: 'That\'s Log time', text: 'Search or browse to the job, then add time already done or time it as you go. If an 8x8 call comes in while the timer runs, the hub asks whether to log the call.' },
+    ],
+  },
+
+  '#/time': {
+    practice: true,
+    intro: 'Check the time you have logged, week by week.',
+    steps: [
+      { target: '.week-nav', title: 'This week', text: 'Your Tempo time for this week, with the hours and XP added up.' },
+      { target: '.chart', title: 'Day by day', text: 'Each bar is a day. A full day is about seven and a half hours, so a short bar stands out.' },
+      { act: 'click', target: '[data-week="-1"]', title: 'Look back', text: 'Tap the left arrow to see last week.' },
+      { target: '.day-label', title: 'Every log, day by day', text: 'Under the chart, each day lists what you logged and the XP each earned.' },
+      { act: 'click', target: '[data-week="1"]', title: 'Back to this week', text: 'Tap the right arrow to come forward again.' },
+      { target: () => document.querySelector('#view a.btn[href="#/log"]')?.closest('.row'), title: 'Log or correct time', text: 'Log time takes you to Log time. Open Tempo shows the same logs in Jira, if you need to change or delete one.' },
+    ],
+  },
+
+  '#/xp': {
+    practice: true,
+    intro: 'What your level, ELO and rank mean, and how to ask for something to be taken into account.',
+    steps: [
+      { target: '.xp-head', title: 'Your level', text: 'Time you log earns XP. Your level and title come from your total XP, and the bar shows how far you are through this level.' },
+      { target: 'dl.stats', title: 'The numbers', text: 'Your total XP, this week\'s XP, your ELO rating and the rank it gives you.' },
+      { target: '.elo-chart', title: 'Your ELO', text: 'ELO moves when a job you worked on is finished. Beating the estimate on a hard job raises it; running over on an easy one lowers it.' },
+      { target: '.elo-list li', title: 'Job by job', text: 'Each finished job: its time against the estimate, your share of the hours, and how much your ELO moved.' },
+      { act: 'click', target: '[data-period="month"]', title: 'The leaderboard', text: 'Tap This month to see who has earned the most XP this month.' },
+      { target: '#leaderboard', title: 'Where you stand', text: 'You\'re highlighted. Choose a team to compare with just them.' },
+      { act: 'click', target: '[data-mod-new]', title: 'When work is harder for a while', text: 'If something is making work harder, such as being unwell or bringing on an apprentice, you can ask for it to be taken into account. Tap the button.' },
+      { act: 'click', target: withText('[data-mod-kind]', 'Supporting apprentices'), title: 'Choose what it is', text: 'Tap Supporting apprentices. No details are needed.' },
+      { act: 'click', target: '[data-mod-send]', title: 'Ask', text: 'Tap Ask. Your supervisor is asked to agree it.' },
+      { target: '#modifiers .list', title: 'Waiting to be agreed', text: 'Once agreed, your jobs count for less towards your ELO while it applies. End it yourself whenever you like.' },
+      { target: () => all('#view > h2').find((h) => h.textContent.includes('Where your XP'))?.nextElementSibling, title: 'Where your XP came from', text: 'Every time log and the XP it earned, newest first.' },
+    ],
+  },
+
+  '#/jobs': {
+    practice: true,
+    intro: 'Follow your open jobs against their estimates, and dispute one that has turned out harder than it was quoted.',
+    steps: [
+      { target: '.job-order', title: 'Your open jobs', text: 'Each order you have logged time on, with its categories underneath.' },
+      { target: '.job-cat', title: 'Each category', text: 'Its job ELO, which says how hard it was quoted to be, and the time logged against its estimate. The bar turns amber near the estimate and red past it.' },
+      { act: 'click', target: '[data-jobs-scope="team"]', title: 'Your team\'s jobs', text: 'Tap My team to see everything your team has open. All shows every open order.' },
+      { act: 'type', target: '#jobs-search', value: 'Harbour', title: 'Search', text: 'Type Harbour to find the Harbour Mills order.' },
+      { act: 'click', target: within('.job-cat', 'HBM-205', '[data-jobs-dispute]'), title: 'This one ran over', text: 'HBM-205 has passed its estimate. If a job turns out harder than it was quoted, tap Dispute.' },
+      { target: '.score-row', title: 'How hard is it really?', text: 'Score each area from 1 to 5. What it was quoted at is shown beside each one.' },
+      { act: 'click', target: '[data-jobs-score="scope"][data-value="4"]', title: 'Change a score', text: 'The scope grew on this job. Tap 4 for Scope and size, and watch the job ELO change underneath.' },
+      { act: 'type', target: '[data-jobs-field="estimateHours"]', value: '48', title: 'A better estimate', text: 'If you know roughly how long it will really take, put it here. Type 48.' },
+      { act: 'click', target: withText('[data-jobs-reason]', 'Scope grew'), title: 'What changed', text: 'Tap Scope grew. Choose as many as apply.' },
+      { act: 'type', target: '[data-jobs-field="comment"]', value: 'Harbour Mills asked for a second intake point during commissioning.', title: 'In your words', text: 'Say what made it harder. Your team lead reads this.' },
+      { act: 'click', target: '[data-jobs-send]', title: 'Send it', text: 'Tap Send to the team lead.' },
+      { target: withText('.job-cat', 'HBM-205'), title: 'With your team lead', text: 'The category now says your dispute is with the team lead. They can agree, adjust or decline it, and Jira is updated to match.' },
+      { when: lead, target: '.approvals', title: 'Waiting for you', text: 'As a team lead, disputes from your team, and requests to take something into account, wait for you here.' },
+      { when: lead, act: 'click', target: '[data-jobs-decide]', title: 'Review a dispute', text: 'Tap Review on Dan\'s dispute.' },
+      { when: lead, target: '.dispute-words', title: 'What they said', text: 'Their reasons and words, then the quoted and suggested scores side by side.' },
+      { when: lead, act: 'click', target: '[data-jobs-verdict="approve"]', title: 'Agree it', text: 'Adjust the scores or the estimate if you need to, then tap Agree. XP already earned on it is worked out again at the new ELO.' },
+      { when: lead, target: withText('.job-cat', 'ASF-71'), title: 'Agreed', text: 'The category shows it was agreed after a dispute, with its new ELO and estimate.' },
+    ],
+  },
+
+  '#/quotes': {
+    practice: true,
+    intro: 'Build a quote from what the job involves, and give your estimate when someone asks for it.',
+    steps: [
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-new-open]', title: 'Start a quote', text: 'Tap Start a quote.' },
+      { when: (me) => me.user.can?.quotes, act: 'type', target: '#q-customer-search', value: 'North', title: 'The customer', text: 'Type North to find Northgate Bakery.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-customer="NGB"]', title: 'Choose them', text: 'Tap Northgate Bakery.' },
+      { when: (me) => me.user.can?.quotes, act: 'type', target: '[data-q-new="title"]', value: 'Line 3 recipe system', title: 'A title', text: 'Say what the customer is asking for.' },
+      { when: (me) => me.user.can?.quotes, act: 'type', target: '[data-q-new="description"]', value: 'Recipe management for the new line 3, matching line 2. Needed before the January shutdown.', title: 'The description', text: 'What they want, where, any deadlines, and anything the engineers should know. It becomes the description on the quote in Jira.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-new-disc="software"]', title: 'The categories', text: 'Tap Software. Choose every kind of work the job needs.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-create]', title: 'Make it', text: 'Tap Start the quote. It\'s made in Jira straight away.' },
+      { when: (me) => me.user.can?.quotes, target: '.q-section', title: 'One section per category', text: 'Fill in what the job involves. Similar finished jobs and a suggested number of hours appear alongside as you go.' },
+      { when: (me) => me.user.can?.quotes, act: 'type', target: '[data-q-count="screens"]', value: '12', title: 'How much', text: 'Type 12 for the screens or workflows. The counts are what future quotes learn from.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-set="novelty"][data-value="similar"]', title: 'Done it before?', text: 'Tap Done something similar.' },
+      { when: (me) => me.user.can?.quotes, act: 'until', target: () => document.querySelector('.q-hours'), until: () => all('.q-section [data-q-field$="_hours"]:not([data-q-field="quoted_hours"])').every((i) => i.value),
+        doIt: async (help) => { help.type('[data-q-field="best_hours"]', '30'); help.type('[data-q-field="likely_hours"]', '40'); help.type('[data-q-field="worst_hours"]', '60'); },
+        title: 'Best, likely and worst', text: 'Fill in the hours for the best case, the likely case and the worst case.' },
+      { when: (me) => me.user.can?.quotes, act: 'until', target: () => document.querySelector('.q-section .score-row')?.parentElement, until: () => all('.q-section .score-row').every((r) => r.querySelector('.seg.on')),
+        doIt: async (help) => { for (const [k, v] of [['tech', 3], ['risk', 2], ['dep', 2]]) await help.click(`.q-section [data-q-set="${k}"][data-value="${v}"]`); },
+        title: 'How hard is it?', text: 'Score each from 1 to 5. Together they set the job\'s ELO.' },
+      { when: (me) => me.user.can?.quotes, target: '.q-side', title: 'What the hub suggests', text: 'A suggested number of hours from your figures and how similar jobs went, and those jobs to compare against.' },
+      { when: (me) => me.user.can?.quotes, act: 'type', target: '[data-q-field="quoted_hours"]', value: '44', title: 'Hours to quote', text: 'Type the hours you\'ll quote. Type 44.' },
+      { when: (me) => me.user.can?.quotes, act: 'pick', target: '[data-q-ask-who]', value: 'ex-tom', title: 'Ask an engineer', text: 'Not sure? Choose someone to ask for their view.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-ask]', title: 'Ask them', text: 'Tap Ask. Their answer appears here, and you can use their figures with one tap.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-status="ready"]', title: 'Ready to send', text: 'When it\'s done, tap Ready to send. The estimates are added to the quote\'s description in Jira.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-back]', title: 'Back to the list', text: 'Tap Back to quotes.' },
+      { target: '.approvals', title: 'Asked for your estimate?', text: 'When someone wants your view on a quote, it waits here.' },
+      { act: 'click', target: '[data-q-answer-open]', title: 'Give your estimate', text: 'Tap Give my estimate.' },
+      { target: '.dispute-words', title: 'What they want', text: 'What the job is, and any note from whoever asked.' },
+      { act: 'click', target: '[data-q-set="job_type"][data-value="Commissioning"]', title: 'Kind of visit', text: 'Tap Commissioning.' },
+      { act: 'type', target: '[data-q-count="days"]', value: '3', title: 'How much', text: 'Type 3 for the days on site.' },
+      { act: 'until', target: () => document.querySelector('[data-q-section="answer"] .q-hours'), until: () => all('[data-q-section="answer"] .q-hours input').every((i) => i.value),
+        doIt: async (help) => { help.type('[data-q-section="answer"] [data-q-field="best_hours"]', '20'); help.type('[data-q-section="answer"] [data-q-field="likely_hours"]', '24'); help.type('[data-q-section="answer"] [data-q-field="worst_hours"]', '32'); },
+        title: 'Your hours', text: 'Fill in the best, likely and worst case.' },
+      { act: 'until', target: () => document.querySelector('[data-q-section="answer"] .score-row')?.parentElement, until: () => all('[data-q-section="answer"] .score-row').every((r) => r.querySelector('.seg.on')),
+        doIt: async (help) => { for (const [k, v] of [['tech', 2], ['risk', 3], ['dep', 3]]) await help.click(`[data-q-section="answer"] [data-q-set="${k}"][data-value="${v}"]`); },
+        title: 'How hard is it?', text: 'Score each from 1 to 5.' },
+      { act: 'type', target: '[data-q-answer-comment]', value: 'Can be done in the same shutdown if the panel is built beforehand.', title: 'Anything else', text: 'Say what your estimate depends on, or what worries you.' },
+      { act: 'click', target: '[data-q-answer]', title: 'Send it', text: 'Tap Send my estimate. It goes to whoever asked, and is noted on the quote in Jira.' },
+      { target: ['.q-list', '#view .card'], title: 'Sent', text: 'It leaves your list once it\'s sent.' },
+    ],
+  },
+
+  '#/condor': {
+    practice: true,
+    intro: 'Log your development day from Bitbucket, estimate tickets, and see the release plan.',
+    steps: [
+      { target: '.condor-tabs', title: 'Condor Dev', text: 'Everything for MES development is under these tabs.' },
+      { target: '.day-card', title: 'Your day, ready to log', text: 'Your commits and pull request activity in Bitbucket become draft time, ticket by ticket.' },
+      { act: 'click', target: within('[data-draft]', 'MES-498', '[data-draft-dismiss]'), title: 'Not work time?', text: 'That review was late in the evening, at home. Tap Not work time to leave it off.' },
+      { act: 'type', target: within('[data-draft]', 'MES-521', '[data-draft-hours]'), value: '4', title: 'Check the hours', text: 'Correct anything that\'s out. Make MES-521 4 hours.' },
+      { act: 'click', target: '[data-day-log]', title: 'Log the day', text: 'Tap Log to Tempo. Each ticket gets its own worklog.' },
+      { act: 'click', target: '[data-condor-tab="estimate"]', title: 'Estimating', text: 'Tap Estimate.' },
+      { target: '.mes-list', title: 'Tickets with no estimate', text: 'Every open MES ticket still waiting for one. All open shows the rest.' },
+      { act: 'click', target: within('[data-mes-row]', 'MES-518', '[data-mes-estimate]'), title: 'Estimate one', text: 'Tap Estimate on MES-518.' },
+      { target: '.mes-compare', title: 'Compare it', text: 'Rather than guessing hours, compare it with a finished ticket and how long that took.' },
+      { act: 'click', target: '[data-mes-answer="bigger"]', title: 'Bigger or smaller?', text: 'This one is more work. Tap Bigger.' },
+      { act: 'click', target: '[data-mes-answer="same"]', title: 'And this one?', text: 'About the same as this one. Tap About the same.' },
+      { target: '.q-suggest', title: 'The estimate', text: 'The hours, and the range it\'s likely to fall in, from your answers.' },
+      { act: 'click', target: '[data-mes-difficulty="3"]', title: 'How hard is it to do well?', text: 'Tap 3. The hint under the scores says what each means.' },
+      { act: 'click', target: withText('[data-mes-tag]', 'Customer testing needed'), title: 'Anything to note', text: 'Tap Customer testing needed.' },
+      { act: 'click', target: '[data-mes-save]', title: 'Save it', text: 'Tap Save the estimate. It goes to Jira.' },
+      { when: (me) => me.user.can?.condorPlan, act: 'click', target: '[data-condor-tab="triage"]', title: 'Triage', text: 'At the start of a release, go through the open tickets. Tap Triage.' },
+      { when: (me) => me.user.can?.condorPlan, target: '.triage-ticket', title: 'One at a time', text: 'Must, Should and Could put it in the release; Not this time leaves it for the next one.' },
+      { when: (me) => me.user.can?.condorPlan, act: 'click', target: '[data-mes-triage="Must"]', title: 'Decide', text: 'Tap Must.' },
+      { act: 'click', target: '[data-condor-tab="plan"]', title: 'The plan', text: 'Tap Plan.' },
+      { target: ['dl.stats', '.table-wrap'], title: 'Who is doing what, and when', text: 'The release\'s tickets against everyone\'s time, with anything that won\'t fit before the release shown in red.' },
+      { when: (me) => me.user.can?.condorPlan, act: 'click', target: '[data-plan-suggest="accept"]', title: 'When work won\'t fit', text: 'The hub suggests what to move to the next release, Coulds first. Tap Move it.' },
+      { when: (me) => me.user.can?.condorPlan, act: 'click', target: '[data-plan-accept]', title: 'Accept the plan', text: 'Tap Accept the plan. Each ticket gets its dates and sprint in Jira.' },
+      { act: 'click', target: '[data-condor-tab="ratings"]', title: 'Your rating', text: 'Tap Ratings.' },
+      { target: '.elo-chart', title: 'Your Condor rating', text: 'It moves as your tickets finish, against their estimates. It\'s kept apart from your customer ELO.' },
+    ],
+  },
+
+  '#/pow': {
+    practice: true,
+    intro: 'Fill in the risk assessment for a site visit, from picking the visit to signing off.',
+    steps: [
+      { act: 'click', target: '[data-pow="new"]', title: 'Start one', text: 'On site, before you start work, tap Start an assessment.' },
+      { act: 'click', target: withText('[data-node]', 'Harbour Mills'), title: 'Whose site?', text: 'Tap Harbour Mills.' },
+      { act: 'click', target: withText('[data-pick]', 'HBM-207'), title: 'Which visit?', text: 'Tap HBM-207. If your visit isn\'t listed, the button underneath lets you carry on and add the job number later.' },
+      { target: card('#pow-customer'), title: 'The details', text: 'Filled in from Jira. Correct anything that\'s wrong.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'until', target: card('.qrow'), until: answered('.qrow'), doIt: answerAll('.qrow', '[data-value="yes"]'),
+        title: 'Before you start', text: 'Answer each one. Answer No and the form tells you to take action or speak to your manager first.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'until', target: card('[data-toggle="ppe"]'), until: () => all('[data-toggle="ppe"].on').length >= 2, doIt: tapUntil('[data-toggle="ppe"]', 3),
+        title: 'Your PPE', text: 'Tap everything you have on.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'until', target: card('[data-toggle="hazards"]'), until: () => all('[data-toggle="hazards"].on').length >= 1, doIt: tapUntil('[data-toggle="hazards"]', 1),
+        title: 'Hazards present', text: 'Tap anything present on this job.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'click', target: '[data-set^="sig."][data-value="yes"]', title: 'Is it significant?', text: 'Significant means there are no controls, or the ones in place aren\'t enough. Tap Significant.' },
+      { act: 'type', target: '[data-sigcontrol]', value: 'Area barriered off and the feed isolated and locked out', title: 'What you did about it', text: 'Say what you did to make it safe, then choose the risk that\'s left.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'until', target: card('[data-toggle="ras"]'), until: () => all('[data-toggle="ras"].on').length >= 1, doIt: tapUntil('[data-toggle="ras"]', 1),
+        title: 'Assessments you\'re working to', text: 'Tap the risk assessments and safe systems of work you\'re working to.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'until', target: card('.qrow'), until: answered('.qrow'), doIt: answerAll('.qrow', '[data-value="no"]'),
+        title: 'End of job review', text: 'At the end of the job, answer these. Answer Yes to any and you\'re asked for a line about it.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'type', target: '#pow-cname', value: 'Rob Fenwick', title: 'Sign off', text: 'Your name is filled in. Add the customer\'s name, and their email for the feedback form.' },
+      { act: 'click', target: '[data-pow="next"]', title: 'Finish', text: 'Tap Finish and send.' },
+      { target: '#view .card', title: 'Sent', text: 'The signed PDF is attached to the job in Jira and filed in the shared drive. With no signal, it waits on your phone and sends itself later.' },
+    ],
+  },
+
+  '#/obs': {
+    practice: true,
+    intro: 'Survey the equipment on a site and file the report, or read a finished survey and decide on a quote.',
+    steps: [
+      { when: (me) => Boolean(me.user.can?.quotes || me.user.teams?.includes('Sales')), act: 'click', target: '[data-obs="survey-view"]', title: 'Survey a site', text: 'Tap Survey a site.' },
+      { act: 'click', target: '[data-obs="new"]', title: 'Start a survey', text: 'Tap Start a survey.' },
+      { act: 'type', target: '#obs-search', value: 'Ashby', title: 'Which site?', text: 'Type Ashby to find the client.' },
+      { act: 'click', target: '[data-obs-client="ASF-77"]', title: 'Choose it', text: 'Tap Ashby Feeds.' },
+      { target: card('[data-obs-field="title.client"]'), title: 'Site details', text: 'Filled in from Jira where possible.' },
+      { act: 'click', target: '[data-obs="next"]', title: 'Next', text: 'Tap Next.' },
+      { target: '[data-obs-field="controlServers[0].label"]', title: 'One section at a time', text: 'Each section lists what\'s on site. The control servers are already listed; fill in the ones they have.' },
+      { act: 'click', target: '[data-obs-status="controlServers[0].status"][data-value="Active mature"]', title: 'Its condition', text: 'Tap Active mature for the first server.' },
+      { act: 'type', target: '[data-obs-field="controlServers[0].os"]', value: 'Windows Server 2016', title: 'Its details', text: 'Type the operating system. Part numbers suggest what Promtek has seen before as you type.' },
+      { act: 'click', target: '[data-obs="next"]', title: 'Next', text: 'Tap Next.' },
+      { act: 'click', target: '[data-obs="add-vdus"]', title: 'Add what\'s there', text: 'Tap Add VDU for each one on site.' },
+      { act: 'click', target: '[data-obs-status="vdus[0].status"][data-value="Obsolete"]', title: 'Its condition', text: 'Tap Obsolete.' },
+      { act: 'until', target: '[data-obs="next"]', until: () => document.querySelector('[data-obs="next"]')?.textContent.includes('Finish'),
+        doIt: async (help) => { for (let i = 0; i < 10 && !document.querySelector('[data-obs="next"]')?.textContent.includes('Finish'); i++) await help.click('[data-obs="next"]'); },
+        title: 'The other sections', text: 'Amplifiers, load cells, PLC panels, software and critical spares work the same way. Tap Next through them to the end.' },
+      { act: 'type', target: '[data-obs-field="notes"]', value: 'Two VDUs on Windows 7 need replacing this year.', title: 'Anything else?', text: 'A short summary for whoever reads the report.' },
+      { act: 'click', target: '[data-obs="next"]', title: 'File it', text: 'Tap Finish and file. The report is made, filed, and the job in Jira moves on.' },
+      { when: (me) => Boolean(me.user.can?.quotes || me.user.teams?.includes('Sales')), act: 'click', target: '[data-obs="chooser"]', title: 'Reading surveys', text: 'In Sales, you also read finished surveys. Tap Switch to reviewing.' },
+      { when: (me) => Boolean(me.user.can?.quotes || me.user.teams?.includes('Sales')), act: 'click', target: '[data-obs="sales"]', title: 'Review surveys', text: 'Tap Review surveys.' },
+      { when: (me) => Boolean(me.user.can?.quotes || me.user.teams?.includes('Sales')), act: 'click', target: '[data-obs-read]', title: 'Read it', text: 'Read the survey, then tap Finished reading.' },
+      { when: (me) => Boolean(me.user.can?.quotes || me.user.teams?.includes('Sales')), act: 'click', target: '[data-obs-quote="yes"]', title: 'Does it need a quote?', text: 'Tap Quote required. A quote is raised, assigned to you and linked to the report.' },
+      { target: '#view', title: 'Filed', text: 'Finished surveys are listed with their PDF. The report is in the shared drive, and the job in Jira has moved on.', optional: true },
+    ],
+  },
+
+  '#/calls': {
+    practice: true,
+    intro: 'Turn the calls you took into logged time and service items.',
+    steps: [
+      { target: '#calls-date', title: 'Choose the day', text: 'Today is chosen to start with. Nothing is fetched from 8x8 until you ask.' },
+      { act: 'click', target: '[data-calls="load"]', title: 'Show your calls', text: 'Tap Show my calls.' },
+      { target: '.list .call', title: 'Each call', text: 'Who it was with, how long, and the customer if the number is known. Job logs it to an order, Existing PSC to an open service item, New PSC raises one, and Discard is for anything personal.' },
+      { act: 'click', target: '[data-call="new-psc"][data-value="c2"]', title: 'A new service item', text: 'This call from an unknown number was a fault report. Tap New PSC.' },
+      { act: 'type', target: '#call-customer-search', value: 'Kings', title: 'Which customer?', text: 'Type Kings to find them. The number is saved against them, so next time it\'s recognised.' },
+      { act: 'click', target: '[data-call-customer="KWD"]', title: 'Choose them', text: 'Tap Kingsway Dairies.' },
+      { act: 'type', target: '#psc-summary', value: 'Silo display frozen after a power cut', title: 'What it\'s about', text: 'Give it a short summary.' },
+      { act: 'click', target: '[data-action="create-psc"]', title: 'Raise it', text: 'Tap Create and log time. It\'s raised in their project and assigned to you.' },
+      { target: () => document.getElementById('log-minutes')?.closest('.card'), title: 'The call\'s time', text: 'The length of the call and a note are already filled in.' },
+      { act: 'click', target: '[data-action="save-log"]', title: 'Log it', text: 'Tap Log this time.' },
+      { title: 'That\'s 8x8 calls', text: 'Back on 8x8 calls, the call now shows what it was logged against, so you can see at a glance which calls are still to do.' },
+    ],
+  },
+
+  '#/it': {
+    practice: true,
+    intro: 'Report a problem to IT or ask for something you need.',
+    steps: [
+      { target: '#view .list', title: 'Your requests', text: 'Anything you have raised with IT, and where it has got to.' },
+      { act: 'click', target: '[data-it="new"]', title: 'Raise one', text: 'Tap Raise a request.' },
+      { act: 'click', target: '[data-it-cat="hardware-fault"]', title: 'What kind of thing?', text: 'Tap Broken or faulty hardware.' },
+      { act: 'type', target: '#it-summary', value: 'Laptop won\'t charge', title: 'Summary', text: 'A few words IT can see at a glance.' },
+      { act: 'type', target: '#it-detail', value: 'The charging light stays off with two different chargers. Started this morning.', title: 'Detail', text: 'What happens, and when it started.' },
+      { act: 'click', target: '[data-it-urgency="slowed"]', title: 'How much is it holding you up?', text: 'Tap the one that fits. It sets the priority.' },
+      { act: 'click', target: '[data-it-asset="ASSET-1042"]', title: 'Which piece of kit?', text: 'Kit assigned to you is listed. Tap the laptop.' },
+      { target: '#it-photos', title: 'Photos', text: 'Add photos if they help, such as an error on screen.' },
+      { act: 'click', target: '[data-it="send"]', title: 'Send it', text: 'Tap Send to IT. It\'s raised in your name.' },
+      { target: () => document.querySelector('#view .list'), title: 'Following it up', text: 'It appears in your open requests, with its status and who has it.' },
+    ],
+  },
+
+  '#/vehicles': {
+    practice: true,
+    intro: 'Book a vehicle, check it over before you drive, and report anything wrong.',
+    steps: [
+      { target: () => all('#view .list').pop(), title: 'The fleet', text: 'Every vehicle, whether it\'s available, any faults reported, and what\'s due soon.' },
+      { act: 'click', target: '[data-veh-view="book"]', title: 'Book one', text: 'Tap Book.' },
+      { target: '#view .table-wrap', title: 'Who has what', text: 'The week\'s bookings, vehicle by vehicle. The arrows move between weeks.' },
+      { act: 'pick', target: '#veh-id', value: 'v3', title: 'Which vehicle', text: 'Choose the Transit Connect.' },
+      { act: 'type', target: '#veh-job', value: 'HBM-207', title: 'The job', text: 'Add the job it\'s for, if there is one.' },
+      { act: 'click', target: '[data-veh="book"]', title: 'Book it', text: 'Tap Book it.' },
+      { target: () => all('#view .list')[0], title: 'Your bookings', text: 'Your bookings are at the top. Cancel one here if plans change.' },
+      { act: 'click', target: '[data-veh-check="v3"]', title: 'Before you drive', text: 'Before setting off, do the walkaround check. Tap Check on the Transit Connect.' },
+      { act: 'click', target: '[data-set="check.wipers"][data-value="fail"]', title: 'Something wrong', text: 'The wiper blade is split. Tap Fail for the wiper blades.' },
+      { act: 'type', target: '[data-check-note="wipers"]', value: 'Driver side blade split', title: 'Say what\'s wrong', text: 'A few words for whoever fixes it.' },
+      { act: 'until', target: card('.qrow'), until: answered('.qrow'), doIt: answerAll('.qrow', '[data-value="pass"]'),
+        title: 'Everything else', text: 'Tap Pass or Fail for each of the rest.' },
+      { target: () => document.querySelector('[data-set="fit.drive"]')?.closest('.segment'), title: 'Is it fit to drive?', text: 'If it isn\'t safe, say No and it comes off the road straight away.' },
+      { act: 'click', target: '[data-veh="submit-check"]', title: 'Finish the check', text: 'Tap Finish the check. The fault goes to management with your note.' },
+      { when: lead, act: 'click', target: '[data-veh-view="defects"]', title: 'Faults to clear', text: 'As a team lead, you see every reported fault. Tap Defects.' },
+      { when: lead, act: 'click', target: '[data-veh-resolve]', title: 'Once it\'s fixed', text: 'Tap Clear when a fault has been put right.' },
+      { act: 'click', target: '[data-veh-view="home"]', title: 'Back to the fleet', text: 'Tap Fleet.' },
+      { target: withText('#view .list li', 'PL70 WGH'), title: 'Faults show on the fleet', text: 'Each vehicle shows its open faults, so whoever books it next knows.', optional: true },
+    ],
+  },
+
+  '#/psc': {
+    practice: true,
+    intro: 'Pick up new support requests, keep them moving, and log your time to them.',
+    steps: [
+      { target: '.psc-tabs', title: 'PSC', text: 'Every support request from the customer projects and the PSC board. Triage holds anything new or missing a customer or an owner; Open is everything still being worked on.' },
+      { target: '.psc-card', title: 'Each item', text: 'Who it\'s for and their contract, who has it, how long it waited for a first look, and the team\'s last update. A red edge means late; amber means the customer is waiting or it has gone quiet.' },
+      { act: 'click', target: '[data-psc-tab="triage"]', title: 'Triage', text: 'Tap Triage.' },
+      { target: '[data-psc-open="NGB-140"]', title: 'Something new', text: 'A Gold customer\'s weigher is reading heavy and nobody has looked yet. Its first-look clock is running.' },
+      { act: 'click', target: within('[data-psc-open]', 'NGB-140', '[data-psc-pickup]'), title: 'Pick it up', text: 'Tap I\'m on it. It\'s assigned to you, and counts as its first look straight away.' },
+      { target: '[data-psc-open="PSC-212"]', title: 'Raised on the PSC board', text: 'This one was raised on the PSC board, so it needs its Organization to know which customer it\'s for.' },
+      { act: 'pick', target: '[data-psc-org="PSC-212"]', value: '2', title: 'Set the Organization', text: 'Choose Harbour Mills.' },
+      { act: 'pick', target: '[data-psc-assign="PSC-212"]', value: 'ex-ellie', title: 'Give it to someone', text: 'Choose Ellie Morgan. It leaves Triage once someone has looked at it.' },
+      { when: lead, act: 'click', target: '[data-psc-tab="insights"]', title: 'Insights', text: 'Tap Insights.' },
+      { when: lead, target: 'dl.stats', title: 'How the team is doing', text: 'How quickly first looks happen against each contract\'s target, week by week, and who has what.' },
+      { act: 'click', target: '[data-psc-tab="open"]', title: 'Everything open', text: 'Tap Open.' },
+      { act: 'click', target: '[data-psc-who="mine"]', title: 'Just yours', text: 'Tap Mine. You can also pick a customer or a contract, and sort by what needs attention or what has gone longest without an update.' },
+      { act: 'click', target: '[data-psc-open="NGB-140"]', title: 'Open it', text: 'Tap the weigher item.' },
+      { target: '.psc-facts', title: 'Where it stands', text: 'When it was raised, its first look, the last update from the team and the customer\'s last word.' },
+      { target: '.psc-terms', title: 'What their contract gives them', text: 'Cover, callout response and rates, and tokens left. No contract means it\'s chargeable, so agree the cost first.' },
+      { target: '.psc-timeline', title: 'History', text: 'Comments, status changes and time, newest first. Internal notes are marked.' },
+      { act: 'click', target: '[data-psc-log="NGB-140"]', title: 'Log your time', text: 'Tap Log time.' },
+      { act: 'click', target: '[data-log-mode="manual"]', title: 'Time already done', text: 'Tap Add time already done.' },
+      { act: 'click', target: '[data-mins="30"]', title: 'How long', text: 'Tap 30m.' },
+      { act: 'click', target: '[data-action="save-log"]', title: 'Log it', text: 'Tap Log this time.' },
+      { target: withText('.list li', 'NGB-140'), title: 'Logged', text: 'Time on a contracted customer\'s PSC counts towards their token clock, and time logged before anyone has looked at an item counts as its first look.' },
+    ],
+  },
+
+  '#/contracts': {
+    practice: true,
+    intro: 'Follow each customer\'s contract: its dates, visits, tokens and token clock.',
+    steps: [
+      { target: '.con-card', title: 'Each contract', text: 'Its status and tier, the dates it covers, and how many service, calibration and obsolescence visits are done. The calendar badge means it covers bank holidays.' },
+      { target: '.con-tokens', title: 'Tokens', text: 'Available tokens, tokens allocated to jobs that aren\'t finished, and tokens used. In Jira, allocated tokens count as used, so nobody spends them twice.' },
+      { target: '.con-clock', title: 'The token clock', text: 'Time on the contract and the customer\'s PSC items adds up on one clock. Every 4 hours uses a token, however many items it\'s spread across.' },
+      { target: '.con-flags', title: 'Needs attention', text: 'Dates that look wrong, contracts not accepted by their start date, and PSC items with no Organization.' },
+      { act: 'click', target: '[data-con-resolve]', title: 'Once it\'s sorted', text: 'Tap Mark resolved on the first one.' },
+      { act: 'click', target: '[data-con-filter="all"]', title: 'Filters', text: 'Active is chosen to start with. Tap All to see every contract.' },
+      { act: 'type', target: '#con-search', value: 'Ashby', title: 'Search', text: 'Type Ashby.' },
+      { act: 'click', target: '[data-con-open="ASF-61"]', title: 'Open it', text: 'Tap the Ashby Feeds contract.' },
+      { target: () => document.querySelector('.con-clock.big')?.closest('.card'), title: 'The clock in detail', text: 'Time towards the next token, and everything that has added to it.' },
+      { target: () => all('#view h2').find((h) => h.textContent.includes('Visits')), title: 'Visits and tokens', text: 'Each visit and token on the contract and its status in Jira. Tap a key to open it.' },
+      { act: 'click', target: '[data-con-back]', title: 'Back', text: 'Tap All contracts.' },
+      { when: lead, act: 'click', target: '[data-con-tab="insights"]', title: 'Insights', text: 'Tap Insights.' },
+      { when: lead, target: '.con-pace', title: 'Tokens against time', text: 'How far through each contract is against its tokens. A token bar ahead of the time bar means they\'re going faster than the contract.' },
+      { when: lead, act: 'click', target: 'details.con-bar-row summary', title: 'Where the time went', text: 'Tap a customer to see the time logs behind their bar.' },
+      { when: lead, target: 'details.con-bar-row[open]', title: 'The time logs', text: 'Who logged what, and when. Time that can\'t reach a contract, such as PSCs with no Organization, is listed above.' },
+    ],
+  },
+
+  '#/requests': {
+    practice: true,
+    intro: 'Ask for a new tile or a change, or report something that isn\'t working.',
+    steps: [
+      { when: (me) => me.user.isAdmin || me.user.can?.developer, act: 'click', target: '[data-req-new]', title: 'Send one', text: 'Tap Send a request.' },
+      { act: 'click', target: withText('[data-req-kind]', 'A change to a tile'), title: 'What is it?', text: 'Tap A change to a tile.' },
+      { act: 'pick', target: '[data-req="tile"]', value: 'Log time', title: 'Which part of the hub?', text: 'Choose Log time.' },
+      { act: 'type', target: '[data-req="title"]', value: 'Remember the last start time I used', title: 'Title', text: 'A short line saying what you want.' },
+      { act: 'type', target: '[data-req="details"]', value: 'I usually start at 7:30, so having to change it from 9:00 every time is a pain.', title: 'Details', text: 'What you\'d like and why. For a problem: what you did, what you expected, and what you saw.' },
+      { act: 'click', target: '[data-req-send]', title: 'Send it', text: 'Tap Send.' },
+      { target: '.req-list li', title: 'Following it up', text: 'Your requests are listed with where they\'ve got to, and any reply. You get an email when one moves on.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.developer, act: 'type', target: '[data-req-reply]', value: 'Good idea, we\'ll look at this next.', title: 'Reply', text: 'As a developer, reply to the person who sent it.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.developer, act: 'click', target: '[data-req-status="working"]', title: 'Move it on', text: 'Tap Working on it. They see the status and your reply, and get an email.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.developer, target: '.req-filters', title: 'Filters', text: 'Open shows everything new or being worked on. The other filters show each status on its own.' },
+    ],
+  },
+
+  '#/reports': {
+    practice: true,
+    intro: 'Read the team\'s effort, how jobs ran against their quotes, and how long stages take.',
+    steps: [
+      { target: '#view .tabs', title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, and Stages shows how long each kind of stage usually takes.' },
+      { target: '.table-wrap', title: 'Hours each week', text: 'Each engineer\'s hours and XP by week. Short weeks stand out, and the last column is how long after the work people log it.' },
+      { act: 'click', target: withText('[data-engineer]', 'Sam Turner'), title: 'One engineer', text: 'Tap Sam Turner.' },
+      { target: 'dl.stats', title: 'Their figures', text: 'Their level, ELO, average week and logging delay, then their hours, ELO history and what they spent most time on.' },
+      { act: 'click', target: '[data-engineer=""]', title: 'Back', text: 'Tap Back to the team.' },
+      { act: 'click', target: '[data-view="quoting"]', title: 'Quoting', text: 'Tap Quoting.' },
+      { target: '.table-wrap', title: 'Estimates against reality', text: 'How long jobs of each size really take against their estimates, by customer and by team.' },
+      { act: 'click', target: '[data-view="stages"]', title: 'Stages', text: 'Tap Stages.' },
+      { target: '.table-wrap', title: 'The stage library', text: 'How long each kind of stage takes, built from finished work. Useful for splitting a quote into stages.' },
+    ],
+  },
+
+  '#/org': {
+    steps: [
+      { target: ['.org-scroll', '#view'], title: 'The company chart', text: 'Who reports to whom, and each person\'s role. Scroll sideways on a small screen.' },
+      { optional: true, target: '[data-org="download"]', title: 'Save a copy', text: 'Download the chart as an image.' },
+    ],
+  },
+  '#/shop': {
+    steps: [
+      { target: ['#view .card', '#view'], title: 'The XP shop', text: 'Rewards you\'ll be able to spend your levels on, and what each would cost. Nothing here spends anything.' },
+      { optional: true, target: '[data-shop]', title: 'What would it cost?', text: 'For a reward you could take, see what it would cost you and how long it would take to earn back.' },
+    ],
+  },
+  '#/admin': {
+    steps: [
+      { target: ['details.admin-section', '#view'], title: 'Admin sections', text: 'Each section opens and closes. The ones you open stay open next time.' },
+      { optional: true, target: 'details[data-section="employees"]', title: 'Employees', text: 'Each person\'s details, groups, teams and extension.' },
+      { optional: true, target: 'details[data-section="audit-log"]', title: 'Audit log', text: 'Every change made by hand, who made it and what it was before.' },
+    ],
+  },
 };

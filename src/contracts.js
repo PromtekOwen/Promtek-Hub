@@ -347,14 +347,21 @@ async function loadState(env) {
   let projects;
   try { projects = await customerProjects(env); } catch { projects = null; }
   if (!projects?.length) projects = [...new Map(contracts.map((c) => [c.project_key, { key: c.project_key, name: c.customer }])).values()];
-  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), projects, match: orgMatcher(projects, manual) };
+  // Service items in customers' own projects (read by the PSC tile) count towards that customer's contract too.
+  let psc = new Map();
+  try {
+    const { results } = await env.DB.prepare("SELECT issue_id, issue_key, project_key, issuetype, summary FROM psc_items WHERE project_key != 'PSC'").all();
+    psc = new Map(results.map((r) => [r.issue_id, r]));
+  } catch { /* the PSC tile isn't set up */ }
+  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), psc, projects, match: orgMatcher(projects, manual) };
 }
 
 async function worklogsSince(env, from) {
   const { results } = await env.DB.prepare(
     `WITH relevant AS (
        SELECT issue_id FROM contract_issues WHERE issue_key LIKE 'PSC-%'
-       UNION SELECT issue_id FROM contracts UNION SELECT issue_id FROM contract_items WHERE kind = 'token')
+       UNION SELECT issue_id FROM contracts UNION SELECT issue_id FROM contract_items WHERE kind = 'token'
+       UNION SELECT issue_id FROM psc_items WHERE project_key != 'PSC')
      SELECT worklog_id, issue_id, account_id, work_date, seconds, created_at AS seen FROM xp_ledger
       WHERE work_date >= ? AND issue_id IN (SELECT issue_id FROM relevant)
      UNION ALL SELECT worklog_id, issue_id, account_id, work_date, seconds, seen_at AS seen FROM unmatched_worklogs
@@ -375,6 +382,14 @@ export function placeWorklog(w, st) {
     const c = st.contracts.find((x) => x.issue_key === token.contract_key);
     if (!c) return { skip: 'unknown' };
     return ended(c, { issue_key: token.issue_key, summary: token.summary }) || { contract: c, via: 'token' };
+  }
+  const own = st.psc?.get(String(w.issue_id));
+  if (own) {
+    const asIssue = { issue_key: own.issue_key, summary: own.summary };
+    if (UNCHARGED_TYPES.includes(String(own.issuetype || '').toLowerCase())) return { skip: 'snag', issue: asIssue };
+    const covering = st.contracts.filter((c) => c.project_key === own.project_key && CLOCKED.includes(c.status) && c.start_date && c.end_date
+      && w.work_date >= c.start_date && w.work_date <= c.end_date).sort((a, b) => b.start_date.localeCompare(a.start_date));
+    return covering.length ? { contract: covering[0], via: 'psc', issue: asIssue } : { skip: 'no-contract', issue: asIssue, project: own.project_key };
   }
   const issue = st.issues.get(String(w.issue_id));
   if (!issue?.issue_key || !/^PSC-/i.test(issue.issue_key)) return { skip: 'other' };
@@ -412,7 +427,7 @@ function triggerFor(clock, n, st) {
   const target = n * TOKEN_SECONDS;
   const w = clock.logs.find((l) => l.running >= target) || clock.logs[clock.logs.length - 1];
   if (!w) return { key: null, summary: null };
-  const issue = st.issues.get(String(w.issue_id));
+  const issue = st.issues.get(String(w.issue_id)) || st.psc?.get(String(w.issue_id));
   const contract = st.contracts.find((c) => c.issue_id === String(w.issue_id));
   const item = st.items.find((i) => i.issue_id === String(w.issue_id));
   if (issue?.issue_key) return { key: issue.issue_key, summary: issue.summary || issue.issue_key };
@@ -899,7 +914,7 @@ export async function detail(env, viewer, key) {
   ]);
   const byIssue = new Map();
   for (const l of clock?.logs || []) {
-    const issue = st.issues.get(String(l.issue_id));
+    const issue = st.issues.get(String(l.issue_id)) || st.psc?.get(String(l.issue_id));
     const label = issue?.issue_key || (l.via === 'contract' ? c.issue_key : st.items.find((i) => i.issue_id === String(l.issue_id))?.issue_key) || '';
     const row = byIssue.get(label) || { key: label, summary: issue?.summary || (l.via === 'contract' ? 'Time on the contract' : 'Time on a token'), seconds: 0 };
     row.seconds += l.seconds;

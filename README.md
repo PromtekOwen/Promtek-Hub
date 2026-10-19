@@ -16,7 +16,8 @@ Setup instructions are in [SETUP.md](SETUP.md).
 public/            The web app (plain HTML, CSS and JavaScript, no build step)
   app.js           Pages: dashboard, XP & rank, My time, Admin, account panel, page guides
   modules.js       The dashboard tiles
-  tours.js         The guide shown on each page the first time it's opened
+  tours.js         The walkthrough for each page, step by step
+  practice.js      Example data the walkthroughs run on; nothing in practice is sent anywhere
   sw.js            Service worker (installable app, offline shell)
   manifest.webmanifest, *.png   App name, icons and Promtek logo
   apps/<name>/     Each tool lives in its own folder

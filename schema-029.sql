@@ -1,0 +1,1 @@
+ALTER TABLE psc_items ADD COLUMN links TEXT;

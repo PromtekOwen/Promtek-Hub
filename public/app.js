@@ -52,7 +52,27 @@ function toast(message) {
   toast.timer = setTimeout(() => toastEl.classList.remove('show'), 2800);
 }
 
+// Practice mode: the page runs on example data from practice.js and nothing is
+// sent anywhere. It's on while the address has ?practice=<page>.
+const PRACTICE = (() => { try { return new URLSearchParams(location.search).get('practice') || null; } catch { return null; } })();
+const PRACTICE_ROUTE = PRACTICE ? (PRACTICE === 'home' ? '#/' : `#/${PRACTICE}`) : null;
+let practiceData = null;
+let apiPending = 0;            // requests in flight, so a guide knows when the page has settled
+
 async function api(path, options = {}) {
+  apiPending++;
+  try {
+    if (PRACTICE) {
+      practiceData ||= await import('./practice.js');
+      return await practiceData.handle(path, options, serverApi);
+    }
+    return await serverApi(path, options);
+  } finally {
+    apiPending--;
+  }
+}
+
+async function serverApi(path, options = {}) {
   const res = await fetch(path, { redirect: 'manual', headers: { 'content-type': 'application/json' }, ...options });
   // An expired sign-in comes back as a redirect to the Google login page.
   if (res.type === 'opaqueredirect' || res.status === 0) {
@@ -1305,7 +1325,7 @@ function obsSurveyHtml() {
   const step = obsSection;
   const progress = `<div class="card" style="padding:.85rem 1rem">
       <div class="row" style="justify-content:space-between">
-        <strong>${step === 0 ? 'Site details' : sections[step - 1].name}</strong>
+        <strong>${step === 0 ? 'Site details' : step > sections.length ? 'Anything else?' : sections[step - 1].name}</strong>
         <span class="muted">${step + 1} of ${sections.length + 2}</span>
       </div>
       <div class="bar" style="margin-bottom:0"><span style="width:${((step + 1) / (sections.length + 2) * 100).toFixed(0)}%"></span></div>
@@ -2067,9 +2087,17 @@ let powNode = 'root';
 let powTrail = [];
 let powSaved = null;
 
+// In practice, drafts live in memory so they never mix with real ones on this device.
+const practiceDrafts = {};
 const localDrafts = {
-  read() { try { return JSON.parse(localStorage.getItem('pow-drafts') || '{}'); } catch { return {}; } },
-  write(map) { try { localStorage.setItem('pow-drafts', JSON.stringify(map)); } catch { /* full or blocked */ } },
+  read() {
+    if (PRACTICE) return practiceDrafts;
+    try { return JSON.parse(localStorage.getItem('pow-drafts') || '{}'); } catch { return {}; }
+  },
+  write(map) {
+    if (PRACTICE) return;
+    try { localStorage.setItem('pow-drafts', JSON.stringify(map)); } catch { /* full or blocked */ }
+  },
   put(form) { const map = this.read(); map[form.id] = { form, savedAt: Date.now() }; this.write(map); },
   remove(id) { const map = this.read(); delete map[id]; this.write(map); },
   pending() { return Object.values(this.read()).filter((d) => d.form.queued); },
@@ -5342,11 +5370,11 @@ function pscUpdateChips(d) {
 function pscCardHtml(d, { triage = false } = {}) {
   const search = `${d.key} ${d.summary} ${d.customer || ''} ${d.org || ''} ${d.assignee || ''} ${d.type}`.toLowerCase();
   return `<article class="card psc-card s-${d.state}" data-psc-open="${esc(d.key)}" data-search="${esc(search)}" tabindex="0" role="button" aria-label="${esc(d.key)} ${esc(d.summary)}">
-      <div class="psc-top"><span class="psc-key">${esc(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
+      <div class="psc-top"><span class="psc-key">${esc(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}${d.copyOf ? ` · from ${esc(d.copyOf)}` : ''}</span>${pscStatePill(d)}</div>
       <h3>${esc(d.summary)}</h3>
       <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>
         <span class="muted">· ${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'} · ${esc(d.status)} · raised ${agoText(d.created)}</span></p>
-      <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}</div>
+      <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}${d.uncopied ? `<span class="psc-chip warn" title="It has an Organization but no copy in the customer's project has been found">Not copied to ${esc(d.customer || 'the customer')}'s project</span>` : ''}</div>
       ${triage ? pscTriageActions(d) : ''}
     </article>`;
 }
@@ -5442,7 +5470,7 @@ async function pscItemHtml() {
   const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub' };
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-back="1">All items</button></div>
     <section class="card psc-detail">
-      <div class="psc-top"><span class="psc-key">${jiraLink(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}</span>${pscStatePill(d)}</div>
+      <div class="psc-top"><span class="psc-key">${jiraLink(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}${d.copyOf ? ` · copied from ${jiraLink(d.copyOf)}` : ''}</span>${pscStatePill(d)}</div>
       <h2>${esc(d.summary)}</h2>
       <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span><span class="muted">· ${esc(d.status)}</span></p>
       <dl class="psc-facts">
@@ -5634,85 +5662,243 @@ async function pscSettingsClick(event) {
 }
 
 // ---------- guides ----------
-// Each page's guide runs the first time someone opens it, and again from the ?
-// in the page header. Who has seen which is kept with their account, so it
-// doesn't repeat on another phone or computer.
+// Each page has a guide, offered the first time someone opens it and again from
+// the ? in the page header. Most are a walkthrough: the page reloads in practice
+// mode with example data, and each step asks the person to do the next thing
+// themselves, moving on once they have. "Do it for me" does the step for them.
+// A few pages have a short look round the real page instead. Who has seen which
+// guide is kept with their account, so it doesn't repeat on another device.
 
 let toursSeen = null;          // null until loaded, so nothing starts before we know
-let tour = null;               // { route, steps, i, el, root }
+let tour = null;               // { route, steps, i, el, root, practice, token, ready, timer }
+
+const tourDef = (route) => TOURS[route] || null;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+const isShown = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+const pageName = (route) => (route === '#/' ? 'the hub' : route === '#/log' ? 'Log time' : MODULES.find((m) => m.route === route)?.name || 'this page');
 
 function tourButton(route) {
-  if (!TOURS[route] || settingsOpen === route) return '';
-  const beside = me?.user?.isAdmin && TILE_SETTINGS[route] ? ' beside-cog' : '';
-  return `<button class="help-tour${beside}" data-tour="${route}" aria-label="Show the guide for this page" title="Show the guide for this page">?</button>`;
+  if (!tourDef(route) || settingsOpen === route) return '';
+  const beside = me?.user?.isAdmin && TILE_SETTINGS[route] && !PRACTICE ? ' beside-cog' : '';
+  const label = tourDef(route).practice ? 'Walk me through this page' : 'Show the guide for this page';
+  return `<button class="help-tour${beside}" data-tour="${route}" aria-label="${label}" title="${label}">?</button>`;
 }
 
-const tourTarget = (step) => {
-  for (const sel of step.target || []) {
-    const el = [...document.querySelectorAll(sel)].find((x) => {
-      const r = x.getBoundingClientRect();
-      return r.width > 0 && r.height > 0;
-    });
+// A step's target is a selector, a list of them (the first one showing wins),
+// or a function that finds the element.
+function findTarget(target) {
+  if (!target) return null;
+  if (typeof target === 'function') {
+    try { const el = target(); return el?.isConnected && isShown(el) ? el : null; } catch { return null; }
+  }
+  for (const sel of [].concat(target)) {
+    const el = [...document.querySelectorAll(sel)].find(isShown);
     if (el) return el;
   }
   return null;
+}
+
+// The page has settled once nothing is waiting on an answer and it has been drawn.
+async function settle() {
+  // Quiet for a few frames in a row, since one answer often leads to the next request.
+  for (let quiet = 0, i = 0; quiet < 3 && i < 300; i++) {
+    await (apiPending > 0 ? sleep(40) : nextFrame());
+    quiet = apiPending > 0 ? 0 : quiet + 1;
+  }
+}
+
+// The step's target as it is now, in case the page has redrawn it.
+function liveTarget() {
+  if (!tour) return null;
+  if (tour.el?.isConnected) return tour.el;
+  const el = findTarget(tour.steps[tour.i].target);
+  if (el) tour.el = el;
+  return el;
+}
+
+async function waitFor(fn, ms) {
+  const until = Date.now() + ms;
+  for (;;) {
+    await settle();
+    const found = fn();
+    if (found || Date.now() >= until) return found;
+    await sleep(120);
+  }
+}
+
+// What "Do it for me" and a step's own doIt() use.
+const tourHelp = {
+  find: findTarget,
+  all: (sel) => [...document.querySelectorAll(sel)].filter(isShown),
+  settle,
+  sleep,
+  async click(target) {
+    const el = target instanceof Element ? target : findTarget(target);
+    el?.click();
+    await settle();
+    return el;
+  },
+  type(target, value) {
+    const el = target instanceof Element ? target : findTarget(target);
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  },
+  pick(target, value) {
+    const el = target instanceof Element ? target : findTarget(target);
+    if (!el) return;
+    el.value = value ?? [...el.options].find((o) => o.value && !o.disabled)?.value ?? '';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  },
 };
 
+// Walkthroughs are remembered under their own name, so people who saw the older,
+// shorter guides are still offered them once.
+const seenKey = (route) => (tourDef(route)?.practice ? `walk:${route}` : route);
+
+const stepsFor = (route) => (tourDef(route)?.steps || []).filter((s) => !s.when || s.when(me));
+
 function maybeTour(route) {
-  if (!toursSeen || toursSeen.has(route) || tour || !TOURS[route] || settingsOpen) return;
+  if (PRACTICE || !toursSeen || toursSeen.has(seenKey(route)) || tour || !tourDef(route) || settingsOpen) return;
   setTimeout(() => {
-    if (tour || toursSeen.has(route) || currentRoute() !== route || settingsOpen) return;
+    if (tour || toursSeen.has(seenKey(route)) || currentRoute() !== route || settingsOpen) return;
     if (document.querySelector('.modal-backdrop') || accountDialog.open) return;
-    startTour(route);
+    offerTour(route);
   }, 450);
 }
 
-function startTour(route) {
-  const steps = (TOURS[route] || []).filter((s) => !s.optional || tourTarget(s));
+// The ? button, or the first visit: a walkthrough is offered first, since it
+// reloads the page with example data; a look round starts straight away.
+function offerTour(route) {
+  const def = tourDef(route);
+  if (!def) return;
+  if (PRACTICE) { location.reload(); return; }
+  if (!def.practice) { startTour(route); return; }
+  const steps = stepsFor(route);
+  const minutes = Math.max(1, Math.round(steps.length / 4));
+  openTour(route, [{
+    offer: true,
+    title: `Learn ${pageName(route)}`,
+    text: `${def.intro} It takes about ${minutes} ${minutes === 1 ? 'minute' : 'minutes'}. You do each step yourself on example jobs and customers, so nothing you do reaches Jira, Tempo or anyone else.`,
+  }], false);
+}
+
+function startTour(route, { practice = false } = {}) {
+  const steps = stepsFor(route).filter((s) => practice || !s.optional || findTarget(s.target));
   if (!steps.length) return;
+  if (practice) {
+    steps.push({ title: 'That\'s it', text: `You've been through everything on ${pageName(route)}. Finish takes you back to your real page. You can go through this again any time from the ? at the top.` });
+  }
+  openTour(route, steps, practice);
+}
+
+function openTour(route, steps, practice) {
   endTour(false);
   const root = document.createElement('div');
-  root.className = 'tour';
+  root.className = 'tour waiting';
   root.innerHTML = `<div class="tour-spot" aria-hidden="true"></div>
-    <div class="tour-card card" role="dialog" aria-modal="true" aria-labelledby="tour-title" aria-describedby="tour-text"></div>`;
+    <div class="tour-card card" role="dialog" aria-labelledby="tour-title" aria-describedby="tour-text"></div>`;
   document.body.appendChild(root);
-  tour = { route, steps, i: 0, el: null, root };
+  tour = { route, steps, i: 0, el: null, root, practice, token: 0, ready: false };
   root.addEventListener('click', tourClick);
+  tour.timer = setInterval(tourTick, 250);
   showStep();
 }
 
-function showStep() {
-  const { steps, i, root } = tour;
+function tourStepDone(step) {
+  if (step.until) { try { return Boolean(step.until(tourHelp)); } catch { return false; } }
+  if (step.act === 'type') return Boolean(findTarget(step.field || step.target)?.value?.trim());
+  return true;
+}
+
+function tourCardHtml() {
+  const { steps, i, practice } = tour;
   const step = steps[i];
-  const el = step.target ? tourTarget(step) : null;
-  tour.el = el;
   const last = i === steps.length - 1;
-  root.querySelector('.tour-card').innerHTML = `
-    <p class="tour-count">${i + 1} of ${steps.length}</p>
+  const act = tour.el || !step.target ? step.act : null;     // a step whose target never showed can only be skipped
+  const back = i > 0 && !steps[i - 1].act && !step.act
+    ? '<button class="btn secondary" data-tour-act="back">Back</button>' : '';
+  let right;
+  if (step.offer) right = '<button class="btn" data-tour-act="practice">Start the walkthrough</button>';
+  else if (act) {
+    const label = act === 'type' ? 'Type it for me' : act === 'pick' ? 'Choose for me' : 'Do it for me';
+    const next = act === 'type' || act === 'until'
+      ? `<button class="btn" data-tour-act="next"${tourStepDone(step) ? '' : ' disabled'}>Next</button>` : '';
+    right = `<button class="btn secondary" data-tour-act="do">${label}</button>${next}`;
+  } else right = `${back}<button class="btn" data-tour-act="next">${last ? (practice ? 'Finish' : 'Done') : 'Next'}</button>`;
+  const left = step.offer ? '<button class="tour-skip" data-tour-act="skip">Not now</button>'
+    : last && !act ? '<span></span>'
+    : `<button class="tour-skip" data-tour-act="skip">${practice ? 'Leave practice' : 'Skip guide'}</button>`;
+  const missing = step.target && !tour.el
+    ? '<p class="tour-missing">This isn\'t showing on your screen. Press Next to carry on.</p>' : '';
+  return `${step.offer ? '' : `<p class="tour-count">${practice ? '<span class="tour-badge">Practice</span>' : ''}${i + 1} of ${steps.length}</p>`}
     <h2 id="tour-title">${esc(step.title)}</h2>
-    <p id="tour-text">${esc(step.text)}</p>
-    <div class="tour-actions">
-      ${last ? '<span></span>' : '<button class="tour-skip" data-tour-act="skip">Skip guide</button>'}
-      <span class="tour-nav">
-        ${i ? '<button class="btn secondary" data-tour-act="back">Back</button>' : ''}
-        <button class="btn" data-tour-act="next">${last ? 'Done' : 'Next'}</button>
-      </span>
-    </div>`;
+    ${act ? '<p class="tour-turn">Your turn</p>' : ''}
+    <p id="tour-text">${esc(step.text)}</p>${missing}
+    <div class="tour-actions">${left}<span class="tour-nav">${missing && step.act ? '<button class="btn" data-tour-act="next">Next</button>' : right}</span></div>`;
+}
+
+async function showStep() {
+  const t = tour;
+  if (!t) return;
+  const token = ++t.token;
+  const step = t.steps[t.i];
+  t.ready = false;
+  t.el = null;
+  t.root.classList.add('waiting');
+  const el = step.target ? await waitFor(() => findTarget(step.target), t.practice ? (step.wait ?? 8000) : 0) : null;
+  if (tour !== t || token !== t.token) return;
+  if (step.target && !el && step.optional) {
+    if (t.i < t.steps.length - 1) { t.i++; return showStep(); }
+    return finishTour();
+  }
+  if (!step.target && t.practice) await settle();
+  if (tour !== t || token !== t.token) return;
+  t.el = el;
+  t.ready = true;
+  t.root.classList.remove('waiting');
+  t.root.classList.toggle('act', Boolean(el && step.act));
+  t.root.querySelector('.tour-card').innerHTML = tourCardHtml();
   if (el) {
     // Bring it into view below the app bar; a tall one shows from its top.
     const bar = document.querySelector('.appbar')?.offsetHeight || 0;
     const r = el.getBoundingClientRect();
     const room = innerHeight - bar;
     const y = r.height > room * 0.5 ? r.top - bar - 16 : r.top - bar - (room - r.height) / 2;
-    scrollBy({ top: y, behavior: 'instant' });
+    if (r.top < bar || r.bottom > innerHeight || r.height > room * 0.5) scrollBy({ top: y, behavior: 'instant' });
+    // Inside a row that scrolls sideways, such as filter buttons on a phone.
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
   }
   placeTour();
-  root.querySelector('[data-tour-act="next"]').focus({ preventScroll: true });
+  const focus = t.root.querySelector('[data-tour-act="practice"], [data-tour-act="next"]:not([disabled]), [data-tour-act="do"]');
+  if (!step.act || !el) focus?.focus({ preventScroll: true });
+}
+
+// Keeps the highlight on the target as the page redraws, and notices when a
+// step that waits on something is done.
+function tourTick() {
+  if (!tour?.ready) return;
+  placeTour();
+  const step = tour.steps[tour.i];
+  if (!tour.el || !(step.act === 'type' || step.act === 'until')) return;
+  const done = tourStepDone(step);
+  const next = tour.root.querySelector('[data-tour-act="next"]');
+  if (next) next.disabled = !done;
+  if (done && step.until && !tour.advancing) {
+    tour.advancing = true;
+    const t = tour, i = t.i;
+    setTimeout(() => { if (tour === t && t.i === i) { t.advancing = false; tourNext(); } }, 450);
+  }
 }
 
 function placeTour() {
   if (!tour) return;
-  if (tour.el && !tour.el.isConnected) tour.el = tourTarget(tour.steps[tour.i]);   // the page redrew underneath
+  const step = tour.steps[tour.i];
+  if (tour.el && (!tour.el.isConnected || !isShown(tour.el))) tour.el = findTarget(step.target) || tour.el;   // the page redrew underneath
   const { root, el } = tour;
   const spot = root.querySelector('.tour-spot');
   const card = root.querySelector('.tour-card');
@@ -5741,29 +5927,136 @@ function placeTour() {
   card.style.top = `${Math.max(8, y)}px`;
 }
 
+function tourNext() {
+  if (!tour) return;
+  if (tour.i < tour.steps.length - 1) { tour.i++; return showStep(); }
+  return finishTour();
+}
+
+async function tourDo() {
+  const step = tour.steps[tour.i];
+  const el = liveTarget();
+  if (step.doIt) return step.doIt(tourHelp, el);
+  if (step.act === 'click') return tourHelp.click(step.click ? findTarget(step.click) : el);
+  if (step.act === 'type') {
+    tourHelp.type(step.field ? findTarget(step.field) : el, step.value);
+    if (!step.until) tourNext();
+    return;
+  }
+  if (step.act === 'pick') return tourHelp.pick(step.field ? findTarget(step.field) : el, step.value);
+}
+
 function tourClick(event) {
   const act = event.target.closest('[data-tour-act]')?.dataset.tourAct;
-  if (act === 'next') return tour.i < tour.steps.length - 1 ? (tour.i++, showStep()) : endTour(true);
+  if (!act || !tour) return;
+  if (act === 'next') return tourNext();
   if (act === 'back' && tour.i > 0) { tour.i--; return showStep(); }
-  if (act === 'skip') return endTour(true);
+  if (act === 'do') return tourDo();
+  if (act === 'skip') return tour.practice ? leavePractice() : endTour(true);
+  if (act === 'practice') return enterPractice(tour.route);
+}
+
+function markTourSeen(route) {
+  const key = seenKey(route);
+  if (!toursSeen || toursSeen.has(key)) return Promise.resolve();
+  toursSeen.add(key);
+  return serverApi('/api/prefs/tours', { method: 'POST', body: JSON.stringify({ seen: [...toursSeen] }) }).catch(() => {});
 }
 
 function endTour(markSeen) {
   if (!tour) return;
-  const { route, root } = tour;
+  const { route, root, timer, practice } = tour;
+  clearInterval(timer);
   root.remove();
   tour = null;
-  if (markSeen && toursSeen && !toursSeen.has(route)) {
-    toursSeen.add(route);
-    api('/api/prefs/tours', { method: 'POST', body: JSON.stringify({ seen: [...toursSeen] }) }).catch(() => {});
+  if (markSeen) markTourSeen(practice ? PRACTICE_ROUTE : route);
+}
+
+function finishTour() {
+  if (tour?.practice) return leavePractice();
+  endTour(true);
+}
+
+async function enterPractice(route) {
+  endTour(false);
+  await Promise.race([markTourSeen(route), sleep(800)]);
+  location.assign(`${location.pathname}?practice=${route === '#/' ? 'home' : route.slice(2)}${route}`);
+}
+
+async function leavePractice() {
+  endTour(false);
+  await Promise.race([markTourSeen(PRACTICE_ROUTE), sleep(800)]);
+  location.replace(`${location.pathname}${PRACTICE_ROUTE}`);
+}
+
+function practiceBar() {
+  const bar = document.createElement('div');
+  bar.className = 'practice-bar';
+  bar.setAttribute('role', 'note');
+  bar.innerHTML = `<span><strong>Practice</strong> with example data. Nothing you do here is saved or sent anywhere.</span>
+    <button class="btn secondary" data-practice="leave">Leave practice</button>`;
+  bar.querySelector('button').addEventListener('click', leavePractice);
+  document.body.prepend(bar);
+}
+
+// While a walkthrough runs, the page only takes the click the step asks for, so
+// the steps and the page stay in step. Clicks the hub makes itself go through.
+function tourGate(event) {
+  if (!tour || !event.isTrusted) return;
+  if (event.target.closest?.('.tour-card, .practice-bar')) return;
+  const step = tour.steps[tour.i];
+  const inTarget = tour.ready && step.act && liveTarget()?.contains(event.target);
+  if (!inTarget) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.type === 'click' && tour.ready) {
+      const card = tour.root.querySelector('.tour-card');
+      card.classList.remove('nudge');
+      void card.offsetWidth;
+      card.classList.add('nudge');
+    }
   }
 }
+document.addEventListener('mousedown', tourGate, true);
+document.addEventListener('click', tourGate, true);
+
+// A step done by the person themselves moves the guide on.
+document.addEventListener('click', (event) => {
+  if (!tour?.ready) return;
+  const step = tour.steps[tour.i];
+  if (step.act !== 'click' || !liveTarget()) return;
+  const wanted = step.click ? findTarget(step.click) : liveTarget();
+  if (!wanted?.contains(event.target)) return;
+  const t = tour, i = t.i;
+  t.ready = false;
+  setTimeout(() => { if (tour === t && t.i === i) tourNext(); }, 0);
+}, true);
+document.addEventListener('change', (event) => {
+  if (!tour?.ready) return;
+  const step = tour.steps[tour.i];
+  if (step.act !== 'pick' || !liveTarget()?.contains(event.target)) return;
+  const t = tour, i = t.i;
+  t.ready = false;
+  setTimeout(() => { if (tour === t && t.i === i) tourNext(); }, 0);
+}, true);
+
+// In practice, links out to Jira, Tempo or a PDF would open real pages.
+document.addEventListener('click', (event) => {
+  if (!PRACTICE) return;
+  const link = event.target.closest?.('a[target="_blank"], a[href^="/api/"]');
+  if (!link) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  toast('In practice, links to Jira, Tempo and PDFs don\'t open');
+}, true);
 
 document.addEventListener('keydown', (event) => {
   if (!tour) return;
-  if (event.key === 'Escape') { event.preventDefault(); endTour(true); }
-  else if (event.key === 'ArrowRight') tourClick({ target: tour.root.querySelector('[data-tour-act="next"]') });
-  else if (event.key === 'ArrowLeft') tourClick({ target: tour.root.querySelector('[data-tour-act="back"]') || document.body });
+  if (event.key === 'Escape') { event.preventDefault(); tour.practice ? leavePractice() : endTour(true); return; }
+  const step = tour.steps[tour.i];
+  if (step.act || step.offer || ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName)) return;
+  if (event.key === 'ArrowRight') tourNext();
+  else if (event.key === 'ArrowLeft' && tour.i > 0 && !tour.steps[tour.i - 1].act) { tour.i--; showStep(); }
 });
 addEventListener('resize', () => placeTour());
 addEventListener('scroll', () => placeTour(), { passive: true });
@@ -5816,7 +6109,7 @@ function renderAccount() {
 // The cog lives in the header, outside the main view, so it needs its own listener.
 band.addEventListener('click', (event) => {
   const tourBtn = event.target.closest('[data-tour]');
-  if (tourBtn) return startTour(tourBtn.dataset.tour);
+  if (tourBtn) return offerTour(tourBtn.dataset.tour);
   const settingsBtn = event.target.closest('[data-settings]');
   if (!settingsBtn) return;
   settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
@@ -6451,7 +6744,7 @@ let settingsOpen = null;
 let settingsData = null;
 
 function cogButton(route) {
-  if (!me?.user?.isAdmin || !TILE_SETTINGS[route]) return '';
+  if (PRACTICE || !me?.user?.isAdmin || !TILE_SETTINGS[route]) return '';
   return `<button class="cog" data-settings="${route}" aria-label="${esc(TILE_SETTINGS[route].label)}" title="${esc(TILE_SETTINGS[route].label)}">
       ${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}
     </button>`;
@@ -6574,6 +6867,12 @@ view.addEventListener('input', (event) => {
     }, 400);
     return;
   }
+  if (event.target.dataset?.checkNote !== undefined && checkForm) {
+    // Kept as it's typed, so ticking the next item doesn't lose it.
+    const entry = checkForm.results[event.target.dataset.checkNote];
+    if (entry) entry.note = event.target.value;
+    return;
+  }
   if (['log-hours', 'log-minutes'].includes(event.target.id)) return updateXpPreview();
   if (event.target.id === 'log-search') {
     logSearch = event.target.value;
@@ -6653,7 +6952,7 @@ view.addEventListener('change', async (event) => {
 });
 
 window.addEventListener('hashchange', () => {
-  endTour(false);
+  if (!tour?.practice) endTour(false);     // a walkthrough can lead from one page to the next
   setTimeout(trackerBar, 0);
   settingsOpen = null;
   if (currentRoute() !== '#/time') weekOffset = 0;
@@ -6692,6 +6991,12 @@ async function syncAndRefresh(announce = false) {
 }
 
 async function start() {
+  if (PRACTICE) {
+    // A walkthrough always starts on its own page, even after a reload part-way through.
+    if (location.hash.replace(/\/$/, '') !== PRACTICE_ROUTE.replace(/\/$/, '')) history.replaceState(null, '', `${location.pathname}${location.search}${PRACTICE_ROUTE}`);
+    document.body.classList.add('practice');
+    practiceBar();
+  }
   try {
     me = await api('/api/me');
   } catch (err) {
@@ -6703,6 +7008,7 @@ async function start() {
   try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
   await render();
   logFab();
+  if (PRACTICE) startTour(PRACTICE_ROUTE, { practice: true });
   syncAndRefresh();
   trackerInit();
   powFlushQueue();

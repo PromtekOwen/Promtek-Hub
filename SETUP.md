@@ -312,13 +312,16 @@ The **Requests** tile lets anyone ask for a new tile or a change to one, or repo
 
 Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead, with an optional reply. Developers are emailed about each new request, and the person who sent one is emailed when its status changes. Emails go through the alert relay.
 
-## Part 14d: Page guides
+## Part 14d: Page walkthroughs
 
-The first time someone signs in, the home screen walks them through the hub in a few steps: their level and rank, the tiles, arranging tiles, the Log time button and the **?** button. Each tile has its own short guide the first time it's opened. Each step highlights the part of the page it's describing, with Next, Back and Skip guide.
+The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.
 
-The **?** in each page header shows that page's guide again. Which guides someone has seen is kept with their account, so they don't repeat on another device. Steps about things a person can't open, such as a Condor tab they don't have, are left out for them.
+Nothing done in practice reaches Jira, Tempo, 8x8 or the hub's database. Every request goes to `public/practice.js` instead, which answers from its own example data and keeps track of what the person has done, so their logged time, picked-up PSCs and so on show up as they would for real. Leaving practice, or finishing, reloads the real page.
 
-The wording of every guide is in `public/tours.js`.
+The **?** in each page header starts the walkthrough again. Which ones someone has been offered is kept with their account, so they aren't offered again on another device. Steps for things a person doesn't do, such as approving disputes or Condor triage, are left out for them. The company chart, XP shop and Admin keep a short look round the real page instead.
+
+The wording and steps of every walkthrough are in `public/tours.js`; the example data is in `public/practice.js`. If a page changes, its walkthrough may need its steps updating to match.
+
 
 ## Part 14e: Service contracts
 
