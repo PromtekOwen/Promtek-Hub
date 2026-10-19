@@ -221,6 +221,13 @@ dialog#account::backdrop { background: rgba(9, 32, 48, .45); }
 .board .lvl { color: var(--muted); font-size: .9rem; }
 .board .pts { font-weight: 700; color: var(--blue-deep); font-variant-numeric: tabular-nums; }
 .board .you { background: var(--tint); border-radius: 10px; }
+.board .pts .elo-move { display: block; text-align: right; font-size: .8rem; font-weight: 600; color: var(--muted); }
+.board .pts .elo-move.up { color: var(--ok); }
+.board .pts .elo-move.down { color: var(--danger); }
+.leader-head { align-items: center; gap: .75rem; }
+.elo-table td { vertical-align: middle; }
+.elo-swings { font-size: .9rem; white-space: nowrap; }
+.elo-spark { display: block; }
 .board .you.break { margin-top: .5rem; border-top: 2px dashed var(--line); }
 
 .linklike { border: 0; background: none; padding: 0; color: var(--blue-deep); font-weight: 600; cursor: pointer; }

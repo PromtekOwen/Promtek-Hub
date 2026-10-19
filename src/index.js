@@ -11,7 +11,7 @@ import * as Audit from './audit.js';
 import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
 import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
-import { teamWeeks, engineerReport, leaderboard, exportCsv } from './reports.js';
+import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
 import * as Vehicles from './vehicles.js';
@@ -443,7 +443,8 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/leaderboard') {
-    return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', accountId: user.accountId, team: url.searchParams.get('team') || null }));
+    return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', metric: url.searchParams.get('metric') === 'elo' ? 'elo' : 'xp',
+      accountId: user.accountId, team: url.searchParams.get('team') || null }));
   }
 
   if (method === 'GET' && pathname === '/api/elo/history') {
@@ -484,6 +485,12 @@ async function route(request, env, url, user) {
       ]);
       return json({ ...stages, difficulty });
     }
+    if (method === 'GET' && pathname === '/api/reports/elo') {
+      return json(await eloReport(env, {
+        weeks: Math.min(104, Math.max(4, Number(url.searchParams.get('weeks')) || 26)),
+        team: url.searchParams.get('team') || null,
+      }));
+    }
     if (method === 'GET' && pathname === '/api/reports/engineer') {
       const report = await engineerReport(env, url.searchParams.get('accountId'), { weeks: 12 });
       return report ? json(report) : json({ error: 'No such engineer.' }, 404);
@@ -491,7 +498,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/reports/export') {
       const { filename, csv } = await exportCsv(env, {
         stageOptions: { discipline: url.searchParams.get('discipline') || null, team: url.searchParams.get('team') || null,
-          customer: url.searchParams.get('customer') || null, groupBy: url.searchParams.get('group') || 'type' },
+          customer: url.searchParams.get('customer') || null, groupBy: url.searchParams.get('group') || 'type', weeks: url.searchParams.get('weeks') },
         type: url.searchParams.get('type') || 'ledger',
         from: url.searchParams.get('from'),
         to: url.searchParams.get('to'),

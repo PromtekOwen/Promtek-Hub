@@ -111,7 +111,9 @@ export const TOURS = {
       { target: '.elo-chart', title: 'Your ELO', text: 'ELO moves when a job you worked on is finished. Beating the estimate on a hard job raises it; running over on an easy one lowers it.' },
       { target: '.elo-list li', title: 'Job by job', text: 'Each finished job: its time against the estimate, your share of the hours, and how much your ELO moved.' },
       { act: 'click', target: '[data-period="month"]', title: 'The leaderboard', text: 'Tap This month to see who has earned the most XP this month.' },
-      { target: '#leaderboard', title: 'Where you stand', text: 'You\'re highlighted. Choose a team to compare with just them.' },
+      { target: '#leaderboard', title: 'Where you stand', text: 'You\'re highlighted, with each person\'s level at the start of the month and now. Choose a team to compare with just them.' },
+      { act: 'click', target: '[data-leader-metric="elo"]', title: 'The ELO leaderboard', text: 'Tap ELO to rank everyone by ELO instead.' },
+      { target: '#leaderboard .board', title: 'Ranked by ELO', text: 'Everyone\'s ELO and rank now. The arrows show how far finished jobs have moved each person over the last three months.' },
       { act: 'click', target: '[data-mod-new]', title: 'When work is harder for a while', text: 'If something is making work harder, such as being unwell or bringing on an apprentice, you can ask for it to be taken into account. Tap the button.' },
       { act: 'click', target: withText('[data-mod-kind]', 'Supporting apprentices'), title: 'Choose what it is', text: 'Tap Supporting apprentices. No details are needed.' },
       { act: 'click', target: '[data-mod-send]', title: 'Ask', text: 'Tap Ask. Your supervisor is asked to agree it.' },
@@ -409,9 +411,9 @@ export const TOURS = {
 
   '#/reports': {
     practice: true,
-    intro: 'Read the team\'s effort, how jobs ran against their quotes, and how long stages take.',
+    intro: 'Read the team\'s effort, how jobs ran against their quotes, how long stages take, and how everyone\'s ELO is moving.',
     steps: [
-      { target: '#view .tabs', title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, and Stages shows how long each kind of stage usually takes.' },
+      { target: '#view .tabs', title: 'Reports', text: 'Effort shows time logged week by week, Quoting shows how jobs ran against their estimates, Stages shows how long each kind of stage usually takes, and ELO shows how everyone\'s rating moves over time.' },
       { target: '.table-wrap', title: 'Hours each week', text: 'Each engineer\'s hours and XP by week. Short weeks stand out, and the last column is how long after the work people log it.' },
       { act: 'click', target: withText('[data-engineer]', 'Sam Turner'), title: 'One engineer', text: 'Tap Sam Turner.' },
       { target: 'dl.stats', title: 'Their figures', text: 'Their level, ELO, average week and logging delay, then their hours, ELO history and what they spent most time on.' },
@@ -420,6 +422,11 @@ export const TOURS = {
       { target: '.table-wrap', title: 'Estimates against reality', text: 'How long jobs of each size really take against their estimates, by customer and by team.' },
       { act: 'click', target: '[data-view="stages"]', title: 'Stages', text: 'Tap Stages.' },
       { target: '.table-wrap', title: 'The stage library', text: 'How long each kind of stage takes, built from finished work. Useful for splitting a quote into stages.' },
+      { act: 'click', target: '[data-view="elo"]', title: 'ELO over time', text: 'Tap ELO.' },
+      { target: '.elo-chart', title: 'The team\'s ELO, week by week', text: 'Each engineer as a faint line, with the team average over them. The dashed lines are where the ranks change.' },
+      { act: 'pick', target: '[data-elo-sort]', value: 'up', title: 'Who\'s moving', text: 'Choose Biggest climb to see who has improved most. Biggest drop shows anyone who may need support.' },
+      { target: '.elo-table', title: 'Each engineer', text: 'Their rank, ELO, change over the period, jobs rated, the trend, and the jobs behind their biggest moves.' },
+      { act: 'click', target: '[data-elo-weeks="52"]', title: 'Further back', text: 'Tap 52 weeks for the longer view. The CSV button downloads everyone\'s ELO week by week.' },
     ],
   },
 

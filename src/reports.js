@@ -1,6 +1,6 @@
 // Progress and effort reporting, built from the XP ledger and weekly snapshots.
 import { londonDate, mondayOf } from './sync.js';
-import { progressFor } from './progression.js';
+import { progressFor, rankFor, RANKS } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
 import { teamsOf } from './permissions.js';
 
@@ -99,8 +99,13 @@ export async function engineerReport(env, accountId, { weeks = 12 } = {}) {
   };
 }
 
-// Friendly leaderboard. period: 'week' | 'month' | 'all'
-export async function leaderboard(env, { period = 'week', accountId = null, team = null } = {}) {
+// Friendly leaderboard. metric: 'xp' | 'elo'.
+// XP periods: 'week' | 'month' | 'all'. For a week or month, each person's level
+// is shown as it went, from where they started the period to where they are now.
+// ELO periods: 'month' | 'quarter' | 'all'. Everyone is ranked by their ELO now,
+// with how far finished jobs have moved it over the period.
+export async function leaderboard(env, { period = 'week', metric = 'xp', accountId = null, team = null } = {}) {
+  if (metric === 'elo') return eloLeaderboard(env, { period, accountId, team });
   let rows;
   if (period === 'all') {
     const { results } = await env.DB.prepare(
@@ -108,17 +113,19 @@ export async function leaderboard(env, { period = 'week', accountId = null, team
          FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
         GROUP BY e.account_id ORDER BY xp DESC`
     ).all();
-    rows = results;
+    rows = results.map((r) => ({ ...r, total: r.xp }));
   } else {
     const from = period === 'month'
       ? londonDate().slice(0, 8) + '01'
       : mondayOf(londonDate());
     const { results } = await env.DB.prepare(
-      `SELECT e.account_id, e.name, e.teams, e.team, COALESCE(SUM(l.xp), 0) AS xp, COALESCE(SUM(l.seconds), 0) AS seconds
-         FROM employees e LEFT JOIN xp_ledger l
-           ON l.account_id = e.account_id AND l.work_date >= ?
+      `SELECT e.account_id, e.name, e.teams, e.team,
+              COALESCE(SUM(CASE WHEN l.work_date >= ? THEN l.xp END), 0) AS xp,
+              COALESCE(SUM(CASE WHEN l.work_date >= ? THEN l.seconds END), 0) AS seconds,
+              e.opening_xp + COALESCE(SUM(l.xp), 0) AS total
+         FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
         GROUP BY e.account_id ORDER BY xp DESC`
-    ).bind(from).all();
+    ).bind(from, from).all();
     rows = results;
   }
 
@@ -128,11 +135,140 @@ export async function leaderboard(env, { period = 'week', accountId = null, team
     accountId: r.account_id,
     name: r.name,
     xp: r.xp,
-    level: progressFor(r.xp).level,
+    level: progressFor(r.total).level,
+    levelFrom: period === 'all' ? null : progressFor(r.total - r.xp).level,
     isYou: r.account_id === accountId,
   }));
   const you = ranked.find((r) => r.isYou) || null;
-  return { period, top: ranked.slice(0, 10), you, total: ranked.length, all: ranked };
+  return { metric: 'xp', period, top: ranked.slice(0, 10), you, total: ranked.length, all: ranked };
+}
+
+const isoDaysAgo = (days) => new Date(Date.now() - days * 86_400_000).toISOString();
+
+function eloPeriodStart(period) {
+  if (period === 'month') return `${londonDate().slice(0, 8)}01T00:00:00`;
+  if (period === 'quarter') return isoDaysAgo(91);
+  if (period === 'year') return isoDaysAgo(365);
+  return null;
+}
+
+// Everyone with an ELO: active people who have a rating or have had a job rated.
+async function eloPeople(env, team) {
+  const { results } = await env.DB.prepare(
+    `SELECT e.account_id, e.name, e.teams, e.team, e.elo FROM employees e
+      WHERE e.active = 1 AND (e.elo IS NOT NULL OR EXISTS (SELECT 1 FROM elo_events v WHERE v.account_id = e.account_id))`
+  ).all();
+  return team ? results.filter((r) => teamsOf(r).includes(team)) : results;
+}
+
+async function eloLeaderboard(env, { period = 'quarter', accountId = null, team = null }) {
+  if (!['month', 'quarter', 'all'].includes(period)) period = 'quarter';
+  const since = eloPeriodStart(period);
+  const people = await eloPeople(env, team);
+  // Movement counts finished jobs and any undoing of them, not ratings set by hand.
+  const { results: moves } = await env.DB.prepare(
+    `SELECT account_id, SUM(delta) AS change, SUM(CASE WHEN kind = 'match' AND reversed_at IS NULL THEN 1 ELSE 0 END) AS jobs
+       FROM elo_events WHERE kind != 'adjustment'${since ? ' AND created_at >= ?' : ''} GROUP BY account_id`
+  ).bind(...(since ? [since] : [])).all();
+  const { results: ever } = await env.DB.prepare(
+    "SELECT account_id, COUNT(*) AS n FROM elo_events WHERE kind = 'match' AND reversed_at IS NULL GROUP BY account_id"
+  ).all();
+  const moveBy = new Map(moves.map((m) => [m.account_id, m]));
+  const rated = new Map(ever.map((m) => [m.account_id, m.n]));
+  const peaks = await peakElos(env);
+  const ranked = people
+    .map((p) => ({ ...p, elo: p.elo ?? 1099 }))
+    .sort((a, b) => b.elo - a.elo || a.name.localeCompare(b.name))
+    .map((p, i) => ({
+      position: i + 1,
+      accountId: p.account_id,
+      name: p.name,
+      elo: Math.round(p.elo),
+      rank: rankWithPeak(p.elo, peaks.get(p.account_id) ?? null)?.name || null,
+      change: Math.round(moveBy.get(p.account_id)?.change || 0),
+      jobs: moveBy.get(p.account_id)?.jobs || 0,
+      ratedJobs: rated.get(p.account_id) || 0,
+      isYou: p.account_id === accountId,
+    }));
+  const you = ranked.find((r) => r.isYou) || null;
+  return { metric: 'elo', period, top: ranked.slice(0, 10), you, total: ranked.length, all: ranked };
+}
+
+// Long-term ELO for a team: each person's rating week by week, how far it has
+// moved, and the jobs behind the biggest moves. Built from the ELO events, so it
+// reaches back to when the ELO engine started rating jobs.
+export async function eloReport(env, { weeks = 26, team = null } = {}) {
+  const list = weeksBack(weeks);
+  const ends = list.map((w, i) => (i === list.length - 1
+    ? new Date().toISOString()
+    : `${list[i + 1]}T00:00:00`));
+  const start = `${list[0]}T00:00:00`;
+  const people = await eloPeople(env, team);
+  const ids = new Set(people.map((p) => p.account_id));
+  const { results: events } = await env.DB.prepare(
+    `SELECT e.id, e.account_id, e.kind, e.delta, e.elo_before, e.elo_after, e.reversed_at, e.created_at,
+            m.issue_key, m.summary
+       FROM elo_events e LEFT JOIN elo_matches m ON m.category_id = e.category_id
+      ORDER BY e.created_at, e.id`
+  ).all();
+  const byPerson = new Map();
+  for (const e of events) {
+    if (!ids.has(e.account_id)) continue;
+    if (!byPerson.has(e.account_id)) byPerson.set(e.account_id, []);
+    byPerson.get(e.account_id).push(e);
+  }
+  const peaks = await peakElos(env);
+
+  // A person's ELO at a moment: the rating after their last change before it, or
+  // the rating before their first change after it, or their rating now.
+  const eloAt = (list, now, at) => {
+    let last = null;
+    for (const e of list) { if (e.created_at < at) last = e; else break; }
+    if (last) return last.elo_after;
+    return list.length ? list[0].elo_before : now;
+  };
+
+  const rows = people.map((p) => {
+    const evs = byPerson.get(p.account_id) || [];
+    const now = p.elo ?? (evs.length ? evs[evs.length - 1].elo_after : 1099);
+    const series = ends.map((at) => Math.round(eloAt(evs, now, at)));
+    const from = Math.round(eloAt(evs, now, start));
+    const inWindow = evs.filter((e) => e.created_at >= start);
+    const jobs = inWindow.filter((e) => e.kind === 'match' && !e.reversed_at);
+    const movement = inWindow.filter((e) => e.kind !== 'adjustment').reduce((t, e) => t + e.delta, 0);
+    const best = jobs.reduce((b, e) => (!b || e.delta > b.delta ? e : b), null);
+    const worst = jobs.reduce((b, e) => (!b || e.delta < b.delta ? e : b), null);
+    const swing = (e) => (e ? { key: e.issue_key, summary: e.summary, delta: Math.round(e.delta * 10) / 10, at: e.created_at.slice(0, 10) } : null);
+    const rankNow = rankWithPeak(now, peaks.get(p.account_id) ?? null)?.name || null;
+    return {
+      accountId: p.account_id, name: p.name, team: p.team,
+      elo: Math.round(now), from, change: Math.round(movement),
+      rank: rankNow, rankFrom: rankFor(from)?.name || null,
+      jobs: jobs.length, ratedEver: evs.some((e) => e.kind === 'match'),
+      best: best && best.delta > 0 ? swing(best) : null,
+      worst: worst && worst.delta < 0 ? swing(worst) : null,
+      series,
+    };
+  }).sort((a, b) => b.elo - a.elo || a.name.localeCompare(b.name));
+
+  const avg = (xs) => (xs.length ? xs.reduce((t, x) => t + x, 0) / xs.length : null);
+  const order = RANKS.map(([, name]) => name);
+  return {
+    weeks: list,
+    people: rows,
+    average: list.map((_, i) => (rows.length ? Math.round(avg(rows.map((r) => r.series[i]))) : null)),
+    summary: {
+      averageNow: rows.length ? Math.round(avg(rows.map((r) => r.elo))) : null,
+      averageFrom: rows.length ? Math.round(avg(rows.map((r) => r.from))) : null,
+      up: rows.filter((r) => r.change > 0).length,
+      down: rows.filter((r) => r.change < 0).length,
+      still: rows.filter((r) => r.change === 0).length,
+      jobs: rows.reduce((t, r) => t + r.jobs, 0),
+      rankUps: rows.filter((r) => r.rankFrom && r.rank && order.indexOf(r.rank) > order.indexOf(r.rankFrom)).length,
+      rankDowns: rows.filter((r) => r.rankFrom && r.rank && order.indexOf(r.rank) < order.indexOf(r.rankFrom)).length,
+    },
+    ranks: order.map((name) => ({ name, n: rows.filter((r) => r.rank === name).length })).filter((x) => x.n),
+  };
 }
 
 // ---------- CSV export ----------
@@ -227,6 +363,19 @@ export async function exportCsv(env, { type, from, to, accountId, stageOptions =
         ['Category', 'Stage', ...(split ? [split] : []), 'Times done', 'From older orders', 'Typical hours', 'Shortest', 'Longest', 'Typical share of category', 'Last seen'],
         lib.stages.map((r) => [r.discipline, r.stage, ...(split ? [r.by] : []), r.times, r.fromOlderOrders, r.medianHours.toFixed(2),
           r.lowHours.toFixed(2), r.highHours.toFixed(2), r.medianShare == null ? '' : (r.medianShare * 100).toFixed(1) + '%', r.lastSeen])
+      ),
+    };
+  }
+
+  // Everyone's ELO at the end of each week, a row per person and week.
+  if (type === 'elo') {
+    const weeks = Math.min(104, Math.max(4, Number(stageOptions?.weeks) || 52));
+    const r = await eloReport(env, { weeks, team: stageOptions?.team || null });
+    return {
+      filename: `promtek-hub-elo-${r.weeks[0]}-to-${londonDate()}.csv`,
+      csv: toCsv(
+        ['Week beginning', 'Engineer', 'Team', 'ELO at the end of the week', 'Rank now'],
+        r.weeks.flatMap((w, i) => r.people.map((p) => [w, p.name, p.team, p.series[i], p.rank])),
       ),
     };
   }

@@ -297,14 +297,26 @@ function tracker(action, body) {
 
 // ---------- XP, ELO and what's taken into account ----------
 
+const ELO_BOARD = [['Tom Reid', 1388, 41, 6], ['Sam Turner', 1302, 12, 4], ['Priya Shah', 1265, -8, 3], ['Ellie Morgan', 1190, 26, 2], ['Dan Walsh', 1140, -22, 3], ['Amy Clarke', 1101, 0, 0]];
+
+function eloBoard(period) {
+  const scale = period === 'month' ? 0.4 : period === 'quarter' ? 1 : 2.2;
+  const rankName = (e) => (e < 1100 ? 'Gram II' : e < 1300 ? 'Kilogram I' : e < 1500 ? 'Kilogram II' : 'Tonne I');
+  const mine = eloHistory(1100);
+  const rows = [...ELO_BOARD.map(([name, elo, change, jobs]) => ({ name, elo, change: Math.round(change * scale), jobs: Math.round(jobs * scale), ratedJobs: jobs ? 8 : 0, isYou: false })),
+    { name: me.name, elo: Math.round(mine.elo), change: Math.round(mine.elo - mine.start) * (period === 'month' ? 0 : 1), jobs: 3, ratedJobs: mine.events.length, isYou: true }]
+    .sort((a, b) => b.elo - a.elo).map((r, i) => ({ ...r, position: i + 1, rank: rankName(r.elo) }));
+  return { metric: 'elo', period, top: rows.slice(0, 10), all: rows, you: rows.find((r) => r.isYou), total: rows.length };
+}
+
 function leaderboard(period) {
   const scale = period === 'week' ? 1 : period === 'month' ? 4.2 : 60;
   const rows = [
     ['Sam Turner', 912], ['Priya Shah', 870], ['Tom Reid', 845], ['Ellie Morgan', 790], ['Dan Walsh', 760],
     ['Amy Clarke', 731], ['Chris Doyle', 698], ['Jordan Pike', 655], ['Megan Ross', 610], ['Lewis Hart', 580], ['Kate Bell', 540], ['Ryan Moss', 505],
-  ].map(([name, xp]) => ({ name, xp: Math.round(xp * scale), level: 180 + Math.round(xp / 9), isYou: false }));
+  ].map(([name, xp]) => ({ name, xp: Math.round(xp * scale), level: 180 + Math.round(xp / 9), levelFrom: period === 'all' ? null : 180 + Math.round(xp / 9) - Math.max(1, Math.round(scale)), isYou: false }));
   const mine = meResponse().employee;
-  rows.push({ name: me.name, xp: period === 'week' ? mine.week.xp : Math.round(mine.week.xp * scale * 0.95), level: mine.progress.level, isYou: true });
+  rows.push({ name: me.name, xp: period === 'week' ? mine.week.xp : Math.round(mine.week.xp * scale * 0.95), level: mine.progress.level, levelFrom: period === 'all' ? null : mine.progress.level - Math.max(1, Math.round(scale)), isYou: true });
   rows.sort((a, b) => b.xp - a.xp);
   rows.forEach((r, i) => { r.position = i + 1; });
   return { top: rows.slice(0, 10), all: rows, you: rows.find((r) => r.isYou), total: rows.length };
@@ -787,7 +799,7 @@ async function answer(p, q, method, body) {
   }
 
   // XP and rank
-  if (p === '/api/leaderboard') return leaderboard(q.get('period') || 'week');
+  if (p === '/api/leaderboard') return q.get('metric') === 'elo' ? eloBoard(q.get('period') || 'quarter') : leaderboard(q.get('period') || 'week');
   if (p === '/api/elo/history') return eloHistory(1100);
   if (p === '/api/modifiers') return { modifiers: world.modifiers, kinds: ['Supporting apprentices', 'Training someone', 'Covering for absence', 'Learning on the job', 'Heavy workload', 'Unwell', 'Personal circumstances'], supervisor: 'Sam Turner' };
   if (p === '/api/modifiers/request') {
@@ -1111,6 +1123,30 @@ async function answer(p, q, method, body) {
       weeks: t.weeks, byWeek: t.weeks.map((w) => ({ week_start: w, ...row.weeks[w] })), snapshots: [],
       topJobs: [{ issue_key: 'HBM-208', summary: 'Site - Installation', seconds: 22 * 3600, xp: 1360 }, { issue_key: 'NGB-122', summary: 'Software - FAT', seconds: 14 * 3600, xp: 870 }],
       recent: world.worklogs.slice(-6).reverse(),
+    };
+  }
+  if (p === '/api/reports/elo') {
+    const weeks = Number(q.get('weeks')) || 26;
+    const list = Array.from({ length: weeks }, (_, i) => addDays(mondayOf(today()), (i - weeks + 1) * 7));
+    const people = [...ELO_BOARD, [me.name, 1180, 18, 3]].map(([name, elo, change, jobs], k) => {
+      const total = Math.round(change * weeks / 13);
+      const from = elo - total;
+      const series = list.map((_, i) => Math.round(from + (total * Math.min(1, Math.max(0, (i - k) / (weeks - k - 1 || 1))))));
+      series[series.length - 1] = elo;
+      const person = PEOPLE.find((x) => x.name === name);
+      const rankName = (e) => (e < 1100 ? 'Gram II' : e < 1300 ? 'Kilogram I' : e < 1500 ? 'Kilogram II' : 'Tonne I');
+      return { accountId: person?.id || me.id, name, team: person?.team || world.employee.team, elo, from, change: total, rank: rankName(elo), rankFrom: rankName(from),
+        jobs: Math.round(jobs * weeks / 13), ratedEver: jobs > 0,
+        best: total > 0 ? { key: 'HBM-150', delta: Math.round(total * 0.6), at: addDays(today(), -30) } : null,
+        worst: total < 0 ? { key: 'ASF-62', delta: Math.round(total * 0.7), at: addDays(today(), -20) } : null, series };
+    }).sort((a, b) => b.elo - a.elo);
+    const avg = (xs) => Math.round(xs.reduce((t, x) => t + x, 0) / xs.length);
+    return {
+      weeks: list, people, average: list.map((_, i) => avg(people.map((p) => p.series[i]))),
+      summary: { averageNow: avg(people.map((p) => p.elo)), averageFrom: avg(people.map((p) => p.from)), up: people.filter((p) => p.change > 0).length,
+        down: people.filter((p) => p.change < 0).length, still: people.filter((p) => !p.change).length, jobs: people.reduce((t, p) => t + p.jobs, 0),
+        rankUps: people.filter((p) => p.rank !== p.rankFrom && p.change > 0).length, rankDowns: people.filter((p) => p.rank !== p.rankFrom && p.change < 0).length },
+      ranks: ['Gram II', 'Kilogram I', 'Kilogram II', 'Tonne I'].map((name) => ({ name, n: people.filter((p) => p.rank === name).length })).filter((x) => x.n),
     };
   }
   if (p === '/api/reports/quoting') return {

@@ -274,7 +274,9 @@ const pages = {
         <button class="tab${reportView === 'team' ? ' on' : ''}" data-view="team">Effort</button>
         <button class="tab${reportView === 'quoting' ? ' on' : ''}" data-view="quoting">Quoting</button>
         <button class="tab${reportView === 'stages' ? ' on' : ''}" data-view="stages">Stages</button>
+        <button class="tab${reportView === 'elo' ? ' on' : ''}" data-view="elo">ELO</button>
       </div>${teamPickerHtml(reportTeam, 'data-report-team')}`;
+      if (reportView === 'elo') return tabs + eloReportHtml(await api(`/api/reports/elo?weeks=${eloWeeks}${reportTeam ? `&team=${encodeURIComponent(reportTeam)}` : ''}`));
       if (reportView === 'stages') {
         const params = new URLSearchParams();
         if (quotingDiscipline) params.set('discipline', quotingDiscipline);
@@ -2861,6 +2863,97 @@ function stagesHtml(data) {
     </div>` : '<div class="card"><p class="muted">Not enough scored work recorded yet.</p></div>'}`;
 }
 
+// ---------- ELO over time ----------
+
+let eloWeeks = 26;
+let eloSort = 'elo';
+const signedInt = (v) => (v > 0 ? `+${n(v)}` : v < 0 ? `−${n(-v)}` : '0');
+
+function eloSpark(series) {
+  const w = 96, h = 26, lo = Math.min(...series), hi = Math.max(...series), span = Math.max(20, hi - lo);
+  const x = (i) => (series.length > 1 ? (i / (series.length - 1)) * (w - 4) + 2 : w / 2);
+  const y = (v) => h - 3 - ((v - lo + (span - (hi - lo)) / 2) / span) * (h - 6);
+  const move = series[series.length - 1] - series[0];
+  const colour = move > 0 ? 'var(--ok)' : move < 0 ? 'var(--danger)' : 'var(--muted)';
+  return `<svg class="elo-spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true">
+    <polyline points="${series.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}" fill="none" stroke="${colour}" stroke-width="1.8" stroke-linejoin="round"/></svg>`;
+}
+
+// Everyone's ELO week by week as faint lines, with the team average drawn over them.
+function eloTeamChart(data) {
+  const all = data.people.flatMap((p) => p.series);
+  if (!all.length) return '';
+  // Drawn at the card's real width so the labels stay readable on a phone.
+  const w = Math.max(280, Math.min(view.clientWidth || 680, 1000) - 42), h = w < 500 ? 200 : 240, padL = 8, padR = w < 500 ? 78 : 92, padT = 12, padB = 26;
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const span = Math.max(120, hi - lo);
+  lo -= span * 0.12; hi += span * 0.12;
+  const count = data.weeks.length;
+  const x = (i) => padL + (count > 1 ? (i / (count - 1)) * (w - padL - padR) : 0);
+  const y = (v) => padT + (1 - (v - lo) / (hi - lo)) * (h - padT - padB);
+  const line = (series) => series.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  const ranks = RANK_LINES.filter(([v]) => v > lo && v < hi).map(([v, name]) => `
+    <line x1="${padL}" x2="${w - padR}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--line)" stroke-dasharray="4 4"/>
+    <text x="${w - padR + 8}" y="${(y(v) + 4).toFixed(1)}" font-size="12" fill="var(--muted)">${esc(name)}</text>`).join('');
+  const people = data.people.map((p) => `<path d="${line(p.series)}" fill="none" stroke="#9fb4c3" stroke-width="1.2" opacity=".55"><title>${esc(p.name)}: ${n(p.series[0])} to ${n(p.elo)}</title></path>`).join('');
+  const ticks = [0, Math.floor((count - 1) / 2), count - 1].filter((v, i, a) => a.indexOf(v) === i)
+    .map((i) => `<text x="${x(i).toFixed(1)}" y="${h - 6}" font-size="12" fill="var(--muted)" text-anchor="${i === 0 ? 'start' : i === count - 1 ? 'end' : 'middle'}">${shortDate(data.weeks[i])}</text>`).join('');
+  return `<svg class="elo-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="Team ELO week by week, average now ${n(data.summary.averageNow)}">
+      ${ranks}${people}
+      <path d="${line(data.average)}" fill="none" stroke="var(--blue-deep)" stroke-width="3" stroke-linejoin="round"><title>Team average</title></path>
+      ${ticks}</svg>
+    <p class="help" style="padding:.4rem 0 0"><span class="key-dot" style="background:var(--blue-deep)"></span>Team average <span class="key-dot" style="background:#9fb4c3"></span>Each engineer. Dashed lines are where the ranks change.</p>`;
+}
+
+function eloReportHtml(data) {
+  const s = data.summary;
+  const sorts = {
+    elo: (a, b) => b.elo - a.elo,
+    up: (a, b) => b.change - a.change || b.elo - a.elo,
+    down: (a, b) => a.change - b.change || b.elo - a.elo,
+    jobs: (a, b) => b.jobs - a.jobs || b.elo - a.elo,
+  };
+  const people = [...data.people].sort(sorts[eloSort] || sorts.elo);
+  const swing = (e) => (e ? `${e.delta > 0 ? '▲' : '▼'} ${n(Math.abs(Math.round(e.delta)))} on ${e.key ? `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(e.key)}" target="_blank" rel="noopener">${esc(e.key)}</a>` : 'a job'}` : '');
+  const rows = people.map((p) => `<tr>
+      <td><button class="linklike" data-engineer="${esc(p.accountId)}">${esc(p.name)}</button>${p.ratedEver ? '' : '<br><small class="muted">No jobs rated yet</small>'}</td>
+      <td>${esc(p.rank || '—')}${p.rankFrom && p.rank && p.rankFrom !== p.rank ? `<br><small class="muted">was ${esc(p.rankFrom)}</small>` : ''}</td>
+      <td class="num">${n(p.elo)}</td>
+      <td class="num ${p.change > 0 ? 'good' : p.change < 0 ? 'bad' : 'muted'}">${signedInt(p.change)}</td>
+      <td class="num">${n(p.jobs)}</td>
+      <td>${eloSpark(p.series)}</td>
+      <td class="elo-swings">${[swing(p.best), swing(p.worst)].filter(Boolean).join('<br>') || '<span class="muted">—</span>'}</td>
+    </tr>`).join('');
+  const maxRank = Math.max(1, ...data.ranks.map((r) => r.n));
+  return `
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="tabs">${[13, 26, 52, 104].map((w) => `<button class="tab${w === eloWeeks ? ' on' : ''}" data-elo-weeks="${w}">${w === 104 ? '2 years' : `${w} weeks`}</button>`).join('')}</div>
+        <a class="btn secondary" href="/api/reports/export?type=elo&weeks=${eloWeeks}${reportTeam ? `&team=${encodeURIComponent(reportTeam)}` : ''}">ELO by week CSV</a>
+      </div>
+      <p class="muted" style="margin:.85rem 0 0">Each engineer's ELO week by week. ELO moves when a job they worked on is finished, against its estimate and how hard it was.
+      Changes here count finished jobs only, not ratings set by hand on the Admin page.</p>
+    </div>
+    ${data.people.length ? `<dl class="stats">
+      <div><dt>Average ELO</dt><dd>${n(s.averageNow)}<small>${signedInt(s.averageNow - s.averageFrom)} over ${eloWeeks === 104 ? 'two years' : `${eloWeeks} weeks`}</small></dd></div>
+      <div><dt>Moved up</dt><dd>${n(s.up)}<small>${n(s.rankUps)} up a rank</small></dd></div>
+      <div><dt>Moved down</dt><dd>${n(s.down)}<small>${n(s.rankDowns)} down a rank</small></dd></div>
+      <div><dt>Jobs rated</dt><dd>${n(s.jobs)}<small>${n(s.still)} ${s.still === 1 ? 'person' : 'people'} unchanged</small></dd></div>
+    </dl>
+    <h2>Over time</h2>
+    <div class="card">${eloTeamChart(data)}</div>
+    <h2>Engineers</h2>
+    <div class="row" style="margin-bottom:.75rem"><label>Sort <select data-elo-sort>${[['elo', 'ELO now'], ['up', 'Biggest climb'], ['down', 'Biggest drop'], ['jobs', 'Most jobs rated']].map(([k, l]) =>
+      `<option value="${k}"${eloSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label></div>
+    <div class="table-wrap"><table class="elo-table">
+      <thead><tr><th>Engineer</th><th>Rank</th><th class="num">ELO</th><th class="num">Change</th><th class="num">Jobs rated</th><th>Trend</th><th>Biggest moves</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <h2>Ranks now</h2>
+    <div class="card"><div class="con-bars">${data.ranks.map((r) => `<div class="psc-bar-row"><span class="con-bar-label">${esc(r.name)}</span>
+      <span class="con-bar"><span style="width:${(r.n / maxRank) * 100}%"></span></span><span class="con-bar-value">${r.n}</span></div>`).join('')}</div></div>`
+    : '<div class="card"><p style="margin:0">Nobody in this team has an ELO yet.</p></div>'}`;
+}
+
 function engineerReportHtml(data) {
   const e = data.employee;
   const maxSeconds = Math.max(37.5 * 3600, ...data.byWeek.map((w) => w.seconds));
@@ -2929,27 +3022,48 @@ function teamPickerHtml(value, attr) {
 }
 
 let leaderTeam = '';
+let leaderMetric = 'xp';
+const LEADER_PERIODS = {
+  xp: [['week', 'This week'], ['month', 'This month'], ['all', 'All time']],
+  elo: [['month', 'This month'], ['quarter', 'Last 3 months'], ['all', 'All time']],
+};
+const eloMove = (change) => (change > 0 ? `<small class="elo-move up">▲ ${n(change)}</small>`
+  : change < 0 ? `<small class="elo-move down">▼ ${n(-change)}</small>` : '<small class="elo-move">no change</small>');
+
+function leaderRowHtml(r, extra = '') {
+  if (leaderMetric === 'elo') {
+    return `<li class="${[r.isYou ? 'you' : '', extra].filter(Boolean).join(' ')}">
+      <span class="pos">${r.position}</span>
+      <span class="who">${esc(r.name)}</span>
+      <span class="lvl">${esc(r.rank || '')}${r.ratedJobs ? '' : ' · no jobs rated yet'}</span>
+      <span class="pts">${n(r.elo)}${eloMove(r.change)}</span>
+    </li>`;
+  }
+  const level = r.levelFrom != null && r.levelFrom !== r.level ? `Level ${n(r.levelFrom)} → ${n(r.level)}` : `Level ${n(r.level)}`;
+  return `<li class="${[r.isYou ? 'you' : '', extra].filter(Boolean).join(' ')}">
+      <span class="pos">${r.position}</span>
+      <span class="who">${esc(r.name)}</span>
+      <span class="lvl">${level}</span>
+      <span class="pts">${n(r.xp)} XP</span>
+    </li>`;
+}
+
 function leaderboardHtml(data) {
   const rows = (leaderExpanded ? data.all : data.top);
   const youShown = rows.some((r) => r.isYou);
-  const list = rows.map((r) => `<li${r.isYou ? ' class="you"' : ''}>
-      <span class="pos">${r.position}</span>
-      <span class="who">${esc(r.name)}</span>
-      <span class="lvl">Level ${n(r.level)}</span>
-      <span class="pts">${n(r.xp)} XP</span>
-    </li>`).join('');
-  const you = !youShown && data.you ? `<li class="you break">
-      <span class="pos">${data.you.position}</span>
-      <span class="who">${esc(data.you.name)}</span>
-      <span class="lvl">Level ${n(data.you.level)}</span>
-      <span class="pts">${n(data.you.xp)} XP</span>
-    </li>` : '';
-  const periods = [['week', 'This week'], ['month', 'This month'], ['all', 'All time']];
+  const list = rows.map((r) => leaderRowHtml(r)).join('');
+  const you = !youShown && data.you ? leaderRowHtml(data.you, 'break') : '';
+  const what = leaderMetric === 'elo'
+    ? `<p class="help">Ranked by ELO now. The arrows show how far finished jobs have moved each person's ELO ${leaderPeriod === 'month' ? 'this month' : leaderPeriod === 'quarter' ? 'in the last three months' : 'since jobs started being rated'}.</p>`
+    : leaderPeriod === 'all' ? '' : `<p class="help">XP earned ${leaderPeriod === 'week' ? 'this week' : 'this month'}, and each person's level from the start of the ${leaderPeriod} to now.</p>`;
   return `
-    <div class="tabs">${periods.map(([p, label]) =>
-      `<button class="tab${p === leaderPeriod ? ' on' : ''}" data-period="${p}">${label}</button>`).join('')}</div>
+    <div class="row leader-head"><span class="segment" role="group" aria-label="Rank by">${[['xp', 'XP'], ['elo', 'ELO']].map(([k, l]) =>
+      `<button class="seg${leaderMetric === k ? ' on' : ''}" data-leader-metric="${k}">${l}</button>`).join('')}</span>
+      <div class="tabs">${LEADER_PERIODS[leaderMetric].map(([p, label]) =>
+        `<button class="tab${p === leaderPeriod ? ' on' : ''}" data-period="${p}">${label}</button>`).join('')}</div></div>
     ${teamPickerHtml(leaderTeam, 'data-leader-team')}
-    <ol class="board">${list}${you}</ol>
+    ${what}
+    <ol class="board">${list || '<li><span></span><span class="muted">Nobody here yet.</span></li>'}${you}</ol>
     ${data.total > data.top.length ? `<button class="btn secondary" data-leader="toggle" style="margin-top:.85rem">
       ${leaderExpanded ? 'Show top 10 only' : `Show all ${n(data.total)}`}</button>` : ''}`;
 }
@@ -2958,7 +3072,7 @@ async function loadLeaderboard() {
   const host = document.getElementById('leaderboard');
   if (!host) return;
   try {
-    const data = await api(`/api/leaderboard?period=${leaderPeriod}${leaderTeam ? `&team=${encodeURIComponent(leaderTeam)}` : ''}`);
+    const data = await api(`/api/leaderboard?metric=${leaderMetric}&period=${leaderPeriod}${leaderTeam ? `&team=${encodeURIComponent(leaderTeam)}` : ''}`);
     host.innerHTML = leaderboardHtml(data);
   } catch (err) {
     host.innerHTML = `<p class="bad">${esc(err.message)}</p>`;
@@ -3048,6 +3162,12 @@ async function loadEloHistory(accountId = null) {
   eloHistoryFor = accountId;
   try {
     const data = await api(`/api/elo/history${accountId ? `?accountId=${encodeURIComponent(accountId)}` : ''}`);
+    // Nothing rated yet: the section stays out of the way rather than showing an empty chart.
+    const heading = host.previousElementSibling?.tagName === 'H2' ? host.previousElementSibling : null;
+    const empty = !data.events.length;
+    host.hidden = empty;
+    if (heading) heading.hidden = empty;
+    if (empty) return;
     // Drawn at the card's real width so the labels stay readable on a phone.
     const width = host.clientWidth - 2 * parseFloat(getComputedStyle(host.querySelector('.card') || host).paddingLeft || 0);
     host.innerHTML = eloHistoryHtml(data, { canUndo: me.user.isAdmin && Boolean(accountId), width, self: !accountId });
@@ -6621,6 +6741,13 @@ view.addEventListener('click', async (event) => {
   const setBtn = event.target.closest('[data-set]');
   if (setBtn) return powSet(setBtn.dataset.set, setBtn.dataset.value);
 
+  const metricBtn = event.target.closest('button[data-leader-metric]');
+  if (metricBtn) {
+    leaderMetric = metricBtn.dataset.leaderMetric;
+    if (!LEADER_PERIODS[leaderMetric].some(([p]) => p === leaderPeriod)) leaderPeriod = leaderMetric === 'elo' ? 'quarter' : 'week';
+    leaderExpanded = false;
+    return loadLeaderboard();
+  }
   const periodBtn = event.target.closest('button[data-period]');
   if (periodBtn) { leaderPeriod = periodBtn.dataset.period; leaderExpanded = false; return loadLeaderboard(); }
   const leaderBtn = event.target.closest('button[data-leader]');
@@ -6679,6 +6806,8 @@ view.addEventListener('click', async (event) => {
   if (engineerBtn) { reportAccount = engineerBtn.dataset.engineer || null; return render(); }
   const viewBtn = event.target.closest('button[data-view]');
   if (viewBtn) { reportView = viewBtn.dataset.view; return render(); }
+  const eloWeeksBtn = event.target.closest('button[data-elo-weeks]');
+  if (eloWeeksBtn) { eloWeeks = Number(eloWeeksBtn.dataset.eloWeeks); return render(); }
   const weeksBtn = event.target.closest('button[data-weeks]');
   if (weeksBtn) { reportWeeks = Number(weeksBtn.dataset.weeks); return render(); }
   const actionBtn = event.target.closest('button[data-action]');
@@ -6820,6 +6949,7 @@ view.addEventListener('input', (event) => {
   if (currentRoute() === '#/psc' && pscInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
+  if (event.target.matches('[data-elo-sort]')) { eloSort = event.target.value; render(); return; }
   if (event.target.matches('[data-stage-customer]')) { stageCustomer = event.target.value; render(); return; }
   if (event.target.matches('[data-leader-team]')) { leaderTeam = event.target.value; loadLeaderboard(); return; }
   if (event.target.matches('[data-audit-q]')) {
