@@ -33,6 +33,7 @@ src/               The Worker (API and background sync)
   disputes.js      Open jobs, difficulty disputes, estimate alerts
   modifiers.js     Supervisor-approved modifiers
   quotes.js        Quote builder: estimates, reference jobs, learned estimate, hand-off to orders
+  customer-lists.js Quotes and PSCs kept under each customer's Quote List, PSC & Snag List and Service item, and those lists' statuses
   devtime.js       Condor Dev: Bitbucket activity turned into draft worklogs
   mes.js           Condor Dev: MES estimating by comparison, triage and mid-release review, Condor rating
   release-notes.js Condor Dev: release notes from Jira, note types, writing them, pictures to Jira
@@ -83,6 +84,7 @@ schema-028.sql     PSC: support requests, pick-ups and changes waiting for Jira
 schema-029.sql     PSC: links between items, to spot copies
 schema-030.sql     Home screen alerts and news, and who has seen them
 schema-031.sql     Condor Dev: release notes, note types, and each ticket's release and sub-tasks
+schema-032.sql     Quotes: Promtek team, every open quote from Jira, customer list items and moves under them
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

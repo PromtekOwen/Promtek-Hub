@@ -396,15 +396,25 @@ function initQuotes() {
   return {
     seq: 3,
     list: [
-      { id: 'q1', title: 'Second intake weigher', project_key: 'HBM', customer: 'Harbour Mills', quote_key: 'HBM-221', status: 'open', created_name: 'Priya Shah', description: 'Harbour Mills want a second intake weigher on the new silo, matching the one fitted this year.',
+      { id: 'q1', title: 'Second intake weigher', project_key: 'HBM', customer: 'Harbour Mills', quote_key: 'HBM-221', status: 'open', team: 'Projecting', created_name: 'Priya Shah', description: 'Harbour Mills want a second intake weigher on the new silo, matching the one fitted this year.',
         sections: [blankSection('hardware', { counts: { panels: 1, weighpoints: 4 }, best_hours: 20, likely_hours: 26, worst_hours: 34, tech: 2, risk: 2, dep: 2, estimator: 'Dan Walsh', estimator_id: 'ex-dan' }),
           blankSection('engineering', { job_type: 'Commissioning', counts: { days: 2 } })] },
-      { id: 'q2', title: 'Recipe reports for line 3', project_key: 'NGB', customer: 'Northgate Bakery', quote_key: 'NGB-130', status: 'ready', created_name: 'Priya Shah', description: '', sections: [blankSection('software')] },
+      { id: 'q2', title: 'Recipe reports for line 3', project_key: 'NGB', customer: 'Northgate Bakery', quote_key: 'NGB-130', status: 'ready', team: 'Condor', created_name: 'Priya Shah', description: '', sections: [blankSection('software')] },
     ],
     // Someone asking this person for their view: everyone sees this one.
     requests: [{ id: 'r1', quote_id: 'q1', discipline: 'engineering', title: 'Second intake weigher', customer: 'Harbour Mills', quote_key: 'HBM-221',
       requested_name: 'Priya Shah', note: 'Same site as HBM-204. Can it be done in the same shutdown?', status: 'pending', account_id: 'me', name: null }],
     asks: [],
+    // Every open quote in Jira, including ones made there rather than here.
+    open: [
+      ['HBM-221', 'HBM', 'Second intake weigher', 'In Progress', 'Projecting', 'Priya Shah', 12, 'q1'],
+      ['NGB-130', 'NGB', 'Recipe reports for line 3', 'Open', 'Condor', 'Priya Shah', 5, 'q2'],
+      ['ASF-77', 'ASF', 'Bagging line PLC upgrade', 'Open', 'Projecting', 'Dan Walsh', 31, null],
+      ['KWD-48', 'KWD', 'Annual calibration visit', 'Open', 'Service', 'Sam Turner', 3, null],
+      ['HBM-224', 'HBM', 'Silo level sensors', 'In Progress', 'Service', 'Ellie Morgan', 9, null],
+      ['NGB-133', 'NGB', 'MicroMan second station', 'Open', null, null, 64, null],
+    ].map(([key, project, summary, status, team, assignee, days, hubId]) => ({ key, project, summary, status, team, assignee, reporter: assignee,
+      created: new Date(Date.now() - days * 86_400_000).toISOString(), hubId })),
   };
 }
 
@@ -430,10 +440,10 @@ function quoteGet(id) {
   if (!q) throw new Error('That quote has gone.');
   const canEdit = Boolean(me.user?.can?.quotes);
   return {
-    quote: { id: q.id, title: q.title, customer: q.customer, project_key: q.project_key, quote_key: q.quote_key, status: q.status, description: q.description, epic_key: null, description_synced: 1 },
+    quote: { id: q.id, title: q.title, customer: q.customer, project_key: q.project_key, quote_key: q.quote_key, status: q.status, team: q.team || null, description: q.description, epic_key: null, description_synced: 1 },
     sections: q.sections.map((s) => ({ ...s, help: quoteHelp(s) })),
     requests: world.quotes.asks.filter((r) => r.quote_id === q.id),
-    canEdit, config: QUOTE_CONFIG, jiraUrl: '#',
+    canEdit, config: QUOTE_CONFIG, jiraUrl: '#', teams: ['Projecting', 'Service', 'Condor'],
   };
 }
 
@@ -989,7 +999,16 @@ async function answer(p, q, method, body) {
     const scope = q.get('scope') || 'open';
     const canCreate = Boolean(me.user?.can?.quotes);
     const list = world.quotes.list.filter((x) => scope === 'all' || (scope === 'mine' ? x.created_name === me.name : ['open', 'ready'].includes(x.status)));
-    return { requests: world.quotes.requests.filter((r) => r.status === 'pending'), quotes: canCreate ? list : [], canCreate };
+    return { requests: world.quotes.requests.filter((r) => r.status === 'pending'), quotes: canCreate ? list : [], canCreate, teams: ['Projecting', 'Service', 'Condor'] };
+  }
+  if (p === '/api/quotes/open') {
+    const names = Object.fromEntries(CUSTOMERS.map((c) => [c.key, c.name]));
+    return { quotes: world.quotes.open.map((x) => ({ ...x, customer: names[x.project] || x.project })), readAt: now(), movedThisWeek: { quotes: 2 }, notMoved: [], teams: ['Projecting', 'Service', 'Condor'] };
+  }
+  if (p === '/api/quotes/team') {
+    const qt = world.quotes.list.find((x) => x.id === body.id); qt.team = body.team;
+    const o = world.quotes.open.find((x) => x.key === qt.quote_key); if (o) o.team = body.team;
+    return { ok: true, jiraUpdated: true };
   }
   if (p === '/api/quotes/get') return quoteGet(q.get('id'));
   if (p === '/api/quotes/people') return { people: [...PEOPLE].map((x) => ({ account_id: x.id, name: x.name, team: x.team })) };
@@ -999,8 +1018,9 @@ async function answer(p, q, method, body) {
     if (!body.title) throw new Error('Give it a title.');
     const id = `q${++world.quotes.seq}`;
     const key = `${body.projectKey}-${240 + world.quotes.seq}`;
-    world.quotes.list.unshift({ id, title: body.title, project_key: body.projectKey, customer: body.customer, quote_key: key, status: 'open', created_name: me.name,
+    world.quotes.list.unshift({ id, title: body.title, project_key: body.projectKey, customer: body.customer, quote_key: key, status: 'open', team: body.team, created_name: me.name,
       description: body.description || '', sections: (body.disciplines?.length ? body.disciplines : ['software']).map((d) => blankSection(d)) });
+    world.quotes.open.unshift({ key, project: body.projectKey, summary: body.title, status: 'Open', team: body.team, assignee: me.name, reporter: me.name, created: iso(now()), hubId: id });
     return { id, quoteKey: key };
   }
   if (p === '/api/quotes/section') {

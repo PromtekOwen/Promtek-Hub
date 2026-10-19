@@ -72,7 +72,8 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
   for (const c of cats) {
     const isMine = mine.has(c.issue_id);
     if (scope === 'mine' && !isMine) continue;
-    if (scope === 'team' && !viewer.teams?.includes(c.team)) continue;
+    // Condor orders are Projecting's too.
+    if (scope === 'team' && !viewer.teams?.includes(c.team) && !(c.team === 'Condor' && viewer.teams?.includes('Projecting'))) continue;
     const o = overrides.get(c.issue_id);
     const estimate = o?.estimate_seconds ?? c.estimate_seconds;
     if (!orders.has(c.epic_key)) {

@@ -187,6 +187,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
     customer_last_by: lastCustomer?.by || null,
     timeline: JSON.stringify(events.slice(-25).reverse()),
     links: JSON.stringify((f.issuelinks || []).map((l) => l.outwardIssue?.key || l.inwardIssue?.key).filter(Boolean)),
+    parent_key: f.parent?.key || null,
     synced_at: now,
   };
 }
@@ -194,7 +195,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
 async function saveItems(env, rows) {
   const cols = ['issue_id', 'issue_key', 'project_key', 'org', 'summary', 'issuetype', 'status', 'done', 'priority', 'assignee_id', 'assignee_name',
     'reporter_name', 'reporter_team', 'created_at', 'updated_at', 'resolved_at', 'team_first_at', 'team_first_by', 'team_first_how', 'team_last_at',
-    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'synced_at'];
+    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'parent_key', 'synced_at'];
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));

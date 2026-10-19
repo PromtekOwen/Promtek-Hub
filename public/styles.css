@@ -1027,3 +1027,13 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .rn-pics { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
 .rn-thumb figcaption { display: grid; gap: .35rem; }
 .rn-thumb figcaption input[type=text] { width: 100%; max-width: 28rem; }
+
+/* ---------- Quotes: open quotes and teams ---------- */
+.q-tabs { margin-bottom: 1rem; }
+.q-tools { flex-wrap: wrap; gap: .6rem; }
+.q-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem 1rem; }
+.q-filters .q-filter-search { grid-column: 1 / -1; }
+.q-filters select, .q-filters input { width: 100%; }
+.q-open-count { margin: 1rem 0 .5rem; }
+.q-status { display: inline-block; background: var(--tint); color: var(--blue-deep); border-radius: 999px; padding: 0 .55rem; font-weight: 600; font-size: .85rem; }
+.q-team-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin-top: .75rem; }

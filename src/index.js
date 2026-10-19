@@ -392,6 +392,24 @@ async function route(request, env, url, user) {
       return json(await customerList(env));
     }
     if (method === 'POST' && pathname === '/api/quotes/create') return json(await Quotes.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/team') {
+      const r = await Quotes.setTeam(env, user, body);
+      await Audit.record(env, user, { area: 'Quotes', action: 'Promtek Team changed', subjectType: 'quote', subjectId: String(body.id), changes: [{ label: 'Team', before: '', after: body.team }] });
+      return json(r);
+    }
+    // Every open quote in Jira, whoever made it and wherever.
+    if (method === 'GET' && pathname === '/api/quotes/open') {
+      if (!user.can?.quotes) return json({ error: 'Only the sales team and team leads see every quote.' }, 403);
+      const Lists = await import('./customer-lists.js');
+      // Read Jira now when asked, at most once a minute.
+      if (url.searchParams.get('refresh') === '1' && Date.now() - Number((await getState(env, 'lists_at')) || 0) > 60_000) {
+        await Lists.run(env, { force: true }).catch((err) => console.error('Jira lists', err));
+      }
+      const data = await Lists.openQuotes(env);
+      const { customerProjects } = await import('./jira.js');
+      const names = new Map((await customerProjects(env).catch(() => [])).map((p) => [p.key, p.name]));
+      return json({ ...data, quotes: data.quotes.map((q) => ({ ...q, customer: names.get(q.project) || q.hubCustomer || q.project })), teams: Quotes.QUOTE_TEAMS });
+    }
     if (method === 'POST' && pathname === '/api/quotes/section') return json(await Quotes.saveSection(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/status') return json(await Quotes.setStatus(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/description') return json(await Quotes.saveDescription(env, user, body));

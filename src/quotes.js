@@ -9,6 +9,11 @@ import { forMe } from './permissions.js';
 
 export const DISCIPLINE_ORDER = ['software', 'hardware', 'engineering', 'condor'];
 const QUOTE_NUMBER_FIELD = 'customfield_14259';
+const TEAM_FIELD = 'customfield_14562';     // "Promtek Team"
+export const QUOTE_TEAMS = ['Projecting', 'Service', 'Condor'];
+// A suggestion only: anything with Condor in it is Condor, a site visit on its own is Service.
+export const suggestTeam = (disciplines = []) => (disciplines.includes('condor') ? 'Condor'
+  : disciplines.length && disciplines.every((d) => d === 'engineering') ? 'Service' : 'Projecting');
 const MODEL_MIN_JOBS = 15;
 const NOVELTY = { exact: 0, similar: 0.5, never: 1 };
 const SPEC = { clear: 0, partly: 0.5, vague: 1 };
@@ -116,16 +121,37 @@ async function createInJira(env, quote, viewer) {
   if (description) fields.description = description;
   if (viewer?.accountId) fields.assignee = { id: viewer.accountId };
   if (lists[0]) fields.parent = { key: lists[0].key };
+  if (quote.team) fields[TEAM_FIELD] = { value: quote.team };
   let created;
   try {
     created = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
   } catch (err) {
-    if (!fields.parent && !fields.assignee) throw err;
-    // Some projects refuse a parent or assignee on create; the quote matters more.
-    delete fields.parent; delete fields.assignee;
+    if (!fields.parent && !fields.assignee && !fields[TEAM_FIELD]) throw err;
+    // Some projects refuse a parent, assignee or team on create; the quote matters more.
+    // The team is tried again on its own straight after.
+    delete fields.parent; delete fields.assignee; delete fields[TEAM_FIELD];
     created = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
+    if (quote.team) await syncTeam(env, { ...quote, quote_key: created.key }).catch(() => {});
   }
   return created.key;
+}
+
+async function syncTeam(env, q) {
+  if (!q.quote_key || !q.team) return null;
+  await jira(env, `/rest/api/3/issue/${encodeURIComponent(q.quote_key)}`, { method: 'PUT', body: JSON.stringify({ fields: { [TEAM_FIELD]: { value: q.team } } }) });
+  await env.DB.prepare('UPDATE jira_quotes SET team = ? WHERE issue_key = ?').bind(q.team, q.quote_key).run();
+  return true;
+}
+
+export async function setTeam(env, viewer, input) {
+  if (!canCreate(viewer)) throw new Error('Only the sales team and team leads can change a quote.');
+  if (!QUOTE_TEAMS.includes(input.team)) throw new Error('Choose Projecting, Service or Condor.');
+  const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(input.id)).first();
+  if (!q) throw new Error('That quote has gone.');
+  await env.DB.prepare('UPDATE quotes SET team = ?, updated_at = ? WHERE id = ?').bind(input.team, new Date().toISOString(), q.id).run();
+  let jiraUpdated = null;
+  try { jiraUpdated = await syncTeam(env, { ...q, team: input.team }); } catch { jiraUpdated = false; }
+  return { ok: true, jiraUpdated };
 }
 
 export async function retryJira(env, id) {
@@ -149,10 +175,12 @@ export async function create(env, viewer, input) {
   if (!/^[A-Z][A-Z0-9_]+$/.test(input.projectKey || '')) throw new Error('Choose the customer.');
   const disciplines = DISCIPLINE_ORDER.filter((d) => (input.disciplines || []).includes(d));
   if (!disciplines.length) throw new Error('Choose at least one category.');
+  const team = input.team || suggestTeam(disciplines);
+  if (!QUOTE_TEAMS.includes(team)) throw new Error('Choose the Promtek team: Projecting, Service or Condor.');
   const now = new Date().toISOString();
   const res = await env.DB.prepare(
-    `INSERT INTO quotes (project_key, customer, title, description, status, created_by, created_email, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?)`
-  ).bind(input.projectKey, String(input.customer || '').slice(0, 120), title, cleanDescription(input.description) || null, viewer.accountId, viewer.email, now, now).run();
+    `INSERT INTO quotes (project_key, customer, title, description, status, team, created_by, created_email, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
+  ).bind(input.projectKey, String(input.customer || '').slice(0, 120), title, cleanDescription(input.description) || null, team, viewer.accountId, viewer.email, now, now).run();
   const id = res.meta.last_row_id;
   await env.DB.batch(disciplines.map((d) => env.DB.prepare(
     'INSERT INTO quote_sections (quote_id, discipline, counts, chips, updated_at) VALUES (?, ?, ?, ?, ?)'
@@ -166,11 +194,12 @@ export async function list(env, viewer, { scope = 'open' } = {}) {
   let rows;
   if (canCreate(viewer)) {
     const where = scope === 'mine' ? 'WHERE q.created_by = ?' : scope === 'open' ? "WHERE q.status IN ('open', 'ready')" : '';
-    const stmt = env.DB.prepare(`SELECT q.*, e.name AS created_name FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by ${where} ORDER BY q.id DESC LIMIT 200`);
+    const stmt = env.DB.prepare(`SELECT q.*, COALESCE(q.team, j.team) AS team, e.name AS created_name FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by
+      LEFT JOIN jira_quotes j ON j.issue_key = q.quote_key ${where} ORDER BY q.id DESC LIMIT 200`);
     rows = (scope === 'mine' ? await stmt.bind(viewer.accountId).all() : await stmt.all()).results;
   } else {
     rows = (await env.DB.prepare(
-      `SELECT DISTINCT q.*, e.name AS created_name FROM quotes q JOIN quote_requests r ON r.quote_id = q.id
+      `SELECT DISTINCT q.*, COALESCE(q.team, (SELECT j.team FROM jira_quotes j WHERE j.issue_key = q.quote_key)) AS team, e.name AS created_name FROM quotes q JOIN quote_requests r ON r.quote_id = q.id
          LEFT JOIN employees e ON e.account_id = q.created_by WHERE r.account_id = ? ORDER BY q.id DESC LIMIT 100`
     ).bind(viewer.accountId).all()).results;
   }
@@ -178,11 +207,11 @@ export async function list(env, viewer, { scope = 'open' } = {}) {
     `SELECT r.*, q.title, q.quote_key, q.customer, e.name AS requested_name FROM quote_requests r JOIN quotes q ON q.id = r.quote_id
        LEFT JOIN employees e ON e.account_id = r.requested_by WHERE r.account_id = ? AND r.status = 'pending' ORDER BY r.id`
   ).bind(viewer.accountId).all()).results : [];
-  return { quotes: rows, requests, canCreate: canCreate(viewer) };
+  return { quotes: rows, requests, canCreate: canCreate(viewer), teams: QUOTE_TEAMS };
 }
 
 export async function get(env, viewer, id) {
-  const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(id)).first();
+  const q = await env.DB.prepare('SELECT q.*, COALESCE(q.team, (SELECT j.team FROM jira_quotes j WHERE j.issue_key = q.quote_key)) AS team FROM quotes q WHERE id = ?').bind(Number(id)).first();
   if (!q) throw new Error('That quote has gone.');
   if (!(await canView(env, viewer, q.id))) throw new Error('This quote hasn\'t been shared with you.');
   const { results: sections } = await env.DB.prepare('SELECT s.*, e.name AS estimator FROM quote_sections s LEFT JOIN employees e ON e.account_id = s.estimator_id WHERE quote_id = ?').bind(q.id).all();
@@ -196,7 +225,7 @@ export async function get(env, viewer, id) {
   return {
     quote: q, sections: withHelp, config: await config(env),
     requests: requests.map((r) => ({ ...r, answer: parse(r.answer, null) })),
-    canEdit: canCreate(viewer), jiraUrl: q.quote_key ? `${env.JIRA_BASE_URL}/browse/${q.quote_key}` : null,
+    canEdit: canCreate(viewer), teams: QUOTE_TEAMS, jiraUrl: q.quote_key ? `${env.JIRA_BASE_URL}/browse/${q.quote_key}` : null,
   };
 }
 

@@ -401,7 +401,9 @@ export async function quotingSummary(env, { discipline = null, minConfidence = '
   let filter = "kind = 'category' AND actual_seconds > 0";
   if (discipline) { filter += ' AND discipline = ?'; params.push(discipline); }
   if (minConfidence === 'good') filter += " AND confidence = 'good'";
-  if (team) { filter += ' AND team = ?'; params.push(team); }
+  // Condor work is Projecting work too.
+  if (team === 'Projecting') filter += " AND team IN ('Projecting', 'Condor')";
+  else if (team) { filter += ' AND team = ?'; params.push(team); }
 
   const { results } = await env.DB.prepare(
     `SELECT discipline, story_points, weighted_score, estimate_seconds, actual_seconds, done_date,
@@ -491,8 +493,9 @@ export async function mappedStages(env, { team = null } = {}) {
     `SELECT s.issue_id, s.issue_key, s.stage_type, s.actual_seconds, s.parent_id, s.epic_key, s.done_date, s.team, s.legacy, s.project_name,
             c.kind AS parent_kind, c.discipline AS parent_discipline, c.confidence AS parent_confidence
        FROM completed_jobs s LEFT JOIN completed_jobs c ON c.issue_id = s.parent_id
-      WHERE s.kind = 'stage' AND s.stage_type IS NOT NULL AND s.stage_type != '' ${team ? 'AND s.team = ?' : ''}`
-  ).bind(...(team ? [team] : [])).all();
+      WHERE s.kind = 'stage' AND s.stage_type IS NOT NULL AND s.stage_type != ''
+        ${team === 'Projecting' ? "AND s.team IN ('Projecting', 'Condor')" : team ? 'AND s.team = ?' : ''}`
+  ).bind(...(team && team !== 'Projecting' ? [team] : [])).all();
   const condorOrders = new Set(results.filter((r) => STAGE_TYPES[r.stage_type]?.[0] === 'condor').map((r) => r.epic_key));
   const rows = [];
   for (const r of results) {

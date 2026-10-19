@@ -3730,6 +3730,16 @@ async function modifiersClick(event) {
 
 let quotesView = null;      // null, { kind: 'new' }, { kind: 'quote', id } or { kind: 'answer', id }
 let quotesScope = 'open';
+let quotesTab = 'builder';   // 'builder' (quotes made here) or 'open' (every open quote in Jira)
+let quotesTeam = '';         // team filter for the builder list
+let quotesOpen = { customer: '', team: '', status: '', q: '', sort: 'new' };
+let quotesOpenData = null;
+let quotesOpenRefresh = false;
+const QUOTE_TEAMS = ['Projecting', 'Service', 'Condor'];
+// Condor work is Projecting work too.
+const teamMatches = (filter, team) => !filter || team === filter || (filter === 'Projecting' && team === 'Condor');
+const suggestTeam = (ds = []) => (ds.includes('condor') ? 'Condor' : ds.length && ds.every((d) => d === 'engineering') ? 'Service' : 'Projecting');
+const teamFilterLabel = (t) => (t === 'Projecting' ? 'Projecting (with Condor)' : t);
 let quoteData = null;       // the open quote, with each section as edited
 let quoteNew = null;
 let quotePeople = null;
@@ -3822,8 +3832,13 @@ async function quoteHtml() {
   const actions = quoteData.canEdit && !q.epic_key ? `<div class="row" style="margin-top:.75rem">
       ${q.status !== 'ready' ? '<button class="btn" data-q-status="ready">Ready to send</button>' : '<button class="btn secondary" data-q-status="open">Back to working on it</button>'}
       ${q.status !== 'lost' ? '<button class="btn secondary" data-q-status="lost">Not going ahead</button>' : ''}</div>` : '';
+  const teamRow = quoteData.canEdit && !q.epic_key
+    ? `<div class="q-team-row"><span class="muted">Promtek team</span><span class="segment" role="group" aria-label="Promtek team">${(quoteData.teams || QUOTE_TEAMS).map((t) =>
+        `<button class="seg${q.team === t ? ' on' : ''}" data-q-team="${t}">${t}</button>`).join('')}</span></div>`
+    : q.team ? `<p class="muted" style="margin:.4rem 0 0">Promtek team: ${esc(q.team)}</p>` : '';
   return `<div class="card"><p style="margin:0"><strong>${esc(q.title)}</strong><br>
       <span class="muted">${esc(q.customer || q.project_key)}. Quote ${jira}. ${status}.</span></p>
+      ${teamRow}
       ${q.jira_error && !q.quote_key ? `<p class="help">${esc(q.jira_error)}. Everything here is saved; it goes to Jira when it can.</p>` : ''}
       ${q.handoff_error ? `<p class="help">The order's figures are waiting to go into Jira: ${esc(q.handoff_error)}</p>` : ''}
       ${actions}<div class="result" id="q-status-result" role="status"></div></div>
@@ -3860,6 +3875,10 @@ async function quoteNewHtml() {
       <h3>Categories</h3>
       <div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((d) =>
         `<button class="chip${quoteNew.disciplines.includes(d) ? ' on' : ''}" data-q-new-disc="${d}">${qDisc(d)}</button>`).join('')}</div>
+      <h3>Promtek team</h3>
+      <span class="segment" role="group" aria-label="Promtek team" data-q-team-group>${QUOTE_TEAMS.map((t) =>
+        `<button class="seg${(quoteNew.team || suggestTeam(quoteNew.disciplines)) === t ? ' on' : ''}" data-q-new-team="${t}">${t}</button>`).join('')}</span>
+      <p class="help">Set in the Promtek Team field in Jira. ${quoteNew.team ? '' : 'Chosen from the categories until you pick one: Condor for anything with Condor in it. '}Condor quotes count as Projecting too when filtering.</p>
       <p class="help">The quote is created in Jira under the customer's quote list, with this description, and its key is the quote number in Quoter.</p>
       <div class="row"><button class="btn" data-q-create="1">Start the quote</button><button class="btn secondary" data-q-back="1">Cancel</button></div>
       <div class="result" id="q-new-result" role="status"></div></div>`;
@@ -3888,19 +3907,76 @@ async function quoteAnswerHtml() {
 
 async function quotesHomeHtml() {
   const data = await api(`/api/quotes?scope=${quotesScope}`);
+  const tabs = data.canCreate ? `<div class="tabs q-tabs">${[['builder', 'Quote builder'], ['open', 'Open quotes']].map(([k, l]) =>
+    `<button class="tab${quotesTab === k ? ' on' : ''}" data-q-tab="${k}">${l}</button>`).join('')}</div>` : '';
+  if (data.canCreate && quotesTab === 'open') return `${tabs}${await quotesOpenHtml()}`;
   const asks = data.requests.length ? `<h2>Waiting for your estimate</h2><ul class="list approvals">${data.requests.map((r) => `<li>
       <span class="title">${esc(r.title)}, ${qDisc(r.discipline)}</span>
       <span class="sub">${esc(r.customer || '')}. Asked by ${esc(r.requested_name || 'someone')}.</span>
       <button class="btn secondary" data-q-answer-open="${r.id}" style="margin-top:.6rem">Give my estimate</button></li>`).join('')}</ul>` : '';
   const scopes = [['open', 'Open'], ['mine', 'Mine'], ['all', 'All']];
   const status = { open: 'Being worked on', ready: 'Ready to send', won: 'Became an order', lost: 'Not going ahead' };
-  const rows = data.quotes.map((q) => `<li data-q-row><button class="linklike title" data-q-open="${q.id}">${esc(q.title)}</button>
-      <span class="sub">${esc(q.customer || q.project_key)}${q.quote_key ? `, ${esc(q.quote_key)}` : ''}. ${status[q.status]}${q.created_name ? `. ${esc(q.created_name)}` : ''}.</span></li>`).join('');
-  return `${asks}
+  const shown = data.quotes.filter((q) => teamMatches(quotesTeam, q.team));
+  const rows = shown.map((q) => `<li data-q-row><button class="linklike title" data-q-open="${q.id}">${esc(q.title)}</button>
+      <span class="sub">${esc(q.customer || q.project_key)}${q.quote_key ? `, ${esc(q.quote_key)}` : ''}. ${status[q.status]}${q.team ? ` · ${esc(q.team)}` : ''}${q.created_name ? `. ${esc(q.created_name)}` : ''}.</span></li>`).join('');
+  const teamSeg = `<span class="segment" role="group" aria-label="Promtek team">${[['', 'All teams'], ...QUOTE_TEAMS.map((t) => [t, t])].map(([k, l]) =>
+    `<button class="seg${quotesTeam === k ? ' on' : ''}" data-q-team-filter="${k}"${k === 'Projecting' ? ' title="Includes Condor quotes"' : ''}>${l}</button>`).join('')}</span>`;
+  return `${tabs}${asks}
     ${data.canCreate ? `<div class="row" style="margin:1rem 0"><button class="btn" data-q-new-open="1">Start a quote</button></div>
-      <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) => `<button class="seg${quotesScope === k ? ' on' : ''}" data-q-scope="${k}">${l}</button>`).join('')}</span>
-      <input type="search" id="q-search" placeholder="Search quotes" aria-label="Search quotes"></div>` : ''}
-    ${rows ? `<ul class="list q-list">${rows}</ul>` : `<div class="card"><p style="margin:0">${data.canCreate ? 'No quotes here yet.' : 'When someone asks for your estimate on a quote, it appears here.'}</p></div>`}`;
+      <div class="row jobs-tools q-tools"><span class="segment">${scopes.map(([k, l]) => `<button class="seg${quotesScope === k ? ' on' : ''}" data-q-scope="${k}">${l}</button>`).join('')}</span>
+      ${teamSeg}
+      <input type="search" id="q-search" placeholder="Search quotes" aria-label="Search quotes"></div>
+      ${quotesTeam === 'Projecting' ? '<p class="help" style="margin-top:0">Projecting includes Condor quotes.</p>' : ''}` : ''}
+    ${rows ? `<ul class="list q-list">${rows}</ul>` : `<div class="card"><p style="margin:0">${data.canCreate ? (quotesTeam ? `No ${esc(quotesTeam)} quotes here.` : 'No quotes here yet.') : 'When someone asks for your estimate on a quote, it appears here.'}</p></div>`}`;
+}
+
+// Every open quote in Jira, wherever it was made, to filter and search.
+const ageText = (iso) => {
+  if (!iso) return '';
+  const days = Math.floor((Date.now() - Date.parse(iso)) / 86_400_000);
+  return days < 1 ? 'today' : days === 1 ? 'yesterday' : days < 14 ? `${days} days ago` : days < 60 ? `${Math.floor(days / 7)} weeks ago` : `${Math.floor(days / 30)} months ago`;
+};
+
+function quotesOpenList() {
+  const d = quotesOpenData;
+  const f = quotesOpen;
+  const q = f.q.trim().toLowerCase();
+  let list = d.quotes.filter((x) => (!f.customer || x.project === f.customer) && teamMatches(f.team, x.team) && (!f.status || x.status === f.status)
+    && (!q || `${x.key} ${x.summary} ${x.customer} ${x.assignee || ''} ${x.reporter || ''}`.toLowerCase().includes(q)));
+  if (f.sort === 'old') list = [...list].reverse();
+  if (f.sort === 'customer') list = [...list].sort((a, b) => a.customer.localeCompare(b.customer) || String(b.created).localeCompare(String(a.created)));
+  const customers = new Set(list.map((x) => x.project)).size;
+  const filtered = f.customer || f.team || f.status || q;
+  return `<p class="muted q-open-count">${n(list.length)} open ${list.length === 1 ? 'quote' : 'quotes'}${customers > 1 ? ` for ${n(customers)} customers` : list.length ? ` for ${esc(list[0].customer)}` : ''}${filtered ? ` <button class="linklike" data-qo-clear>Clear the filters</button>` : ''}</p>
+    ${list.length ? `<ul class="list q-open-list">${list.map((x) => `<li>
+        <span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}</span>
+        <span class="sub">${esc(x.customer)} · <span class="q-status">${esc(x.status || 'Open')}</span>${x.team ? ` · ${esc(x.team)}` : ' · <span class="muted">No team</span>'}${x.assignee ? ` · ${esc(x.assignee)}` : ''} · opened ${ageText(x.created)}</span>
+        ${x.hubId ? `<button class="chip-btn" data-q-open="${x.hubId}" style="margin-top:.4rem">Open in the quote builder</button>` : ''}</li>`).join('')}</ul>`
+      : `<div class="card"><p style="margin:0">${filtered ? 'No open quotes match.' : 'No open quotes in Jira.'}</p></div>`}`;
+}
+
+async function quotesOpenHtml() {
+  if (!quotesOpenData) quotesOpenData = await api(`/api/quotes/open${quotesOpenRefresh ? '?refresh=1' : ''}`);
+  quotesOpenRefresh = false;
+  const d = quotesOpenData;
+  const byCustomer = new Map();
+  for (const x of d.quotes) byCustomer.set(x.project, { name: x.customer, n: (byCustomer.get(x.project)?.n || 0) + 1 });
+  const customers = [...byCustomer].sort((a, b) => a[1].name.localeCompare(b[1].name));
+  const statuses = [...new Set(d.quotes.map((x) => x.status).filter(Boolean))].sort();
+  const f = quotesOpen;
+  const sel = (key, label, options) => `<label>${label}<select data-qo="${key}">${options.map(([v, l]) => `<option value="${esc(v)}"${f[key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+  const moved = d.movedThisWeek?.quotes || 0;
+  return `<div class="card q-filters">
+      ${sel('customer', 'Customer', [['', `All customers (${n(customers.length)})`], ...customers.map(([k, v]) => [k, `${v.name} (${v.n})`])])}
+      ${sel('team', 'Promtek team', [['', 'All teams'], ...QUOTE_TEAMS.map((t) => [t, teamFilterLabel(t)])])}
+      ${sel('status', 'Status', [['', 'Any open status'], ...statuses.map((x) => [x, x])])}
+      ${sel('sort', 'Order', [['new', 'Newest first'], ['old', 'Oldest first'], ['customer', 'By customer']])}
+      <label class="q-filter-search">Search<input type="search" data-qo="q" value="${esc(f.q)}" placeholder="Key, title, customer or person"></label>
+    </div>
+    <div id="q-open-results">${quotesOpenList()}</div>
+    <p class="help">${d.readAt ? `Read from Jira at ${hhmm(new Date(d.readAt).toISOString())}. ` : 'Jira is read every 10 minutes. '}New quotes are moved under their customer's Quote List, and the list shows Active Quotes or No Open Quotes to match.${moved ? ` ${n(moved)} moved this week.` : ''}
+      <button class="linklike" data-qo-reload>Read Jira now</button></p>
+    ${d.notMoved?.length ? `<div class="card notice"><p style="margin-top:0"><strong>Couldn't be moved under their Quote List</strong></p><ul class="plain">${d.notMoved.map((m) => `<li>${esc(m.issue_key)}: ${esc(m.error || '')}</li>`).join('')}</ul></div>` : ''}`;
 }
 
 function qSectionOf(d) { return d === 'answer' ? answerDraft : quoteData?.sections.find((s) => s.discipline === d); }
@@ -3942,12 +4018,34 @@ async function quotesClick(event) {
     return true;
   }
   const nd = t('[data-q-new-disc]');
-  if (nd) { const d = nd.dataset.qNewDisc; quoteNew.disciplines = quoteNew.disciplines.includes(d) ? quoteNew.disciplines.filter((x) => x !== d) : [...quoteNew.disciplines, d]; nd.classList.toggle('on'); return true; }
+  if (nd) {
+    const d = nd.dataset.qNewDisc;
+    quoteNew.disciplines = quoteNew.disciplines.includes(d) ? quoteNew.disciplines.filter((x) => x !== d) : [...quoteNew.disciplines, d];
+    nd.classList.toggle('on');
+    // Until a team is picked, it follows the categories.
+    if (!quoteNew.team) view.querySelectorAll('[data-q-new-team]').forEach((b) => b.classList.toggle('on', b.dataset.qNewTeam === suggestTeam(quoteNew.disciplines)));
+    return true;
+  }
+  const nt = t('[data-q-new-team]');
+  if (nt) { quoteNew.team = nt.dataset.qNewTeam; view.querySelectorAll('[data-q-new-team]').forEach((b) => b.classList.toggle('on', b === nt)); return true; }
+  const qt = t('[data-q-team]');
+  if (qt) {
+    try {
+      const r = await api('/api/quotes/team', { method: 'POST', body: JSON.stringify({ id: quoteData.quote.id, team: qt.dataset.qTeam }) });
+      toast(r.jiraUpdated === false ? `Promtek team set to ${qt.dataset.qTeam}. Jira couldn't be updated` : `Promtek team set to ${qt.dataset.qTeam}`);
+      return render();
+    } catch (err) { toast(err.message); }
+    return true;
+  }
+  if (t('[data-q-tab]')) { quotesTab = t('[data-q-tab]').dataset.qTab; if (quotesTab === 'open') quotesOpenData = null; return render(); }
+  if (t('[data-q-team-filter]')) { quotesTeam = t('[data-q-team-filter]').dataset.qTeamFilter; return render(); }
+  if (t('[data-qo-clear]')) { quotesOpen = { customer: '', team: '', status: '', q: '', sort: quotesOpen.sort }; return render(); }
+  if (t('[data-qo-reload]')) { quotesOpenData = null; quotesOpenRefresh = true; return render(); }
   const create = t('[data-q-create]');
   if (create) {
     create.disabled = true;
     try {
-      const r = await api('/api/quotes/create', { method: 'POST', body: JSON.stringify(quoteNew) });
+      const r = await api('/api/quotes/create', { method: 'POST', body: JSON.stringify({ ...quoteNew, team: quoteNew.team || suggestTeam(quoteNew.disciplines) }) });
       toast(r.quoteKey ? `Quote ${r.quoteKey} started` : 'Quote started. Jira will catch up');
       quotesView = { kind: 'quote', id: r.id }; quoteNew = null; return render();
     } catch (err) { document.getElementById('q-new-result').textContent = err.message; create.disabled = false; }
@@ -4026,6 +4124,13 @@ async function quotesClick(event) {
 
 function quotesInput(event) {
   const el = event.target;
+  if (el.dataset.qo != null && quotesOpenData) {
+    quotesOpen[el.dataset.qo] = el.value;
+    // Only the results redraw, so typing in the search box keeps its place.
+    const host = document.getElementById('q-open-results');
+    if (host) host.innerHTML = quotesOpenList();
+    return true;
+  }
   if (el.dataset.qNew && quoteNew) { quoteNew[el.dataset.qNew] = el.value; return true; }
   if (el.id === 'q-customer-search') {
     const query = el.value.toLowerCase(); const list = document.querySelector('.q-customers');
@@ -7674,7 +7779,7 @@ const sectionLoading = (label = 'Loading') => `<div class="card loading-card sma
 // Some pages know what they are waiting for.
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
-  '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : 'Loading'),
+  '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : quotesOpenRefresh ? 'Reading quotes from Jira' : 'Loading'),
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',

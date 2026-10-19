@@ -381,7 +381,7 @@ export async function snapshotWeek(env, weekStart) {
 // The free Workers plan allows 50 outside calls per run. Each run does the
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'lists', 'alerts'];
 
 export async function runScheduled(env) {
   if (!(await getState(env, 'ledger_start'))) return;
@@ -431,6 +431,7 @@ export async function runScheduled(env) {
       await attempt('Quotes', async () => (await import('./quotes.js')).hourly(env));
       await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
+      if (new Date().getUTCHours() === 5) await attempt('Jira lists retry', async () => (await import('./customer-lists.js')).daily(env));
     }),
     tracker: async () => {
       const r = await attempt('Timer stretches', async () => (await import('./tracker.js')).retry(env));
@@ -447,7 +448,8 @@ export async function runScheduled(env) {
     'mes-sync': async () => {
       const pending = await env.DB.prepare(
         `SELECT (SELECT COUNT(*) FROM mes_estimates WHERE jira_synced = 0) + (SELECT COUNT(*) FROM mes_plan WHERE jira_synced = 0)
-              + (SELECT COUNT(*) FROM mes_schedule WHERE jira_synced = 0) AS n`
+              + (SELECT COUNT(*) FROM mes_schedule WHERE jira_synced = 0) + (SELECT COUNT(*) FROM mes_note_kinds WHERE jira_synced = 0)
+              + (SELECT COUNT(*) FROM mes_note_edits WHERE note_synced = 0) AS n`
       ).first();
       if (!pending?.n) return { idle: true };
       await attempt('MES to Jira', async () => (await import('./mes.js')).hourly(env));
@@ -456,6 +458,10 @@ export async function runScheduled(env) {
     },
     psc: async () => {
       const r = await attempt('Service items', async () => (await import('./psc.js')).run(env));
+      return r?.idle ? { idle: true } : r;
+    },
+    lists: async () => {
+      const r = await attempt('Jira lists', async () => (await import('./customer-lists.js')).run(env));
       return r?.idle ? { idle: true } : r;
     },
     contracts: async () => {
