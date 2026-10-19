@@ -869,3 +869,130 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .psc-terms.none { border-left: 4px solid #D9895A; background: #FFF6EF; }
 .psc-out { color: #8A5A00; font-weight: 600; }
 .psc-terms-note { font-size: .85rem !important; }
+
+/* ---------- Condor Dev: release notes ---------- */
+.rn-tools { align-items: flex-end; gap: .75rem; flex-wrap: wrap; }
+.rn-tools label { flex: 1 1 14rem; max-width: 22rem; }
+.rn-status { margin: .5rem 0 0; }
+.rn-checks ul { margin: 0; padding-left: 1.1rem; }
+.rn-checks li + li { margin-top: .3rem; }
+.rn-bar { justify-content: space-between; align-items: center; gap: .75rem; flex-wrap: wrap; margin-top: 1rem; }
+.rn-downloads { display: flex; gap: .5rem; flex-wrap: wrap; }
+.rn-warn { color: #8a5a00; }
+.rn-tickets li { display: grid; grid-template-columns: 1fr auto; column-gap: 1rem; align-items: center; }
+.rn-tickets li .title, .rn-tickets li .sub { grid-column: 1; }
+.rn-tickets li .rn-kind-cell { grid-column: 2; grid-row: 1 / span 2; }
+.rn-kind-cell select { min-width: 11rem; }
+@media (max-width: 640px) { .rn-tickets li { grid-template-columns: 1fr; } .rn-tickets li .rn-kind-cell { grid-column: 1; grid-row: auto; margin-top: .5rem; } }
+.linklike.danger { color: var(--danger); }
+
+/* The preview is laid out like the printed release notes. */
+.rn-doc { background: #fff; color: #333; font-family: 'Open Sans', Arial, sans-serif; font-size: 15px; line-height: 1.6;
+  border-radius: 6px; box-shadow: var(--shadow); overflow: hidden; margin-top: 1rem; max-width: 860px; }
+.rn-band { position: relative; line-height: 0; }
+.rn-band img { width: 100%; height: auto; display: block; }
+.rn-band h1 { position: absolute; left: 23.5%; right: 3%; top: 50%; transform: translateY(-50%); margin: 0; color: #fff;
+  font: 700 clamp(.95rem, 3.4vw, 1.75rem)/1.2 'Open Sans', Arial, sans-serif; }
+.rn-page { padding: 1.4rem clamp(1rem, 5vw, 3rem) 2.5rem; }
+.rn-date { font-weight: 700; margin: 0 0 1.4rem; }
+.rn-doc h2 { color: #008dc6; font-size: 1.45rem; font-weight: 700; margin: 1.6rem 0 .4rem; line-height: 1.3; }
+.rn-page > h2:first-of-type { margin-top: 0; }
+.rn-doc h3 { color: #333; font-size: 1.15rem; font-weight: 700; margin: 1.1rem 0 .3rem; }
+.rn-doc ul { list-style: none; margin: 0; padding: 0; }
+.rn-doc p { margin: 0 0 .5rem; }
+.rn-item { position: relative; padding: .15rem 0 .15rem 1.6rem; margin: 0 0 .25rem; }
+.rn-item .rn-bullet::before { content: ''; position: absolute; left: .55rem; top: .78em; width: 6px; height: 6px; border-radius: 50%; background: #333; }
+.rn-item .rn-from-summary { font-style: italic; }
+.rn-item img { display: block; width: 100%; height: auto; margin: .6rem 0 1rem -1.6rem; width: calc(100% + 1.6rem); border: 1px solid #e3e7ea; }
+.rn-hover { position: relative; }
+.rn-item.rn-hover { padding-left: 1.6rem; }
+.rn-edit { position: absolute; top: 0; right: 0; border: 1px solid var(--line); background: #fff; color: var(--blue-deep); font: 600 .8rem var(--font);
+  border-radius: 8px; padding: .15rem .55rem; cursor: pointer; opacity: .6; transition: opacity .15s; }
+.rn-hover:hover > .rn-edit, .rn-edit:focus-visible { opacity: 1; }
+@media (hover: none), (max-width: 640px) { .rn-edit { opacity: 1; position: static; margin: .1rem 0 .4rem; } }
+@media (hover: hover) and (min-width: 641px) { .rn-hover { padding-right: 3.6rem; } }
+.rn-hover:hover { outline: 2px dashed var(--tint); outline-offset: 4px; border-radius: 4px; }
+.rn-empty { color: var(--muted); }
+.rn-editor { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin: .5rem 0 1rem; font-family: var(--font); color: var(--ink); }
+.rn-editing { padding-left: 0; }
+.rn-editor-head { margin-top: 0; font-weight: 600; }
+.rn-field { display: block; margin-bottom: .75rem; }
+.rn-field textarea { width: 100%; font: 400 .95rem/1.5 'Open Sans', Arial, sans-serif; }
+.rn-thumb { margin: 0 0 .75rem; }
+.rn-thumb img { max-width: 100%; max-height: 220px; display: block; border: 1px solid var(--line); border-radius: 6px; margin: 0; width: auto; }
+.rn-thumb.off img { opacity: .35; }
+.rn-thumb figcaption { margin-top: .3rem; }
+.rn-where { gap: .75rem; flex-wrap: wrap; margin: .75rem 0 .25rem; }
+.rn-where label { flex: 1 1 12rem; }
+
+/* ---------- Condor Dev: triage card ---------- */
+.tri-top { display: grid; gap: .75rem; }
+.tri-top label { max-width: 24rem; }
+.tri-top .segment { justify-self: start; }
+.triage-ticket { border-top: 0; padding-top: 0; }
+.tri-head { border-bottom: 1px solid var(--line); padding-bottom: .75rem; margin-bottom: .25rem; }
+.tri-title { margin: 0; font-weight: 700; font-size: 1.1rem; line-height: 1.35; }
+.tri-meta { margin: .2rem 0 0; }
+.tri-status { display: inline-block; background: var(--tint); color: var(--blue-deep); border-radius: 999px; padding: 0 .55rem; font-weight: 600; font-size: .85rem; }
+.tri-progress { margin: .35rem 0 0; font-size: .9rem; color: var(--muted); }
+.tri-steps { list-style: none; margin: 0; padding: 0; counter-reset: tri; }
+.tri-steps > li { counter-increment: tri; position: relative; padding: .85rem 0 .85rem 2.4rem; border-bottom: 1px solid var(--line); }
+.tri-steps > li::before { content: counter(tri); position: absolute; left: 0; top: .85rem; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  background: var(--tint); color: var(--blue-deep); font-weight: 700; font-size: .85rem; display: grid; place-items: center; }
+.tri-label { display: block; font-weight: 700; margin-bottom: .35rem; }
+.tri-steps select { max-width: 22rem; width: 100%; }
+.tri-done { margin: 0; }
+.tri-need { display: block; color: #8a5a00; margin-top: .3rem; }
+.tri-est .mes-compare { background: var(--bg); border-radius: 12px; padding: .75rem 1rem; }
+.tri-est .mes-compare p { margin: 0 0 .5rem; }
+.triage-ticket .triage-actions { margin-top: 1rem; }
+
+/* ---------- Condor Dev: writing release notes ---------- */
+.rn-bar { margin-top: 1rem; }
+.rn-bar .segment { flex-wrap: wrap; }
+.rn-w-bar { align-items: center; gap: .75rem; flex-wrap: wrap; margin: 1rem 0 .25rem; }
+.rn-w-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .9rem; }
+.rn-w { margin: 0; }
+.rn-w-title { margin: 0; font-weight: 700; line-height: 1.35; }
+.rn-w-meta { margin: .15rem 0 0; font-size: .9rem; }
+.rn-w-kind { margin-top: .85rem; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem; }
+.rn-w-kind .tri-label { margin: 0; }
+.rn-w-kind select { width: auto; min-width: 12rem; }
+.rn-w-help { margin: .5rem 0 .4rem; }
+.rn-w input[type=text], .rn-w textarea { width: 100%; font: 400 1rem/1.5 'Open Sans', Arial, sans-serif; }
+.rn-w-foot { align-items: center; gap: .75rem; flex-wrap: wrap; margin-top: .85rem; }
+.rn-pics { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; margin-top: .75rem; }
+.rn-pic { position: relative; margin: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; aspect-ratio: 4 / 3; }
+.rn-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rn-pic-x { position: absolute; top: .3rem; right: .3rem; width: 1.8rem; height: 1.8rem; border-radius: 50%; border: 0; background: rgba(15, 43, 61, .75);
+  color: #fff; font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.rn-pic-wait { display: grid; place-items: center; text-align: center; color: var(--muted); font-size: .85rem; padding: .5rem; }
+.rn-drop { display: grid; place-items: center; text-align: center; border: 2px dashed var(--line); border-radius: 10px; aspect-ratio: 4 / 3;
+  padding: .5rem; cursor: pointer; color: var(--blue-deep); background: var(--bg); }
+.rn-drop small { color: var(--muted); }
+.rn-drop.over, .rn-drop:hover { border-color: var(--blue); background: var(--tint); }
+.rn-drop:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.rn-preview-bar { margin-top: 1rem; }
+.rn-downloads { margin-top: 1rem; }
+.rn-drop { position: relative; }
+.rn-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.tri-est .chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+.tri-est .chips .chip { margin: 0; }
+.mes-alt .linklike { text-align: left; }
+@media (max-width: 640px) { .tri-steps > li { padding-left: 2.1rem; } .tri-est .chip { padding: .3rem .65rem; font-size: .9rem; } }
+/* Release notes laid out as the help page: sections for bigger changes, bullets for the rest. */
+.rn-hover > h2:first-child { margin-top: 0; }
+.rn-feature { margin: 0 0 .5rem; }
+.rn-feature h3 { margin-bottom: .35rem; }
+.rn-figure { margin: .6rem 0 1rem; }
+.rn-figure img { display: block; width: 100%; height: auto; border: 1px solid #e3e7ea; }
+.rn-figure figcaption { text-align: center; color: #666; font-size: .85rem; margin-top: .35rem; }
+.rn-list { list-style: disc; padding-left: 1.4rem; margin: 0 0 .6rem; }
+.rn-list li { margin: .15rem 0; }
+.rn-bullets { margin-bottom: .5rem; }
+.rn-from-summary, h3.rn-from-summary { font-style: italic; color: #777; }
+.rn-pic-card { margin: 0; display: grid; gap: .35rem; }
+.rn-pic-card input { width: 100%; font-size: .9rem; }
+.rn-pics { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.rn-thumb figcaption { display: grid; gap: .35rem; }
+.rn-thumb figcaption input[type=text] { width: 100%; max-width: 28rem; }

@@ -1,9 +1,9 @@
 // Release planning for Condor development. Each person's working days are filled
 // in priority order, keeping a reserve free for emergencies; when Musts or
 // Shoulds no longer fit, the least important work is suggested for the next release.
-import { jira } from './jira.js';
+import { jira, searchJql } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
-import { versions, syncPlan, canTriage } from './mes.js';
+import { versions, syncPlan, canTriage, saveTickets, FIELDS } from './mes.js';
 import { ensureRelease, knownSprints, sprintFor, placeTickets } from './mes-sprints.js';
 
 const PRIORITY_ORDER = { Must: 0, Should: 1, Could: 2 };
@@ -82,7 +82,13 @@ export function plan({ start, release, today, reserve = DEFAULT_RESERVE, people,
   let capacity = 0;
   for (const p of people) for (let d = from; d <= release; d = addDays(d, 1)) capacity += personDay(p, d);
   const planned = schedule.filter((s) => s.fits).reduce((a, s) => a + s.hours, 0);
-  return { from, release, reserve, schedule, needsEstimate, capacity, usable: capacity * usable, planned };
+  // If nothing is taken out, the release is ready when the last ticket is.
+  const late = schedule.filter((s) => !s.fits);
+  const finish = late.length && late.every((s) => s.due) ? schedule.reduce((m, s) => (s.due && s.due > m ? s.due : m), release) : null;
+  let lateDays = 0;
+  if (finish) for (let d = addDays(release, 1); d <= finish; d = addDays(d, 1)) if (weekday(d) <= 5) lateDays++;
+  return { from, release, reserve, schedule, needsEstimate, capacity, usable: capacity * usable, planned,
+    projected: late.length ? { finish, lateDays, cannotPlace: late.filter((s) => !s.due).length } : null };
 }
 
 // Takes out the least important work, one ticket at a time, keeping a move only
@@ -97,7 +103,7 @@ export function suggest(input, { declined = new Set() } = {}) {
   let tickets = input.tickets;
   let result = plan(input);
   for (let i = 0; i < MAX_MOVES * 3 && moved.length < MAX_MOVES; i++) {
-    const blocked = result.schedule.filter((s) => !s.fits && s.priority !== 'Could');
+    const blocked = result.schedule.filter((s) => !s.fits && (s.priority === 'Must' || s.priority === 'Should'));
     if (!blocked.length) break;
     const worst = Math.min(...blocked.map((b) => PRIORITY_ORDER[b.priority]));
     const candidate = result.schedule
@@ -121,7 +127,7 @@ export function suggest(input, { declined = new Set() } = {}) {
     ...moved,
     ...stillOut.filter((s) => s.priority === 'Could' && !declined.has(s.id)).map((s) => ({ ...s, reason: "it won't fit before the release" })),
   ];
-  return { result, suggestions, stillOut: stillOut.filter((s) => s.priority !== 'Could') };
+  return { result, suggestions, stillOut: stillOut.filter((s) => s.priority === 'Must' || s.priority === 'Should') };
 }
 
 // ---------- Data ----------
@@ -131,18 +137,41 @@ async function people(env) {
     `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e
        LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND (e.teams LIKE '%"Condor"%' OR (e.teams IS NULL AND e.team = 'Condor')) ORDER BY e.name`
   ).all();
-  return results.map((r) => ({ id: r.account_id, name: r.name, hoursPerWeek: r.hours_per_week ?? DEFAULT_HOURS, days: r.days || '12345',
-    away: JSON.parse(r.away || '[]'), included: r.included == null ? true : Boolean(r.included) }));
+  return results.map(personFrom);
+}
+const personFrom = (r) => ({ id: r.account_id, name: r.name, hoursPerWeek: r.hours_per_week ?? DEFAULT_HOURS, days: r.days || '12345',
+  away: JSON.parse(r.away || '[]'), included: r.included == null ? true : Boolean(r.included) });
+
+// Someone assigned work in the release is planned with their own time, even if
+// they aren't in the Condor team or aren't usually planned for.
+async function assigneesOutside(env, tickets, planned) {
+  const have = new Set(planned.map((p) => p.id));
+  const ids = [...new Set(tickets.map((t) => t.assigneeId).filter((id) => id && !have.has(id)))];
+  if (!ids.length) return [];
+  const { results } = await env.DB.prepare(
+    `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e LEFT JOIN mes_capacity c ON c.account_id = e.account_id
+      WHERE e.account_id IN (${ids.map(() => '?').join(',')})`
+  ).bind(...ids).all();
+  return results.map((r) => ({ ...personFrom(r), assignedOnly: true }));
+}
+
+// What Jira says is in the release, so tickets added there directly count too.
+async function readRelease(env, versionId) {
+  const issues = await searchJql(env,
+    `project = MES AND fixVersion = ${Number(versionId)} AND statusCategory != Done AND issuetype not in subTaskIssueTypes()`, FIELDS, { limit: 300 });
+  await saveTickets(env, issues);
 }
 
 async function releaseTickets(env, versionId) {
   const { results } = await env.DB.prepare(
     `SELECT t.issue_id AS id, t.issue_key AS key, t.summary, t.type, t.module, t.status, t.status_category AS statusCategory,
-            t.assignee_id AS assigneeId, t.created, t.actual_seconds, e.hours AS estimateHours, e.timebox, p.priority
-       FROM mes_plan p JOIN mes_tickets t ON t.issue_id = p.issue_id LEFT JOIN mes_estimates e ON e.issue_id = t.issue_id
-      WHERE p.version_id = ? AND t.done = 0`
-  ).bind(versionId).all();
-  return results.map((r) => ({ ...r, loggedHours: (r.actual_seconds || 0) / 3600 }));
+            COALESCE(CASE WHEN p.jira_synced = 0 THEN p.assignee_id END, t.assignee_id) AS assigneeId, t.created, t.actual_seconds, e.hours AS estimateHours, e.timebox,
+            CASE WHEN p.version_id = ?1 AND p.priority != 'Not this time' THEN p.priority END AS priority
+       FROM mes_tickets t LEFT JOIN mes_plan p ON p.issue_id = t.issue_id LEFT JOIN mes_estimates e ON e.issue_id = t.issue_id
+      WHERE t.done = 0 AND t.type != 'Epic'
+        AND ((p.version_id = ?1 AND (p.jira_synced = 0 OR t.fix_versions IS NULL)) OR t.fix_versions LIKE ?2)`
+  ).bind(versionId, `%"${versionId}"%`).all();
+  return results.map((r) => ({ ...r, priority: r.priority || null, loggedHours: (r.actual_seconds || 0) / 3600 }));
 }
 
 export async function reserveOf(env) {
@@ -158,9 +187,12 @@ export async function view(env, viewer, versionId) {
   if (!version) return { versions: vs, version: null, people: team, canPlan: canTriage(viewer) };
   const today = londonDate();
   const reserve = await reserveOf(env);
+  let readError = null;
+  try { await readRelease(env, version.id); } catch (err) { readError = err.message; }
   const tickets = await releaseTickets(env, version.id);
   const { results: dec } = await env.DB.prepare("SELECT issue_id FROM mes_suggestion_decisions WHERE version_id = ? AND decision = 'declined'").bind(version.id).all();
-  const included = team.filter((p) => p.included);
+  const extra = await assigneesOutside(env, tickets, team.filter((p) => p.included));
+  const included = [...team.filter((p) => p.included), ...extra];
   const release = version.releaseDate || addDays(today, 90);
   const input = { start: version.startDate, release, today, reserve, people: included, tickets };
   const current = plan(input);
@@ -169,7 +201,7 @@ export async function view(env, viewer, versionId) {
   const accepted = await env.DB.prepare(
     'SELECT COUNT(*) AS n, MAX(accepted_at) AS at, SUM(CASE WHEN jira_synced = 0 THEN 1 ELSE 0 END) AS waiting FROM mes_schedule WHERE version_id = ?'
   ).bind(version.id).first();
-  const names = new Map(team.map((p) => [p.id, p.name]));
+  const names = new Map([...team, ...extra].map((p) => [p.id, p.name]));
   const sprintInfo = await knownSprints(env, version.id);
   const sprints = sprintInfo?.sprints || [];
   for (const s of current.schedule) s.sprint = s.fits && s.start && sprints.length ? sprintFor(sprints, s.start)?.name || null : null;
@@ -179,7 +211,7 @@ export async function view(env, viewer, versionId) {
   return {
     versions: vs, version: { ...version, releaseDate: release, assumedDate: !version.releaseDate }, next, reserve, canPlan,
     people: canPlan ? team : [], names: Object.fromEntries(names),
-    capacity: current.capacity, usable: current.usable, planned: current.planned,
+    capacity: current.capacity, usable: current.usable, planned: current.planned, projected: current.projected, readError,
     schedule: current.schedule.filter(visible), needsEstimate: canPlan ? current.needsEstimate : [],
     suggestions: canPlan ? suggestions : [], stillOut: canPlan ? stillOut : [],
     accepted: { count: accepted?.n || 0, at: accepted?.at || null, waiting: accepted?.waiting || 0 },

@@ -514,7 +514,7 @@ let homeTimer = null;
 let homePausedUntil = 0;
 let homeHold = false;           // pointer over it or focus in it
 let homeStopped = false;        // the pause button
-const HOME_TURN_MS = 8000;
+const HOME_TURN_MS = 5000;
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 function levelSlideHtml() {
@@ -4171,11 +4171,12 @@ function bitbucketAdminHtml(b) {
 let condorTab = 'day';
 let mesFilter = 'unestimated';
 let mesEst = null;          // the estimate in progress
-let mesTriage = { versionId: null, skipped: [] };
+let mesTriage = { versionId: null, mode: null, skipped: [], notes: {}, assignee: {}, changeWho: [] };
+const freshTriage = (versionId, mode = null) => ({ versionId, mode, skipped: [], notes: {}, assignee: {}, changeWho: [] });
 let mesRatingFor = null;
 
 function condorTabs() {
-  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.can?.condorPlan ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['ratings', 'Ratings']];
+  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.can?.condorPlan ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['notes', 'Release notes'], ['ratings', 'Ratings']];
   return `<div class="tabs condor-tabs">${tabs.map(([k, l]) => `<button class="tab${condorTab === k ? ' on' : ''}" data-condor-tab="${k}">${l}</button>`).join('')}</div>`;
 }
 
@@ -4226,7 +4227,7 @@ async function mesEstimateHtml() {
     e.method = 'compare';
     step = `<p class="muted" style="margin-top:0">Question ${q.asked + 1} of up to ${q.maxQuestions}</p>
       <div class="mes-compare">
-        <p>Compared with ${mesLink(q.next.key)} <strong>${esc(q.next.summary)}</strong>,<br><span class="muted">${mesMeta(q.next)}, which took ${hoursLabel(Math.round(q.next.hours * 4) / 4)}</span></p>
+        <p>Compared with ${mesLink(q.next.key)} <strong>${esc(q.next.summary)}</strong>,<br><span class="muted">${mesMeta(q.next)}, ${q.next.done === false ? `which has had ${hoursLabel(Math.round(q.next.hours * 4) / 4)} logged so far` : `which took ${hoursLabel(Math.round(q.next.hours * 4) / 4)}`}</span></p>
         <p style="margin-bottom:.5rem"><strong>is ${esc(q.ticket.issue_key)}</strong></p>
         <div class="row mes-answers">${[['smaller', 'Smaller'], ['same', 'About the same'], ['bigger', 'Bigger']].map(([k, l]) =>
           `<button class="btn${k === 'same' ? '' : ' secondary'}" data-mes-answer="${k}" data-ref="${esc(q.next.id)}">${l}</button>`).join('')}</div></div>`;
@@ -4242,6 +4243,19 @@ async function mesEstimateHtml() {
   if (e.method !== 'three-point' && q.poolSize) alt.push('<button class="linklike" data-mes-method="three-point">Give hours instead</button>');
   if (e.method !== 'compare' && q.poolSize) alt.push('<button class="linklike" data-mes-method="compare">Compare with finished tickets</button>');
   const hint = me._mesHints?.[e.difficulty] || '';
+  if (e.embedded) {
+    // Inside the triage card: the same questions, without leaving the ticket.
+    return `<div class="tri-est">${step}
+      ${alt.length ? `<p class="mes-alt">${alt.join(' · ')}</p>` : ''}
+      ${ready ? `<p class="tri-label">How hard is it to do well?</p>
+        <div class="segment">${[1, 2, 3, 4, 5].map((v) => `<button class="seg${Number(e.difficulty) === v ? ' on' : ''}" data-mes-difficulty="${v}">${v}</button>`).join('')}</div>
+        <p class="help" id="mes-hint">${esc(hint)}</p>
+        <div class="chips">${(me._mesTags || []).map((t) => `<button class="chip${e.tags.includes(t) ? ' on' : ''}" data-mes-tag="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+        <div class="row" style="margin-top:.75rem"><button class="btn" data-mes-save="1">Save the estimate</button>
+          ${e.hadEstimate ? '<button class="linklike" data-mes-back="1">Keep the current estimate</button>' : ''}</div>`
+        : e.hadEstimate ? '<p style="margin-bottom:0"><button class="linklike" data-mes-back="1">Keep the current estimate</button></p>' : ''}
+      <div class="result" id="mes-result" role="status"></div></div>`;
+  }
   return `<div class="card">
       <p style="margin-top:0"><strong>${mesLink(q.ticket.issue_key)} ${esc(q.ticket.summary)}</strong><br><span class="muted">${mesMeta(q.ticket)}</span></p>
       ${step}
@@ -4256,27 +4270,101 @@ async function mesEstimateHtml() {
 }
 
 let mesNewRelease = null;
+const NOTE_KINDS = [['none', 'Not included'], ['sentence', 'Single sentence'], ['paragraph', 'Paragraph'], ['photo', 'Paragraph with photo']];
+const noteKindLabel = (k) => NOTE_KINDS.find(([id]) => id === k)?.[1] || 'Not chosen';
+
+function newReleaseHtml(versions) {
+  mesNewRelease = mesNewRelease || { name: '', startDate: todayIso(), releaseDate: '' };
+  return `<div class="card"><h2 style="margin-top:0">Start a new release</h2>
+      <label>Name<input type="text" data-new-release="name" value="${esc(mesNewRelease.name)}" placeholder="For example Gobi"></label>
+      <div class="row" style="margin-top:.75rem">
+        <label>Starts<input type="date" data-new-release="startDate" value="${esc(mesNewRelease.startDate)}"></label>
+        <label>Released<input type="date" data-new-release="releaseDate" value="${esc(mesNewRelease.releaseDate)}"></label></div>
+      <p class="help">The release is made in Jira as a version of MES. Triage then decides what goes in it, and its board and three sprints are made from that.</p>
+      <div class="row"><button class="btn" data-release-create>Start the release</button>${versions.length ? '<button class="btn secondary" data-release-cancel>Cancel</button>' : ''}</div>
+      <div class="result" id="mes-result" role="status"></div></div>`;
+}
+
+// The three things to settle before deciding: how long, who, and the release notes.
+async function triageTicketHtml(t, data, { mid, version, next, progress }) {
+  const id = t.issue_id;
+  let estimate;
+  const estimating = mesEst?.embedded && mesEst.issueId === id;
+  if (t.hours == null && !estimating && data.canEstimate) {
+    mesEst = { issueId: id, answers: [], tags: [], difficulty: null, timeboxHours: 4, from: 'triage', embedded: true };
+  }
+  if (mesEst?.embedded && mesEst.issueId === id) estimate = await mesEstimateHtml();
+  else if (t.hours != null) {
+    estimate = `<p class="tri-done">${t.timebox ? 'Time-boxed at' : 'Estimated at'} <strong>${hoursLabel(t.hours)}</strong>${t.difficulty ? `, difficulty ${n(t.difficulty)}` : ''}
+      <button class="linklike" data-tri-estimate="${esc(id)}">Re-estimate</button></p>`;
+  } else {
+    estimate = `<p class="tri-done muted">No estimate. <button class="linklike" data-tri-estimate="${esc(id)}">Estimate it</button></p>`;
+  }
+  const chosen = mesTriage.assignee[id];
+  const who = t.assignee_id && !mesTriage.changeWho.includes(id)
+    ? `<p class="tri-done"><strong>${esc(t.assignee_name || 'Someone outside the hub')}</strong> <button class="linklike" data-tri-who="${esc(id)}">Change</button></p>`
+    : `<select data-tri-assignee="${esc(id)}" aria-label="Who will do it"><option value="">Choose someone</option>${data.team.map((p) =>
+        `<option value="${esc(p.id)}"${(chosen || t.assignee_id) === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      ${t.assignee_id ? '' : '<small class="tri-need">Nobody is assigned in Jira</small>'}`;
+  const kind = mesTriage.notes[id] ?? t.notes_kind ?? '';
+  const notes = `<select data-tri-notes="${esc(id)}" aria-label="In the release notes"><option value=""${kind ? '' : ' selected'}>Choose</option>${NOTE_KINDS.map(([k, l]) =>
+      `<option value="${k}"${kind === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  const moveLabel = mid ? (next ? `Move to ${esc(next.name)}` : 'Take it out') : 'Not this time';
+  return `<div class="triage-ticket" data-tri-ticket="${esc(id)}">
+      <div class="tri-head">
+        <p class="tri-title">${mesLink(t.issue_key)} ${esc(t.summary)}</p>
+        <p class="muted tri-meta">${mesMeta(t) || 'No module'}${mid && t.status ? ` · <span class="tri-status">${esc(t.status)}</span>` : ''}</p>
+        <p class="tri-progress">${progress}</p>
+      </div>
+      <ol class="tri-steps">
+        <li><span class="tri-label">How long</span>${estimate}</li>
+        <li><span class="tri-label">Who's doing it</span>${who}</li>
+        <li><span class="tri-label">Release notes</span>${notes}</li>
+      </ol>
+      <div class="row triage-actions">${data.priorities.map((p) => `<button class="btn" data-mes-triage="${p}" data-issue="${esc(id)}">${p}</button>`).join('')}
+        <button class="btn secondary" data-mes-triage="none" data-issue="${esc(id)}">${moveLabel}</button>
+        <button class="btn secondary" data-mes-skip="${esc(id)}">Skip for now</button></div>
+      <p class="help">${mid
+        ? `Must, Should and Could keep it in ${esc(version.name)}. ${next ? `${moveLabel} puts it in ${esc(next.name)} for that release's triage.` : 'There is no later release in Jira yet, so taking it out leaves it without one.'}`
+        : `Must, Should and Could put it in ${esc(version.name)} and set its Fix Version in Jira. Not this time leaves it for the next release's triage.`} Keeping a ticket needs all three steps, so the plan knows how long it takes and who it's for.</p>
+      <div class="result" id="tri-result" role="status"></div></div>`;
+}
+
 async function mesTriageHtml() {
   const first = await api('/api/mes/outstanding?filter=none');
   const versions = first.versions;
-  if (mesNewRelease || !versions.length) {
-    mesNewRelease = mesNewRelease || { name: '', startDate: todayIso(), releaseDate: '' };
-    return `<div class="card"><h2 style="margin-top:0">Start a new release</h2>
-        <label>Name<input type="text" data-new-release="name" value="${esc(mesNewRelease.name)}" placeholder="For example Gobi"></label>
-        <div class="row" style="margin-top:.75rem">
-          <label>Starts<input type="date" data-new-release="startDate" value="${esc(mesNewRelease.startDate)}"></label>
-          <label>Released<input type="date" data-new-release="releaseDate" value="${esc(mesNewRelease.releaseDate)}"></label></div>
-        <p class="help">The release is made in Jira as a version of MES. Triage then decides what goes in it, and its board and three sprints are made from that.</p>
-        <div class="row"><button class="btn" data-release-create>Start the release</button>${versions.length ? '<button class="btn secondary" data-release-cancel>Cancel</button>' : ''}</div>
-        <div class="result" id="mes-result" role="status"></div></div>`;
-  }
+  if (mesNewRelease || !versions.length) return newReleaseHtml(versions);
   if (!mesTriage.versionId || !versions.some((v) => v.id === mesTriage.versionId)) mesTriage.versionId = versions[0].id;
   const version = versions.find((v) => v.id === mesTriage.versionId);
+  const started = version.startDate && version.startDate <= todayIso();
+  if (!mesTriage.mode) mesTriage.mode = started ? 'mid' : 'new';
+  const mid = mesTriage.mode === 'mid';
+  const top = `<div class="card tri-top">
+      <label>Release<select data-mes-version>${versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}
+        <option value="new">Start a new release</option></select></label>
+      <span class="segment" role="group" aria-label="What to triage">${[['new', 'New tickets'], ['mid', 'Mid-release review']].map(([k, l]) =>
+        `<button class="seg${mesTriage.mode === k ? ' on' : ''}" data-tri-mode="${k}" aria-pressed="${mesTriage.mode === k}">${l}</button>`).join('')}</span>
+      <p class="help" style="margin:0">${mid
+        ? `What's left of ${esc(version.name)}, one ticket at a time, furthest along first, to reassess what still fits before ${version.releaseDate ? shortDate(version.releaseDate) : 'the release'}.`
+        : `Open tickets not yet decided for ${esc(version.name)}.`}</p></div>`;
+
+  if (mid) {
+    const data = await api(`/api/mes/mid-release?versionId=${encodeURIComponent(version.id)}`);
+    const queue = data.tickets.filter((t) => !t.reviewed && !mesTriage.skipped.includes(t.issue_id));
+    const t = queue[0];
+    if (!data.total) return `${top}<div class="card"><p style="margin:0">Nothing unfinished is in ${esc(version.name)}.</p></div>`;
+    if (!t) {
+      return `${top}<div class="card"><p style="margin-top:0"><strong>Review done.</strong> All ${n(data.total)} unfinished ${data.total === 1 ? 'ticket' : 'tickets'} in ${esc(version.name)} have been looked at${mesTriage.skipped.length ? `, apart from ${n(mesTriage.skipped.length)} skipped. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : '.'}</p>
+        <div class="row"><button class="btn" data-condor-tab="plan">See what fits in the plan</button><button class="btn secondary" data-tri-restart>Start the review again</button></div></div>`;
+    }
+    const sameStatus = queue.filter((x) => x.status === t.status).length;
+    const progress = `${esc(t.status || 'Not started')}: ${n(sameStatus)} left · ${n(data.reviewed)} of ${n(data.total)} reviewed`;
+    return `${top}<div class="card">${await triageTicketHtml(t, data, { mid: true, version, next: data.next, progress })}</div>`;
+  }
+
   const data = await api(`/api/mes/outstanding?filter=untriaged&release=${encodeURIComponent(version.id)}`);
   const queue = data.tickets.filter((t) => !mesTriage.skipped.includes(t.issue_id));
   const t = queue[0];
-  const picker = `<label>Release<select data-mes-version>${versions.map((v) => `<option value="${esc(v.id)}"${v.id === version.id ? ' selected' : ''}>${esc(v.name)}${v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}
-      <option value="new">Start a new release</option></select></label>`;
   const sprints = data.release?.sprints || [];
   const sprintCard = `<div class="card" style="margin-top:1rem">
       ${sprints.length
@@ -4285,19 +4373,10 @@ async function mesTriageHtml() {
         : `<p style="margin-top:0">${n(data.inRelease)} ${data.inRelease === 1 ? 'ticket is' : 'tickets are'} in ${esc(version.name)}. When triage is done, make its board and sprints in Jira and place the tickets in them.</p>`}
       <button class="btn${t ? ' secondary' : ''}" data-make-sprints>${sprints.length ? 'Place the tickets in the sprints' : `Make the sprints for ${esc(version.name)}`}</button>
       <div class="result" id="sprint-result" role="status"></div></div>`;
-  if (!t && data.catchingUp) return `${mesReadingHtml(data)}<div class="card">${picker}<p style="margin-bottom:0">Tickets to triage appear here as MES is read.</p></div>${sprintCard}`;
-  if (!t) return `<div class="card">${picker}<p style="margin-bottom:0">Everything open has been triaged for ${esc(version.name)}.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>${sprintCard}`;
-  return `${mesReadingHtml(data)}<div class="card">${picker}
-      <p class="muted">${n(queue.length)} left to triage for ${esc(version.name)}${data.catchingUp ? ' so far' : ''}, ${n(data.inRelease)} in it so far</p>
-      <div class="triage-ticket">
-        <p style="margin-top:0"><strong>${mesLink(t.issue_key)} ${esc(t.summary)}</strong><br><span class="muted">${mesMeta(t)}</span></p>
-        <p>${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated at'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}.` : 'No estimate yet.'}
-          <button class="linklike" data-mes-estimate="${esc(t.issue_id)}" data-from="triage">${t.hours != null ? 'Re-estimate' : 'Estimate it now'}</button></p>
-        <div class="row triage-actions">${data.priorities.map((p) => `<button class="btn" data-mes-triage="${p}" data-issue="${esc(t.issue_id)}">${p}</button>`).join('')}
-          <button class="btn secondary" data-mes-triage="none" data-issue="${esc(t.issue_id)}">Not this time</button>
-          <button class="btn secondary" data-mes-skip="${esc(t.issue_id)}">Skip for now</button></div>
-        <p class="help">Must, Should and Could put it in ${esc(version.name)} and set its Fix Version in Jira. Not this time leaves it for the next release's triage. When work has to give way, Coulds go first.</p>
-      </div><div class="result" id="mes-result" role="status"></div></div>${sprintCard}`;
+  if (!t && data.catchingUp) return `${top}${mesReadingHtml(data)}<div class="card"><p style="margin:0">Tickets to triage appear here as MES is read.</p></div>${sprintCard}`;
+  if (!t) return `${top}<div class="card"><p style="margin:0">Everything open has been triaged for ${esc(version.name)}.${mesTriage.skipped.length ? ` ${mesTriage.skipped.length} skipped for now. <button class="linklike" data-mes-unskip="1">Go back to them</button>` : ''}</p></div>${sprintCard}`;
+  const progress = `${n(queue.length)} left to triage${data.catchingUp ? ' so far' : ''} · ${n(data.inRelease)} in ${esc(version.name)}`;
+  return `${top}${mesReadingHtml(data)}<div class="card">${await triageTicketHtml(t, data, { mid: false, version, progress })}</div>${sprintCard}`;
 }
 
 async function mesRatingsHtml() {
@@ -4318,24 +4397,39 @@ async function mesRatingsHtml() {
 
 async function condorHtml() {
   if (!me.linked) return notLinkedCard();
+  const asked = location.hash.split('?')[1];
+  if (asked && ['day', 'estimate', 'triage', 'plan', 'notes', 'ratings'].includes(asked)) {
+    condorTab = asked; mesEst = null;
+    if (asked === 'notes') { rn.stale = true; rn.view = 'write'; rn.mine = true; }
+    history.replaceState(null, '', '#/condor');
+  }
   let body;
-  if (mesEst) body = await mesEstimateHtml();
+  if (mesEst && !mesEst.embedded) body = await mesEstimateHtml();
   else if (condorTab === 'estimate') body = await mesListHtml();
   else if (condorTab === 'triage') body = await mesTriageHtml();
   else if (condorTab === 'ratings') body = await mesRatingsHtml();
   else if (condorTab === 'plan') body = await mesPlanHtml();
+  else if (condorTab === 'notes') body = await rnHtml();
   else body = '<div id="day-drafts"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading your days</p></div></div>';
-  return `${mesEst ? '' : condorTabs()}${body}`;
+  return `${mesEst && !mesEst.embedded ? '' : condorTabs()}${body}`;
 }
 
 async function condorClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (condorTab === 'plan' && !mesEst && await planClick(event) !== false) return true;
-  if (t('[data-condor-tab]')) { condorTab = t('[data-condor-tab]').dataset.condorTab; mesRatingFor = null; return render(); }
+  if (condorTab === 'notes' && !mesEst && await rnClick(event) !== false) return true;
+  if (t('[data-condor-tab]')) {
+    condorTab = t('[data-condor-tab]').dataset.condorTab; mesRatingFor = null;
+    if (mesEst?.embedded) mesEst = null;
+    if (condorTab === 'notes') rn.stale = true;
+    return render();
+  }
   if (t('[data-mes-filter]')) { mesFilter = t('[data-mes-filter]').dataset.mesFilter; return render(); }
   const est = t('[data-mes-estimate]');
   if (est) { mesEst = { issueId: est.dataset.mesEstimate, answers: [], tags: [], difficulty: null, timeboxHours: 4, from: est.dataset.from || null }; window.scrollTo(0, 0); return render(); }
-  if (t('[data-mes-back]')) { mesEst = null; return render(); }
+  if (t('[data-mes-back]')) {
+    mesEst = null; return render();
+  }
   if (!mesEst && t('[data-mes-rating]')) { mesRatingFor = t('[data-mes-rating]').dataset.mesRating || null; return render(); }
   if (mesEst) {
     const ans = t('[data-mes-answer]');
@@ -4366,15 +4460,35 @@ async function condorClick(event) {
       return true;
     }
   }
+  const mode = t('[data-tri-mode]');
+  if (mode) { mesTriage = freshTriage(mesTriage.versionId, mode.dataset.triMode); if (mesEst?.embedded) mesEst = null; return render(); }
+  const reEst = t('[data-tri-estimate]');
+  if (reEst) {
+    mesEst = { issueId: reEst.dataset.triEstimate, answers: [], tags: [], difficulty: null, timeboxHours: 4, from: 'triage', embedded: true, hadEstimate: true };
+    return render();
+  }
+  const whoBtn = t('[data-tri-who]');
+  if (whoBtn) { mesTriage.changeWho.push(whoBtn.dataset.triWho); return render(); }
+  if (t('[data-tri-restart]')) {
+    try { await api('/api/mes/mid-release/restart', { method: 'POST', body: JSON.stringify({ versionId: mesTriage.versionId }) }); } catch (err) { toast(err.message); }
+    mesTriage = freshTriage(mesTriage.versionId, 'mid'); return render();
+  }
   const tri = t('[data-mes-triage]');
   if (tri) {
     tri.disabled = true;
     try {
-      const r = await api('/api/mes/triage', { method: 'POST', body: JSON.stringify({ issueId: tri.dataset.issue, versionId: tri.dataset.mesTriage === 'none' ? null : mesTriage.versionId,
-        releaseId: mesTriage.versionId, priority: tri.dataset.mesTriage }) });
-      if (!r.jiraSynced) toast('Saved. Jira will catch up');
+      const id = tri.dataset.issue;
+      const card = tri.closest('[data-tri-ticket]');
+      const assigneeId = card?.querySelector('[data-tri-assignee]')?.value || null;
+      const notes = card?.querySelector('[data-tri-notes]')?.value || undefined;
+      const r = await api('/api/mes/triage', { method: 'POST', body: JSON.stringify({ issueId: id, priority: tri.dataset.mesTriage,
+        versionId: tri.dataset.mesTriage === 'none' ? null : mesTriage.versionId, releaseId: mesTriage.versionId, mode: mesTriage.mode,
+        ...(assigneeId ? { assigneeId } : {}), ...(notes ? { notes } : {}) }) });
+      if (mesEst?.embedded) mesEst = null;
+      const key = card?.querySelector('.tri-title a')?.textContent || 'Ticket';
+      toast(r.movedTo ? `${key} moved to ${r.movedTo}` : r.outOfRelease ? `${key} taken out of the release` : `${key} saved${r.jiraSynced ? '' : '. Jira will catch up'}`);
       return render();
-    } catch (err) { document.getElementById('mes-result').textContent = err.message; tri.disabled = false; }
+    } catch (err) { document.getElementById('tri-result').textContent = err.message; tri.disabled = false; }
     return true;
   }
   if (t('[data-release-cancel]')) { mesNewRelease = null; return render(); }
@@ -4383,7 +4497,7 @@ async function condorClick(event) {
     createRel.disabled = true;
     try {
       const r = await api('/api/mes/release', { method: 'POST', body: JSON.stringify(mesNewRelease) });
-      mesNewRelease = null; mesTriage = { versionId: r.id, skipped: [] }; toast(`${r.name} started`); return render();
+      mesNewRelease = null; mesTriage = freshTriage(r.id); toast(`${r.name} started`); return render();
     } catch (err) { document.getElementById('mes-result').textContent = err.message; createRel.disabled = false; }
     return true;
   }
@@ -4404,13 +4518,16 @@ async function condorClick(event) {
 
 function condorInput(event) {
   const el = event.target;
+  if (condorTab === 'notes' && rnInput(event)) return true;
   if (el.dataset.mesField && mesEst) { mesEst[el.dataset.mesField] = el.value; return true; }
   if (el.matches('[data-mes-version]')) {
     if (el.value === 'new') mesNewRelease = { name: '', startDate: todayIso(), releaseDate: '' };
-    else mesTriage = { versionId: el.value, skipped: [] };
+    else { mesTriage = freshTriage(el.value); if (mesEst?.embedded) mesEst = null; }
     render(); return true;
   }
   if (el.dataset.newRelease && mesNewRelease) { mesNewRelease[el.dataset.newRelease] = el.value; return true; }
+  if (el.dataset.triAssignee != null) { mesTriage.assignee[el.dataset.triAssignee] = el.value || null; return true; }
+  if (el.dataset.triNotes != null) { mesTriage.notes[el.dataset.triNotes] = el.value || null; return true; }
   if (el.matches('[data-plan-version]')) { planVersion = el.value; planCapacityOpen = null; render(); return true; }
   if (el.id === 'mes-search') {
     const q = el.value.toLowerCase();
@@ -4419,6 +4536,432 @@ function condorInput(event) {
   }
   return false;
 }
+
+// ---------- Condor Dev: release notes ----------
+// Triage decides what kind of note each ticket gets; whoever is assigned the
+// ticket writes it here. Then a live preview of the release notes, every ticket
+// in the release, and the downloads.
+
+let rn = { versionId: null, view: 'write', mine: true, data: null, stale: true, refresh: false, editing: null, draft: null, intro: null, number: null, drafts: {}, uploading: {} };
+
+const rnImg = (issueId, b) => b.src || `/api/mes/notes/image?issue=${encodeURIComponent(issueId)}&att=${encodeURIComponent(b.attachmentId)}`;
+const rnItem = (id) => rn.data?.items.find((i) => i.id === id);
+const RN_NEEDS = { sentence: 'One sentence for the list of smaller changes under its heading.',
+  paragraph: 'A section of its own on the release notes page: a short heading, then what changed and how it helps.',
+  photo: 'A section of its own: a short heading, what changed and how it helps, and at least one screenshot with a caption.' };
+
+async function rnLoad() {
+  const q = new URLSearchParams();
+  if (rn.versionId) q.set('versionId', rn.versionId);
+  if (rn.refresh) q.set('refresh', '1');
+  rn.data = await api(`/api/mes/notes?${q}`);
+  rn.versionId = rn.data.version?.id || null;
+  rn.stale = false; rn.refresh = false;
+}
+
+function rnNoteHtml(item, blocks) {
+  const [head, ...rest] = blocks;
+  const para = (t) => esc(t).replace(/\n/g, '<br>');
+  return `${head?.type === 'text' ? `<p class="rn-bullet${head.fromSummary ? ' rn-from-summary' : ''}">${para(head.text)}</p>` : ''}
+    ${(head?.type === 'text' ? rest : blocks).map((b) => b.type === 'text' ? `<p>${para(b.text)}</p>`
+      : b.type === 'image' ? `<img src="${esc(rnImg(item.id, b))}" alt="Screenshot for ${esc(item.key)}" loading="lazy">` : '').join('')}`;
+}
+
+function rnKindSelect(item, attr = 'data-rn-kind') {
+  return `<select ${attr}="${esc(item.id)}" aria-label="Release note for ${esc(item.key)}">${item.kind ? '' : '<option value="" selected>Not decided</option>'}${NOTE_KINDS.map(([k, l]) =>
+    `<option value="${k}"${item.kind === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+}
+
+// ----- To write -----
+
+function rnDraftFor(item) {
+  if (!rn.drafts[item.id]) {
+    const blocks = item.blocks.filter((b) => !b.hidden);
+    rn.drafts[item.id] = {
+      title: item.title || '',
+      text: blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n\n'),
+      images: blocks.filter((b) => b.type === 'image').map((b) => ({ attachmentId: b.attachmentId, filename: b.filename, caption: b.caption || '', src: b.src || null })),
+    };
+  }
+  return rn.drafts[item.id];
+}
+
+function rnWriteCardHtml(item, showWho) {
+  const d = rnDraftFor(item);
+  const kind = item.kind;
+  const id = esc(item.id);
+  const field = kind === 'sentence'
+    ? `<input type="text" maxlength="300" data-rn-wtext="${id}" value="${esc(d.text.replace(/\s*\n+\s*/g, ' '))}" placeholder="For example: Stock locations can now be removed through the user interface." aria-label="The sentence">`
+    : `<label class="rn-field">Heading<input type="text" maxlength="120" data-rn-wtitle="${id}" value="${esc(d.title)}" placeholder="For example: Multiple scales per station"></label>
+       <label class="rn-field">What changed<textarea rows="5" data-rn-wtext="${id}" placeholder="What changed and how it helps people using Condor. Start a line with - for a list.">${esc(d.text)}</textarea></label>`;
+  const ups = rn.uploading[item.id] || 0;
+  const pictures = kind === 'photo' ? `<div class="rn-pics">
+      ${d.images.map((im, i) => `<figure class="rn-pic-card"><div class="rn-pic"><img src="${esc(im.src || rnImg(item.id, im))}" alt="">
+          <button class="rn-pic-x" data-rn-unpic="${i}" data-issue="${id}" aria-label="Remove this picture">×</button></div>
+        <input type="text" maxlength="200" data-rn-caption="${i}" data-issue="${id}" value="${esc(im.caption)}" placeholder="Caption, such as: Invitation form with site access" aria-label="Caption for picture ${i + 1}"></figure>`).join('')}
+      ${ups ? `<div class="rn-pic rn-pic-wait"><span class="spinner" aria-hidden="true"></span> Adding ${ups === 1 ? 'picture' : `${ups} pictures`}</div>` : ''}
+      <label class="rn-drop" data-rn-drop="${id}"><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple data-rn-file="${id}">
+        <span><strong>Add pictures</strong><br><small>or drop them here, or paste a screenshot</small></span></label></div>` : '';
+  return `<li class="card rn-w" data-rn-w="${id}">
+      <div class="rn-w-head"><p class="rn-w-title">${mesLink(item.key)} ${esc(item.summary)}</p>
+        <p class="muted rn-w-meta">${esc(item.heading)} · ${esc(item.status || '')}${showWho ? ` · ${esc(item.assigneeName || 'Nobody assigned')}` : ''}</p></div>
+      <div class="rn-w-kind"><span class="tri-label">Release note</span>${rnKindSelect(item)}</div>
+      <p class="help rn-w-help">${RN_NEEDS[kind] || ''}</p>
+      ${field}${pictures}
+      <div class="row rn-w-foot"><button class="btn" data-rn-wsave="${id}">Save</button>
+        <small class="muted">The words go to the ticket's Release Note in Jira${kind === 'photo' ? ', and the pictures to its attachments' : ''}.</small></div>
+      <div class="result" data-rn-wresult="${id}" role="status"></div></li>`;
+}
+
+function rnWriteHtml(data) {
+  const all = data.items.filter((i) => i.kind && i.kind !== 'none' && i.missing.length);
+  const mine = all.filter((i) => data.me && i.assigneeId === data.me);
+  const list = rn.mine ? mine : all;
+  const done = data.items.filter((i) => i.kind && i.kind !== 'none' && !i.missing.length).length;
+  const toggle = `<span class="segment" role="group" aria-label="Whose notes">${[[true, `Mine (${n(mine.length)})`], [false, `Everyone (${n(all.length)})`]].map(([k, l]) =>
+    `<button class="seg${rn.mine === k ? ' on' : ''}" data-rn-mine="${k ? 1 : 0}" aria-pressed="${rn.mine === k}">${l}</button>`).join('')}</span>`;
+  const empty = rn.mine
+    ? `<div class="card"><p style="margin:0">Nothing of yours to write for ${esc(data.version.name)}.${all.length ? ` <button class="linklike" data-rn-mine="0">View all ${n(all.length)} still to write</button>` : ''}</p></div>`
+    : `<div class="card"><p style="margin:0">Every note for ${esc(data.version.name)} has been written.${done ? ' <button class="linklike" data-rn-view="preview">See the preview</button>' : ''}</p></div>`;
+  return `<div class="row rn-w-bar">${toggle}<small class="muted">${n(done)} written, ${n(all.length)} to go</small></div>
+    ${list.length ? `<ul class="rn-w-list">${list.map((i) => rnWriteCardHtml(i, !rn.mine)).join('')}</ul>` : empty}`;
+}
+
+// ----- Preview -----
+
+function rnHeadingSelect(current) {
+  const list = [...new Set([...rn.data.headings, current].filter(Boolean))];
+  return `<select data-rn-module>${list.map((m) => `<option${m === current ? ' selected' : ''}>${esc(m)}</option>`).join('')}<option value="__other">Another heading…</option></select>`;
+}
+
+function rnEditorHtml(item) {
+  const d = rn.draft;
+  const sentence = item.kind === 'sentence';
+  return `<div class="rn-editor" data-rn-item="${esc(item.id)}">
+      <p class="rn-editor-head">${mesLink(item.key)} ${esc(item.summary)}</p>
+      ${item.changedInJira ? `<p class="notice-line">The Release Note in Jira has changed since this was tidied. <button class="linklike" data-rn-reset>Use the wording from Jira</button></p>` : ''}
+      ${sentence ? '' : `<label class="rn-field">Heading<input type="text" maxlength="120" data-rn-title value="${esc(d.title)}"></label>`}
+      ${d.blocks.map((b, i) => b.type === 'text'
+        ? `<label class="rn-field">${sentence ? 'The sentence' : 'Paragraph'}<textarea rows="${Math.min(8, Math.max(2, Math.ceil(b.text.length / 70)))}" data-rn-text="${i}">${esc(b.text)}</textarea></label>`
+        : sentence ? '' : `<figure class="rn-thumb${b.hidden ? ' off' : ''}"><img src="${esc(rnImg(item.id, b))}" alt="">
+            <figcaption><input type="text" maxlength="200" data-rn-ecaption="${i}" value="${esc(b.caption || '')}" placeholder="Caption" aria-label="Caption">
+            <label class="inline-check"><input type="checkbox" data-rn-show="${i}"${b.hidden ? '' : ' checked'}> Show this picture</label></figcaption></figure>`).join('')}
+      ${sentence ? '' : '<button class="linklike" data-rn-addtext>Add a paragraph</button>'}
+      <div class="row rn-where"><label>Under the heading${rnHeadingSelect(d.module)}</label>
+        ${d.otherHeading ? `<label>New heading<input type="text" maxlength="80" data-rn-other value="${esc(d.otherHeading === true ? '' : d.otherHeading)}" placeholder="For example: Condor Sense — coming soon"></label>` : ''}</div>
+      <p class="help">Tidying here changes the release notes only. The ticket in Jira keeps its own wording.</p>
+      <div class="row"><button class="btn" data-rn-save>Save</button><button class="btn secondary" data-rn-cancel>Cancel</button>
+        ${item.edited && !item.changedInJira ? '<button class="linklike" data-rn-reset>Use the wording from Jira</button>' : ''}</div>
+      <p style="margin-bottom:0"><button class="linklike danger" data-rn-kind-set="none" data-issue="${esc(item.id)}">Leave this ticket out of the release notes</button></p>
+      <div class="result" id="rn-result" role="status"></div></div>`;
+}
+
+// A paragraph's words, with lines starting "- " shown as a list.
+function rnParaHtml(text) {
+  const out = [];
+  let list = null, para = [];
+  const flushPara = () => { if (para.length) out.push(`<p>${para.map(esc).join('<br>')}</p>`); para = []; };
+  const flushList = () => { if (list) out.push(`<ul class="rn-list">${list.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`); list = null; };
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    const item = /^[-•*]\s+(.*)$/.exec(line);
+    if (item) { flushPara(); (list ||= []).push(item[1]); } else { flushList(); para.push(line); }
+  }
+  flushPara(); flushList();
+  return out.join('');
+}
+
+const rnVersionTitle = (v) => (v.number ? `v${v.number} (${v.displayName || v.name})` : v.displayName || v.name);
+const rnAdditional = (name) => `Additional ${/^[A-Z][a-z]/.test(name) && !/[A-Z]/.test(name.slice(1)) ? name[0].toLowerCase() + name.slice(1) : name} improvements`;
+
+function rnPreviewHtml(data) {
+  const intro = data.intro ?? data.introDefault;
+  const v = data.version;
+  const top = rn.intro != null
+    ? `<div class="rn-editor"><label class="rn-field">Version number<input type="text" maxlength="20" data-rn-number value="${esc(rn.number ?? v.number ?? '')}" placeholder="For example 2026.07"></label>
+        <label class="rn-field">Introduction<textarea rows="4" data-rn-intro-text>${esc(rn.intro)}</textarea></label>
+        <div class="row"><button class="btn" data-rn-intro-save>Save</button><button class="btn secondary" data-rn-intro-cancel>Cancel</button>
+        ${data.intro != null ? '<button class="linklike" data-rn-intro-default>Use the suggested introduction</button>' : ''}</div></div>`
+    : `<div class="rn-hover"><h2>${esc(rnVersionTitle(v))}</h2><p>${intro ? esc(intro) : '<span class="muted">No introduction yet.</span>'}</p>
+        <button class="rn-edit" data-rn-intro aria-label="Edit the version number and introduction">Edit</button></div>`;
+  const editBtn = (it) => `<button class="rn-edit" data-rn-edit="${esc(it.id)}" aria-label="Edit the note for ${esc(it.key)}">Edit</button>`;
+  const body = data.document.length ? data.document.map((m) => `<h2>${esc(m.name)}</h2>
+      ${m.features.map((f) => {
+        const item = rnItem(f.id);
+        if (rn.editing === f.id && item) return rnEditorHtml(item);
+        return `<section class="rn-feature rn-hover" data-rn-item="${esc(f.id)}"><h3${f.titleFromSummary ? ' class="rn-from-summary"' : ''}>${esc(f.title)}</h3>
+          ${f.blocks.map((b) => b.type === 'text' ? `<div class="${b.fromSummary ? 'rn-from-summary' : ''}">${rnParaHtml(b.text)}</div>`
+            : `<figure class="rn-figure"><img src="${esc(rnImg(f.id, b))}" alt="${esc(b.caption || f.title)}" loading="lazy">${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}</figure>`).join('')}
+          ${editBtn(f)}</section>`;
+      }).join('')}
+      ${m.bullets.length ? `${m.features.length ? `<h3>${esc(rnAdditional(m.name))}</h3>` : ''}<ul class="rn-bullets">${m.bullets.map((b) => {
+        const item = rnItem(b.id);
+        if (rn.editing === b.id && item) return `<li class="rn-editing">${rnEditorHtml(item)}</li>`;
+        return `<li class="rn-item rn-hover" data-rn-item="${esc(b.id)}"><p class="rn-bullet${b.fromSummary ? ' rn-from-summary' : ''}">${esc(b.text)}</p>${editBtn(b)}</li>`;
+      }).join('')}</ul>` : ''}`).join('')
+    : '<p class="rn-empty">Nothing is in the release notes yet. Tickets appear here once they\'re finished and marked for the release notes.</p>';
+  return `<div class="rn-downloads"><button class="btn" data-rn-pdf${data.counts.inDocument ? '' : ' disabled'}>Download PDF</button>
+      <button class="btn secondary" data-rn-md${data.counts.inDocument ? '' : ' disabled'}>Download for the help pages</button></div>
+    <div class="result" id="rn-export" role="status"></div>
+    <article class="rn-doc" aria-label="Release notes preview">
+      <header class="rn-band"><img src="/release-notes-header.jpg" alt="Promtek"><h1>Condor Release Notes - ${esc(v.displayName || v.name)}</h1></header>
+      <div class="rn-page">
+        ${v.releaseDate ? `<p class="rn-date">Expected Release Date: ${esc(v.releaseDate)}</p>` : ''}
+        ${top}
+        ${body}
+      </div></article>`;
+}
+
+// ----- All tickets -----
+
+function rnTicketsHtml(data) {
+  const groups = [
+    ['Not decided yet', data.items.filter((i) => !i.kind)],
+    ['Still to write', data.items.filter((i) => i.kind && i.kind !== 'none' && i.missing.length)],
+    ['Written', data.items.filter((i) => i.kind && i.kind !== 'none' && !i.missing.length)],
+    ['Not included', data.items.filter((i) => i.kind === 'none')],
+  ].filter(([, list]) => list.length);
+  if (!groups.length) return `<div class="card"><p style="margin:0">There are no tickets in ${esc(data.version.name)} yet.</p></div>`;
+  return groups.map(([title, list]) => `<h3>${title} <small class="muted">${n(list.length)}</small></h3><ul class="list rn-tickets">${list.map((i) => {
+    const notes = [];
+    if (i.kind && i.kind !== 'none') {
+      if (i.missing.length) notes.push(`needs ${i.missing.join(' and ')}`);
+      if (!i.done) notes.push('shows once finished');
+      if (!i.moduleSet) notes.push(`no module in Jira, so under ${i.heading}`);
+      if (i.blocks.some((b) => b.type === 'missing')) notes.push('a picture couldn\'t be found in its attachments');
+    }
+    if (i.kindWaiting || i.notePending) notes.push('waiting to reach Jira');
+    return `<li><span class="title">${mesLink(i.key)} ${esc(i.summary)}</span>
+      <span class="sub">${esc(i.type || 'Ticket')} under ${esc(i.heading)}. ${esc(i.status || '')}${i.assigneeName ? ` · ${esc(i.assigneeName)}` : ''}${notes.length ? `<br><span class="rn-warn">${esc(notes.join('; '))}</span>` : ''}</span>
+      <span class="rn-kind-cell">${rnKindSelect(i)}</span></li>`;
+  }).join('')}</ul>`).join('');
+}
+
+async function rnHtml() {
+  if (rn.stale || !rn.data) await rnLoad();
+  const data = rn.data;
+  if (!data.version) return `<div class="card"><p style="margin:0">${esc(data.error || 'There are no releases to show.')}</p></div>`;
+  const picker = `<label>Release<select data-rn-version>${data.releases.map((v) => `<option value="${esc(v.id)}"${v.id === data.version.id ? ' selected' : ''}>${esc(v.name)}${v.released ? ', released' : v.releaseDate ? `, due ${shortDate(v.releaseDate)}` : ''}</option>`).join('')}</select></label>`;
+  const c = data.counts;
+  const tabs = [['write', `To write${c.toWrite ? ` (${n(c.toWrite)})` : ''}`], ['preview', 'Preview'], ['tickets', 'All tickets']];
+  return `<div class="row rn-tools">${picker}
+      <button class="btn secondary" data-rn-read>Read from Jira again</button></div>
+    <p class="muted rn-status">${data.readAt ? `Read from Jira at ${hhmm(data.readAt)}${new Date(data.readAt).toDateString() !== new Date().toDateString() ? ` on ${shortDate(data.readAt.slice(0, 10))}` : ''}. ` : ''}${n(c.inDocument)} ${c.inDocument === 1 ? 'note' : 'notes'} in the preview${c.undecided ? `, ${n(c.undecided)} ${c.undecided === 1 ? 'ticket' : 'tickets'} not decided` : ''}.</p>
+    ${data.error ? `<div class="card notice"><p style="margin:0">Jira couldn't be read just now, so this is from the last time it was. ${esc(data.error)}</p></div>` : ''}
+    <div class="rn-bar"><span class="segment" role="tablist">${tabs.map(([k, l]) => `<button class="seg${rn.view === k ? ' on' : ''}" data-rn-view="${k}" aria-pressed="${rn.view === k}">${l}</button>`).join('')}</span></div>
+    ${rn.view === 'tickets' ? rnTicketsHtml(data) : rn.view === 'preview' ? rnPreviewHtml(data) : rnWriteHtml(data)}`;
+}
+
+function rnSave(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+
+async function rnExport(kind, btn) {
+  const label = btn.textContent;
+  const status = document.getElementById('rn-export');
+  btn.disabled = true;
+  const progress = (done, total) => { btn.innerHTML = `<span class="spinner" aria-hidden="true"></span> Pictures ${done} of ${total}`; };
+  btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> Making it';
+  try {
+    const R = await import('/release-notes.js');
+    const srcFor = (it, b) => rnImg(it.id, b);
+    if (kind === 'pdf') {
+      const header = await fetch('/release-notes-header.jpg').then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+      const r = await R.makePdf(rn.data, { srcFor, header, onProgress: progress });
+      rnSave(new Blob([r.bytes], { type: 'application/pdf' }), `${R.fileBase(R.versionTitle(rn.data.version))}.pdf`);
+      status.textContent = r.failed ? `${r.failed} ${r.failed === 1 ? 'picture' : 'pictures'} couldn't be fetched from Jira and ${r.failed === 1 ? 'is' : 'are'} missing from the PDF.` : '';
+    } else {
+      const r = await R.makeMarkdownZip(rn.data, { srcFor, onProgress: progress });
+      rnSave(r.blob, `Release notes ${R.folderFor(rn.data.version)}.zip`);
+      status.textContent = r.failed ? `${r.failed} ${r.failed === 1 ? 'picture' : 'pictures'} couldn't be fetched from Jira and ${r.failed === 1 ? 'is' : 'are'} missing.` : '';
+    }
+  } catch (err) { status.textContent = err.message; }
+  btn.disabled = false; btn.textContent = label;
+}
+
+// Large pictures are made smaller before they go to Jira; screenshots stay sharp.
+async function rnPrepare(file) {
+  if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) throw new Error(`${file.name || 'That file'} isn't a picture Condor can show.`);
+  if (file.size <= 4 * 1024 * 1024) return file;
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 2400 / bmp.width);
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.88));
+  return new File([blob], (file.name || 'picture').replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+}
+
+async function rnUpload(issueId, files) {
+  const list = [...files].filter((f) => f && f.type?.startsWith('image/'));
+  if (!list.length) return;
+  const item = rnItem(issueId);
+  if (!item || item.kind !== 'photo') return;
+  const d = rnDraftFor(item);
+  rn.uploading[issueId] = (rn.uploading[issueId] || 0) + list.length;
+  rnRefreshCard(issueId);
+  for (const f of list) {
+    try {
+      const file = await rnPrepare(f);
+      const name = file.name || `screenshot-${Date.now()}.png`;
+      const att = await api(`/api/mes/notes/upload?issue=${encodeURIComponent(issueId)}`, { method: 'POST', body: file,
+        headers: { 'content-type': file.type, 'x-filename': encodeURIComponent(name) } });
+      d.images.push({ attachmentId: att.id, filename: att.filename, src: att.src || null });
+    } catch (err) { toast(err.message); }
+    rn.uploading[issueId]--;
+    rnRefreshCard(issueId);
+  }
+}
+
+// Redraws one card in place, keeping what's been typed.
+function rnRefreshCard(issueId) {
+  const el = view.querySelector(`[data-rn-w="${CSS.escape(issueId)}"]`);
+  const item = rnItem(issueId);
+  if (!el || !item) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = rnWriteCardHtml(item, !rn.mine);
+  el.replaceWith(tmp.firstElementChild);
+}
+
+async function rnClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-rn-view]')) { rn.view = t('[data-rn-view]').dataset.rnView; rn.editing = null; return render(); }
+  if (t('[data-rn-mine]')) { rn.mine = t('[data-rn-mine]').dataset.rnMine === '1'; rn.view = 'write'; return render(); }
+  if (t('[data-rn-read]')) { rn.refresh = true; rn.stale = true; rn.editing = null; rn.drafts = {}; return render(); }
+  if (t('[data-rn-pdf]')) { await rnExport('pdf', t('[data-rn-pdf]')); return true; }
+  if (t('[data-rn-md]')) { await rnExport('md', t('[data-rn-md]')); return true; }
+
+  const unpic = t('[data-rn-unpic]');
+  if (unpic) { rnDraftFor(rnItem(unpic.dataset.issue)).images.splice(Number(unpic.dataset.rnUnpic), 1); rnRefreshCard(unpic.dataset.issue); return true; }
+  const wsave = t('[data-rn-wsave]');
+  if (wsave) {
+    const id = wsave.dataset.rnWsave, item = rnItem(id), d = rnDraftFor(item);
+    const out = view.querySelector(`[data-rn-wresult="${CSS.escape(id)}"]`);
+    if (rn.uploading[id]) { out.textContent = 'Wait for the pictures to finish adding.'; return true; }
+    wsave.disabled = true;
+    try {
+      const r = await api('/api/mes/notes/write', { method: 'POST', body: JSON.stringify({ issueId: id, title: d.title, text: d.text,
+        images: d.images.map((im) => ({ id: im.attachmentId, caption: im.caption })) }) });
+      delete rn.drafts[id]; rn.stale = true;
+      toast(`${item.key} written${r.jiraSynced ? '' : '. Jira will catch up'}`);
+      return render();
+    } catch (err) { out.textContent = err.message; wsave.disabled = false; }
+    return true;
+  }
+
+  const edit = t('[data-rn-edit]');
+  if (edit) {
+    const item = rnItem(edit.dataset.rnEdit);
+    let blocks = item.blocks.filter((b) => b.type !== 'missing').map((b) => ({ ...b }));
+    if (item.kind === 'sentence') blocks = blocks.filter((b) => b.type === 'text').slice(0, 1);
+    if (!blocks.some((b) => b.type === 'text')) blocks.unshift({ type: 'text', text: item.summary || '' });
+    rn.editing = item.id; rn.intro = null;
+    rn.draft = { blocks, module: item.heading, title: item.title || item.summary || '', otherHeading: false };
+    render(); return true;
+  }
+  if (t('[data-rn-cancel]')) { rn.editing = null; rn.draft = null; return render(); }
+  if (t('[data-rn-addtext]')) { rn.draft.blocks.push({ type: 'text', text: '' }); render(); return true; }
+  const show = t('[data-rn-show]');
+  if (show) { const b = rn.draft.blocks[Number(show.dataset.rnShow)]; b.hidden = !show.checked; show.closest('.rn-thumb').classList.toggle('off', b.hidden); return true; }
+  const save = t('[data-rn-save]');
+  if (save) {
+    const item = rnItem(rn.editing);
+    save.disabled = true;
+    const body = { issueId: item.id, key: item.key, blocks: rn.draft.blocks.filter((b) => b.type === 'image' || b.text.trim()) };
+    if (item.kind === 'sentence') body.blocks = [...body.blocks, ...item.blocks.filter((b) => b.type === 'image')];
+    const heading = rn.draft.otherHeading ? String(rn.draft.otherHeading === true ? '' : rn.draft.otherHeading).trim() : rn.draft.module;
+    if (rn.draft.otherHeading && !heading) { document.getElementById('rn-result').textContent = 'Type the new heading.'; return true; }
+    if (heading !== item.heading) body.module = heading;
+    if (item.kind !== 'sentence' && rn.draft.title.trim() !== (item.title || '')) body.title = rn.draft.title.trim();
+    try {
+      await api('/api/mes/notes/item', { method: 'POST', body: JSON.stringify(body) });
+      rn.editing = null; rn.draft = null; rn.stale = true; toast(`${item.key} saved`); return render();
+    } catch (err) { document.getElementById('rn-result').textContent = err.message; save.disabled = false; }
+    return true;
+  }
+  if (t('[data-rn-reset]')) {
+    const item = rnItem(rn.editing);
+    try {
+      await api('/api/mes/notes/item', { method: 'POST', body: JSON.stringify({ issueId: item.id, blocks: null }) });
+      rn.editing = null; rn.draft = null; rn.stale = true; return render();
+    } catch (err) { document.getElementById('rn-result').textContent = err.message; }
+    return true;
+  }
+  const out = t('[data-rn-kind-set]');
+  if (out) { await rnSetKind(out.dataset.issue, out.dataset.rnKindSet); return true; }
+  if (t('[data-rn-intro]')) { rn.intro = rn.data.intro ?? rn.data.introDefault ?? ''; rn.number = rn.data.version.number || ''; rn.editing = null; render(); document.querySelector('[data-rn-intro-text]')?.focus(); return true; }
+  if (t('[data-rn-intro-cancel]')) { rn.intro = null; rn.number = null; return render(); }
+  const introSave = t('[data-rn-intro-save]') || t('[data-rn-intro-default]');
+  if (introSave) {
+    introSave.disabled = true;
+    const intro = introSave.matches('[data-rn-intro-default]') ? null : rn.intro.trim();
+    try {
+      await api('/api/mes/notes/intro', { method: 'POST', body: JSON.stringify({ versionId: rn.data.version.id, intro, number: rn.number ?? rn.data.version.number }) });
+      rn.intro = null; rn.number = null; rn.stale = true; return render();
+    } catch (err) { toast(err.message); introSave.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+async function rnSetKind(issueId, kind) {
+  const item = rnItem(issueId);
+  if (!item || item.kind === kind || !kind) return;
+  try {
+    const r = await api('/api/mes/notes/item', { method: 'POST', body: JSON.stringify({ issueId: item.id, key: item.key, kind }) });
+    toast(`${item.key}: ${noteKindLabel(kind)}${r.jiraSynced ? '' : '. Jira will catch up'}`);
+    if (rn.editing === item.id) { rn.editing = null; rn.draft = null; }
+    rn.stale = true; render();
+  } catch (err) { toast(err.message); }
+}
+
+function rnInput(event) {
+  const el = event.target;
+  if (el.matches('[data-rn-version]')) { rn.versionId = el.value; rn.stale = true; rn.editing = null; rn.intro = null; rn.drafts = {}; render(); return true; }
+  if (el.dataset.rnKind != null) { rnSetKind(el.dataset.rnKind, el.value); return true; }
+  if (el.dataset.rnWtext != null) { rnDraftFor(rnItem(el.dataset.rnWtext)).text = el.value; return true; }
+  if (el.dataset.rnWtitle != null) { rnDraftFor(rnItem(el.dataset.rnWtitle)).title = el.value; return true; }
+  if (el.dataset.rnCaption != null) { rnDraftFor(rnItem(el.dataset.issue)).images[Number(el.dataset.rnCaption)].caption = el.value; return true; }
+  if (el.dataset.rnEcaption != null && rn.draft) { rn.draft.blocks[Number(el.dataset.rnEcaption)].caption = el.value; return true; }
+  if (el.matches('[data-rn-title]') && rn.draft) { rn.draft.title = el.value; return true; }
+  if (el.matches('[data-rn-other]') && rn.draft) { rn.draft.otherHeading = el.value || true; return true; }
+  if (el.matches('[data-rn-number]')) { rn.number = el.value; return true; }
+  if (el.dataset.rnFile != null) { rnUpload(el.dataset.rnFile, el.files); el.value = ''; return true; }
+  if (el.dataset.rnText != null && rn.draft) { rn.draft.blocks[Number(el.dataset.rnText)].text = el.value; return true; }
+  if (el.matches('[data-rn-module]') && rn.draft) {
+    if (el.value === '__other') { rn.draft.otherHeading = true; render(); return true; }
+    rn.draft.module = el.value; if (rn.draft.otherHeading) { rn.draft.otherHeading = false; render(); }
+    return true;
+  }
+  if (el.matches('[data-rn-intro-text]')) { rn.intro = el.value; return true; }
+  return el.matches('[data-rn-show]');
+}
+
+// Screenshots can be pasted straight into a note, or dropped on it.
+view.addEventListener('paste', (event) => {
+  if (currentRoute() !== '#/condor' || condorTab !== 'notes') return;
+  const card = event.target.closest?.('[data-rn-w]');
+  const files = [...(event.clipboardData?.files || [])].filter((f) => f.type.startsWith('image/'));
+  if (!card || !files.length || rnItem(card.dataset.rnW)?.kind !== 'photo') return;
+  event.preventDefault();
+  rnUpload(card.dataset.rnW, files);
+});
+view.addEventListener('dragover', (event) => {
+  const drop = event.target.closest?.('[data-rn-drop]');
+  if (!drop) return;
+  event.preventDefault(); drop.classList.add('over');
+});
+view.addEventListener('dragleave', (event) => { event.target.closest?.('[data-rn-drop]')?.classList.remove('over'); });
+view.addEventListener('drop', (event) => {
+  const drop = event.target.closest?.('[data-rn-drop]');
+  if (!drop) return;
+  event.preventDefault(); drop.classList.remove('over');
+  rnUpload(drop.dataset.rnDrop, event.dataTransfer?.files || []);
+});
 
 // ---------- Condor Dev: release plan ----------
 
@@ -4446,7 +4989,7 @@ function planTimeline(p) {
     const y = top + rows.indexOf(s.personId) * rowH + 6;
     const bw = Math.max(dw - 2, (dayDiff(s.start, s.due) + 1) * dw - 2);
     return `<g><title>${esc(s.key)} ${esc(s.summary)}: ${shortDate(s.start)} to ${shortDate(s.due)}, ${hoursLabel(s.hours)}</title>
-      <rect x="${x(s.start) + 1}" y="${y}" width="${bw}" height="${rowH - 12}" rx="5" fill="${s.fits ? PRIORITY_COLOURS[s.priority] : 'var(--danger)'}" opacity="${s.fits ? 1 : 0.75}"/>
+      <rect x="${x(s.start) + 1}" y="${y}" width="${bw}" height="${rowH - 12}" rx="5" fill="${s.fits ? PRIORITY_COLOURS[s.priority] || 'var(--muted)' : 'var(--danger)'}" opacity="${s.fits ? 1 : 0.75}"/>
       ${bw > 52 ? `<text x="${x(s.start) + 6}" y="${y + 15}" font-size="11" fill="#fff">${esc(s.key)}</text>` : ''}</g>`;
   }).join('');
   const names = rows.map((id, i) => `<text x="0" y="${top + i * rowH + 21}" font-size="12" fill="var(--ink)">${esc((p.names[id] || 'Unassigned').split(' ')[0])}</text>`).join('');
@@ -4465,7 +5008,7 @@ function planRowsHtml(list, p) {
   const sprintCol = (p.sprints || []).length > 0;
   return `<div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Priority</th>${p.canPlan ? '<th>Who</th>' : ''}${sprintCol ? '<th>Sprint</th>' : ''}<th>Starts</th><th>Due</th><th class="num">Hours left</th></tr></thead>
     <tbody>${list.map((s) => `<tr${s.fits ? '' : ' class="unfit"'}>
-      <td>${mesLink(s.key)}<br><span class="muted">${esc(s.summary)}</span></td><td>${esc(s.priority)}</td>
+      <td>${mesLink(s.key)}<br><span class="muted">${esc(s.summary)}</span></td><td>${esc(s.priority || 'To triage')}</td>
       ${p.canPlan ? `<td>${esc(p.names[s.personId] || '—')}${s.plannedAssignee && s.personId ? '<br><span class="muted">suggested</span>' : ''}</td>` : ''}
       ${sprintCol ? `<td>${esc(s.sprint ? s.sprint.replace(`${p.version.name} `, '') : '—')}</td>` : ''}
       <td>${s.start ? shortDate(s.start) : '—'}</td><td>${s.due ? shortDate(s.due) : '—'}${s.fits ? '' : '<br><span class="bad">after the release</span>'}</td>
@@ -4534,8 +5077,12 @@ async function mesPlanHtml() {
       <div><dt>Time to plan</dt><dd>${hoursLabel(Math.round(p.usable))}<small>of ${hoursLabel(Math.round(p.capacity))}, ${Math.round(p.reserve * 100)}% kept free</small></dd></div>
       <div><dt>Planned</dt><dd>${hoursLabel(Math.round(p.planned))}<small>${n(fitting.length)} ${fitting.length === 1 ? 'ticket' : 'tickets'}</small></dd></div>
       ${unfit.length
-        ? `<div><dt>Doesn't fit</dt><dd class="bad">${hoursLabel(Math.round(unfitHours))}<small>${n(unfit.length)} ${unfit.length === 1 ? 'ticket' : 'tickets'} past the release</small></dd></div>`
-        : `<div><dt>Room left</dt><dd>${hoursLabel(Math.round(Math.max(0, free)))}<small>before the reserve</small></dd></div>`}</dl>`;
+        ? `<div><dt>Doesn't fit</dt><dd class="bad">${hoursLabel(Math.round(unfitHours))}<small>${n(unfit.length)} ${unfit.length === 1 ? 'ticket' : 'tickets'} past the release</small></dd></div>
+           <div><dt>Likely ready</dt>${p.projected?.finish
+             ? `<dd class="bad">${shortDate(p.projected.finish)}<small>if nothing is taken out, ${n(p.projected.lateDays)} working ${p.projected.lateDays === 1 ? 'day' : 'days'} late</small></dd>`
+             : '<dd class="bad">Over a year<small>some work has nobody with time for it</small></dd>'}</div>`
+        : `<div><dt>Room left</dt><dd>${hoursLabel(Math.round(Math.max(0, free)))}<small>before the reserve</small></dd></div>`}</dl>
+    ${p.readError ? `<p class="help">Jira couldn't be read just now, so this uses what the hub last knew. ${esc(p.readError)}</p>` : ''}`;
   const sugg = p.suggestions.length ? `<h2>Suggested changes</h2><ul class="list approvals">${p.suggestions.map((s) => `<li>
       <span class="title">Move ${mesLink(s.key)} ${esc(s.summary)}</span>
       <span class="sub">${esc(s.priority)}, ${hoursLabel(Math.round(s.hours * 4) / 4)} left. To ${p.next ? esc(p.next.name) : 'no release'}, ${esc(s.reason)}.</span>
@@ -4543,7 +5090,7 @@ async function mesPlanHtml() {
         <button class="btn secondary" data-plan-suggest="decline" data-issue="${esc(s.id)}">Keep it in</button></div></li>`).join('')}</ul>` : '';
   const stuck = p.stillOut.length ? `<div class="card notice"><p style="margin:0">${p.stillOut.map((s) => mesLink(s.key)).join(', ')} still ${p.stillOut.length === 1 ? "doesn't" : "don't"} fit before the release, even with the suggested changes. Their time may need more people, a later release date, or using some of the reserve.</p></div>` : '';
   const needs = p.needsEstimate.length ? `<h2>Needs an estimate first</h2><ul class="list mes-list">${p.needsEstimate.map((t) => `<li>
-      <span class="title">${mesLink(t.key)} ${esc(t.summary)}</span><span class="sub">${esc(t.priority)}</span>
+      <span class="title">${mesLink(t.key)} ${esc(t.summary)}</span><span class="sub">${esc(t.priority || 'To triage')}</span>
       <button class="chip-btn" data-mes-estimate="${esc(t.id)}" data-from="plan" style="margin-top:.4rem">Estimate</button></li>`).join('')}</ul>` : '';
   const accepted = p.accepted.count
     ? `Accepted ${new Date(p.accepted.at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}, ${n(p.accepted.count)} tickets${p.accepted.waiting ? `, ${n(p.accepted.waiting)} still to reach Jira` : ', all in Jira'}.`
@@ -7110,7 +7657,8 @@ view.addEventListener('click', async (event) => {
 // ---------- routing ----------
 
 function currentRoute() {
-  const hash = location.hash.replace(/\/$/, '');
+  // A link can open a page on one of its tabs, as #/condor?notes.
+  const hash = location.hash.split('?')[0].replace(/\/$/, '');
   return pages[hash] ? hash : '#/';
 }
 
@@ -7121,7 +7669,7 @@ const spinner = (label = 'Loading') => `<div class="card loading-card"><span cla
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : 'Loading'),
-  '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : 'Loading'),
+  '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
   '#/calls': () => 'Loading',
   '#/contracts': () => (conOpen ? 'Loading the contract' : 'Loading contracts'),

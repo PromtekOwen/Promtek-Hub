@@ -116,6 +116,13 @@ async function systemAlerts(env, viewer) {
         body: `From ${b.starts_at.slice(11, 16)}. Do the walkaround check before you drive.`, link: '#/vehicles' });
     }
 
+    // Release notes for Condor work this person did that still need writing.
+    const notes = await (await import('./release-notes.js')).waitingFor(env, me).catch(() => 0);
+    if (notes) {
+      out.push({ key: 'release-notes', tone: 'info', title: notes === 1 ? 'A release note to write' : `${plural(notes, 'release note')} to write`,
+        body: 'For Condor tickets of yours going in the release notes.', link: '#/condor?notes' });
+    }
+
     const timer = await env.DB.prepare('SELECT current FROM active_timers WHERE account_id = ?').bind(me).first().catch(() => null);
     const cur = parse(timer?.current, null);
     if (cur?.startedAt && Date.now() - Date.parse(cur.startedAt) > 10 * 3600_000) {

@@ -18,6 +18,9 @@ public/            The web app (plain HTML, CSS and JavaScript, no build step)
   modules.js       The dashboard tiles
   tours.js         The walkthrough for each page, step by step
   practice.js      Example data the walkthroughs run on; nothing in practice is sent anywhere
+  release-notes.js Release notes downloads made in the browser: the PDF and the Markdown ZIP
+  pdf.js           The same PDF writer as src/pdf.js, for the browser
+  release-notes-header.jpg  The blue band at the top of the release notes
   sw.js            Service worker (installable app, offline shell)
   manifest.webmanifest, *.png   App name, icons and Promtek logo
   apps/<name>/     Each tool lives in its own folder
@@ -31,7 +34,8 @@ src/               The Worker (API and background sync)
   modifiers.js     Supervisor-approved modifiers
   quotes.js        Quote builder: estimates, reference jobs, learned estimate, hand-off to orders
   devtime.js       Condor Dev: Bitbucket activity turned into draft worklogs
-  mes.js           Condor Dev: MES estimating by comparison, triage, Condor rating
+  mes.js           Condor Dev: MES estimating by comparison, triage and mid-release review, Condor rating
+  release-notes.js Condor Dev: release notes from Jira, note types, writing them, pictures to Jira
   mes-plan.js      Condor Dev: release planning, suggestions, Jira timeline
   mes-sprints.js   Condor Dev: releases, boards and sprints in Jira
   audit.js         The audit log of changes made by hand
@@ -78,6 +82,7 @@ schema-027.sql     Service contracts, their visits and tokens, token clocks and 
 schema-028.sql     PSC: support requests, pick-ups and changes waiting for Jira
 schema-029.sql     PSC: links between items, to spot copies
 schema-030.sql     Home screen alerts and news, and who has seen them
+schema-031.sql     Condor Dev: release notes, note types, and each ticket's release and sub-tasks
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

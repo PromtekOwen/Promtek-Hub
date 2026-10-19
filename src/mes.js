@@ -10,12 +10,17 @@ import { DEFAULT_ELO } from './progression.js';
 import { managesPerson } from './permissions.js';
 
 const PROJECT = 'MES';
-const MODULE_FIELD = 'customfield_15583';
-const FIELDS = ['summary', 'issuetype', 'status', 'assignee', 'statuscategorychangedate', 'resolutiondate', 'aggregatetimespent', 'parent', 'created', 'updated', MODULE_FIELD];
+export const MODULE_FIELD = 'customfield_15583';
+// "Include in release notes" (Yes or No) and the Release Note itself.
+export const INCLUDE_FIELD = 'customfield_15584';
+export const NOTE_FIELD = 'customfield_15684';
+export const FIELDS = ['summary', 'issuetype', 'status', 'assignee', 'statuscategorychangedate', 'resolutiondate', 'aggregatetimespent', 'parent', 'created', 'updated', 'fixVersions', 'subtasks', MODULE_FIELD, INCLUDE_FIELD];
 const SCAN_BATCH = 50;
 const SETTLE_DAYS = 3;
 const MAX_QUESTIONS = 3;
 const MIN_REF_SECONDS = 15 * 60;
+const MIN_POOL = 5;               // comparisons narrow to like-for-like once there are this many
+const ENOUGH_FINISHED = 15;       // until then, open tickets with time logged count as well
 export const PRIORITIES = ['Must', 'Should', 'Could'];
 export const TAGS = ['Database change', 'Needs investigation', 'Customer testing needed', 'UI only', 'Touches several modules'];
 export const DIFFICULTY_HINTS = {
@@ -37,6 +42,14 @@ export function moduleOf(issue) {
   return v || null;
 }
 
+export function includeOf(issue) {
+  let v = issue.fields?.[INCLUDE_FIELD];
+  if (Array.isArray(v)) v = v[0];
+  if (v && typeof v === 'object') v = v.value;
+  const t = String(v ?? '').trim().toLowerCase();
+  return t === 'yes' ? 'yes' : t === 'no' ? 'no' : null;
+}
+
 const doneDateOf = (f) => (f.statuscategorychangedate || f.resolutiondate || f.updated || '').slice(0, 10) || null;
 
 // ---------- Keeping a local copy of MES ----------
@@ -46,18 +59,20 @@ function ticketRow(issue) {
   const done = f.status?.statusCategory?.key === 'done';
   return [String(issue.id), issue.key, f.summary || '', f.issuetype?.name || null, moduleOf(issue), f.status?.name || null,
     done ? 1 : 0, done ? doneDateOf(f) : null, f.aggregatetimespent || 0, f.parent?.id ? String(f.parent.id) : null,
-    (f.created || '').slice(0, 10) || null, new Date().toISOString(), f.assignee?.accountId || null, f.status?.statusCategory?.key || null];
+    (f.created || '').slice(0, 10) || null, new Date().toISOString(), f.assignee?.accountId || null, f.status?.statusCategory?.key || null, includeOf(issue),
+    JSON.stringify((f.fixVersions || []).map((v) => String(v.id))), JSON.stringify((f.subtasks || []).map((x) => String(x.id)))];
 }
 
-async function saveTickets(env, issues) {
+export async function saveTickets(env, issues) {
   for (const issue of issues) {
     await env.DB.prepare(
-      `INSERT INTO mes_tickets (issue_id, issue_key, summary, type, module, status, done, done_date, actual_seconds, parent_id, created, updated_at, assignee_id, status_category)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO mes_tickets (issue_id, issue_key, summary, type, module, status, done, done_date, actual_seconds, parent_id, created, updated_at, assignee_id, status_category, release_notes, fix_versions, subtask_ids)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, summary = excluded.summary, type = excluded.type,
          module = excluded.module, status = excluded.status, done = excluded.done, done_date = excluded.done_date,
          actual_seconds = excluded.actual_seconds, parent_id = excluded.parent_id, updated_at = excluded.updated_at,
-         assignee_id = excluded.assignee_id, status_category = excluded.status_category`
+         assignee_id = excluded.assignee_id, status_category = excluded.status_category, release_notes = excluded.release_notes,
+         fix_versions = excluded.fix_versions, subtask_ids = excluded.subtask_ids`
     ).bind(...ticketRow(issue)).run();
   }
 }
@@ -91,21 +106,29 @@ export async function scan(env, { maxBatches = 5 } = {}) {
 
 // ---------- Estimating by comparison ----------
 
-// Finished tickets with real time on them, as alike as there are enough of.
+// Tickets with real time on them, as alike as there are enough of: the same
+// module and type first, then the same module, then the same type. Finished
+// tickets are the yardstick; until there are enough of those, open tickets with
+// time logged count too. Time logged on sub-tasks counts towards their parent.
+const sameText = (a, b) => Boolean(a && b) && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 export async function referencePool(env, ticket) {
   const { results } = await env.DB.prepare(
-    `SELECT issue_id, issue_key, summary, type, module, actual_seconds FROM mes_tickets
-      WHERE done = 1 AND actual_seconds >= ? AND issue_id != ? AND type != 'Epic'`
+    `SELECT issue_id, issue_key, summary, type, module, actual_seconds, done FROM mes_tickets
+      WHERE actual_seconds >= ? AND issue_id != ? AND type != 'Epic'`
   ).bind(MIN_REF_SECONDS, String(ticket.issue_id)).all();
+  const finished = results.filter((r) => r.done);
+  const base = finished.length >= ENOUGH_FINISHED ? finished : results;
   const tiers = [
-    (r) => r.module && r.module === ticket.module && r.type === ticket.type,
-    (r) => r.module && r.module === ticket.module,
-    (r) => r.type === ticket.type,
+    (r) => sameText(r.module, ticket.module) && sameText(r.type, ticket.type),
+    (r) => sameText(r.module, ticket.module),
+    (r) => sameText(r.type, ticket.type),
     () => true,
   ];
   for (const keep of tiers) {
-    const pool = results.filter(keep);
-    if (pool.length >= 5 || keep === tiers[3]) return pool.map((r) => ({ ...r, hours: r.actual_seconds / 3600 })).sort((a, b) => a.hours - b.hours);
+    const pool = base.filter(keep);
+    if (pool.length >= MIN_POOL || keep === tiers[3]) {
+      return pool.map((r) => ({ ...r, done: Boolean(r.done), hours: r.actual_seconds / 3600 })).sort((a, b) => a.hours - b.hours);
+    }
   }
   return [];
 }
@@ -149,7 +172,7 @@ export async function nextQuestion(env, { issueId, answers = [] }) {
   const ticket = await ticketFor(env, issueId);
   const pool = await referencePool(env, ticket);
   const r = compare(pool, answers);
-  const ref = r.next && { id: r.next.issue_id, key: r.next.issue_key, summary: r.next.summary, type: r.next.type, module: r.next.module, hours: r.next.hours };
+  const ref = r.next && { id: r.next.issue_id, key: r.next.issue_key, summary: r.next.summary, type: r.next.type, module: r.next.module, hours: r.next.hours, done: r.next.done };
   return { ticket, poolSize: pool.length, next: ref || null, estimate: r.estimate || null, asked: answers.length, maxQuestions: MAX_QUESTIONS };
 }
 
@@ -227,59 +250,154 @@ export async function versions(env) {
     .sort((a, b) => (a.releaseDate || '9999').localeCompare(b.releaseDate || '9999'));
 }
 
-export async function outstanding(env, viewer, { filter = 'untriaged', query = '', releaseId = null } = {}) {
+// The Condor team, for choosing who does a ticket.
+export async function condorTeam(env) {
   const { results } = await env.DB.prepare(
-    `SELECT t.*, e.hours, e.low, e.high, e.difficulty, e.timebox, e.method, p.version_id, p.version_name, p.priority, p.decided_for
-       FROM mes_tickets t LEFT JOIN mes_estimates e ON e.issue_id = t.issue_id LEFT JOIN mes_plan p ON p.issue_id = t.issue_id
-      WHERE t.done = 0 AND t.type != 'Epic' ORDER BY t.created DESC LIMIT 1000`
+    `SELECT account_id AS id, name FROM employees WHERE active = 1 AND account_id IS NOT NULL
+       AND (teams LIKE '%"Condor"%' OR (teams IS NULL AND team = 'Condor')) ORDER BY name`
   ).all();
+  return results;
+}
+
+// Hub's choice first, then Jira's Yes or No.
+export const NOTE_KINDS = ['none', 'sentence', 'paragraph', 'photo'];
+const kindOf = (r) => r.note_kind || (r.release_notes === 'no' ? 'none' : r.release_notes === 'yes' ? 'paragraph' : null);
+
+const TICKET_SELECT = `SELECT t.*, e.hours, e.low, e.high, e.difficulty, e.timebox, e.method, p.version_id, p.version_name, p.priority, p.decided_for,
+            p.triaged_at, k.kind AS note_kind, emp.name AS assignee_name
+       FROM mes_tickets t LEFT JOIN mes_estimates e ON e.issue_id = t.issue_id LEFT JOIN mes_plan p ON p.issue_id = t.issue_id
+       LEFT JOIN mes_note_kinds k ON k.issue_id = t.issue_id LEFT JOIN employees emp ON emp.account_id = t.assignee_id`;
+
+const shape = (r) => ({ ...r, notes_kind: kindOf(r) });
+
+export async function outstanding(env, viewer, { filter = 'untriaged', query = '', releaseId = null } = {}) {
+  const { results } = await env.DB.prepare(`${TICKET_SELECT} WHERE t.done = 0 AND t.type != 'Epic' ORDER BY t.created DESC LIMIT 1000`).all();
   const q = query.trim().toLowerCase();
+  const R = releaseId ? String(releaseId) : null;
   const rows = results.filter((r) => {
     if (q && !`${r.issue_key} ${r.summary} ${r.module || ''}`.toLowerCase().includes(q)) return false;
-    // A "not this time" only holds for the release it was decided in.
-    if (filter === 'untriaged') return !r.priority || (!r.version_id && (!releaseId || r.decided_for !== String(releaseId)));
+    // Waiting for this release's triage: never decided, or decided for another
+    // release and not settled in one (a "not this time", or moved here from it).
+    if (filter === 'untriaged') {
+      if (R && JSON.parse(r.fix_versions || '[]').includes(R) && r.decided_for === R) return false;
+      return !r.priority || (r.decided_for !== R && (!r.version_id || r.version_id === R));
+    }
     if (filter === 'unestimated') return r.hours == null;
     return true;
-  });
+  }).map(shape);
   const known = (await env.DB.prepare('SELECT COUNT(*) AS n FROM mes_tickets').first()).n;
   const cursor = await getState(env, 'mes_cursor');
   // Still reading history if the scan's position is more than a day behind.
   const catchingUp = !cursor || cursor < `${londonDate(Date.now() - 86_400_000).replace(/-/g, '/')} 00:00`;
-  const release = releaseId ? await env.DB.prepare('SELECT board_id, sprints FROM mes_releases WHERE version_id = ?').bind(String(releaseId)).first() : null;
-  const inRelease = releaseId ? results.filter((r) => r.version_id === String(releaseId)).length : 0;
+  const release = R ? await env.DB.prepare('SELECT board_id, sprints FROM mes_releases WHERE version_id = ?').bind(R).first() : null;
+  const inRelease = R ? results.filter((r) => r.version_id === R || JSON.parse(r.fix_versions || '[]').includes(R)).length : 0;
   return {
     release: release ? { boardId: release.board_id, sprints: JSON.parse(release.sprints || '[]') } : null, inRelease,
     known, catchingUp, readUpTo: cursor ? cursor.slice(0, 10).replace(/\//g, '-') : null,
     tickets: rows.slice(0, 200), total: rows.length, versions: await versions(env).catch(() => []),
+    team: await condorTeam(env), noteKinds: NOTE_KINDS,
     canTriage: canTriage(viewer), canEstimate: canEstimate(viewer), priorities: PRIORITIES, tags: TAGS, hints: DIFFICULTY_HINTS,
   };
+}
+
+// ---------- Mid-release review ----------
+// What's left of a release that has started, read fresh from Jira, furthest
+// along first (Jira's own status order), so the team can reassess what still fits.
+
+const reviewKey = (versionId) => `mes_mid_review:${versionId}`;
+
+export async function midRelease(env, viewer, versionId) {
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin reviews a release.');
+  const vs = await versions(env);
+  const version = vs.find((v) => v.id === String(versionId));
+  if (!version) throw new Error('That release is no longer open in Jira.');
+  const issues = await searchJql(env,
+    `project = ${PROJECT} AND fixVersion = ${Number(version.id)} AND statusCategory != Done AND issuetype not in subTaskIssueTypes() ORDER BY status DESC, rank ASC`,
+    FIELDS, { limit: 300 });
+  await saveTickets(env, issues);
+  let from = await getState(env, reviewKey(version.id));
+  if (!from) { from = new Date().toISOString(); await setState(env, reviewKey(version.id), from); }
+  const order = new Map(issues.map((x, i) => [String(x.id), i]));
+  const ids = [...order.keys()];
+  const rows = ids.length ? (await env.DB.prepare(`${TICKET_SELECT} WHERE t.issue_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results : [];
+  const names = new Map(issues.map((x) => [String(x.id), x.fields?.assignee?.displayName || null]));
+  const tickets = rows.map((r) => ({ ...shape(r), assignee_name: r.assignee_name || names.get(r.issue_id) || null,
+    reviewed: r.decided_for === version.id && r.triaged_at >= from }))
+    .sort((a, b) => order.get(a.issue_id) - order.get(b.issue_id));
+  const i = vs.indexOf(version);
+  return { version, next: vs[i + 1] || null, from, tickets, total: tickets.length, reviewed: tickets.filter((t) => t.reviewed).length,
+    team: await condorTeam(env), noteKinds: NOTE_KINDS, priorities: PRIORITIES, tags: TAGS, hints: DIFFICULTY_HINTS, canEstimate: canEstimate(viewer), canTriage: true };
+}
+
+export async function restartReview(env, viewer, versionId) {
+  if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin reviews a release.');
+  await setState(env, reviewKey(String(versionId)), new Date().toISOString());
+  return { ok: true };
 }
 
 export async function triage(env, viewer, input) {
   if (!canTriage(viewer)) throw new Error('A Condor lead, management or an admin decides what goes in a release.');
   const ticket = await ticketFor(env, input.issueId);
-  const priority = input.versionId ? (PRIORITIES.includes(input.priority) ? input.priority : null) : 'Not this time';
-  const decidedFor = String(input.releaseId || input.versionId || '') || null;
-  if (input.versionId && !priority) throw new Error('Choose Must, Should or Could.');
   const vs = await versions(env);
-  const version = input.versionId ? vs.find((v) => v.id === String(input.versionId)) : null;
-  if (input.versionId && !version) throw new Error('That release is no longer open in Jira.');
+  const releaseId = String(input.releaseId || input.versionId || '') || null;
+  const mid = input.mode === 'mid';
+  const keep = PRIORITIES.includes(input.priority);
+  if (!keep && input.priority !== 'none') throw new Error('Choose Must, Should, Could or Not this time.');
+  const release = releaseId ? vs.find((v) => v.id === releaseId) : null;
+  if (releaseId && !release) throw new Error('That release is no longer open in Jira.');
+
+  // Who does it: needed for anything going in a release, so the plan can give it to them.
+  const team = await condorTeam(env);
+  let assigneeId = input.assigneeId ? String(input.assigneeId) : null;
+  if (assigneeId && !team.some((p) => p.id === assigneeId)) throw new Error('Choose someone from the Condor team.');
+  if (keep && !assigneeId && !ticket.assignee_id) throw new Error('Choose who will do it.');
+  // Every ticket in a release has an estimate, so the plan knows how long it takes.
+  if (keep && !(await env.DB.prepare('SELECT 1 AS y FROM mes_estimates WHERE issue_id = ?').bind(ticket.issue_id).first())) {
+    throw new Error('Estimate it first, so the plan knows how long it takes.');
+  }
+  if (assigneeId === ticket.assignee_id) assigneeId = null;
+
+  // What goes in the release notes.
+  const kind = input.notes === undefined ? undefined : input.notes;
+  if (kind !== undefined && kind !== null && !NOTE_KINDS.includes(kind)) throw new Error('Choose how it appears in the release notes.');
+  if (keep && !kind) {
+    const known = await env.DB.prepare('SELECT kind FROM mes_note_kinds WHERE issue_id = ?').bind(ticket.issue_id).first();
+    if (!known && !ticket.release_notes) throw new Error('Choose how it appears in the release notes.');
+  }
+
+  let version = null, priority = input.priority, movedTo = null;
+  if (keep) version = release;
+  else if (mid) {
+    // Not this time, part-way through: it goes to the next release for that release's triage.
+    const i = vs.indexOf(release);
+    movedTo = vs[i + 1] || null;
+    version = movedTo;
+    priority = 'Not this time';
+  } else priority = 'Not this time';
+
   await env.DB.prepare(
-    `INSERT INTO mes_plan (issue_id, issue_key, version_id, version_name, priority, decided_for, triaged_by, triaged_at, jira_synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `INSERT INTO mes_plan (issue_id, issue_key, version_id, version_name, priority, decided_for, triaged_by, triaged_at, assignee_id, jira_synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(issue_id) DO UPDATE SET version_id = excluded.version_id, version_name = excluded.version_name, priority = excluded.priority,
-       decided_for = excluded.decided_for, triaged_by = excluded.triaged_by, triaged_at = excluded.triaged_at, jira_synced = 0, jira_error = NULL`
-  ).bind(ticket.issue_id, ticket.issue_key, version?.id || null, version?.name || null, priority, decidedFor, viewer.email, new Date().toISOString()).run();
-  return { ok: true, jiraSynced: await syncPlan(env, ticket.issue_id) };
+       decided_for = excluded.decided_for, triaged_by = excluded.triaged_by, triaged_at = excluded.triaged_at, assignee_id = excluded.assignee_id,
+       jira_synced = 0, jira_error = NULL`
+  ).bind(ticket.issue_id, ticket.issue_key, version?.id || null, version?.name || null, priority, releaseId, viewer.email, new Date().toISOString(), assigneeId).run();
+  // The plan uses the new person and release straight away, before Jira is read again.
+  await env.DB.prepare('UPDATE mes_tickets SET assignee_id = COALESCE(?, assignee_id), fix_versions = ? WHERE issue_id = ?')
+    .bind(assigneeId, JSON.stringify(version ? [version.id] : []), ticket.issue_id).run();
+  let notesSynced = true;
+  if (kind) notesSynced = await (await import('./release-notes.js')).setKind(env, viewer, ticket, kind);
+  const jiraSynced = await syncPlan(env, ticket.issue_id);
+  return { ok: true, jiraSynced: jiraSynced && notesSynced, movedTo: movedTo ? movedTo.name : null, outOfRelease: mid && !keep && !movedTo };
 }
 
-// The ticket's Fix Version in Jira follows the triage decision.
+// The ticket's Fix Version, and its assignee when triage chose one, follow the decision.
 export async function syncPlan(env, issueId) {
   const p = await env.DB.prepare('SELECT * FROM mes_plan WHERE issue_id = ?').bind(issueId).first();
   if (!p || p.jira_synced) return true;
+  const body = { update: { fixVersions: [{ set: p.version_id ? [{ id: p.version_id }] : [] }] } };
+  if (p.assignee_id) body.fields = { assignee: { accountId: p.assignee_id } };
   try {
-    await jira(env, `/rest/api/3/issue/${encodeURIComponent(p.issue_key)}`, {
-      method: 'PUT', body: JSON.stringify({ update: { fixVersions: [{ set: p.version_id ? [{ id: p.version_id }] : [] }] } }),
-    });
+    await jira(env, `/rest/api/3/issue/${encodeURIComponent(p.issue_key)}`, { method: 'PUT', body: JSON.stringify(body) });
     await env.DB.prepare('UPDATE mes_plan SET jira_synced = 1, jira_error = NULL WHERE issue_id = ?').bind(issueId).run();
     return true;
   } catch (err) {
@@ -322,10 +440,13 @@ async function rateTicket(env, t, { employees, rated, worklogsFor }) {
   // A time-box was for finding the cause, not doing the fix.
   if (t.timebox) return skip('Only time-boxed for investigation');
 
+  // Time logged on sub-tasks belongs to the ticket they're under.
   const { results: subs } = await env.DB.prepare('SELECT issue_id FROM jobs WHERE parent_id = ?').bind(t.issue_id).all();
+  let subIds = [];
+  try { subIds = JSON.parse(t.subtask_ids || '[]'); } catch { /* none known */ }
   const seconds = new Map(), days = new Map();
   let total = 0;
-  for (const id of [t.issue_id, ...subs.map((s) => s.issue_id)]) {
+  for (const id of [...new Set([t.issue_id, ...subs.map((s) => s.issue_id), ...subIds.map(String)])]) {
     for (const wl of await worklogsFor(env, id)) {
       if (!wl.accountId || !wl.seconds) continue;
       seconds.set(wl.accountId, (seconds.get(wl.accountId) || 0) + wl.seconds);

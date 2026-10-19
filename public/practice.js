@@ -440,19 +440,30 @@ function quoteGet(id) {
 // ---------- Condor ----------
 
 function initMes() {
-  const t = (id, key, summary, type, module, extra = {}) => ({ issue_id: id, issue_key: key, summary, type, module, hours: null, timebox: false, difficulty: null, priority: null, version_name: null, ...extra });
+  const t = (id, key, summary, type, module, extra = {}) => ({ issue_id: id, issue_key: key, summary, type, module, hours: null, timebox: false, difficulty: null, priority: null, version_name: null,
+    status: 'To Do', assignee_id: null, assignee_name: null, notes_kind: null, ...extra });
+  const tom = { assignee_id: 'ex-tom', assignee_name: 'Tom Reid' }, amy = { assignee_id: 'ex-amy', assignee_name: 'Amy Clarke' };
   return {
     tickets: [
       t('m1', 'MES-512', 'Batch report shows the wrong operator', 'Bug', 'Reports'),
-      t('m2', 'MES-518', 'Allow two recipes per weigh station', 'Story', 'Recipes'),
+      t('m2', 'MES-518', 'Allow two recipes per weigh station', 'Story', 'Recipes', tom),
       t('m3', 'MES-521', 'Add a search to the ingredient list', 'Story', 'Ingredients', { hours: 6, difficulty: 2 }),
       t('m4', 'MES-525', 'Label printer queue stalls after a restart', 'Bug', 'Printing'),
-      t('m5', 'MES-530', 'Export stock movements to CSV', 'Story', 'Stock', { hours: 10, difficulty: 3 }),
+      t('m5', 'MES-530', 'Export stock movements to CSV', 'Story', 'Stock', { hours: 10, difficulty: 3, ...amy }),
     ],
+    // What's left of Gobi, for a mid-release review: furthest along first.
+    mid: [
+      t('g1', 'MES-480', 'Recipe import keeps the line order', 'Story', 'Recipes', { status: 'In Review', hours: 8, difficulty: 3, ...amy, notes_kind: 'paragraph' }),
+      t('g2', 'MES-486', 'Scheduling board shows shift breaks', 'Story', 'Scheduling', { status: 'In Progress', hours: 12, difficulty: 3, ...tom, notes_kind: 'photo' }),
+      t('g3', 'MES-489', 'Reprint a weighbridge ticket', 'Improvement', 'Weighbridge', { status: 'To Do', hours: 5, difficulty: 2, notes_kind: 'sentence' }),
+      t('g4', 'MES-491', 'Stock take variance report', 'Story', 'Reports', { status: 'To Do' }),
+    ],
+    reviewed: {},
+    kinds: {},
     refs: [
       { id: 'f1', key: 'MES-402', summary: 'Show the batch number on the weigh screen', type: 'Story', module: 'Weighing', hours: 5 },
       { id: 'f2', key: 'MES-377', summary: 'Recipe copy keeps the old version number', type: 'Bug', module: 'Recipes', hours: 9 },
-      { id: 'f3', key: 'MES-415', summary: 'New ingredient allergen report', type: 'Story', module: 'Reports', hours: 16 },
+      { id: 'f3', key: 'MES-415', summary: 'New ingredient allergen report', type: 'Story', module: 'Reports', hours: 16, done: false },
     ],
     versions: [{ id: 'v1', name: 'Gobi', releaseDate: addDays(today(), 70) }, { id: 'v2', name: 'Kalahari', releaseDate: addDays(today(), 160) }],
     triaged: {},
@@ -466,11 +477,113 @@ function initMes() {
     suggestions: [{ id: 'm2', key: 'MES-518', summary: 'Allow two recipes per weigh station', priority: 'Could', hours: 14, reason: 'it doesn\'t fit before Gobi and it is a Could' }],
     accepted: null,
     estimates: {},
+    notes: initNotes(),
+  };
+}
+
+// A made-up screen, so the release notes have pictures to show.
+function mockShot(title, accent = '#008dc6') {
+  const rows = [0, 1, 2, 3].map((i) => `<rect x="230" y="${150 + i * 54}" width="560" height="40" rx="4" fill="${i % 2 ? '#f6f8fa' : '#fff'}" stroke="#e1e6ea"/><rect x="246" y="${164 + i * 54}" width="${180 - i * 25}" height="12" rx="3" fill="#c9d3da"/><rect x="560" y="${164 + i * 54}" width="90" height="12" rx="3" fill="#dfe6eb"/>`).join('');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="820" height="400" viewBox="0 0 820 400"><rect width="820" height="400" fill="#fff"/>`
+    + `<rect width="200" height="400" fill="#1b75b0"/><circle cx="34" cy="32" r="14" fill="#fff" opacity=".9"/><rect x="56" y="24" width="100" height="14" rx="3" fill="#fff" opacity=".85"/>`
+    + [0, 1, 2, 3, 4, 5].map((i) => `<rect x="24" y="${78 + i * 30}" width="${110 - (i % 3) * 18}" height="10" rx="3" fill="#fff" opacity=".6"/>`).join('')
+    + `<text x="230" y="58" font-family="Arial" font-size="22" fill="#333">${title}</text><rect x="230" y="80" width="560" height="44" rx="6" fill="#f2f6f9"/>`
+    + `<rect x="680" y="90" width="96" height="26" rx="5" fill="${accent}"/>${rows}`
+    + `<path d="M520 360 L600 300" stroke="#e53935" stroke-width="3"/><path d="M600 300 l-14 2 l8 10 z" fill="#e53935"/></svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+function initNotes() {
+  const it = (id, key, summary, type, module, kind, done, blocks, who, title = null) => ({ id, key, summary, type, module, kind, done, blocks, title, status: done ? 'Done' : 'In Progress',
+    assigneeId: who === 'me' ? me.id : who || null, assigneeName: who === 'me' ? me.name : who === 'ex-tom' ? 'Tom Reid' : who === 'ex-amy' ? 'Amy Clarke' : null });
+  return {
+    intro: null,
+    number: null,
+    edits: {},
+    uploads: {},
+    items: [
+      it('n1', 'MES-488', 'Expected throughput on finished products', 'Story', 'Stock', 'sentence', true, [
+        { type: 'text', text: 'Finished products can now include expected throughput times, supporting the QC metrics report and a countdown timer in the control system.' }], 'ex-amy'),
+      it('n2', 'MES-493', 'Remove stock locations', 'Improvement', 'Stock', 'sentence', true, [
+        { type: 'text', text: 'Stock locations can now be removed through the user interface.' }], 'ex-tom'),
+      it('n9', 'MES-495', 'MicroMan multiple scales per station', 'Story', 'Microman', 'photo', true, [
+        { type: 'text', text: 'A MicroMan station can now use multiple scales. This supports stations that need different weighing ranges, such as a smaller scale for low-quantity ingredients and a larger scale for bulk additions.' },
+        { type: 'text', text: 'The required scale can be selected for the station, helping operators use equipment appropriate to each weighment.' },
+        { type: 'image', attachmentId: 'a1', filename: 'scales.png', caption: 'MicroMan station configured with multiple scales', src: mockShot('Station scales') }], 'ex-amy', 'Multiple scales per station'),
+      it('n10', 'MES-499', 'Keyboard shortcuts for the MicroMan schedule', 'Improvement', 'Microman', 'sentence', true, [
+        { type: 'text', text: 'Added keyboard shortcuts for moving directly to the top or bottom of the MicroMan schedule.' }], 'ex-tom'),
+      it('n3', 'MES-497', 'Work order list keeps its filters', 'Task', 'Work Orders', 'sentence', true, [
+        { type: 'text', text: 'The work order list now remembers the filters you chose.' }], 'ex-tom'),
+      it('n4', 'MES-501', 'Batch report shows the wrong operator', 'Bug', 'Reports', 'sentence', true, [], 'me'),
+      it('n8', 'MES-503', 'Label preview before printing', 'Story', 'Work Orders', 'photo', true, [], 'me'),
+      it('n5', 'MES-506', 'Weighbridge tickets print twice', 'Bug', 'Weighbridge', 'paragraph', false, [], 'ex-amy'),
+      it('n6', 'MES-509', 'Tidy the importer logging', 'Task', 'Importer / Exporter', null, true, [], 'ex-tom'),
+      it('n7', 'MES-511', 'Refactor the label service', 'Task', null, 'none', true, [], 'ex-amy'),
+    ],
+  };
+}
+
+const NOTE_HEADINGS = ['Stock', 'Reports', 'Formulas and recipes', 'MicroMan', 'Weighbridge', 'Site and system management', 'Work orders',
+  'Scheduling', 'Time in motion and energy', 'LIMS and quality control', 'Purchase and sales orders', 'Importer and exporter'];
+const NOTE_FROM = { stock: 'Stock', reports: 'Reports', formulas: 'Formulas and recipes', recipes: 'Formulas and recipes', microman: 'MicroMan', weighbridge: 'Weighbridge',
+  security: 'Site and system management', general: 'Site and system management', 'work orders': 'Work orders', 'importer / exporter': 'Importer and exporter' };
+const noteHeading = (m) => NOTE_FROM[String(m || '').toLowerCase()] || m || 'Site and system management';
+
+function noteMissing(kind, blocks, title) {
+  const shown = blocks.filter((b) => !b.hidden);
+  const out = [];
+  if (kind !== 'sentence' && !String(title || '').trim()) out.push('a heading');
+  if (!shown.some((b) => b.type === 'text' && b.text.trim())) out.push(kind === 'sentence' ? 'a sentence' : 'a paragraph');
+  if (kind === 'photo' && !shown.some((b) => b.type === 'image')) out.push('a picture');
+  return out;
+}
+
+function mesNotes(versionId) {
+  const m = world.mes, nt = m.notes;
+  const version = m.versions.find((v) => v.id === versionId) || m.versions[0];
+  const items = nt.items.map((i) => {
+    const e = nt.edits[i.id] || {};
+    const kind = e.kind !== undefined ? e.kind : i.kind;
+    const blocks = e.blocks || i.blocks;
+    const title = e.title !== undefined ? e.title : i.title;
+    return { id: i.id, key: i.key, summary: i.summary, type: i.type, status: i.status, done: i.done, kind, include: kind == null ? null : kind === 'none' ? 'no' : 'yes',
+      assigneeId: i.assigneeId, assigneeName: i.assigneeName, kindWaiting: false, notePending: false,
+      module: i.module, heading: e.module || noteHeading(i.module), moduleSet: Boolean(e.module || i.module), title,
+      blocks, jiraBlocks: i.blocks, edited: Boolean(e.blocks || e.title || e.module), changedInJira: false,
+      missing: kind && kind !== 'none' ? noteMissing(kind, blocks, title) : [] };
+  });
+  const shown = (i) => {
+    let b = i.blocks.filter((x) => !x.hidden);
+    if (i.kind === 'sentence') b = b.filter((x) => x.type === 'text').slice(0, 1);
+    if (i.kind === 'paragraph') b = b.filter((x) => x.type === 'text');
+    return b.some((x) => x.type === 'text') ? b : [{ type: 'text', text: i.summary, fromSummary: true }, ...b];
+  };
+  const inDoc = items.filter((i) => i.include === 'yes' && i.done);
+  const rank = (h) => (NOTE_HEADINGS.indexOf(h) >= 0 ? NOTE_HEADINGS.indexOf(h) : 500);
+  const document = [...new Set(inDoc.map((i) => i.heading))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map((name) => {
+    const here = inDoc.filter((i) => i.heading === name);
+    return {
+      name,
+      features: here.filter((i) => i.kind !== 'sentence').map((i) => ({ id: i.id, key: i.key, title: i.title || i.summary, titleFromSummary: !i.title, blocks: shown(i) })),
+      bullets: here.filter((i) => i.kind === 'sentence').map((i) => { const b = shown(i)[0]; return { id: i.id, key: i.key, text: b.text, fromSummary: Boolean(b.fromSummary) }; }),
+    };
+  });
+  const toWrite = items.filter((i) => i.kind && i.kind !== 'none' && i.missing.length);
+  const rd = version.releaseDate || '';
+  return {
+    releases: [...m.versions.map((v) => ({ ...v, released: false })), { id: 'v0', name: 'Fuji', releaseDate: addDays(today(), -40), released: true }],
+    version: { ...version, released: false, displayName: version.name, number: nt.number || (rd ? `${rd.slice(0, 4)}.${rd.slice(5, 7)}` : ''), numberSet: Boolean(nt.number) },
+    readAt: iso(now()), error: null, me: me.id,
+    intro: nt.intro, introDefault: `${version.name} introduces improvements across ${document.map((d) => (d.name === 'MicroMan' ? d.name : d.name.toLowerCase())).join(', ').replace(/, ([^,]*)$/, ' and $1')}.`,
+    document, items, headings: NOTE_HEADINGS,
+    counts: { inDocument: inDoc.length, unfinished: items.filter((i) => i.include === 'yes' && !i.done).length, undecided: items.filter((i) => !i.kind).length,
+      left: items.filter((i) => i.kind === 'none').length, pictures: inDoc.reduce((t, i) => t + shown(i).filter((b) => b.type === 'image').length, 0),
+      toWrite: toWrite.length, mine: toWrite.filter((i) => i.assigneeId === me.id).length },
   };
 }
 
 function mesQuestion({ issueId, answers }) {
-  const tk = world.mes.tickets.find((x) => x.issue_id === issueId);
+  const tk = [...world.mes.tickets, ...world.mes.mid].find((x) => x.issue_id === issueId);
   const asked = answers.length;
   const ticket = { issue_key: tk.issue_key, summary: tk.summary, type: tk.type, module: tk.module };
   if (asked < 2) {
@@ -503,6 +616,7 @@ function mesPlan() {
   return {
     version: v, versions: m.versions, next: m.versions[1], canPlan: Boolean(me.user?.can?.condorPlan), names,
     schedule, usable: 220, capacity: 275, reserve: 0.2, planned, noRelease: false, sprints: [],
+    projected: schedule.some((x) => !x.fits) ? { finish: addDays(start, 78), lateDays: 6, cannotPlace: 0 } : null,
     suggestions: m.suggestions, stillOut: [], needsEstimate: m.tickets.filter((t) => t.hours == null && m.triaged[t.issue_id] && m.triaged[t.issue_id] !== 'none').map((t) => ({ id: t.issue_id, key: t.issue_key, summary: t.summary, priority: m.triaged[t.issue_id] })),
     accepted: m.accepted || { count: 0 },
     people: [
@@ -763,6 +877,14 @@ export async function handle(path, options = {}, server) {
 
   // A moment's pause, so the page behaves as it does for real.
   await wait(method === 'GET' ? 120 : 260);
+  // A picture for a release note: kept in the browser, nothing is sent.
+  if (p === '/api/mes/notes/upload') {
+    const nt = world.mes.notes;
+    const file = options.body;
+    const id = `up${nextId()}`;
+    nt.uploads[id] = { src: URL.createObjectURL(file), filename: decodeURIComponent(options.headers?.['x-filename'] || 'picture.png') };
+    return { id, filename: nt.uploads[id].filename, mimeType: file.type, src: nt.uploads[id].src };
+  }
   return clone(await answer(p, q, method, body));
 }
 
@@ -919,8 +1041,10 @@ async function answer(p, q, method, body) {
     const base = { canTriage: Boolean(me.user?.can?.condorPlan), canEstimate: true, priorities: ['Must', 'Should', 'Could'],
       tags: ['Database change', 'Needs investigation', 'Customer testing needed', 'UI only', 'Touches several modules'],
       hints: { 1: 'A small change in familiar code', 2: 'Routine work in a module the team knows', 3: 'A typical feature or fix with some thinking in it', 4: 'Tricky: unfamiliar code, several parts, or careful testing', 5: 'New ground: design decisions, unknowns, or risk of breaking things' },
-      versions: m.versions, catchingUp: false, known: m.tickets.length };
-    const withPriority = m.tickets.map((t) => ({ ...t, priority: m.triaged[t.issue_id] ? (m.triaged[t.issue_id] === 'none' ? 'Not this time' : m.triaged[t.issue_id]) : null, version_name: m.triaged[t.issue_id] && m.triaged[t.issue_id] !== 'none' ? 'Gobi' : null }));
+      versions: m.versions, catchingUp: false, known: m.tickets.length,
+      team: [{ id: 'ex-amy', name: 'Amy Clarke' }, { id: me.id, name: me.name }, { id: 'ex-tom', name: 'Tom Reid' }],
+      noteKinds: ['none', 'sentence', 'paragraph', 'photo'] };
+    const withPriority = m.tickets.map((t) => ({ ...t, notes_kind: m.kinds[t.issue_id] ?? t.notes_kind, priority: m.triaged[t.issue_id] ? (m.triaged[t.issue_id] === 'none' ? 'Not this time' : m.triaged[t.issue_id]) : null, version_name: m.triaged[t.issue_id] && m.triaged[t.issue_id] !== 'none' ? 'Gobi' : null }));
     if (filter === 'none') return { ...base, tickets: [] };
     if (filter === 'untriaged') {
       const left = withPriority.filter((t) => !m.triaged[t.issue_id]);
@@ -931,7 +1055,7 @@ async function answer(p, q, method, body) {
   }
   if (p === '/api/mes/question') return mesQuestion(body);
   if (p === '/api/mes/estimate') {
-    const t = world.mes.tickets.find((x) => x.issue_id === body.issueId);
+    const t = [...world.mes.tickets, ...world.mes.mid].find((x) => x.issue_id === body.issueId);
     let hours;
     if (body.method === 'timebox') { hours = Number(body.timeboxHours) || 4; t.timebox = true; }
     else if (body.method === 'three-point') hours = ((Number(body.best) || 0) + 4 * (Number(body.likely) || 0) + (Number(body.worst) || 0)) / 6 || 4;
@@ -941,7 +1065,56 @@ async function answer(p, q, method, body) {
     t.difficulty = body.difficulty || 3;
     return { hours: t.hours, jiraSynced: true };
   }
-  if (p === '/api/mes/triage') { world.mes.triaged[body.issueId] = body.priority; return { jiraSynced: true }; }
+  if (p === '/api/mes/triage') {
+    const m = world.mes;
+    const t = [...m.tickets, ...m.mid].find((x) => x.issue_id === body.issueId);
+    if (body.priority !== 'none' && !body.assigneeId && !t?.assignee_id) throw new Error('Choose who will do it.');
+    if (body.priority !== 'none' && t?.hours == null) throw new Error('Estimate it first, so the plan knows how long it takes.');
+    if (body.priority !== 'none' && !body.notes && !t?.notes_kind && !m.kinds[body.issueId]) throw new Error('Choose how it appears in the release notes.');
+    if (t && body.assigneeId) { t.assignee_id = body.assigneeId; t.assignee_name = [{ id: 'ex-amy', name: 'Amy Clarke' }, { id: me.id, name: me.name }, { id: 'ex-tom', name: 'Tom Reid' }].find((x) => x.id === body.assigneeId)?.name; }
+    if (body.notes) m.kinds[body.issueId] = body.notes;
+    if (body.mode === 'mid') {
+      m.reviewed[body.issueId] = true;
+      if (body.priority === 'none') return { jiraSynced: true, movedTo: m.versions[1]?.name || null };
+      return { jiraSynced: true };
+    }
+    m.triaged[body.issueId] = body.priority; return { jiraSynced: true };
+  }
+  if (p === '/api/mes/mid-release') {
+    const m = world.mes;
+    const tickets = m.mid.map((t) => ({ ...t, notes_kind: m.kinds[t.issue_id] ?? t.notes_kind, reviewed: Boolean(m.reviewed[t.issue_id]) }));
+    return { version: m.versions[0], next: m.versions[1], tickets, total: tickets.length, reviewed: tickets.filter((t) => t.reviewed).length,
+      team: [{ id: 'ex-amy', name: 'Amy Clarke' }, { id: me.id, name: me.name }, { id: 'ex-tom', name: 'Tom Reid' }], noteKinds: ['none', 'sentence', 'paragraph', 'photo'],
+      priorities: ['Must', 'Should', 'Could'], tags: [], hints: {}, canEstimate: true, canTriage: true };
+  }
+  if (p === '/api/mes/mid-release/restart') { world.mes.reviewed = {}; return { ok: true }; }
+  if (p === '/api/mes/notes') return mesNotes(q.get('versionId'));
+  if (p === '/api/mes/notes/item') {
+    const e = world.mes.notes.edits[body.issueId] = world.mes.notes.edits[body.issueId] || {};
+    if (body.blocks !== undefined) e.blocks = body.blocks;
+    if (body.title !== undefined) e.title = body.title;
+    if (body.module !== undefined) e.module = body.module;
+    if (body.kind !== undefined) e.kind = body.kind;
+    return { ok: true, jiraSynced: true };
+  }
+  if (p === '/api/mes/notes/write') {
+    const nt = world.mes.notes;
+    const item = nt.items.find((i) => i.id === body.issueId);
+    const e = nt.edits[body.issueId] = nt.edits[body.issueId] || {};
+    const kind = e.kind !== undefined ? e.kind : item.kind;
+    const text = String(body.text || '').trim();
+    if (!text) throw new Error(kind === 'sentence' ? 'Write the sentence first.' : 'Write the paragraph first.');
+    if (kind === 'sentence' && /\n/.test(text)) throw new Error('Keep it to a single sentence, on one line.');
+    const known = new Map([...item.blocks.filter((b) => b.type === 'image').map((b) => [b.attachmentId, b]),
+      ...Object.entries(nt.uploads).map(([id, u]) => [id, { type: 'image', attachmentId: id, filename: u.filename, src: u.src }])]);
+    if (kind !== 'sentence' && !String(body.title || '').trim()) throw new Error('Give it a heading, such as "Multiple scales per station".');
+    const pics = kind === 'photo' ? (body.images || []).map((x) => known.get(x.id) && { ...known.get(x.id), caption: x.caption || '' }).filter(Boolean) : [];
+    if (kind === 'photo' && !pics.length) throw new Error('Add at least one picture.');
+    e.blocks = [...text.split(/\n\s*\n/).map((t) => ({ type: 'text', text: t.trim() })).filter((b) => b.text), ...pics];
+    if (kind !== 'sentence') e.title = String(body.title).trim();
+    return { ok: true, jiraSynced: true };
+  }
+  if (p === '/api/mes/notes/intro') { world.mes.notes.intro = body.intro; if (body.number !== undefined) world.mes.notes.number = body.number; return { ok: true }; }
   if (p === '/api/mes/release') { const v = { id: `v${world.mes.versions.length + 1}`, name: body.name || 'New release', releaseDate: body.releaseDate || addDays(today(), 90) }; world.mes.versions.push(v); return v; }
   if (p === '/api/mes/make-sprints') return { moved: 4, board: { created: false, name: 'MES' } };
   if (p === '/api/mes/plan') return mesPlan();

@@ -221,6 +221,11 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/mes/')) {
     const Mes = await import('./mes.js');
+    // A picture for a release note arrives as the file itself.
+    if (method === 'POST' && pathname === '/api/mes/notes/upload') {
+      if (!Mes.canEstimate(user)) return json({ error: 'Release notes are for the Condor team.' }, 403);
+      return json(await (await import('./release-notes.js')).upload(env, user, url.searchParams.get('issue'), request));
+    }
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/mes/outstanding') {
       return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '',
@@ -229,8 +234,31 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/question') return json(await Mes.nextQuestion(env, body));
     if (method === 'POST' && pathname === '/api/mes/estimate') return json(await Mes.saveEstimate(env, user, body));
     if (method === 'POST' && pathname === '/api/mes/triage') return json(await Mes.triage(env, user, body));
+    if (method === 'GET' && pathname === '/api/mes/mid-release') return json(await Mes.midRelease(env, user, url.searchParams.get('versionId')));
+    if (method === 'POST' && pathname === '/api/mes/mid-release/restart') return json(await Mes.restartReview(env, user, body.versionId));
     if (method === 'GET' && pathname === '/api/mes/rating') return json(await Mes.ratingHistory(env, user, url.searchParams.get('accountId')));
     if (method === 'GET' && pathname === '/api/mes/team') return json({ team: await Mes.team(env, user) });
+    if (pathname.startsWith('/api/mes/notes')) {
+      if (!Mes.canEstimate(user)) return json({ error: 'Release notes are for the Condor team.' }, 403);
+      const Notes = await import('./release-notes.js');
+      if (method === 'GET' && pathname === '/api/mes/notes') {
+        return json(await Notes.view(env, user, { versionId: url.searchParams.get('versionId'), refresh: url.searchParams.get('refresh') === '1' }));
+      }
+      if (method === 'GET' && pathname === '/api/mes/notes/image') {
+        return Notes.image(env, { issueId: url.searchParams.get('issue'), attachmentId: url.searchParams.get('att') });
+      }
+      if (method === 'POST' && pathname === '/api/mes/notes/item') {
+        const r = await Notes.saveItem(env, user, body);
+        if (body.kind !== undefined) {
+          const label = Notes.KINDS.find((k) => k.id === body.kind)?.label || body.kind;
+          await Audit.record(env, user, { area: 'Condor release notes', action: `Release note: ${label}`,
+            subjectType: 'mes', subjectId: String(body.issueId), label: body.key || null });
+        }
+        return json(r);
+      }
+      if (method === 'POST' && pathname === '/api/mes/notes/write') return json(await Notes.write(env, user, body));
+      if (method === 'POST' && pathname === '/api/mes/notes/intro') return json(await Notes.saveIntro(env, user, body));
+    }
     const Plan = await import('./mes-plan.js');
     if (method === 'GET' && pathname === '/api/mes/plan') return json(await Plan.view(env, user, url.searchParams.get('versionId')));
     if (method === 'POST' && pathname === '/api/mes/capacity') {

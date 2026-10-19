@@ -451,6 +451,7 @@ export async function runScheduled(env) {
       ).first();
       if (!pending?.n) return { idle: true };
       await attempt('MES to Jira', async () => (await import('./mes.js')).hourly(env));
+      await attempt('Release notes to Jira', async () => (await import('./release-notes.js')).hourly(env));
       await attempt('MES timeline', async () => (await import('./mes-plan.js')).syncSchedule(env, { max: 20 }));
     },
     psc: async () => {
