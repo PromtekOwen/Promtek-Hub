@@ -319,7 +319,12 @@ export async function midRelease(env, viewer, versionId) {
   if (!from) { from = new Date().toISOString(); await setState(env, reviewKey(version.id), from); }
   const order = new Map(issues.map((x, i) => [String(x.id), i]));
   const ids = [...order.keys()];
-  const rows = ids.length ? (await env.DB.prepare(`${TICKET_SELECT} WHERE t.issue_id IN (${ids.map(() => '?').join(',')})`).bind(...ids).all()).results : [];
+  // D1 takes at most 100 values in one query, so a big release is read in parts.
+  const rows = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    rows.push(...(await env.DB.prepare(`${TICKET_SELECT} WHERE t.issue_id IN (${part.map(() => '?').join(',')})`).bind(...part).all()).results);
+  }
   const names = new Map(issues.map((x) => [String(x.id), x.fields?.assignee?.displayName || null]));
   const tickets = rows.map((r) => ({ ...shape(r), assignee_name: r.assignee_name || names.get(r.issue_id) || null,
     reviewed: r.decided_for === version.id && r.triaged_at >= from }))

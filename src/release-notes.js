@@ -146,11 +146,9 @@ export async function readRelease(env, version) {
       include, Number(f.priority?.id) || null, f.assignee?.accountId || null, f.assignee?.displayName || null,
       JSON.stringify(blocksFromAdf(f[NOTE_FIELD], attachments)), JSON.stringify(attachments), f.updated || null, now));
   }
-  // Anything moved to another release since the last read no longer belongs here.
-  const ids = issues.map((i) => String(i.id));
-  statements.push(env.DB.prepare(
-    `DELETE FROM mes_note_items WHERE version_id = ?${ids.length ? ` AND issue_id NOT IN (${ids.map(() => '?').join(',')})` : ''}`
-  ).bind(version.id, ...ids));
+  // Anything moved to another release since the last read no longer belongs
+  // here: every ticket still in it was just stamped with this read's time.
+  statements.push(env.DB.prepare('DELETE FROM mes_note_items WHERE version_id = ? AND read_at != ?').bind(version.id, now));
   statements.push(env.DB.prepare(
     `INSERT INTO mes_release_notes (version_id, version_name, release_date, read_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(version_id) DO UPDATE SET version_name = excluded.version_name, release_date = excluded.release_date, read_at = excluded.read_at`

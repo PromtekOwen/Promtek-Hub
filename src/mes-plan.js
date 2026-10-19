@@ -148,10 +148,14 @@ async function assigneesOutside(env, tickets, planned) {
   const have = new Set(planned.map((p) => p.id));
   const ids = [...new Set(tickets.map((t) => t.assigneeId).filter((id) => id && !have.has(id)))];
   if (!ids.length) return [];
-  const { results } = await env.DB.prepare(
-    `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e LEFT JOIN mes_capacity c ON c.account_id = e.account_id
-      WHERE e.account_id IN (${ids.map(() => '?').join(',')})`
-  ).bind(...ids).all();
+  const results = [];
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    results.push(...(await env.DB.prepare(
+      `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e LEFT JOIN mes_capacity c ON c.account_id = e.account_id
+        WHERE e.account_id IN (${part.map(() => '?').join(',')})`
+    ).bind(...part).all()).results);
+  }
   return results.map((r) => ({ ...personFrom(r), assignedOnly: true }));
 }
 
