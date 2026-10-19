@@ -20,6 +20,7 @@ import * as Shop from './shop.js';
 import * as Obs from './obsolescence.js';
 import * as Org from './org.js';
 import * as People from './people.js';
+import * as Home from './home.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -442,6 +443,12 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/pow/delete') return json(await Pow.deleteDraft(env, user, body.id));
   }
 
+  if (method === 'GET' && pathname === '/api/home') return json(await Home.feed(env, user));
+  if (method === 'POST' && pathname === '/api/home/dismiss') {
+    const body = await request.json().catch(() => ({}));
+    return json(await Home.dismiss(env, user, body.id));
+  }
+
   if (method === 'GET' && pathname === '/api/leaderboard') {
     return json(await leaderboard(env, { period: url.searchParams.get('period') || 'week', metric: url.searchParams.get('metric') === 'elo' ? 'elo' : 'xp',
       accountId: user.accountId, team: url.searchParams.get('team') || null }));
@@ -519,6 +526,9 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
+    if (method === 'GET' && pathname === '/api/admin/home-messages') return json(await Home.adminList(env));
+    if (method === 'POST' && pathname === '/api/admin/home-messages') return json(await Home.send(env, user, body));
+    if (method === 'POST' && pathname === '/api/admin/home-messages/end') return json(await Home.end(env, user, body.id));
     if (method === 'GET' && pathname === '/api/admin/elo') return json(await Elo.status(env));
     if (method === 'GET' && pathname === '/api/admin/bitbucket') return json(await (await import('./devtime.js')).status(env));
     if (method === 'POST' && pathname === '/api/admin/bitbucket-test') return json(await (await import('./devtime.js')).testConnection(env));

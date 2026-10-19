@@ -41,8 +41,16 @@ const tapUntil = (sel, count) => async (help) => {
 export const TOURS = {
   '#/': {
     practice: true,
-    intro: 'A look round the hub: your level, your tiles, and how to log time from anywhere.',
+    intro: 'A look round the hub: the strip at the top, your tiles, and how to log time from anywhere.',
     steps: [
+      { target: '#home-feed', title: 'Your strip', text: 'The top of the home screen turns through your level, alerts for you, news, and your week. It moves on by itself every few seconds; tap a tab or swipe to choose, and it waits while you read.' },
+      { act: 'click', target: '[data-feed-tab="alerts"]', title: 'Alerts', text: 'Tap Alerts.' },
+      { target: '#feed-alerts', title: 'What needs you', text: 'Alerts from admins, and things waiting on you elsewhere in the hub: an estimate someone asked for, a customer waiting on your PSC, a vehicle check due. Open goes straight there.' },
+      { act: 'click', target: '#feed-alerts [data-feed-dismiss]', title: 'Got it', text: 'An alert from an admin stays until you tap Got it. The hub\'s own alerts go away by themselves once they\'re dealt with.' },
+      { act: 'click', target: '[data-feed-tab="news"]', title: 'News', text: 'Tap News, for messages from admins to everyone or your team.' },
+      { act: 'click', target: '[data-feed-tab="week"]', title: 'Your week', text: 'Tap Week.' },
+      { target: '#feed-week', title: 'How your week is going', text: 'Time logged this week, day by day. A day with nothing logged is marked, so nothing gets forgotten.' },
+      { act: 'click', target: '[data-feed-tab="you"]', title: 'Your level', text: 'Tap You.' },
       { target: ['#band .summary', '#band'], title: 'Your level and rank', text: 'Time you log earns XP. Your level, title and ELO rank show here. Tap it any time to see where your XP came from.' },
       { target: '.tiles', title: 'Your tiles', text: 'Each tile opens a part of the hub. You see the ones that fit your job and team.' },
       { act: 'click', target: '[data-tile="arrange"]', title: 'Put them in your order', text: 'Tap Arrange tiles.' },

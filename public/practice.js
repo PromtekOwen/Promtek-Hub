@@ -142,6 +142,11 @@ function initWorld(real) {
     contracts: initContracts(),
     contractFlags: initFlags(),
     tiles: null,
+    homeMessages: [
+      { id: 9001, kind: 'alert', tone: 'important', title: 'Return the van keys to reception', body: 'The Transit keys need to be back by 5pm on Fridays so the van can be serviced.', link: '#/vehicles', from: 'Owen Hume', at: ago(2 * HOUR) },
+      { id: 9002, kind: 'announcement', tone: 'info', title: 'Christmas party, Friday 19 December', body: 'Drinks from 6pm at The Swan, food at 7. Partners welcome. Let Becky know by the end of the month if you\'re coming.', link: null, from: 'Owen Hume', at: ago(DAY) },
+      { id: 9003, kind: 'announcement', tone: 'info', title: 'New fire assembly point', body: 'The assembly point has moved to the far end of the car park, by the gate.', link: null, from: 'Owen Hume', at: ago(3 * DAY) },
+    ],
   };
 }
 
@@ -770,6 +775,28 @@ async function answer(p, q, method, body) {
     const action = p.replace('/api/tracker', '').replace(/^\//, '');
     return tracker(action || 'status', body);
   }
+
+  // The strip on the home screen
+  if (p === '/api/home') {
+    const monday = mondayOf(today());
+    const days = Array.from({ length: 5 }, (_, i) => addDays(monday, i));
+    const secs = (d) => world.worklogs.filter((w) => w.work_date === d).reduce((t, w) => t + w.seconds, 0);
+    // One weekday with nothing logged, so the week shows what a gap looks like.
+    const gap = days.find((d) => d < today() && d !== monday);
+    const shown = (d) => (d === gap ? 0 : secs(d));
+    return {
+      alerts: [
+        ...world.homeMessages.filter((m) => m.kind === 'alert'),
+        { key: 'quote', tone: 'info', title: 'Priya Shah would like your estimate', body: 'Second intake weigher for Harbour Mills, Site visit.', link: '#/quotes' },
+        { key: 'psc', tone: 'important', title: 'Hannah Price is waiting on you', body: 'She replied on NGB-140, Mixer 3 weigher reading 2kg heavy.', link: '#/psc' },
+      ],
+      news: world.homeMessages.filter((m) => m.kind === 'announcement'),
+      week: { seconds: days.reduce((t, d) => t + shown(d), 0), target: 37.5 * 3600,
+        days: days.map((d) => ({ date: d, seconds: shown(d), past: d < today(), today: d === today() })),
+        missing: days.filter((d) => d < today() && !shown(d)) },
+    };
+  }
+  if (p === '/api/home/dismiss') { world.homeMessages = world.homeMessages.filter((m) => String(m.id) !== String(body.id)); return { ok: true }; }
 
   // Log time
   if (p === '/api/log/shortcuts') {

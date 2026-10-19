@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS home_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT, link TEXT, tone TEXT NOT NULL DEFAULT 'info', audience TEXT NOT NULL, starts_at TEXT, ends_at TEXT, emailed INTEGER NOT NULL DEFAULT 0, created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, ended_at TEXT, ended_by TEXT);
+CREATE INDEX IF NOT EXISTS idx_home_messages_live ON home_messages(ended_at, ends_at);
+CREATE TABLE IF NOT EXISTS home_message_reads (message_id INTEGER NOT NULL, account_id TEXT NOT NULL, seen_at TEXT, dismissed_at TEXT, PRIMARY KEY (message_id, account_id));

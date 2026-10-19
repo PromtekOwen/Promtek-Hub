@@ -58,6 +58,79 @@ button { font: inherit; }
 .summary .ring { flex: none; }
 .summary strong { display: block; font-size: 1.15rem; line-height: 1.25; }
 .summary .meta { color: rgba(255,255,255,.85); font-size: .95rem; }
+/* The strip at the top of the home screen */
+.feed { margin-top: 1.25rem; max-width: 620px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22);
+  border-radius: 20px; padding: .55rem .55rem .9rem; color: #fff; }
+.feed-tabs { display: flex; align-items: center; gap: .1rem; padding: 0 0 .5rem; overflow-x: auto; scrollbar-width: none; }
+.feed-tabs::-webkit-scrollbar { display: none; }
+.feed-tab { border: 0; background: none; color: rgba(255,255,255,.85); font: 600 .92rem var(--font); padding: .35rem .6rem;
+  border-radius: 99px; cursor: pointer; display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap; }
+.feed-tab:hover { background: rgba(255,255,255,.12); color: #fff; }
+.feed-tab.on { background: #fff; color: var(--blue-deep); }
+.feed-count { min-width: 1.2rem; height: 1.2rem; padding: 0 .3rem; border-radius: 99px; background: var(--gold); color: #1d1300;
+  font-size: .75rem; font-weight: 700; display: inline-grid; place-items: center; }
+.feed-pause { margin-left: auto; flex: none; width: 32px; height: 32px; border: 0; border-radius: 10px; background: none; color: rgba(255,255,255,.8);
+  display: grid; place-items: center; cursor: pointer; }
+.feed-pause:hover { background: rgba(255,255,255,.12); color: #fff; }
+.feed-pause svg { width: 18px; height: 18px; fill: currentColor; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
+.feed-track { display: flex; align-items: flex-start; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none;
+  transition: height .25s ease; overscroll-behavior-x: contain; }
+.feed-track::-webkit-scrollbar { display: none; }
+.feed-slide { flex: 0 0 100%; min-width: 0; scroll-snap-align: start; padding: .1rem .5rem 0; }
+.feed .summary { margin: 0; background: none; border: 0; padding: .1rem 0 0; max-width: none; }
+.feed .summary:hover { background: none; }
+.feed-empty { margin: .4rem 0 .2rem; color: rgba(255,255,255,.88); }
+.feed-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .5rem; }
+.feed-item { display: grid; grid-template-columns: .6rem minmax(0, 1fr) auto; gap: .2rem .65rem; align-items: start;
+  background: rgba(255,255,255,.1); border-radius: 14px; padding: .6rem .75rem; }
+.feed-dot { width: .6rem; height: .6rem; border-radius: 50%; background: rgba(255,255,255,.75); margin-top: .45rem; }
+.feed-item.important .feed-dot { background: var(--gold); box-shadow: 0 0 0 3px rgba(232,163,23,.3); }
+.feed-text strong { display: block; line-height: 1.3; }
+.feed-body { display: block; color: rgba(255,255,255,.88); font-size: .95rem; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+.feed-slide .feed-item .feed-body { -webkit-line-clamp: 3; }
+.feed-item.full .feed-body { -webkit-line-clamp: unset; display: block; }
+.feed-from { display: block; color: rgba(255,255,255,.7); font-size: .82rem; margin-top: .15rem; }
+.feed-actions { display: flex; gap: .35rem; align-items: center; }
+.feed-open, .feed-done { font: 600 .88rem var(--font); border-radius: 10px; padding: .3rem .65rem; cursor: pointer; text-decoration: none; white-space: nowrap; }
+.feed-open { background: #fff; color: var(--blue-deep); }
+.feed-done { background: none; border: 1px solid rgba(255,255,255,.5); color: #fff; }
+.feed-done:hover { background: rgba(255,255,255,.12); }
+.feed-more { margin-top: .5rem; border: 0; background: none; color: #fff; font: 600 .92rem var(--font); text-decoration: underline; cursor: pointer; padding: .2rem 0; }
+@media (max-width: 480px) {
+  .feed-item { grid-template-columns: .6rem minmax(0, 1fr); }
+  .feed-actions { grid-column: 2; margin-top: .3rem; }
+}
+.feed-week-head { margin: .2rem 0 .45rem !important; color: #fff !important; }
+.feed-week-head strong { font-size: 1.35rem; }
+.feed-week-head span { color: rgba(255,255,255,.75); }
+.feed-bar { height: 8px; border-radius: 99px; background: rgba(255,255,255,.2); overflow: hidden; }
+.feed-bar span { display: block; height: 100%; background: #fff; border-radius: 99px; }
+.feed-days { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: .35rem; margin: .7rem 0 0; padding: 0; }
+.feed-days li { text-align: center; border-radius: 10px; padding: .3rem .2rem; background: rgba(255,255,255,.08); font-size: .85rem; }
+.feed-days li span { display: block; color: rgba(255,255,255,.75); }
+.feed-days li b { font-weight: 700; }
+.feed-days li.done { background: rgba(255,255,255,.2); }
+.feed-days li.missing { background: rgba(232,163,23,.28); box-shadow: inset 0 0 0 1px rgba(232,163,23,.7); }
+.feed-days li.today { box-shadow: inset 0 0 0 2px #fff; }
+.feed-week-note { margin: .6rem 0 0 !important; }
+.feed-week-note a { color: #fff; font-weight: 700; }
+.feed-all .feed-list { margin-bottom: 1rem; }
+.feed-all .feed-item { background: var(--tint); color: var(--ink); }
+.feed-all .feed-body, .feed-all .feed-from { color: var(--muted); }
+.feed-all .feed-dot { background: var(--blue); }
+.feed-all .feed-done { border-color: var(--line); color: var(--blue-deep); }
+.feed-all .feed-open { background: var(--blue-deep); color: #fff; }
+.feed-all { max-height: 85vh; overflow-y: auto; }
+@media (prefers-reduced-motion: reduce) { .feed-track { transition: none; } }
+
+/* Home screen messages, on Admin */
+.hm-form label { margin-top: .85rem; }
+.hm-form > .muted { margin: 1rem 0 .4rem; }
+.hm-form > .muted:first-child { margin-top: 0; }
+.hm-people { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .6rem; }
+.hm-found { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .5rem; }
+
 .chip { display: inline-block; margin-top: .4rem; padding: .1rem .6rem; border-radius: 99px;
   background: #fff; color: var(--blue-deep); font-weight: 700; font-size: .85rem; }
 

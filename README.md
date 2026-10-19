@@ -38,6 +38,7 @@ src/               The Worker (API and background sync)
   tracker.js       The active time tracker: stretches to Tempo, assisting, 8x8 calls
   requests.js      Requests: ideas and problems sent about the hub
   contracts.js     Service contracts: statuses, token clocks, tokens, alerts and insights
+  home.js          The home screen strip: alerts, news from admins, and the week so far
   psc.js           PSC: support requests, triage, first-look and update timers, insights
   permissions.js   Groups, teams and what each allows
   orgdocs.js       Company chart versions (IMS2.02) and publishing to Confluence
@@ -75,6 +76,8 @@ schema-025.sql     Requests
 schema-026.sql     Which page guides each person has seen
 schema-027.sql     Service contracts, their visits and tokens, token clocks and alerts
 schema-028.sql     PSC: support requests, pick-ups and changes waiting for Jira
+schema-029.sql     PSC: links between items, to spot copies
+schema-030.sql     Home screen alerts and news, and who has seen them
 mail-relay.gs      Optional Apps Script that emails alerts
 wrangler.jsonc     Cloudflare configuration
 ```

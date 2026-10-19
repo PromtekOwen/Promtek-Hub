@@ -137,17 +137,7 @@ const pages = {
     band() {
       const first = (me.employee?.name || '').split(' ')[0];
       const e = me.employee;
-      const summary = me.linked
-        ? `<a class="summary" href="#/xp">
-            ${ring(e.progress, 92)}
-            <div>
-              <strong>${esc(e.progress.title)}</strong>
-              <span class="meta">${n(e.progress.xp)} XP. ${n(e.progress.xpToNextLevel)} to level ${n(e.progress.level + 1)}.</span>
-              ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}
-            </div>
-          </a>`
-        : '';
-      return `<h1>${greeting()}${first ? `, ${esc(first)}` : ''}</h1><p>${longDate(todayIso())}</p>${summary}`;
+      return `<h1>${greeting()}${first ? `, ${esc(first)}` : ''}</h1><p>${longDate(todayIso())}</p><div id="home-feed-host">${homeFeedHtml()}</div>`;
     },
     render() {
       const visible = orderedTiles();
@@ -457,6 +447,10 @@ const pages = {
 
         ${eloAdminHtml(elo, peopleData.source)}
 
+        <h2>Home screen messages</h2>
+        <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
+        <div id="home-admin"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading</p></div></div>
+
         <h2>Audit log</h2>
         <p class="muted">Changes made by hand to employees, vehicles and settings: who changed what, when, and what it was before.</p>
         <div id="audit-log"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading</p></div></div>
@@ -506,6 +500,294 @@ const pages = {
 };
 
 // ---------- account panel ----------
+
+// ---------- the strip at the top of the home screen ----------
+// It turns through your level, alerts for you, news from admins and your week,
+// on its own every few seconds, or by tapping a tab or swiping. It stops turning
+// while someone is reading it: pointer over it, focus in it, or just after they
+// have moved it themselves.
+
+let homeFeed = null;            // { alerts, news, week } from the server
+let homeFeedAt = 0;
+let homeSlide = null;           // the slide showing, by name
+let homeTimer = null;
+let homePausedUntil = 0;
+let homeHold = false;           // pointer over it or focus in it
+let homeStopped = false;        // the pause button
+const HOME_TURN_MS = 8000;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+function levelSlideHtml() {
+  const e = me.employee;
+  if (!me.linked) return '<p class="feed-empty">Your account isn\'t linked to an engineer profile yet, so there\'s no level to show.</p>';
+  return `<a class="summary" href="#/xp">
+      ${ring(e.progress, 92)}
+      <div>
+        <strong>${esc(e.progress.title)}</strong>
+        <span class="meta">${n(e.progress.xp)} XP. ${n(e.progress.xpToNextLevel)} to level ${n(e.progress.level + 1)}.</span>
+        ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}
+      </div>
+    </a>`;
+}
+
+const feedWhen = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+
+function feedItemHtml(a, { full = false } = {}) {
+  const open = a.link ? `<a class="feed-open" href="${esc(a.link)}"${a.link.startsWith('http') ? ' target="_blank" rel="noopener"' : ''}>Open</a>` : '';
+  const done = a.id ? `<button class="feed-done" data-feed-dismiss="${a.id}">Got it</button>` : '';
+  return `<li class="feed-item${a.tone === 'important' ? ' important' : ''}${full ? ' full' : ''}">
+      <span class="feed-dot" aria-hidden="true"></span>
+      <div class="feed-text"><strong>${esc(a.title)}</strong>${a.body ? `<span class="feed-body">${esc(a.body)}</span>` : ''}
+        ${a.from ? `<span class="feed-from">${esc(a.from)}, ${feedWhen(a.at)}</span>` : ''}</div>
+      ${open || done ? `<span class="feed-actions">${open}${done}</span>` : ''}
+    </li>`;
+}
+
+function weekSlideHtml(w) {
+  const pct = Math.min(100, (w.seconds / w.target) * 100);
+  const names = w.missing.map((d) => dateOf(d).toLocaleDateString('en-GB', { weekday: 'long' }));
+  const words = names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `<div class="feed-week">
+      <p class="feed-week-head"><strong>${duration(w.seconds)}</strong> logged this week <span>of ${duration(w.target)}</span></p>
+      <div class="feed-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
+      <ol class="feed-days">${w.days.map((d) => `<li class="${d.seconds ? 'done' : d.past ? 'missing' : ''}${d.today ? ' today' : ''}" title="${esc(longDate(d.date))}: ${d.seconds ? duration(d.seconds) : 'nothing logged'}">
+        <span>${dateOf(d.date).toLocaleDateString('en-GB', { weekday: 'short' })}</span><b>${d.seconds ? duration(d.seconds) : d.past ? 'None' : '—'}</b></li>`).join('')}</ol>
+      <p class="feed-week-note">${names.length ? `Nothing logged on ${esc(words)} yet. <a href="#/log">Log time</a>` : 'Every day so far this week has time logged.'}</p>
+    </div>`;
+}
+
+function homeSlides() {
+  const f = homeFeed;
+  const slides = [{ id: 'you', label: 'You', html: levelSlideHtml() }];
+  if (!f) return slides;
+  // One at a time on a phone, two side by side in height on a wider screen.
+  const room = matchMedia('(max-width: 480px)').matches ? 1 : 2;
+  const alerts = f.alerts.slice(0, room).map((a) => feedItemHtml(a)).join('');
+  slides.push({ id: 'alerts', label: 'Alerts', count: f.alerts.length,
+    html: f.alerts.length ? `<ul class="feed-list">${alerts}</ul>${f.alerts.length > room ? `<button class="feed-more" data-feed-all="alerts">See all ${f.alerts.length}</button>` : ''}`
+      : '<p class="feed-empty">Nothing waiting for you. Alerts from admins, and things that need you elsewhere in the hub, show up here.</p>' });
+  if (f.news.length) {
+    slides.push({ id: 'news', label: 'News', count: f.news.length,
+      html: `<ul class="feed-list">${feedItemHtml(f.news[0])}</ul>${f.news.length > 1 ? `<button class="feed-more" data-feed-all="news">See all ${f.news.length}</button>` : ''}` });
+  }
+  if (f.week) slides.push({ id: 'week', label: 'Week', html: weekSlideHtml(f.week) });
+  return slides;
+}
+
+function homeFeedHtml() {
+  const slides = homeSlides();
+  if (!slides.some((x) => x.id === homeSlide)) homeSlide = slides[0].id;
+  const tabs = slides.length > 1 ? `<div class="feed-tabs" role="tablist" aria-label="What's shown">
+      ${slides.map((x) => `<button class="feed-tab${x.id === homeSlide ? ' on' : ''}" role="tab" aria-selected="${x.id === homeSlide}" aria-controls="feed-${x.id}" data-feed-tab="${x.id}">${x.label}${x.count ? `<span class="feed-count">${x.count}</span>` : ''}</button>`).join('')}
+      <button class="feed-pause" data-feed-pause aria-label="${homeStopped ? 'Turn on' : 'Stop'} moving on by itself" title="${homeStopped ? 'Turn on' : 'Stop'} moving on by itself">${homeStopped
+        ? svgIcon('<path d="M8 5.5v13l10.5-6.5z"/>') : svgIcon('<path d="M8.5 5.5v13M15.5 5.5v13"/>')}</button>
+    </div>` : '';
+  return `<div class="feed" id="home-feed" aria-roledescription="carousel" aria-label="Your home screen">${tabs}
+      <div class="feed-track">${slides.map((x) => `<section class="feed-slide" id="feed-${x.id}" data-slide="${x.id}" role="tabpanel" aria-label="${x.label}">${x.html}</section>`).join('')}</div>
+    </div>`;
+}
+
+// Moves to a slide by name, and keeps the strip the height of what's showing.
+function homeGo(id, { smooth = true } = {}) {
+  const track = document.querySelector('#home-feed .feed-track');
+  const slide = track?.querySelector(`[data-slide="${id}"]`);
+  if (!slide) return;
+  homeSlide = id;
+  track.scrollTo({ left: slide.offsetLeft - track.offsetLeft, behavior: smooth && !reducedMotion.matches ? 'smooth' : 'instant' });
+  // As tall as the tallest slide, so the tiles underneath don't jump as it turns.
+  track.style.height = `${Math.max(...[...track.children].map((x) => x.offsetHeight))}px`;
+  document.querySelectorAll('#home-feed [data-feed-tab]').forEach((t) => {
+    const on = t.dataset.feedTab === id;
+    t.classList.toggle('on', on);
+    t.setAttribute('aria-selected', String(on));
+  });
+}
+
+function homeTick() {
+  if (currentRoute() !== '#/' || !document.getElementById('home-feed')) return;
+  if (homeStopped || homeHold || reducedMotion.matches || document.hidden || Date.now() < homePausedUntil || document.querySelector('.tour, .modal-backdrop')) return;
+  const ids = homeSlides().map((x) => x.id);
+  if (ids.length < 2) return;
+  homeGo(ids[(ids.indexOf(homeSlide) + 1) % ids.length]);
+}
+
+function homeFeedMount() {
+  const host = document.getElementById('home-feed-host');
+  if (!host) return;
+  host.innerHTML = homeFeedHtml();
+  const feed = host.querySelector('#home-feed');
+  const track = feed.querySelector('.feed-track');
+  requestAnimationFrame(() => homeGo(homeSlide, { smooth: false }));
+  feed.addEventListener('pointerenter', () => { homeHold = true; });
+  feed.addEventListener('pointerleave', () => { homeHold = false; });
+  feed.addEventListener('focusin', () => { homeHold = true; });
+  feed.addEventListener('focusout', () => { homeHold = feed.matches(':hover'); });
+  // A swipe settles on a slide; that slide becomes the one showing.
+  let settle = null;
+  track.addEventListener('scroll', () => {
+    clearTimeout(settle);
+    settle = setTimeout(() => {
+      const i = Math.round(track.scrollLeft / Math.max(1, track.clientWidth));
+      const slide = track.children[i];
+      if (slide && slide.dataset.slide !== homeSlide) { homePausedUntil = Date.now() + 30_000; homeGo(slide.dataset.slide, { smooth: false }); }
+    }, 120);
+  }, { passive: true });
+  clearInterval(homeTimer);
+  homeTimer = setInterval(homeTick, HOME_TURN_MS);
+}
+
+async function loadHomeFeed({ force = false } = {}) {
+  if (!force && homeFeed && Date.now() - homeFeedAt < 60_000) return homeFeedMount();
+  try {
+    const first = !homeFeed;
+    homeFeed = await api('/api/home');
+    homeFeedAt = Date.now();
+    // On arrival, anything that needs them comes first.
+    if (first && (homeFeed.alerts.some((a) => a.tone === 'important' || a.id))) homeSlide = 'alerts';
+  } catch { /* the level still shows */ }
+  if (currentRoute() === '#/') homeFeedMount();
+}
+
+function homeFeedAll(kind) {
+  const list = homeFeed?.[kind] || [];
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop';
+  host.innerHTML = `<div class="modal card feed-all" role="dialog" aria-modal="true" aria-labelledby="feed-all-title">
+      <h2 id="feed-all-title" style="margin-top:0">${kind === 'news' ? 'News' : 'Alerts for you'}</h2>
+      <ul class="feed-list">${list.map((a) => feedItemHtml(a, { full: true })).join('')}</ul>
+      <div class="modal-actions"><button class="btn secondary" data-feed-close>Close</button></div></div>`;
+  document.body.appendChild(host);
+  host.querySelector('[data-feed-close]').focus();
+}
+
+async function homeFeedDismiss(id) {
+  try { await api('/api/home/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch (err) { toast(err.message); return; }
+  for (const k of ['alerts', 'news']) homeFeed[k] = homeFeed[k].filter((a) => String(a.id) !== String(id));
+  const all = document.querySelector('.feed-all');
+  if (all) all.querySelector(`[data-feed-dismiss="${id}"]`)?.closest('li')?.remove();
+  homeFeedMount();
+}
+
+document.addEventListener('click', (event) => {
+  const t = (sel) => event.target.closest?.(sel);
+  if (t('[data-feed-tab]')) { homePausedUntil = Date.now() + 30_000; return homeGo(t('[data-feed-tab]').dataset.feedTab); }
+  if (t('[data-feed-pause]')) { homeStopped = !homeStopped; return homeFeedMount(); }
+  if (t('[data-feed-all]')) return homeFeedAll(t('[data-feed-all]').dataset.feedAll);
+  if (t('[data-feed-dismiss]')) return homeFeedDismiss(t('[data-feed-dismiss]').dataset.feedDismiss);
+  const backdrop = t('.modal-backdrop');
+  if (backdrop?.querySelector('.feed-all') && (t('[data-feed-close]') || event.target === backdrop || t('.feed-open'))) backdrop.remove();
+});
+addEventListener('resize', () => { if (document.getElementById('home-feed')) homeGo(homeSlide, { smooth: false }); });
+
+// ---------- home screen messages, for admins ----------
+
+let homeAdmin = null;
+let homeDraft = null;
+const blankHomeDraft = () => ({ kind: 'alert', everyone: false, teams: [], people: [], title: '', body: '', link: '', linkWeb: '', tone: 'info', until: '', email: false, find: '' });
+
+function homeAdminHtml() {
+  const a = homeAdmin, d = homeDraft;
+  const seg = (name, value, options) => `<span class="segment">${options.map(([k, l]) => `<button class="seg${value === k ? ' on' : ''}" data-hm-set="${name}" data-value="${k}">${l}</button>`).join('')}</span>`;
+  const pages = [['', 'No link'], ...[...MODULES.filter((m) => m.route), { route: '#/log', name: 'Log time' }].map((m) => [m.route, m.name]).sort((x, y) => x[1].localeCompare(y[1])), ['web', 'A web address']];
+  const found = d.find.trim().length > 1 ? a.people.filter((p) => !d.people.includes(p.id) && p.name.toLowerCase().includes(d.find.trim().toLowerCase())).slice(0, 8) : [];
+  const form = `<div class="card hm-form">
+      <p class="muted">What is it?</p>
+      ${seg('kind', d.kind, [['alert', 'An alert'], ['announcement', 'News']])}
+      <p class="help">${d.kind === 'alert' ? 'Alerts show under Alerts, for the people you choose. Use them for things someone needs to act on.' : 'News shows under News. Use it for things everyone, or a team, should know.'}</p>
+      <p class="muted">Who for?</p>
+      ${seg('everyone', d.everyone ? 'yes' : 'no', [['yes', 'Everyone'], ['no', 'Choose teams or people']])}
+      ${d.everyone ? '' : `<div class="chips" style="margin-top:.6rem">${a.teams.map((t) => `<button class="chip${d.teams.includes(t) ? ' on' : ''}" data-hm-team="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+        <div class="hm-people">${d.people.map((id) => `<span class="con-person">${esc(a.people.find((p) => p.id === id)?.name || id)}<button data-hm-unperson="${esc(id)}" aria-label="Remove">×</button></span>`).join('')}</div>
+        <label>Add a person <input type="search" data-hm-field="find" value="${esc(d.find)}" placeholder="Type a name" autocomplete="off"></label>
+        ${found.length ? `<div class="hm-found">${found.map((p) => `<button class="chip-btn" data-hm-person="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>` : ''}`}
+      <label>Title <input data-hm-field="title" maxlength="120" value="${esc(d.title)}" placeholder="For example: Return the van keys to reception"></label>
+      <label>Message, optional <textarea data-hm-field="body" rows="3" maxlength="1000">${esc(d.body)}</textarea></label>
+      <div class="row">
+        <label>Link to <select data-hm-field="link">${pages.map(([v, l]) => `<option value="${esc(v)}"${d.link === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        ${d.link === 'web' ? `<label style="flex:1">Web address <input data-hm-field="linkWeb" value="${esc(d.linkWeb)}" placeholder="https://"></label>` : ''}
+      </div>
+      <p class="muted">How important?</p>
+      ${seg('tone', d.tone, [['info', 'Normal'], ['important', 'Important']])}
+      <p class="help">Important ones show first, and the strip opens on Alerts for them.</p>
+      <div class="row" style="align-items:end">
+        <label>Show until, optional <input type="date" data-hm-field="until" value="${esc(d.until)}" min="${todayIso()}"></label>
+        <label class="inline-check"><input type="checkbox" data-hm-field="email"${d.email ? ' checked' : ''}> Email it to them too</label>
+      </div>
+      <div class="row"><button class="btn" data-hm-send>Send</button></div>
+      <div class="result" id="hm-result" role="status"></div>
+    </div>`;
+  const rows = a.messages.map((m) => `<li>
+      <span class="title">${m.tone === 'important' ? '<span class="psc-chip warn">Important</span> ' : ''}${esc(m.title)}</span>
+      <span class="xp"><small>${m.kind === 'alert' ? 'Alert' : 'News'}</small></span>
+      <span class="sub">${esc(m.audienceText)}. Seen by ${n(m.seen)} of ${n(m.reach)}${m.dismissed ? `, ${n(m.dismissed)} dismissed` : ''}${m.emailed ? ', emailed' : ''}.
+        ${esc(m.from || '')}, ${feedWhen(m.at)}. ${m.live ? (m.endsAt ? `Showing until ${feedWhen(m.endsAt)}.` : 'Showing until it\'s ended.') : `Ended ${feedWhen(m.endedAt)}.`}
+        ${m.live ? `<button class="linklike" data-hm-end="${m.id}">End it</button>` : ''}</span></li>`).join('');
+  return `${form}<h3>Sent</h3>${rows ? `<ul class="list">${rows}</ul>` : '<div class="card"><p class="muted" style="margin:0">Nothing sent yet.</p></div>'}`;
+}
+
+async function loadHomeAdmin() {
+  const host = document.getElementById('home-admin');
+  if (!host) return;
+  try {
+    homeAdmin = await api('/api/admin/home-messages');
+    homeDraft ||= blankHomeDraft();
+    host.innerHTML = homeAdminHtml();
+  } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; }
+}
+
+function homeAdminRedraw(focusField) {
+  const host = document.getElementById('home-admin');
+  if (!host || !homeAdmin) return;
+  host.innerHTML = homeAdminHtml();
+  if (focusField) { const el = host.querySelector(`[data-hm-field="${focusField}"]`); if (el) { el.focus(); el.setSelectionRange?.(el.value.length, el.value.length); } }
+}
+
+async function homeAdminClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (!t('#home-admin')) return false;
+  const d = homeDraft;
+  const set = t('[data-hm-set]');
+  if (set) {
+    const v = set.dataset.value;
+    if (set.dataset.hmSet === 'everyone') d.everyone = v === 'yes'; else d[set.dataset.hmSet] = v;
+    homeAdminRedraw(); return true;
+  }
+  const team = t('[data-hm-team]');
+  if (team) { const x = team.dataset.hmTeam; d.teams = d.teams.includes(x) ? d.teams.filter((y) => y !== x) : [...d.teams, x]; homeAdminRedraw(); return true; }
+  const person = t('[data-hm-person]');
+  if (person) { d.people.push(person.dataset.hmPerson); d.find = ''; homeAdminRedraw('find'); return true; }
+  const un = t('[data-hm-unperson]');
+  if (un) { d.people = d.people.filter((p) => p !== un.dataset.hmUnperson); homeAdminRedraw(); return true; }
+  const end = t('[data-hm-end]');
+  if (end) {
+    if (!confirm('Take this off everyone\'s home screen?')) return true;
+    try { await api('/api/admin/home-messages/end', { method: 'POST', body: JSON.stringify({ id: end.dataset.hmEnd }) }); toast('Ended'); } catch (err) { toast(err.message); }
+    homeFeedAt = 0;
+    await loadHomeAdmin(); return true;
+  }
+  const send = t('[data-hm-send]');
+  if (send) {
+    send.disabled = true;
+    const out = document.getElementById('hm-result');
+    try {
+      const r = await api('/api/admin/home-messages', { method: 'POST', body: JSON.stringify({ ...d, link: d.link === 'web' ? d.linkWeb : d.link }) });
+      toast(r.emailed ? `Sent, and emailed to ${n(r.emailed)}` : 'Sent');
+      homeDraft = blankHomeDraft();
+      homeFeedAt = 0;
+      await loadHomeAdmin();
+    } catch (err) { out.textContent = err.message; out.className = 'result bad'; send.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+function homeAdminInput(event) {
+  const f = event.target.dataset?.hmField;
+  if (!f || !homeDraft) return false;
+  homeDraft[f] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;
+  if (f === 'find' || f === 'link') homeAdminRedraw(f === 'find' ? 'find' : null);
+  return true;
+}
 
 // ---------- arranging tiles ----------
 
@@ -6503,6 +6785,7 @@ async function adminAction(action, button) {
 }
 
 view.addEventListener('click', async (event) => {
+  if (currentRoute() === '#/admin' && await homeAdminClick(event)) return;
   const onPow = currentRoute() === '#/pow';
   if (currentRoute() === '#/log' && await contractWarnClick(event)) return;
 
@@ -6916,7 +7199,8 @@ async function render() {
       if (!settingsOpen) maybeTour(route);
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
-      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) loadAudit();
+      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); }
+      if (route === '#/') loadHomeFeed();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -6950,6 +7234,7 @@ view.addEventListener('input', (event) => {
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
   if (event.target.matches('[data-elo-sort]')) { eloSort = event.target.value; render(); return; }
+  if (homeAdminInput(event)) return;
   if (event.target.matches('[data-stage-customer]')) { stageCustomer = event.target.value; render(); return; }
   if (event.target.matches('[data-leader-team]')) { leaderTeam = event.target.value; loadLeaderboard(); return; }
   if (event.target.matches('[data-audit-q]')) {
