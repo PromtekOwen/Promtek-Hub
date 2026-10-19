@@ -4306,8 +4306,9 @@ async function triageTicketHtml(t, data, { mid, version, next, progress }) {
     : `<select data-tri-assignee="${esc(id)}" aria-label="Who will do it"><option value="">Choose someone</option>${data.team.map((p) =>
         `<option value="${esc(p.id)}"${(chosen || t.assignee_id) === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
       ${t.assignee_id ? '' : '<small class="tri-need">Nobody is assigned in Jira</small>'}`;
-  const kind = mesTriage.notes[id] ?? t.notes_kind ?? '';
-  const notes = `<select data-tri-notes="${esc(id)}" aria-label="In the release notes"><option value=""${kind ? '' : ' selected'}>Choose</option>${NOTE_KINDS.map(([k, l]) =>
+  // Not included unless someone says otherwise.
+  const kind = mesTriage.notes[id] || t.notes_kind || 'none';
+  const notes = `<select data-tri-notes="${esc(id)}" aria-label="In the release notes">${NOTE_KINDS.map(([k, l]) =>
       `<option value="${k}"${kind === k ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
   const moveLabel = mid ? (next ? `Move to ${esc(next.name)}` : 'Take it out') : 'Not this time';
   return `<div class="triage-ticket" data-tri-ticket="${esc(id)}">
