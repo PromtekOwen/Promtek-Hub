@@ -382,7 +382,38 @@ input.tiny { width: 5.5rem; padding: .35rem .5rem; }
 .list li.call .row { flex-wrap: wrap; margin-top: .6rem; }
 
 /* Loading */
-.loading-card { display: flex; align-items: center; gap: .75rem; color: var(--muted); }
+.loading-card { display: grid; place-items: center; min-height: 10rem; color: var(--muted); }
+.loading-card.small { min-height: 5.5rem; }
+/* Three balls bouncing in turn, in the brand blues. */
+.loader-block { display: flex; flex-direction: column; align-items: center; gap: .85rem; color: var(--muted); font-weight: 600; text-align: center; }
+.loader-block.small { gap: .55rem; font-size: .92rem; }
+.loader { display: inline-flex; align-items: flex-end; gap: .45rem; height: 1.9rem; }
+.loader i { width: .8rem; height: .8rem; border-radius: 50%; background: var(--blue); animation: loader-bounce 1.05s ease-in-out infinite; }
+.loader i:nth-child(1) { background: var(--blue-deep); }
+.loader i:nth-child(2) { animation-delay: .14s; }
+.loader i:nth-child(3) { animation-delay: .28s; background: #4FB6E3; }
+.loader-block.small .loader { height: 1.4rem; gap: .35rem; }
+.loader-block.small .loader i { width: .6rem; height: .6rem; }
+@keyframes loader-bounce {
+  0%, 70%, 100% { transform: translateY(0) scale(.9); opacity: .55; }
+  35% { transform: translateY(-1.05rem) scale(1); opacity: 1; }
+}
+.loader-block.small .loader i { animation-name: loader-bounce-small; }
+@keyframes loader-bounce-small {
+  0%, 70%, 100% { transform: translateY(0) scale(.9); opacity: .55; }
+  35% { transform: translateY(-.75rem) scale(1); opacity: 1; }
+}
+/* Floats over a page that's reloading in place. */
+.page-loader { position: fixed; left: 50%; top: 42%; z-index: 60; transform: translate(-50%, -50%) scale(.94); opacity: 0; pointer-events: none;
+  background: var(--surface); border-radius: var(--radius); box-shadow: 0 6px 30px rgba(15, 43, 61, .16); padding: 1.1rem 1.6rem 1rem;
+  transition: opacity .18s ease, transform .18s ease; }
+.page-loader.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+@media (prefers-reduced-motion: reduce) {
+  .loader i { animation: loader-fade 1.6s ease-in-out infinite; }
+  .loader-block.small .loader i { animation-name: loader-fade; }
+  @keyframes loader-fade { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .page-loader { transition: none; }
+}
 .spinner { width: 20px; height: 20px; flex: none; border-radius: 50%;
   border: 2.5px solid var(--tint); border-top-color: var(--blue); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -564,7 +595,7 @@ body.tile-dragging, body.tile-dragging * { cursor: grabbing !important; }
 .perm-cell span { font-weight: 700; color: var(--blue-deep); }
 .perm-grid { width: 100%; } .perm-grid td:first-child { white-space: normal; min-width: 0; } .perm-grid th { white-space: nowrap; }
 .team-picker { margin: .75rem 0; }
-#view.refreshing { opacity: .55; transition: opacity .15s; pointer-events: none; }
+#view.refreshing { opacity: .45; transition: opacity .2s; pointer-events: none; }
 .condor-tabs { overflow-x: auto; scrollbar-width: none; }
 .condor-tabs::-webkit-scrollbar { display: none; }
 @media (max-width: 480px) { .condor-tabs .tab { font-size: .9rem; padding: .45rem .2rem; flex: 1 0 auto; } }

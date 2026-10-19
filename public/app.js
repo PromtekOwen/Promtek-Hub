@@ -198,11 +198,11 @@ const pages = {
           <div><dt>Next rank</dt><dd>${e.rank?.nextAt ? n(e.rank.nextAt) : '—'}${e.rank?.nextName ? `<small>${esc(e.rank.nextName)}</small>` : ''}</dd></div>
         </dl>
         <h2>ELO history</h2>
-        <div id="elo-history"><div class="card"><p class="muted">Loading your ELO history…</p></div></div>
+        <div id="elo-history">${sectionLoading('Loading your ELO history')}</div>
         <h2>Taken into account</h2>
-        <div id="modifiers"><div class="card"><p class="muted">Loading…</p></div></div>
+        <div id="modifiers">${sectionLoading()}</div>
         <h2>Leaderboard</h2>
-        <div id="leaderboard" class="card"><p class="muted">Loading the leaderboard…</p></div>
+        <div id="leaderboard" class="card">${loaderHtml('Loading the leaderboard', 'small')}</div>
         <h2>Where your XP came from</h2>
         ${xpList(me.recent, 'No XP yet. Log time in Tempo and it appears here within a couple of minutes.')}`;
     },
@@ -449,11 +449,11 @@ const pages = {
 
         <h2>Home screen messages</h2>
         <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
-        <div id="home-admin"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading</p></div></div>
+        <div id="home-admin">${sectionLoading()}</div>
 
         <h2>Audit log</h2>
         <p class="muted">Changes made by hand to employees, vehicles and settings: who changed what, when, and what it was before.</p>
-        <div id="audit-log"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading</p></div></div>
+        <div id="audit-log">${sectionLoading()}</div>
 
         <h2>Alerts</h2>
         <div class="card">
@@ -3281,7 +3281,7 @@ function engineerReportHtml(data) {
     <h2>Hours logged per week</h2>
     <div class="card"><div class="chart wide">${chart}</div></div>
     <h2>ELO history</h2>
-    <div id="elo-history"><div class="card"><p class="muted">Loading ELO history…</p></div></div>
+    <div id="elo-history">${sectionLoading('Loading ELO history')}</div>
     ${trend}
     <h2>Most time spent on</h2>
     ${data.topJobs.length ? `<ul class="list">${data.topJobs.map((j) => `<li>
@@ -4410,7 +4410,7 @@ async function condorHtml() {
   else if (condorTab === 'ratings') body = await mesRatingsHtml();
   else if (condorTab === 'plan') body = await mesPlanHtml();
   else if (condorTab === 'notes') body = await rnHtml();
-  else body = '<div id="day-drafts"><div class="card"><p class="muted" style="margin:0"><span class="spinner" aria-hidden="true"></span> Loading your days</p></div></div>';
+  else body = `<div id="day-drafts">${sectionLoading('Loading your days')}</div>`;
   return `${mesEst && !mesEst.embedded ? '' : condorTabs()}${body}`;
 }
 
@@ -7662,8 +7662,13 @@ function currentRoute() {
   return pages[hash] ? hash : '#/';
 }
 
-const spinner = (label = 'Loading') => `<div class="card loading-card"><span class="spinner" aria-hidden="true"></span>
-    <span>${esc(label)}…</span></div>`;
+// The loading animation: three balls bouncing in turn, in the brand blues.
+const loaderHtml = (label = 'Loading', size = '') => `<div class="loader-block${size ? ` ${size}` : ''}" role="status">
+    <span class="loader" aria-hidden="true"><i></i><i></i><i></i></span><span class="loader-label">${esc(label)}…</span></div>`;
+// A whole page loading.
+const spinner = (label = 'Loading') => `<div class="card loading-card">${loaderHtml(label)}</div>`;
+// One part of a page loading after the rest has arrived.
+const sectionLoading = (label = 'Loading') => `<div class="card loading-card small">${loaderHtml(label, 'small')}</div>`;
 
 // Some pages know what they are waiting for.
 const WAITING_FOR = {
@@ -7716,6 +7721,18 @@ let renderToken = 0;
 // different page starts at the top.
 let lastView = null;
 
+// While a page you're on reloads, a loader floats over it.
+let pageLoaderEl = null;
+function pageLoader(label) {
+  if (!pageLoaderEl) {
+    pageLoaderEl = document.createElement('div');
+    pageLoaderEl.className = 'page-loader';
+    document.body.appendChild(pageLoaderEl);
+  }
+  if (label) pageLoaderEl.innerHTML = loaderHtml(label);
+  pageLoaderEl.classList.toggle('show', Boolean(label));
+}
+
 async function render() {
   const token = ++renderToken;
   const route = currentRoute();
@@ -7733,7 +7750,7 @@ async function render() {
   // On the same page the content stays put, dimmed, so the scroll position isn't lost.
   const slow = setTimeout(() => {
     if (token !== renderToken) return;
-    if (samePage) view.classList.add('refreshing');
+    if (samePage) { view.classList.add('refreshing'); pageLoader(WAITING_FOR[route]?.() || 'Loading'); }
     else view.innerHTML = spinner(WAITING_FOR[route]?.() || 'Loading');
   }, 160);
 
@@ -7762,7 +7779,7 @@ async function render() {
     }
   } finally {
     clearTimeout(slow);
-    if (token === renderToken) view.classList.remove('refreshing');
+    if (token === renderToken) { view.classList.remove('refreshing'); pageLoader(null); }
   }
 }
 
