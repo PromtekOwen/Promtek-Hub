@@ -1,5 +1,5 @@
 // Progress and effort reporting, built from the XP ledger and weekly snapshots.
-import { londonDate, mondayOf } from './sync.js';
+import { londonDate, mondayOf, ledgerStamp, remembered } from './sync.js';
 import { progressFor, rankFor, RANKS } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
 import { teamsOf } from './permissions.js';
@@ -106,28 +106,21 @@ export async function engineerReport(env, accountId, { weeks = 12 } = {}) {
 // with how far finished jobs have moved it over the period.
 export async function leaderboard(env, { period = 'week', metric = 'xp', accountId = null, team = null } = {}) {
   if (metric === 'elo') return eloLeaderboard(env, { period, accountId, team });
-  let rows;
-  if (period === 'all') {
-    const { results } = await env.DB.prepare(
-      `SELECT e.account_id, e.name, e.teams, e.team, e.opening_xp + COALESCE(SUM(l.xp), 0) AS xp
-         FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
-        GROUP BY e.account_id ORDER BY xp DESC`
-    ).all();
-    rows = results.map((r) => ({ ...r, total: r.xp }));
-  } else {
-    const from = period === 'month'
-      ? londonDate().slice(0, 8) + '01'
-      : mondayOf(londonDate());
-    const { results } = await env.DB.prepare(
-      `SELECT e.account_id, e.name, e.teams, e.team,
-              COALESCE(SUM(CASE WHEN l.work_date >= ? THEN l.xp END), 0) AS xp,
-              COALESCE(SUM(CASE WHEN l.work_date >= ? THEN l.seconds END), 0) AS seconds,
-              e.opening_xp + COALESCE(SUM(l.xp), 0) AS total
-         FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
-        GROUP BY e.account_id ORDER BY xp DESC`
-    ).bind(from, from).all();
-    rows = results;
-  }
+  // Everyone's totals from the ledger are kept until the ledger changes, so the board
+  // reads the ledger once per change rather than on every visit.
+  const from = period === 'month' ? londonDate().slice(0, 8) + '01' : period === 'all' ? '0000-00-00' : mondayOf(londonDate());
+  const sums = await remembered(env, `leaderboard:${from}`, await ledgerStamp(env), async () => (await env.DB.prepare(
+    `SELECT account_id, COALESCE(SUM(CASE WHEN work_date >= ? THEN xp END), 0) AS xp,
+            COALESCE(SUM(CASE WHEN work_date >= ? THEN seconds END), 0) AS seconds, COALESCE(SUM(xp), 0) AS ledger
+       FROM xp_ledger GROUP BY account_id`
+  ).bind(from, from).all()).results);
+  const byId = new Map(sums.map((r) => [r.account_id, r]));
+  const { results: people } = await env.DB.prepare('SELECT account_id, name, teams, team, opening_xp FROM employees').all();
+  let rows = people.map((e) => {
+    const t = byId.get(e.account_id) || { xp: 0, seconds: 0, ledger: 0 };
+    const total = (e.opening_xp || 0) + t.ledger;
+    return { ...e, xp: period === 'all' ? total : t.xp, seconds: t.seconds, total };
+  }).sort((a, b) => b.xp - a.xp);
 
   if (team) rows = rows.filter((r) => teamsOf(r).includes(team));
   const ranked = rows.map((r, i) => ({

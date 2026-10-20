@@ -8,7 +8,7 @@
 // job, kept to a fixed number of calls per run, and picked up again on the next
 // run if they don't finish.
 import { jira, searchPage, customerProjects, projectFilter } from './jira.js';
-import { raiseAlert, getState, setState, londonDate } from './sync.js';
+import { raiseAlert, getState, setState, londonDate, ledgerStamp } from './sync.js';
 import { leadsOfTeam, groupsOf } from './permissions.js';
 
 export const FIELDS = {
@@ -47,6 +47,7 @@ export const END_MIN_SECONDS = 3600;                                // what's le
 const CHASE_DAYS = 14;
 const SYNC_EVERY_MS = 20 * 60 * 1000;
 const RETRY_EVERY_MS = 5 * 60 * 1000;
+const CLOCK_EVERY_MS = 60 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
 const LOOKBACK_DAYS = 90;
 const TIME_DAYS = 30;
@@ -812,7 +813,14 @@ export async function run(env, { force = false } = {}) {
       out.looked = await lookupIssues(env, b, windowStart);
       await setState(env, 'contracts_sync_at', Date.now());
     }
-    if (started && clockStart) {
+    // The clocks are worked out from every worklog on a contract, so only when time has been
+    // logged or changed since, Jira refused a charge, or at least once an hour.
+    let clockRun = {};
+    try { clockRun = JSON.parse((await getState(env, 'contracts_clock_run')) || '{}'); } catch { /* run it */ }
+    const stamp = await ledgerStamp(env);
+    const clockDue = force || retryDue || clockRun.stamp !== stamp || Date.now() - Number(clockRun.at || 0) >= CLOCK_EVERY_MS;
+    if (started && clockStart && clockDue) {
+      await setState(env, 'contracts_clock_run', JSON.stringify({ stamp, at: Date.now() }));
       let st = await loadState(env);
       await applyStatuses(env, b, st, today);
       const clocks = buildClocks(await worklogsSince(env, clockStart), st, clockStart);
@@ -864,6 +872,20 @@ function mustSee(viewer, insights = false) {
   }
 }
 
+// Every contract, its items and its clock, worked out from the worklogs. Kept in memory
+// and reused until a Jira read, the ledger or a setting moves on, so opening the tile
+// or a contract doesn't add up all the worklogs again.
+let kept = null;
+async function stateAndClocks(env, head) {
+  const key = `${head.syncedAt}|${head.clockStart}|${await ledgerStamp(env)}|${(await getState(env, 'contracts_touched')) || ''}`;
+  if (kept?.key === key && Date.now() - kept.at < 60 * 60 * 1000) return kept;
+  const st = await loadState(env);
+  const clocks = head.clockStart ? buildClocks(await worklogsSince(env, head.clockStart), st, head.clockStart) : new Map();
+  kept = { key, at: Date.now(), st, clocks };
+  return kept;
+}
+const touched = (env) => setState(env, 'contracts_touched', String(Date.now()));
+
 async function header(env) {
   const [started, clockStart, changed, syncAt, error] = await Promise.all(
     ['contracts_started', 'contracts_clock_start', 'contracts_clock_changed', 'contracts_sync_at', 'contracts_error'].map((k) => getState(env, k)));
@@ -888,8 +910,7 @@ function summarise(c, items, clock, charges, clockStart) {
 export async function overview(env, viewer) {
   mustSee(viewer);
   const head = await header(env);
-  const st = await loadState(env);
-  const clocks = head.clockStart ? buildClocks(await worklogsSince(env, head.clockStart), st, head.clockStart) : new Map();
+  const { st, clocks } = await stateAndClocks(env, head);
   const { results: ch } = await env.DB.prepare('SELECT contract_key, COUNT(*) AS n FROM contract_charges GROUP BY contract_key').all();
   const charged = new Map(ch.map((r) => [r.contract_key, r.n]));
   const contracts = st.contracts.filter((c) => !MANUAL.includes(c.status))
@@ -908,10 +929,9 @@ export async function overview(env, viewer) {
 export async function detail(env, viewer, key) {
   mustSee(viewer);
   const head = await header(env);
-  const st = await loadState(env);
+  const { st, clocks } = await stateAndClocks(env, head);
   const c = st.contracts.find((x) => x.issue_key === key);
   if (!c) throw new Error('That contract is no longer in the list.');
-  const clocks = head.clockStart ? buildClocks(await worklogsSince(env, head.clockStart), st, head.clockStart) : new Map();
   const clock = clocks.get(key);
   const [{ results: charges }, { results: events }] = await Promise.all([
     env.DB.prepare('SELECT * FROM contract_charges WHERE contract_key = ? ORDER BY seq DESC').bind(key).all(),
@@ -1019,6 +1039,7 @@ export async function saveOrgMatch(env, viewer, { org, projectKey }) {
   } else {
     await env.DB.prepare('DELETE FROM contract_org_map WHERE org = ?').bind(o).run();
   }
+  await touched(env);
   return { ok: true };
 }
 
@@ -1028,6 +1049,7 @@ export async function start(env, viewer) {
   const now = new Date().toISOString();
   await setState(env, 'contracts_started', now);
   await setState(env, 'contracts_clock_start', londonDate());
+  await touched(env);
   await setState(env, 'contracts_org_check', now);
   return { ok: true, started: now };
 }

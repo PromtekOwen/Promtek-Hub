@@ -5833,7 +5833,7 @@ function personAccessHtml(p) {
 function readsHtml(r) {
   if (!r) return '';
   const today = new Date().toISOString().slice(0, 10);
-  const day = r.days.find((d) => d.day === today) || { background: { total: 0, top: [], runs: 0 }, pages: { total: 0, top: [] } };
+  const day = r.days.find((d) => d.day === today) || { background: { total: 0, top: [], runs: 0 }, pages: { total: 0, top: [] }, queries: [] };
   const total = day.background.total + day.pages.total;
   const pct = Math.min(100, total / r.limit * 100);
   const rows = (list) => list.length
@@ -5856,6 +5856,9 @@ function readsHtml(r) {
       <div class="result" id="reads-result" role="status"></div>
       <h3 style="margin-bottom:0">Busiest background jobs today</h3>${rows(day.background.top)}
       <h3 style="margin-bottom:0">Busiest pages today</h3>${rows(day.pages.top)}
+      ${day.queries?.length ? `<details class="reads-queries"><summary>Busiest database queries today</summary>
+        <ul class="list" style="box-shadow:none;margin-top:.5rem">${day.queries.map((x) => `<li><span class="title"><code>${esc(x.q)}</code></span>
+          <span class="sub">${esc(x.where)}</span><span class="xp">${n(x.n)}</span></li>`).join('')}</ul></details>` : ''}
       ${earlier.length ? `<h3 style="margin-bottom:0">Earlier days</h3>
         <ul class="list" style="box-shadow:none;margin-top:.5rem">${earlier.map((d) => `<li><span class="title">${esc(d.day)}</span>
           <span class="sub">Background ${n(d.background.total)}, pages ${n(d.pages.total)}${d.background.top[0] ? `. Busiest: ${esc(d.background.top[0][0])}` : ''}</span>

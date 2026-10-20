@@ -1,6 +1,6 @@
 // Keeps the XP ledger in step with Tempo and the employee list in step with Jira.
 import { fetchWorklogs } from './tempo.js';
-import { metered, addReads, readsToday, tidyReads, utcDay, BACKGROUND_ROW_LIMIT } from './d1-meter.js';
+import { metered, addReads, readsToday, tidyReads, utcDay, queryName, BACKGROUND_ROW_LIMIT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
 
@@ -27,6 +27,24 @@ export async function setState(env, key, value) {
   await env.DB.prepare(
     'INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   ).bind(key, String(value)).run();
+}
+
+// Moved on whenever XP in the ledger changes, so totals worked out from the
+// ledger can be kept until then instead of being added up again on every visit.
+export async function ledgerChanged(env) {
+  await setState(env, 'ledger_changed_at', String(Date.now()));
+}
+export const ledgerStamp = async (env) => (await getState(env, 'ledger_changed_at')) || '0';
+
+// A result worked out from many rows, kept in one row until its stamp moves on.
+export async function remembered(env, key, stamp, work) {
+  const saved = await getState(env, `memo:${key}`);
+  if (saved) {
+    try { const m = JSON.parse(saved); if (m.stamp === stamp) return m.value; } catch { /* worked out again */ }
+  }
+  const value = await work();
+  try { await setState(env, `memo:${key}`, JSON.stringify({ stamp, value })); } catch { /* too big to keep: fine */ }
+  return value;
 }
 
 async function runBatches(env, statements) {
@@ -164,6 +182,7 @@ export async function processWorklogs(env, worklogs) {
   }
 
   await runBatches(env, stmts);
+  if (changed) await ledgerChanged(env);
   if (unmatched.size) await raiseUnmatchedAlert(env, [...unmatched]);
   return { processed: wls.length, changed, unmatched: unmatched.size };
 }
@@ -264,6 +283,7 @@ export async function reconcileNextDay(env) {
     env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(id),
   ]));
+  if (gone.length) await ledgerChanged(env);
   return { day, fetched: worklogs.length, deleted: gone.length };
 }
 
@@ -394,8 +414,13 @@ export async function runScheduled(rawEnv) {
   if (!(await getState(rawEnv, 'ledger_start'))) return;
   // Every row read is counted against the job that read it.
   const reads = {};
+  const queries = {};
   let current = 'Scheduler';
-  const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows) => { reads[current] = (reads[current] || 0) + rows; }) };
+  const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql) => {
+    reads[current] = (reads[current] || 0) + rows;
+    const q = `${current}: ${queryName(sql)}`;
+    queries[q] = (queries[q] || 0) + rows;
+  }) };
   const errors = [];
   const attempt = async (label, fn) => {
     const before = current;
@@ -407,7 +432,7 @@ export async function runScheduled(rawEnv) {
     current = 'Scheduler';
     await setState(env, 'last_scheduled_run', new Date().toISOString());
     await setState(env, 'last_error', errors.length ? `${new Date().toISOString()} ${errors.join(' | ')}` : '');
-    try { await addReads(rawEnv, 'd1_reads_bg', reads, { runs: 1 }); } catch (err) { console.warn('Read count not saved:', err.message); }
+    try { await addReads(rawEnv, 'd1_reads_bg', reads, { runs: 1, queries }); } catch (err) { console.warn('Read count not saved:', err.message); }
   };
 
   // Once background work has used its share of the day's reads, it stops until
@@ -519,7 +544,9 @@ export async function runScheduled(rawEnv) {
       return r?.idle ? { idle: true } : r;
     },
     alerts: async () => {
-      const waiting = await env.DB.prepare('SELECT COUNT(*) AS n FROM alerts WHERE sent_at IS NULL').first();
+      // Without a mail relay there is nothing to send, so the waiting alerts aren't counted every run.
+      if (!env.ALERT_WEBHOOK_URL) return { idle: true };
+      const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL LIMIT 1').first();
       if (!waiting?.n) return { idle: true };
       await attempt('Alert email', () => sendAlerts(env));
     },

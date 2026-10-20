@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, setState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
+import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -22,7 +22,7 @@ import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
-import { metered, addReads, readsReport } from './d1-meter.js';
+import { metered, addReads, readsReport, queryName } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
@@ -67,14 +67,17 @@ function fromAnotherSite(request, url) {
 // Rows read by each page, kept in memory and saved about once a minute, so the
 // count costs almost nothing. Counts from other copies of the Worker add up too.
 const pageReads = {};
+const pageQueries = {};
 let pageReadsSaved = Date.now();
 const pageName = (method, pathname) => `${method} ${pathname.replace(/\/[A-Z]+-\d+/g, '/KEY').replace(/\/\d+(?=\/|$)/g, '/ID')}`;
 
 async function savePageReads(rawEnv) {
   const counts = { ...pageReads };
+  const queries = { ...pageQueries };
   for (const k of Object.keys(pageReads)) delete pageReads[k];
+  for (const k of Object.keys(pageQueries)) delete pageQueries[k];
   pageReadsSaved = Date.now();
-  try { await addReads(rawEnv, 'd1_reads_web', counts); } catch (err) { console.warn('Read count not saved:', err.message); }
+  try { await addReads(rawEnv, 'd1_reads_web', counts, { queries }); } catch (err) { console.warn('Read count not saved:', err.message); }
 }
 
 export default {
@@ -85,7 +88,11 @@ export default {
     if (fromAnotherSite(request, url)) return json({ error: 'That request didn\'t come from the hub.' }, 403);
 
     const name = pageName(request.method, url.pathname);
-    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows) => { pageReads[name] = (pageReads[name] || 0) + rows; }) };
+    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql) => {
+      pageReads[name] = (pageReads[name] || 0) + rows;
+      const q = `${name}: ${queryName(sql)}`;
+      pageQueries[q] = (pageQueries[q] || 0) + rows;
+    }) };
     if (Date.now() - pageReadsSaved > 60_000 && Object.keys(pageReads).length) ctx.waitUntil(savePageReads(rawEnv));
 
     const user = await getUser(request, env);
@@ -725,6 +732,7 @@ async function route(request, env, url, user) {
         env.DB.prepare('DELETE FROM unmatched_worklogs WHERE account_id = ?').bind(accountId),
         env.DB.prepare('DELETE FROM employees WHERE account_id = ?').bind(accountId),
       ]);
+      await ledgerChanged(env);
       return json({ ok: true, kept: false });
     }
     if (method === 'GET' && pathname === '/api/admin/people') return json({ ...(await People.listPeople(env)), icons: People.ICONS.map(([id, label]) => ({ id, label })), departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
@@ -865,14 +873,23 @@ async function getTime(env, user, url) {
 
 // ---------- Admin ----------
 
+async function ledgerTotals(env) {
+  return remembered(env, 'ledger_totals', await ledgerStamp(env), async () => (await env.DB.prepare(
+    'SELECT account_id, COALESCE(SUM(xp), 0) AS xp, COUNT(*) AS worklogs FROM xp_ledger GROUP BY account_id'
+  ).all()).results);
+}
+
 async function adminOverview(env) {
   const [employees, unmatched, state, alerts, jobs] = await Promise.all([
-    env.DB.prepare(
-      `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension, e.active,
-              COALESCE(SUM(l.xp), 0) AS ledger_xp, COUNT(l.worklog_id) AS worklogs
-         FROM employees e LEFT JOIN xp_ledger l ON l.account_id = e.account_id
-        GROUP BY e.account_id ORDER BY e.name`
-    ).all(),
+    (async () => {
+      // Each person's ledger total is kept until the ledger changes, rather than added up on every visit.
+      const totals = new Map((await ledgerTotals(env)).map((t) => [t.account_id, t]));
+      const { results } = await env.DB.prepare(
+        `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension, e.active
+           FROM employees e ORDER BY e.name`
+      ).all();
+      return { results: results.map((e) => ({ ...e, ledger_xp: totals.get(e.account_id)?.xp || 0, worklogs: totals.get(e.account_id)?.worklogs || 0 })) };
+    })(),
     env.DB.prepare(
       `SELECT account_id, COUNT(*) AS worklogs, SUM(seconds) AS seconds, MAX(work_date) AS latest
          FROM unmatched_worklogs GROUP BY account_id ORDER BY worklogs DESC LIMIT 50`

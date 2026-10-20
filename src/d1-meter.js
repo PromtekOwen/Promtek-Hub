@@ -17,25 +17,29 @@ export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 1
 // Wraps a D1 binding so every query's rows read go to count(rows).
 // first() is answered with all(), which is what D1 does underneath, so the
 // rows read are reported for it too.
+// A query's text, short enough to show, so the busiest ones can be listed.
+export const queryName = (sql) => String(sql).replace(/\s+/g, ' ').replace(/\((\?,\s*)+\?\)/g, '(?…)').trim().slice(0, 140);
+
 export function metered(db, count) {
-  const tally = (result) => { const rows = Number(result?.meta?.rows_read); if (rows > 0) count(rows); return result; };
-  const wrap = (stmt) => ({
+  const tally = (result, sql) => { const rows = Number(result?.meta?.rows_read); if (rows > 0) count(rows, sql); return result; };
+  const wrap = (stmt, sql) => ({
     statement: stmt,
-    bind: (...args) => wrap(stmt.bind(...args)),
-    all: async () => tally(await stmt.all()),
-    run: async () => tally(await stmt.run()),
+    sql,
+    bind: (...args) => wrap(stmt.bind(...args), sql),
+    all: async () => tally(await stmt.all(), sql),
+    run: async () => tally(await stmt.run(), sql),
     raw: (...args) => stmt.raw(...args),
     first: async (column) => {
-      const result = tally(await stmt.all());
+      const result = tally(await stmt.all(), sql);
       const row = result?.results?.[0] ?? null;
       return column ? (row ? row[column] ?? null : null) : row;
     },
   });
   return {
-    prepare: (sql) => wrap(db.prepare(sql)),
+    prepare: (sql) => wrap(db.prepare(sql), sql),
     batch: async (statements) => {
       const results = await db.batch(statements.map((s) => s.statement || s));
-      results.forEach(tally);
+      results.forEach((r, i) => tally(r, statements[i]?.sql || 'batch'));
       return results;
     },
     unmetered: db,
@@ -43,7 +47,8 @@ export function metered(db, count) {
 }
 
 // Adds counts to a day's record: { total, jobs: { name: rows }, runs }.
-export async function addReads(env, key, counts, { runs = 0 } = {}) {
+const KEEP_QUERIES = 60;
+export async function addReads(env, key, counts, { runs = 0, queries = {} } = {}) {
   const db = env.DB.unmetered || env.DB;
   const plain = { DB: db };
   const day = utcDay();
@@ -57,6 +62,10 @@ export async function addReads(env, key, counts, { runs = 0 } = {}) {
     record.total += rows;
   }
   record.runs += runs;
+  record.queries ||= {};
+  for (const [q, rows] of Object.entries(queries)) record.queries[q] = (record.queries[q] || 0) + rows;
+  // Only the busiest are kept, so the record stays small.
+  record.queries = Object.fromEntries(Object.entries(record.queries).sort((a, b) => b[1] - a[1]).slice(0, KEEP_QUERIES));
   await setState(plain, stateKey, JSON.stringify(record));
   return record;
 }
@@ -85,13 +94,15 @@ export async function readsReport(env) {
     try { value = JSON.parse(row.value); } catch { continue; }
     (days[day] ||= { day, background: { total: 0, jobs: {}, runs: 0 }, pages: { total: 0, jobs: {} } })[kind === 'd1_reads_bg' ? 'background' : 'pages'] = {
       total: value.total || 0, runs: value.runs || 0,
-      jobs: value.jobs || {},
+      jobs: value.jobs || {}, queries: value.queries || {},
     };
   }
   const list = Object.values(days).sort((a, b) => b.day.localeCompare(a.day)).map((d) => ({
     ...d,
     background: { ...d.background, top: Object.entries(d.background.jobs).sort((a, b) => b[1] - a[1]).slice(0, 12) },
     pages: { ...d.pages, top: Object.entries(d.pages.jobs).sort((a, b) => b[1] - a[1]).slice(0, 12) },
+    queries: [...Object.entries(d.background.queries || {}).map(([q, n]) => ({ q, n, where: 'Background' })),
+      ...Object.entries(d.pages.queries || {}).map(([q, n]) => ({ q, n, where: 'Pages' }))].sort((a, b) => b.n - a.n).slice(0, 15),
   }));
   return {
     limit: DAILY_ROW_LIMIT, backgroundLimit: BACKGROUND_ROW_LIMIT,

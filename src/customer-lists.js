@@ -23,6 +23,8 @@ export const LISTS = {
 export const PSC_HOME = { Incident: 'pscs', 'Further Investigation': 'pscs', PSC: 'pscs', Problem: 'pscs', Change: 'pscs', 'Service Request': 'service' };
 
 const RUN_EVERY_MS = 10 * 60 * 1000;
+// Even with nothing new read, the moves are checked again this often.
+const RECHECK_MS = 6 * 3600 * 1000;
 const LISTS_EVERY_MS = 24 * 3600 * 1000;
 const RUN_CALLS = 24;
 const MAX_TRIES = 3;
@@ -232,18 +234,29 @@ export async function run(env, { force = false } = {}) {
     const listsAt = Number((await getState(env, 'lists_read_at')) || 0);
     if (Date.now() - listsAt > LISTS_EVERY_MS) out.lists = await readLists(env, b);
     out.quotes = await readQuotes(env, b);
+    // Working out what needs moving reads every quote and PSC, so it's only done when
+    // something has changed: a quote or PSC read from Jira, the lists, or moves left to retry.
+    let checked = {};
+    try { checked = JSON.parse((await getState(env, 'lists_checked')) || '{}'); } catch { /* check */ }
+    const pscVersion = (await getState(env, 'psc_version')) || '0';
+    const dirty = force || out.quotes > 0 || out.lists !== undefined || checked.psc !== pscVersion || checked.pending
+      || Date.now() - Number(checked.at || 0) > RECHECK_MS;
+    if (!dirty) { out.skipped = 'nothing changed'; await setState(env, 'lists_error', ''); out.calls = b.used; return out; }
+    let unfinished = false;
     for (const m of await movesNeeded(env)) {
-      if (b.left() < 2) break;
+      if (b.left() < 2) { unfinished = true; break; }
       if (await move(env, b, m)) out.moved++; else out.failed++;
     }
     for (const l of await statusesNeeded(env)) {
-      if (b.left() < 2) break;
+      if (b.left() < 2) { unfinished = true; break; }
       if (await setListStatus(env, b, l)) out.statuses++;
     }
+    await setState(env, 'lists_checked', JSON.stringify({ psc: pscVersion, at: Date.now(), pending: unfinished || out.failed > 0 }));
     await setState(env, 'lists_error', '');
   } catch (err) {
     if (!(err instanceof OutOfCalls)) { await setState(env, 'lists_error', `${new Date().toISOString()} ${err.message}`); throw err; }
     out.partial = true;
+    await setState(env, 'lists_checked', JSON.stringify({ at: Date.now(), pending: true }));
   }
   const { results } = await env.DB.prepare("SELECT issue_key, error FROM list_moves WHERE status = 'failed' AND tries >= ? ORDER BY at DESC LIMIT 5").bind(MAX_TRIES).all();
   if (results.length) {
@@ -257,6 +270,7 @@ export async function run(env, { force = false } = {}) {
 
 // Gives refused moves another go each day, in case the reason has been fixed.
 export async function daily(env) {
+  await setState(env, 'lists_checked', JSON.stringify({ at: 0, pending: true }));
   await env.DB.prepare("UPDATE list_moves SET tries = ? - 1 WHERE status = 'failed' AND tries >= ?").bind(MAX_TRIES, MAX_TRIES).run();
   await env.DB.prepare('UPDATE customer_lists SET status_error = NULL').run();
 }

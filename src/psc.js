@@ -46,6 +46,7 @@ export function tierOf(contract) {
 
 const SYNC_EVERY_MS = 10 * 60 * 1000;
 const RETRY_EVERY_MS = 5 * 60 * 1000;
+const ALERTS_EVERY_MS = 30 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
 const REFRESH_GAP_MS = 60 * 1000;
 const RECENT_DAYS = 30;
@@ -706,10 +707,16 @@ export async function run(env, { force = false } = {}) {
     if (force || reading || Date.now() - last >= SYNC_EVERY_MS) out.read = await sync(env, b);
     // Alerts look at every item, so they're worked out once a read has finished, or at most
     // every 10 minutes during a long one, rather than after every page.
+    // Alerts look at every item, so they're worked out when something has changed, and
+    // otherwise every half hour for items that have since passed their target. Not during a long read.
     const stillReading = Boolean(await getState(env, 'psc_full_started'));
-    if (force || !stillReading || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= SYNC_EVERY_MS) {
-      await alerts(env, await context(env, { fresh: true }));
+    const v = await version(env);
+    const alertsDue = force || (!stillReading && ((await getState(env, 'psc_alerts_version')) !== v
+      || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= ALERTS_EVERY_MS));
+    if (alertsDue) {
+      await alerts(env, await context(env));
       await setState(env, 'psc_alerts_at', Date.now());
+      await setState(env, 'psc_alerts_version', v);
     }
     await setState(env, 'psc_error', '');
   } catch (err) {

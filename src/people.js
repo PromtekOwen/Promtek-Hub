@@ -3,7 +3,7 @@
 import { progressFor } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
 import { cleanAccess, groupsOf, teamsOf, leadOf } from './permissions.js';
-import { getState, setState } from './sync.js';
+import { getState, setState, ledgerChanged } from './sync.js';
 
 // Badges mark the people to go to in an emergency, so they stand out on the
 // chart. Ordinary job roles are covered by the job title.
@@ -154,6 +154,7 @@ export async function changeAccountId(env, { from, to }) {
     env.DB.prepare('UPDATE pow_forms SET account_id = ? WHERE account_id = ?').bind(target, from),
     env.DB.prepare('UPDATE obs_surveys SET account_id = ? WHERE account_id = ?').bind(target, from),
   ]);
+  await ledgerChanged(env);
   return { ok: true };
 }
 
@@ -171,6 +172,7 @@ export async function removePerson(env, { accountId, keepHistory = false }) {
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE account_id = ?').bind(accountId),
     env.DB.prepare('DELETE FROM employees WHERE account_id = ?').bind(accountId),
   ]);
+  await ledgerChanged(env);
   return { ok: true, kept: false };
 }
 

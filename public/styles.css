@@ -1093,3 +1093,6 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .dd-search { padding: 6px 6px 2px; }
 .dd-search input { width: 100%; padding: .45rem .7rem; border-radius: 8px; }
 .dd-search input:focus, .dd-search input:focus-visible { outline: none; border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+.reads-queries { margin-top: 1rem; }
+.reads-queries summary { cursor: pointer; font-weight: 600; }
+.reads-queries code { font-size: .82rem; white-space: normal; word-break: break-word; }
