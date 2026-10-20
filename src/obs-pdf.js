@@ -219,8 +219,8 @@ export async function buildSurveyPdf(survey) {
         doc.y -= 18;
         for (const card of item.cards || []) {
           if (!card.partNo && !card.comments) continue;
-          itemBlock(doc, survey, card.title || card.cardType || 'Card', card.status,
-            [['Manufacturer', card.manufacturer], ['Part number', card.partNo], ['Card type', card.cardType],
+          itemBlock(doc, survey, card.cardType || card.title || 'Card', card.status,
+            [['Manufacturer', card.manufacturer], ['Part number', card.partNo],
               ['Control voltage', card.voltage], ['Density / I/O', card.density], ['Serial number', card.serialNo]],
             card.comments, card.condition);
         }

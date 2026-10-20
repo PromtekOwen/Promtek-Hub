@@ -1585,6 +1585,128 @@ function obsField(path, label, value, list) {
     <input data-obs-field="${esc(path)}" value="${esc(value || '')}"${list ? ` list="${esc(list)}"` : ''} autocomplete="off"></label>`;
 }
 
+// ---- Library suggestions: each field only offers what fits the fields above it ----
+
+const obsNorm = (v) => String(v ?? '').trim().toLowerCase();
+const obsListId = (path) => `dl-${path.replace(/[^\w]/g, '-')}`;
+const obsUnique = () => obsConfig.uniqueFields || ['serialNo', 'ip', 'subnet', 'gateway'];
+
+function obsColumn(section, key) {
+  if (key === 'comments') return 'Comments';
+  return section.columns?.[key] || null;
+}
+
+// The order fields appear in on an item, which is the order they filter in.
+function obsOrder(section) {
+  return [...(section.columns?.label ? ['label'] : []), ...section.fields.map(([key]) => key), 'comments'];
+}
+
+function obsValue(item, key) {
+  if (key === 'cardType') return item.cardType || item.title || '';
+  return item[key] || '';
+}
+
+// Library rows narrowed by the given fields. A value the library has never
+// seen is skipped rather than emptying the list.
+function obsMatches(section, item, keys) {
+  let rows = obsLibrary?.[section.library] || [];
+  for (const key of keys) {
+    const value = obsNorm(obsValue(item, key));
+    const column = obsColumn(section, key);
+    if (!value || !column) continue;
+    const narrowed = rows.filter((row) => obsNorm(row[column]) === value);
+    if (narrowed.length) rows = narrowed;
+  }
+  return rows;
+}
+
+function obsSuggestions(section, item, key) {
+  const column = obsColumn(section, key);
+  if (!column || !obsLibrary || obsUnique().includes(key)) return [];
+  const order = obsOrder(section);
+  const filters = key === 'comments' && section.commentsBy ? section.commentsBy : order.slice(0, order.indexOf(key));
+  const seen = new Map();
+  for (const row of obsMatches(section, item, filters)) {
+    const value = String(row[column] || '').trim();
+    if (value && !seen.has(obsNorm(value))) seen.set(obsNorm(value), value);
+  }
+  return [...seen.values()].slice(0, 200);
+}
+
+function obsOptions(values) {
+  return values.map((v) => `<option value="${esc(v)}"></option>`).join('');
+}
+
+// A field with its own suggestion list, so the list can follow the fields above it.
+function obsLibField(section, item, base, key, label) {
+  const path = `${base}.${key}`;
+  if (!obsColumn(section, key) || obsUnique().includes(key)) return obsField(path, label, item[key]);
+  const id = obsListId(path);
+  return `${obsField(path, label, item[key], id)}<datalist id="${esc(id)}">${obsOptions(obsSuggestions(section, item, key))}</datalist>`;
+}
+
+// Works out which item a field path belongs to: vdus[2].cpu, plcCards[0].cards[1].partNo
+function obsLocate(path) {
+  const match = path.match(/^(\w+)\[(\d+)\](?:\.cards\[(\d+)\])?\.(\w+)$/);
+  if (!match) return null;
+  const section = obsConfig.sections.find((s) => s.id === match[1]);
+  if (!section || section.spares) return null;
+  const parent = obsSurvey[match[1]]?.[Number(match[2])];
+  const item = match[3] != null ? parent?.cards?.[Number(match[3])] : parent;
+  if (!item) return null;
+  if (section.cards && match[3] == null) return null;          // the panel's own name
+  const base = path.slice(0, path.length - match[4].length - 1);
+  return { section, item, base, key: match[4] };
+}
+
+// Refreshes the suggestion lists on one item after a field changes.
+function obsRefreshLists(base, section, item) {
+  for (const key of obsOrder(section)) {
+    const list = document.getElementById(obsListId(`${base}.${key}`));
+    if (!list) continue;
+    const values = obsSuggestions(section, item, key);
+    list.innerHTML = obsOptions(key === 'cardType' ? [...new Set([...obsConfig.cardTypes, ...values])] : values);
+  }
+}
+
+// A part number the library knows fills in the details it always comes with.
+// Only empty fields are filled, and only where every matching row agrees.
+function obsAutofill(location) {
+  const { section, item, base, key } = location;
+  if (section.fillFrom !== key) return;
+  const column = obsColumn(section, key);
+  const value = obsNorm(item[key]);
+  if (!value || !column) return;
+  const rows = (obsLibrary?.[section.library] || []).filter((row) => obsNorm(row[column]) === value);
+  if (!rows.length) return;
+  for (const other of obsOrder(section)) {
+    if (other === key || other === 'label' || other === 'cardType' || obsUnique().includes(other)) continue;
+    const otherColumn = obsColumn(section, other);
+    if (!otherColumn || String(item[other] || '').trim()) continue;
+    const values = [...new Set(rows.map((row) => String(row[otherColumn] || '').trim()).filter(Boolean))];
+    if (values.length !== 1) continue;
+    item[other] = values[0];
+    const input = document.querySelector(`[data-obs-field="${CSS.escape(`${base}.${other}`)}"]`);
+    if (input) input.value = values[0];
+  }
+}
+
+function obsFieldChanged(path, picked) {
+  const location = obsLocate(path);
+  if (!location) return;
+  if (location.key === 'cardType') location.item.title = location.item.cardType;
+  if (picked) obsAutofill(location);
+  obsRefreshLists(location.base, location.section, location.item);
+}
+
+// A value that exactly matches a suggestion counts as picked.
+function obsIsPick(input) {
+  const list = input.list;
+  if (!list) return false;
+  const value = obsNorm(input.value);
+  return Boolean(value) && [...list.options].some((o) => obsNorm(o.value) === value);
+}
+
 function conditionPicker(path, value) {
   return `<div class="segment" style="margin-top:.6rem">${obsConfig.conditions.map((c) =>
     `<button class="seg${value === c ? ' on' : ''}" data-obs-status="${esc(path)}" data-value="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
@@ -1592,47 +1714,150 @@ function conditionPicker(path, value) {
 
 function itemCard(section, item, index) {
   const base = `${section.id}[${index}]`;
-  return `<div class="card" style="margin-top:.85rem">
+  const nameList = section.columns?.label ? obsListId(`${base}.label`) : '';
+  return `<div class="card obs-item" style="margin-top:.85rem" data-obs-item="${base}">
       <div class="row" style="justify-content:space-between;align-items:center">
-        <input class="hdr" data-obs-field="${base}.label" value="${esc(item.label || '')}" placeholder="Name" autocomplete="off">
-        <button class="linklike" data-obs-remove="${base}">Remove</button>
+        <input class="hdr" data-obs-field="${base}.label" value="${esc(item.label || '')}" placeholder="Name" autocomplete="off"${nameList ? ` list="${esc(nameList)}"` : ''}>
+        ${nameList ? `<datalist id="${esc(nameList)}">${obsOptions(obsSuggestions(section, item, 'label'))}</datalist>` : ''}
+        <span class="obs-item-actions">
+          <button class="linklike" data-obs-dup="${base}">Duplicate</button>
+          <button class="linklike" data-obs-remove="${base}">Remove</button>
+        </span>
       </div>
       ${conditionPicker(`${base}.status`, item.status)}
-      ${section.fields.map(([key, label]) => obsField(`${base}.${key}`, label, item[key], `lib-${section.id}-${key}`)).join('')}
-      ${obsField(`${base}.comments`, 'Comments', item.comments)}
+      ${section.fields.map(([key, label]) => obsLibField(section, item, base, key, label)).join('')}
+      ${obsLibField(section, item, base, 'comments', 'Comments')}
     </div>`;
 }
 
-function panelCard(panel, index) {
+// Cards picked to copy into another panel. Held by reference so removing or
+// duplicating cards doesn't upset the selection.
+const obsPicked = new Set();
+
+function panelCard(section, panel, index) {
   const base = `plcCards[${index}]`;
-  return `<div class="card" style="margin-top:.85rem">
+  const cardFields = section.fields.filter(([key]) => key !== 'cardType');
+  return `<div class="card obs-item" style="margin-top:.85rem" data-obs-item="${base}">
       <div class="row" style="justify-content:space-between;align-items:center">
         <input class="hdr" data-obs-field="${base}.label" value="${esc(panel.label || '')}" autocomplete="off">
-        <button class="linklike" data-obs-remove="${base}">Remove</button>
+        <span class="obs-item-actions">
+          <button class="linklike" data-obs-dup="${base}">Duplicate panel</button>
+          <button class="linklike" data-obs-remove="${base}">Remove</button>
+        </span>
       </div>
-      ${(panel.cards || []).map((card, c) => `<div class="sig">
-          <strong>${esc(card.title)}</strong>
-          ${conditionPicker(`${base}.cards[${c}].status`, card.status)}
-          ${obsField(`${base}.cards[${c}].manufacturer`, 'Manufacturer', card.manufacturer, 'lib-plcCards-manufacturer')}
-          ${obsField(`${base}.cards[${c}].partNo`, 'Part number', card.partNo, 'lib-plcCards-partNo')}
-          ${obsField(`${base}.cards[${c}].voltage`, 'Control voltage', card.voltage)}
-          ${obsField(`${base}.cards[${c}].density`, 'Density / I/O count', card.density)}
-          ${obsField(`${base}.cards[${c}].comments`, 'Comments', card.comments)}
-        </div>`).join('')}
+      ${(panel.cards || []).map((card, c) => {
+        const cardBase = `${base}.cards[${c}]`;
+        const listId = obsListId(`${cardBase}.cardType`);
+        return `<div class="sig obs-card${obsPicked.has(card) ? ' picked' : ''}" data-obs-item="${cardBase}">
+          <div class="obs-card-head">
+            <input class="hdr small" data-obs-field="${cardBase}.cardType" value="${esc(card.cardType || card.title || '')}" placeholder="Card type" autocomplete="off" list="${esc(listId)}">
+            <datalist id="${esc(listId)}">${obsOptions([...new Set([...obsConfig.cardTypes, ...obsSuggestions(section, card, 'cardType')])])}</datalist>
+            <span class="obs-item-actions">
+              <label class="obs-pick"><input type="checkbox" data-obs-pick="${cardBase}"${obsPicked.has(card) ? ' checked' : ''}> Copy</label>
+              <button class="linklike" data-obs-dup="${cardBase}">Duplicate</button>
+              <button class="linklike" data-obs-remove="${cardBase}">Remove</button>
+            </span>
+          </div>
+          ${conditionPicker(`${cardBase}.status`, card.status)}
+          ${cardFields.map(([key, label]) => obsLibField(section, card, cardBase, key, label)).join('')}
+          ${obsLibField(section, card, cardBase, 'comments', 'Comments')}
+        </div>`;
+      }).join('') || '<p class="muted">No cards in this panel.</p>'}
+      <div class="row" style="margin-top:.75rem">
+        <select data-obs-addcard="${index}" aria-label="Add a card">
+          <option value="">Add a card…</option>
+          ${obsConfig.cardTypes.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}
+        </select>
+      </div>
     </div>`;
 }
 
-function datalists() {
-  if (!obsLibrary) return '';
-  const lists = [];
-  for (const section of obsConfig.sections) {
-    const rows = obsLibrary[section.library] || [];
-    for (const [key, label] of section.fields) {
-      const values = [...new Set(rows.map((r) => r[label]).filter(Boolean))].slice(0, 200);
-      if (values.length) lists.push(`<datalist id="lib-${section.id}-${key}">${values.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`);
-    }
+// Shown while cards are picked: where to copy them.
+function obsCopyBar() {
+  const panels = obsSurvey.plcCards || [];
+  const count = panels.reduce((sum, p) => sum + (p.cards || []).filter((c) => obsPicked.has(c)).length, 0);
+  if (!count) return '';
+  const target = panels.findIndex((p) => !(p.cards || []).some((c) => obsPicked.has(c)));   // the first panel they aren't from
+  return `<div class="card obs-copybar">
+      <strong>${count} card${count === 1 ? '' : 's'} picked</strong>
+      <label class="inline">Copy to
+        <select id="obs-copy-target">
+          ${panels.map((p, i) => `<option value="${i}"${i === target ? ' selected' : ''}>${esc(p.label || `PLC Panel ${i + 1}`)}</option>`).join('')}
+          <option value="new"${target === -1 ? ' selected' : ''}>A new panel</option>
+        </select></label>
+      <span class="row" style="gap:.5rem">
+        <button class="btn" data-obs="copy-cards">Copy</button>
+        <button class="btn secondary" data-obs="clear-picks">Clear</button>
+      </span>
+    </div>`;
+}
+
+// The next free number after the last label like "VDU 3", or "… copy".
+function obsNextLabel(list, label, fallback) {
+  const match = String(label || '').match(/^(.*?)(\d+)$/);
+  if (!match) return label ? `${label} copy` : fallback;
+  const prefix = match[1];
+  let top = 0;
+  for (const other of list) {
+    const m = String(other.label || '').match(/^(.*?)(\d+)$/);
+    if (m && m[1] === prefix) top = Math.max(top, Number(m[2]));
   }
-  return lists.join('');
+  return `${prefix}${top + 1}`;
+}
+
+function obsClone(item) {
+  const copy = JSON.parse(JSON.stringify(item));
+  for (const key of obsUnique()) if (key in copy) copy[key] = '';
+  for (const card of copy.cards || []) for (const key of obsUnique()) if (key in card) card[key] = '';
+  return copy;
+}
+
+// Duplicates an item, a whole panel, or one card in a panel.
+function obsDuplicate(path) {
+  const card = path.match(/^plcCards\[(\d+)\]\.cards\[(\d+)\]$/);
+  if (card) {
+    const cards = obsSurvey.plcCards[Number(card[1])].cards;
+    cards.splice(Number(card[2]) + 1, 0, obsClone(cards[Number(card[2])]));
+    return `plcCards[${card[1]}].cards[${Number(card[2]) + 1}]`;
+  }
+  const match = path.match(/^(\w+)\[(\d+)\]$/);
+  if (!match) return null;
+  const list = obsSurvey[match[1]];
+  const index = Number(match[2]);
+  const copy = obsClone(list[index]);
+  copy.label = obsNextLabel(list, list[index].label, list[index].label);
+  // Numbered items go on the end so the numbering stays in order.
+  const at = /\d+$/.test(String(list[index].label || '')) ? list.length : index + 1;
+  list.splice(at, 0, copy);
+  return `${match[1]}[${at}]`;
+}
+
+function obsScrollTo(path) {
+  requestAnimationFrame(() => {
+    const el = document.querySelector(`[data-obs-item="${CSS.escape(path)}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+function obsBlankCard(type) {
+  return { title: type, cardType: type, manufacturer: '', partNo: '', voltage: '', density: '', comments: '', status: '' };
+}
+
+function obsCopyPicked(target) {
+  const panels = obsSurvey.plcCards || [];
+  const picked = [];
+  panels.forEach((p) => (p.cards || []).forEach((c) => { if (obsPicked.has(c)) picked.push(c); }));
+  if (!picked.length) return null;
+  let index = Number(target);
+  if (target === 'new' || !panels[index]) {
+    panels.push({ label: obsNextLabel(panels, panels[panels.length - 1]?.label || 'PLC Panel 0', 'PLC Panel 1'), cards: [] });
+    index = panels.length - 1;
+  }
+  panels[index].cards ||= [];
+  panels[index].cards.push(...picked.map(obsClone));
+  obsPicked.clear();
+  return { index, count: picked.length, label: panels[index].label };
 }
 
 function obsSurveyHtml() {
@@ -1677,28 +1902,40 @@ function obsSurveyHtml() {
   const items = obsSurvey[section.id] || [];
 
   if (section.spares) {
-    const spares = items.length ? items : [];
+    const addRow = `<div class="row obs-add-row"><button class="btn secondary" data-obs="add-spares">${items.length ? 'Add any missing standard spares' : 'Add the standard spares list'}</button>
+        <button class="btn secondary" data-obs="add-${esc(section.id)}">Add one</button></div>`;
+    const descList = obsOptions([...new Set((obsLibrary?.criticalSpares || []).map((r) => String(r.Description || '').trim()).filter(Boolean))]);
+    const areaList = obsOptions([...new Set((obsLibrary?.criticalSpares || []).map((r) => String(r.Area || '').trim()).filter(Boolean))]);
     return `${progress}<div class="card">
         <h2 style="margin-top:0">${esc(section.name)}</h2>
         <p class="muted">Tick what's on the shelf. Add anything missing from the list.</p>
-        ${spares.map((sp, i) => `<div class="qrow">
-            <span>${esc(sp.description)}<br><span class="muted">${esc(sp.area || '')}</span></span>
+        ${addRow}
+        ${items.map((sp, i) => `<div class="qrow" data-obs-item="criticalSpares[${i}]">
+            <span>${sp.custom
+              ? `<input data-obs-field="criticalSpares[${i}].description" value="${esc(sp.description || '')}" placeholder="What is it?" list="dl-spare-desc" autocomplete="off">
+                 <input data-obs-field="criticalSpares[${i}].area" value="${esc(sp.area || '')}" placeholder="Area" list="dl-spare-area" autocomplete="off" style="margin-top:.35rem">`
+              : `${esc(sp.description)}<br><span class="muted">${esc(sp.area || '')}</span>`}</span>
             <span class="segment">${['Yes', 'No', 'N/A'].map((v) =>
               `<button class="seg${sp.inStock === v ? ' on' : ''}" data-obs-status="criticalSpares[${i}].inStock" data-value="${v}">${v}</button>`).join('')}</span>
+            ${sp.custom ? `<button class="linklike" data-obs-remove="criticalSpares[${i}]">Remove</button>` : ''}
           </div>`).join('') || '<p class="muted">Nothing added yet.</p>'}
-        <div class="row" style="margin-top:1rem"><button class="btn secondary" data-obs="add-spares">Add the standard spares list</button>
-        <button class="btn secondary" data-obs="add-${esc(section.id)}">Add one</button></div>
+        ${items.length > 6 ? addRow : ''}
+        <datalist id="dl-spare-desc">${descList}</datalist><datalist id="dl-spare-area">${areaList}</datalist>
       </div>${nav}`;
   }
 
+  const addButton = `<button class="btn secondary" data-obs="add-${esc(section.id)}">Add ${esc(section.addLabel ? (section.cards ? 'a panel' : `another ${section.addLabel}`) : 'item')}</button>`;
   return `${progress}
     <div class="card">
       <h2 style="margin-top:0">${esc(section.name)}</h2>
-      <p class="muted">${items.length ? `${items.length} recorded.` : 'Nothing recorded yet.'} Start typing a part number and the library suggests what Promtek has seen before.</p>
+      <p class="muted">${items.length ? `${items.length} recorded.` : 'Nothing recorded yet.'} ${section.cards
+        ? 'Pick a manufacturer first and the part numbers narrow to theirs; a known part number fills in the rest. Tick Copy on cards to put them in another panel.'
+        : 'Each field suggests what Promtek has seen before, narrowed by the fields above it.'}</p>
+      <div class="row obs-add-row">${addButton}</div>
     </div>
-    ${items.map((item, i) => (section.cards ? panelCard(item, i) : itemCard(section, item, i))).join('')}
-    <div class="row" style="margin-top:.85rem"><button class="btn secondary" data-obs="add-${esc(section.id)}">Add ${esc(section.addLabel || 'item')}</button></div>
-    ${datalists()}${nav}`;
+    ${items.map((item, i) => (section.cards ? panelCard(section, item, i) : itemCard(section, item, i))).join('')}
+    ${items.length ? `<div class="row obs-add-row" style="margin-top:.85rem">${addButton}</div>` : ''}
+    ${section.cards ? obsCopyBar() : ''}${nav}`;
 }
 
 function setPath(target, path, value) {
@@ -1709,6 +1946,12 @@ function setPath(target, path, value) {
 }
 
 function removePath(path) {
+  const card = path.match(/^plcCards\[(\d+)\]\.cards\[(\d+)\]$/);
+  if (card) {
+    const removed = obsSurvey.plcCards[Number(card[1])].cards.splice(Number(card[2]), 1)[0];
+    obsPicked.delete(removed);
+    return;
+  }
   const match = path.match(/^(\w+)\[(\d+)\]$/);
   if (match) obsSurvey[match[1]].splice(Number(match[2]), 1);
 }
@@ -1736,32 +1979,54 @@ async function obsControl(action, value) {
       return render();
     }
     obsSection--;
+    obsPicked.clear();
     await obsSaveDraft();
     return render();
   }
   if (action === 'next') {
     if (obsSection === obsConfig.sections.length + 1) return obsSubmit();
     obsSection++;
+    obsPicked.clear();
     await obsSaveDraft();
     return render();
   }
   if (action === 'add-spares') {
-    const standard = (obsLibrary?.criticalSpares || []).slice(0, 60);
-    obsSurvey.criticalSpares = standard.map((sp) => ({ description: sp.Description || sp.description || '', area: sp.Area || '', inStock: '', comments: '' }));
+    // The standard list is the master sheet's, once each, keeping anything already ticked.
+    const have = new Set((obsSurvey.criticalSpares || []).map((sp) => obsNorm(sp.description)));
+    const standard = [];
+    for (const sp of obsLibrary?.criticalSpares || []) {
+      if (sp.source !== 'master sheet') continue;
+      const description = String(sp.Description || '').trim();
+      if (!description || have.has(obsNorm(description))) continue;
+      have.add(obsNorm(description));
+      standard.push({ description, area: sp.Area || '', inStock: '', comments: '' });
+    }
+    (obsSurvey.criticalSpares ||= []).push(...standard);
+    if (!standard.length) toast('Every standard spare is already on the list');
     return render();
   }
+  if (action === 'copy-cards') {
+    const result = obsCopyPicked(document.getElementById('obs-copy-target')?.value ?? 'new');
+    if (!result) return render();
+    toast(`${result.count} card${result.count === 1 ? '' : 's'} copied to ${result.label}`);
+    await render();
+    obsScrollTo(`plcCards[${result.index}]`);
+    return obsSaveDraft();
+  }
+  if (action === 'clear-picks') { obsPicked.clear(); return render(); }
   if (action.startsWith('add-')) {
     const id = action.slice(4);
     const section = obsConfig.sections.find((s) => s.id === id);
     const list = (obsSurvey[id] ||= []);
     if (section.cards) {
-      list.push({ label: `PLC Panel ${list.length + 1}`, cards: obsConfig.cardTypes.map((title) => ({ title, cardType: title, manufacturer: '', partNo: '', voltage: '', density: '', comments: '', status: '' })) });
+      list.push({ label: obsNextLabel(list, list[list.length - 1]?.label || 'PLC Panel 0', 'PLC Panel 1'), cards: obsConfig.cardTypes.map(obsBlankCard) });
     } else if (section.spares) {
-      list.push({ description: '', area: '', inStock: '', comments: '' });
+      list.push({ description: '', area: '', inStock: '', comments: '', custom: true });
     } else {
-      list.push({ label: `${section.addLabel || 'Item'} ${list.length + 1}`, status: '', comments: '' });
+      list.push({ label: obsNextLabel(list, list[list.length - 1]?.label || `${section.addLabel || 'Item'} 0`, `${section.addLabel || 'Item'} 1`), status: '', comments: '' });
     }
-    return render();
+    await render();
+    return obsScrollTo(`${id}[${list.length - 1}]`);
   }
 }
 
@@ -7608,7 +7873,14 @@ view.addEventListener('click', async (event) => {
   const obsStatus = event.target.closest('[data-obs-status]');
   if (obsStatus) { setPath(obsSurvey, obsStatus.dataset.obsStatus, obsStatus.dataset.value); return render(); }
   const obsRemove = event.target.closest('[data-obs-remove]');
-  if (obsRemove) { removePath(obsRemove.dataset.obsRemove); return render(); }
+  if (obsRemove) { removePath(obsRemove.dataset.obsRemove); obsSaveDraft(); return render(); }
+  const obsDup = event.target.closest('[data-obs-dup]');
+  if (obsDup) {
+    const added = obsDuplicate(obsDup.dataset.obsDup);
+    await render();
+    if (added) obsScrollTo(added);
+    return obsSaveDraft();
+  }
   const obsRead = event.target.closest('[data-obs-read]');
   if (obsRead) {
     const queue = await api('/api/obs/sales');
@@ -7956,6 +8228,7 @@ view.addEventListener('input', (event) => {
   }
   if (event.target.dataset?.obsField !== undefined && obsSurvey) {
     setPath(obsSurvey, event.target.dataset.obsField, event.target.value);
+    obsFieldChanged(event.target.dataset.obsField, !event.inputType || event.inputType === 'insertReplacementText' ? obsIsPick(event.target) : false);
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => obsSaveDraft(), 1200);
     return;
@@ -8006,6 +8279,26 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (event.target.dataset?.obsField !== undefined && obsSurvey) {
+    obsFieldChanged(event.target.dataset.obsField, obsIsPick(event.target));
+    return;
+  }
+  if (event.target.dataset?.obsPick !== undefined && obsSurvey) {
+    const m = event.target.dataset.obsPick.match(/^plcCards\[(\d+)\]\.cards\[(\d+)\]$/);
+    const card = m && obsSurvey.plcCards?.[Number(m[1])]?.cards?.[Number(m[2])];
+    if (card) { if (event.target.checked) obsPicked.add(card); else obsPicked.delete(card); }
+    return render();
+  }
+  if (event.target.dataset?.obsAddcard !== undefined && obsSurvey) {
+    const panel = obsSurvey.plcCards?.[Number(event.target.dataset.obsAddcard)];
+    if (panel && event.target.value) {
+      (panel.cards ||= []).push(obsBlankCard(event.target.value));
+      await render();
+      obsScrollTo(`plcCards[${event.target.dataset.obsAddcard}].cards[${panel.cards.length - 1}]`);
+      obsSaveDraft();
+    }
+    return;
+  }
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {

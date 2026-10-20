@@ -1,12 +1,12 @@
 // Obsolescence surveys: the equipment library, the client list from Jira,
 // the survey itself, and the sales review that follows it.
 import { jira, searchJql } from './jira.js';
-import { raiseAlert, londonDate } from './sync.js';
-import { LIBRARY_SEED } from './obs-library.js';
+import { raiseAlert, londonDate, getState, setState } from './sync.js';
+import { LIBRARY_SEED, LIBRARY_VERSION } from './obs-library.js';
 import { buildSurveyPdf } from './obs-pdf.js';
-import { SECTIONS, CARD_TYPES, CONDITIONS } from './obs-data.js';
+import { SECTIONS, CARD_TYPES, CONDITIONS, UNIQUE_FIELDS } from './obs-data.js';
 
-export { SECTIONS, CARD_TYPES, CONDITIONS };
+export { SECTIONS, CARD_TYPES, CONDITIONS, UNIQUE_FIELDS };
 
 const REPORT_ISSUE_TYPE = 'Obsolescence Reports';
 const CONTRACT_ISSUE_TYPE = 'Service Contract';
@@ -26,18 +26,7 @@ const newId = (prefix) => `${prefix}-${Date.now().toString(36)}-${Math.random().
 // ---------- The equipment library ----------
 
 export async function library(env, kind = null) {
-  const seeded = await env.DB.prepare('SELECT COUNT(*) AS n FROM obs_library').first();
-  if (!seeded.n) {
-    const rows = [];
-    for (const [key, section] of Object.entries(LIBRARY_SEED)) {
-      section.rows.forEach((row, i) => rows.push([`seed-${key}-${i}`, key, JSON.stringify(row)]));
-    }
-    for (let i = 0; i < rows.length; i += 50) {
-      await env.DB.batch(rows.slice(i, i + 50).map(([id, k, data]) => env.DB.prepare(
-        'INSERT INTO obs_library (id, kind, data, source, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
-      ).bind(id, k, data, 'master sheet', new Date().toISOString())));
-    }
-  }
+  await syncMasterSheet(env);
 
   const { results } = kind
     ? await env.DB.prepare('SELECT id, kind, data, source FROM obs_library WHERE kind = ? ORDER BY id').bind(kind).all()
@@ -45,7 +34,7 @@ export async function library(env, kind = null) {
 
   const out = {};
   for (const row of results) {
-    (out[row.kind] ||= []).push({ id: row.id, source: row.source, ...JSON.parse(row.data) });
+    (out[row.kind] ||= []).push({ id: row.id, source: row.source, ...normalise(row.kind, JSON.parse(row.data)) });
   }
   for (const [key, section] of Object.entries(LIBRARY_SEED)) {
     out[key] ||= [];
@@ -54,17 +43,72 @@ export async function library(env, kind = null) {
   return out;
 }
 
+// The master sheet rows are replaced whenever the sheet in the code changes.
+// Rows learned from surveys or added by hand are left alone.
+async function syncMasterSheet(env) {
+  if ((await getState(env, 'obs_library_version')) === LIBRARY_VERSION) return;
+  const rows = [];
+  for (const [key, section] of Object.entries(LIBRARY_SEED)) {
+    section.rows.forEach((row, i) => rows.push([`seed-${key}-${i}`, key, JSON.stringify(row)]));
+  }
+  const now = new Date().toISOString();
+  await env.DB.prepare("DELETE FROM obs_library WHERE source = 'master sheet'").run();
+  for (let i = 0; i < rows.length; i += 50) {
+    await env.DB.batch(rows.slice(i, i + 50).map(([id, k, data]) => env.DB.prepare(
+      'INSERT INTO obs_library (id, kind, data, source, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, data = excluded.data, source = excluded.source'
+    ).bind(id, k, data, 'master sheet', now)));
+  }
+  await setState(env, 'obs_library_version', LIBRARY_VERSION);
+}
+
+// Older survey entries were stored under the app's field labels rather than
+// the sheet's column names, so they are read back under the column names.
+function normalise(kind, data) {
+  const columns = LIBRARY_SEED[kind]?.columns;
+  if (!columns) return data;
+  const byName = new Map(columns.map((c) => [c.toLowerCase(), c]));
+  for (const section of SECTIONS) {
+    if (section.library !== kind) continue;
+    for (const [key, label] of section.fields) {
+      const column = section.columns?.[key];
+      if (column) { byName.set(label.toLowerCase(), column); byName.set(key.toLowerCase(), column); }
+    }
+  }
+  const out = {};
+  for (const [name, value] of Object.entries(data)) {
+    const column = byName.get(name.toLowerCase()) || name;
+    if (value !== '' && value != null) out[column] = String(value);
+    else if (!(column in out)) out[column] = '';
+  }
+  return out;
+}
+
 // Anything new an engineer types during a survey is kept, so the library grows.
 export async function learn(env, entries) {
   const now = new Date().toISOString();
-  const statements = entries
-    .filter((e) => e.kind && e.data && Object.values(e.data).some(Boolean))
-    .slice(0, 100)
-    .map((e) => env.DB.prepare('INSERT INTO obs_library (id, kind, data, source, created_at) VALUES (?, ?, ?, ?, ?)')
+  const wanted = entries.filter((e) => e.kind && e.data && Object.values(e.data).some(Boolean));
+  const kinds = [...new Set(wanted.map((e) => e.kind))];
+  const known = new Set();
+  for (let i = 0; i < kinds.length; i += 90) {
+    const part = kinds.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT kind, data FROM obs_library WHERE kind IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+    for (const row of results) known.add(signature(row.kind, normalise(row.kind, JSON.parse(row.data))));
+  }
+  const statements = [];
+  for (const e of wanted) {
+    const sig = signature(e.kind, normalise(e.kind, e.data));
+    if (known.has(sig)) continue;                     // already in the library
+    known.add(sig);
+    statements.push(env.DB.prepare('INSERT INTO obs_library (id, kind, data, source, created_at) VALUES (?, ?, ?, ?, ?)')
       .bind(newId('lib'), e.kind, JSON.stringify(e.data), e.source || 'survey', now));
+    if (statements.length >= 100) break;
+  }
   if (statements.length) await env.DB.batch(statements);
   return { added: statements.length };
 }
+
+const signature = (kind, data) => `${kind}|${Object.entries(data).filter(([, v]) => String(v || '').trim())
+  .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`).sort().join('|')}`;
 
 export async function addLibraryEntry(env, { kind, data, source = 'added by hand' }) {
   return learn(env, [{ kind, data, source }]);
@@ -258,18 +302,35 @@ function harvest(survey) {
   const entries = [];
   for (const section of SECTIONS) {
     const items = survey[section.id] || [];
+    if (section.spares) {
+      for (const sp of items) {
+        if (sp.custom && sp.description) entries.push({ kind: section.library, data: { Description: sp.description, Area: sp.area || '', 'In Stock?': '', Comments: '' } });
+      }
+      continue;
+    }
     for (const item of items) {
       if (section.cards) {
         for (const card of item.cards || []) {
-          if (card.partNo) entries.push({ kind: 'plcCards', data: { 'Manufacturer': card.manufacturer, 'Part Number': card.partNo, 'Card Type': card.cardType, 'Control Voltage': card.voltage, 'Density / I/O Count': card.density, 'Comments': card.comments } });
+          if (card.partNo) entries.push({ kind: section.library, data: rowFor(section, { ...card, cardType: card.cardType || card.title }) });
         }
         continue;
       }
-      const meaningful = section.fields.some(([key]) => item[key]);
-      if (meaningful) entries.push({ kind: section.library, data: Object.fromEntries(section.fields.map(([key, label]) => [label, item[key] || ''])) });
+      const meaningful = section.fields.some(([key]) => item[key] && !UNIQUE_FIELDS.includes(key));
+      if (meaningful) entries.push({ kind: section.library, data: rowFor(section, item) });
     }
   }
   return entries;
+}
+
+function rowFor(section, item) {
+  const row = {};
+  if (section.columns.label) row[section.columns.label] = item.label || '';
+  for (const [key] of section.fields) {
+    if (UNIQUE_FIELDS.includes(key) || !section.columns[key]) continue;
+    row[section.columns[key]] = item[key] || '';
+  }
+  row.Comments = item.comments || '';
+  return row;
 }
 
 export async function renderPdf(env, viewer, id) {

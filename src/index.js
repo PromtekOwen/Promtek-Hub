@@ -163,7 +163,7 @@ async function route(request, env, url, user) {
     const sales = user.can.quotes || user.inTeam('Sales');
 
     if (method === 'GET' && pathname === '/api/obs/config') {
-      return json({ sections: Obs.SECTIONS, cardTypes: Obs.CARD_TYPES, conditions: Obs.CONDITIONS, sales });
+      return json({ sections: Obs.SECTIONS, cardTypes: Obs.CARD_TYPES, conditions: Obs.CONDITIONS, uniqueFields: Obs.UNIQUE_FIELDS, sales });
     }
     if (method === 'GET' && pathname === '/api/obs/library') return json(await Obs.library(env, url.searchParams.get('kind')));
     if (method === 'GET' && pathname === '/api/obs/reports') return json(await Obs.listReports(env));
