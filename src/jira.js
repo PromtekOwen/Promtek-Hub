@@ -45,7 +45,7 @@ export const BLOCKED_PROJECTS = ['CSIMS', 'CSIMSB', 'CSIMST', 'ARCHIVE', 'TEST',
 // Left out of every list and search like the others, but an item can still be opened
 // by its key, so the hub can be tried out on it.
 const TESTING_PROJECTS = ['TEST'];
-const blockedForLookup = (key) => BLOCKED_PROJECTS.includes(key) && !TESTING_PROJECTS.includes(key);
+export const blockedForLookup = (key) => BLOCKED_PROJECTS.includes(key) && !TESTING_PROJECTS.includes(key);
 
 const projectOf = (keyOrIssueKey) => String(keyOrIssueKey || '').split('-')[0].toUpperCase();
 

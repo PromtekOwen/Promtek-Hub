@@ -2,6 +2,7 @@
 import { fetchWorklogs } from './tempo.js';
 import { metered, addReads, readsToday, tidyReads, utcDay, queryName, BACKGROUND_ROW_LIMIT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
+import { noteStatements } from './staff.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
 
 const CHUNK = 50;                 // D1 allows up to 100 bound parameters per query
@@ -138,10 +139,14 @@ export async function processWorklogs(env, worklogs) {
   const now = new Date().toISOString();
   const stmts = [];
   const unmatched = new Set();
+  const involved = [];
   let changed = 0;
 
   for (const wl of wls) {
     const emp = employees.get(wl.accountId);
+    const prevRow = existing.get(wl.id);
+    // Time newly logged on an item puts its author in Promtek Staff Involved.
+    if (!prevRow || prevRow.issue_id !== wl.issueId) involved.push({ issueId: wl.issueId, accountId: wl.accountId, issueKey: jobs.get(wl.issueId)?.issue_key });
     if (!emp) {
       unmatched.add(wl.accountId);
       stmts.push(env.DB.prepare(
@@ -183,6 +188,10 @@ export async function processWorklogs(env, worklogs) {
 
   await runBatches(env, stmts);
   if (changed) await ledgerChanged(env);
+  // Kept apart from the ledger's own writes, so a problem here never holds up XP.
+  if (involved.length) {
+    try { await runBatches(env, noteStatements(env, involved)); } catch (err) { console.warn('Staff involved not noted:', err.message); }
+  }
   if (unmatched.size) await raiseUnmatchedAlert(env, [...unmatched]);
   return { processed: wls.length, changed, unmatched: unmatched.size };
 }
@@ -408,7 +417,7 @@ export async function snapshotWeek(env, weekStart) {
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
 const RECONCILE_EVERY_MS = 10 * 60 * 1000;
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'lists', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'staff', 'lists', 'alerts'];
 
 export async function runScheduled(rawEnv) {
   if (!(await getState(rawEnv, 'ledger_start'))) return;
@@ -535,6 +544,10 @@ export async function runScheduled(rawEnv) {
       const r = await attempt('Service items', async () => (await import('./psc.js')).run(env));
       return r?.idle ? { idle: true } : r;
     },
+    staff: async () => {
+      const r = await attempt('Staff involved', async () => (await import('./staff.js')).run(env, { raiseAlert, londonDate }));
+      return r?.idle ? { idle: true } : r;
+    },
     lists: async () => {
       const r = await attempt('Jira lists', async () => (await import('./customer-lists.js')).run(env));
       return r?.idle ? { idle: true } : r;
@@ -570,5 +583,5 @@ const SLOT_NAMES = {
   orders: 'Job backfill', categories: 'Finished categories', elo: 'ELO ratings', bitbucket: 'Bitbucket', mes: 'Condor Dev tickets',
   'mes-sync': 'Condor Dev to Jira', 'stage-split': 'Stage estimates', 'stage-types': 'Stage types', tracker: 'Timer stretches',
   'hourly-scan': 'Hourly: profiles and reminders', 'hourly-jobs': 'Hourly: estimates and disputes', 'hourly-quotes': 'Hourly: quotes and chart',
-  contracts: 'Service contracts', psc: 'PSC items', lists: 'Customer lists', alerts: 'Alert email',
+  contracts: 'Service contracts', psc: 'PSC items', staff: 'Staff involved', lists: 'Customer lists', alerts: 'Alert email',
 };
