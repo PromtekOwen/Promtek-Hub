@@ -4,7 +4,8 @@
 import { jira, blockedForLookup } from './jira.js';
 
 export const STAFF_FIELD = 'customfield_14523';
-const PER_RUN = 20;               // of the 50 outside calls a scheduled run may make
+const PER_RUN = 20;               // on its own turn, of the 50 outside calls a scheduled run may make
+export const EVERY_RUN = 5;       // every run, straight after Tempo, so new time goes through within minutes
 const MAX_TRIES = 10;
 const RETRY_BASE_MS = 5 * 60 * 1000;
 const RETRY_CAP_MS = 6 * 3600 * 1000;
@@ -33,10 +34,10 @@ export function noteStatements(env, pairs) {
 
 const retryIn = (tries) => Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 3 ** (tries - 1));
 
-export async function run(env, { raiseAlert, londonDate }) {
+export async function run(env, { raiseAlert, londonDate, limit = PER_RUN }) {
   const now = Date.now();
   const { results: due } = await env.DB.prepare(
-    `SELECT issue_id, account_id, issue_key, tries FROM staff_involved WHERE status = 'pending' AND next_at <= ? LIMIT ${PER_RUN}`
+    `SELECT issue_id, account_id, issue_key, tries FROM staff_involved WHERE status = 'pending' AND next_at <= ? LIMIT ${Math.min(PER_RUN, Math.max(1, Number(limit) || 1))}`
   ).bind(now).all();
   if (!due.length) return { idle: true };
 

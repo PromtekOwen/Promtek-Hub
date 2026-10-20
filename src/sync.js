@@ -474,6 +474,9 @@ export async function runScheduled(rawEnv) {
   await attempt('Weekly snapshot', () => snapshotWeek(env));
   await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
+  // New time puts its author in Promtek Staff Involved within minutes, a few at a time
+  // so the job that follows still has its calls. Its own turn below clears any backlog.
+  await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });
   // One of the last 14 days is re-read every 10 minutes, so each day is checked every couple of hours.
   if (Date.now() - Number((await getState(env, 'reconcile_at')) || 0) >= RECONCILE_EVERY_MS) {
     await setState(env, 'reconcile_at', Date.now());
