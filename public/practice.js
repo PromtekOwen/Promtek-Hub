@@ -141,6 +141,11 @@ function initWorld(real) {
     pscActions: [],
     contracts: initContracts(),
     contractFlags: initFlags(),
+    // Time on contracts still needing a chargeable answer.
+    contractTime: [
+      { worklogId: 'pw-1', contract: 'NGB-90', kind: 'contract', key: 'NGB-90', summary: 'Time on the contract', date: addDays(day, -1), seconds: 5400, who: 'You', mine: true },
+      { worklogId: 'pw-2', contract: 'NGB-90', kind: 'psc', key: 'NGB-140', summary: 'Mixer 3 weigher reading 2kg heavy', date: day, seconds: 2700, who: 'Sam Turner' },
+    ],
     tiles: null,
     homeMessages: [
       { id: 9001, kind: 'alert', tone: 'important', title: 'Return the van keys to reception', body: 'The Transit keys need to be back by 5pm on Fridays so the van can be serviced.', link: '#/vehicles', from: 'Owen Hume', at: ago(2 * HOUR) },
@@ -684,7 +689,7 @@ function pscItem(myId, x) {
     raisedByTeam: false,
     response: { at: null, by: null, how: null, waitMs: 0, late: false, dueAt: iso(Date.parse(created) + TARGET_H[tier] * HOUR), targetMs: TARGET_H[tier] * HOUR, leftMs: 0 },
     lastTeam: null, customerLast: x.customerLast || { at: created, by: x.reporter }, customerWaiting: false, customerWaitMs: 0, quietMs: 0, stale: false,
-    missing: [], state: 'new', rank: 0, copyOf: null, uncopied: false, done: false,
+    missing: [], state: 'new', rank: 0, copyOf: null, uncopied: false, done: false, chargeable: x.chargeable || null,
     timeline: x.timeline || [{ at: created, by: x.reporter, team: false, kind: 'created', text: x.firstText || 'Raised' }],
   };
   if (x.response) Object.assign(item.response, x.response);
@@ -705,7 +710,8 @@ function refreshPsc(p, myId = me?.id) {
   p.customerWaiting = Boolean(r.at) && lastCustomer > lastTeam;
   p.quietMs = lastTeam ? now() - lastTeam : 0;
   p.stale = Boolean(lastTeam) && p.quietMs > 3 * DAY;
-  p.missing = [...(p.project === 'PSC' && !p.org ? ['org'] : []), ...(!p.assigneeId ? ['assignee'] : []), ...(!r.at ? ['response'] : [])];
+  p.missing = [...(p.project === 'PSC' && !p.org ? ['org'] : []), ...(!p.assigneeId ? ['assignee'] : []), ...(!r.at ? ['response'] : []),
+    ...(!p.chargeable && !p.done ? ['charge'] : [])];
   p.state = p.done ? 'resolved' : !r.at && r.late ? 'late' : p.customerWaiting ? 'waiting' : !r.at ? 'new' : p.stale ? 'quiet' : 'active';
   p.customer = p.project === 'PSC' ? (p.org || null) : p.customer;
   return p;
@@ -719,7 +725,7 @@ function initPsc(myId) {
     pscItem(myId, { key: 'PSC-212', project: 'PSC', summary: 'Label printer on line 1 printing blank labels', type: 'PSC', reporter: 'Rob Fenwick', ageMins: 70,
       firstText: 'Called in by Rob at Harbour Mills. Line 1 label printer feeds blank labels after the ribbon change.' }),
     pscItem(myId, { key: 'ASF-88', project: 'ASF', summary: 'Request for a copy of last month\'s batch reports', type: 'Service Request', reporter: 'Leah Grant', ageMins: 26 * 60,
-      assignee: 'Ellie Morgan', assigneeId: 'ex-ellie', response: { at: ago(25 * 60 * MIN), by: 'Ellie Morgan', how: 'comment', waitMs: 60 * MIN, late: false },
+      assignee: 'Ellie Morgan', assigneeId: 'ex-ellie', chargeable: 'yes', response: { at: ago(25 * 60 * MIN), by: 'Ellie Morgan', how: 'comment', waitMs: 60 * MIN, late: false },
       lastTeam: team('Ellie Morgan', 25 * 60, 'commented'), customerLast: { at: ago(3 * 60 * MIN), by: 'Leah Grant' },
       timeline: [
         { at: ago(3 * HOUR), by: 'Leah Grant', team: false, kind: 'comment', text: 'Thanks Ellie. Could you include the weekend shifts as well?' },
@@ -727,7 +733,7 @@ function initPsc(myId) {
         { at: ago(26 * HOUR), by: 'Leah Grant', team: false, kind: 'created', text: 'Please could we have a copy of the batch reports for last month for our audit.' },
       ] }),
     pscItem(myId, { key: 'HBM-233', project: 'HBM', summary: 'Intake conveyor trips when the silo is full', type: 'Problem', reporter: 'Rob Fenwick', ageMins: 5 * DAY / MIN,
-      assignee: me ? me.name : 'You', assigneeId: myId, response: { at: ago((5 * DAY) / 1 - 40 * MIN), by: 'Sam Turner', how: 'status', waitMs: 40 * MIN, late: false },
+      assignee: me ? me.name : 'You', assigneeId: myId, chargeable: 'yes', response: { at: ago((5 * DAY) / 1 - 40 * MIN), by: 'Sam Turner', how: 'status', waitMs: 40 * MIN, late: false },
       lastTeam: team('Sam Turner', 4 * 24 * 60, 'moved it on'),
       timeline: [
         { at: ago(4 * DAY), by: 'Sam Turner', team: true, kind: 'status', text: 'Moved to Investigating' },
@@ -735,7 +741,7 @@ function initPsc(myId) {
         { at: ago(5 * DAY), by: 'Rob Fenwick', team: false, kind: 'created', text: 'The intake conveyor keeps tripping when silo 2 is full.' },
       ] }),
     pscItem(myId, { key: 'KWD-41', project: 'KWD', summary: 'Silo display not updating', type: 'Incident', reporter: 'Gary Holt', ageMins: 3 * 60,
-      assignee: 'Sam Turner', assigneeId: 'ex-sam', response: { at: ago(2.5 * HOUR), by: 'Sam Turner', how: 'comment', waitMs: 30 * MIN, late: false },
+      assignee: 'Sam Turner', assigneeId: 'ex-sam', chargeable: 'no', response: { at: ago(2.5 * HOUR), by: 'Sam Turner', how: 'comment', waitMs: 30 * MIN, late: false },
       lastTeam: team('Sam Turner', 150, 'commented'), customerLast: { at: ago(3 * HOUR), by: 'Gary Holt' } }),
   ];
 }
@@ -817,7 +823,16 @@ function contractDetail(key) {
       { seq: 4, token: n(95), trigger: `${p}-233`, reason: 'clock', overdraft: false, done: true, at: ago(6 * DAY), error: null },
     ] : [],
     events: c.clock ? [{ at: ago(6 * DAY), text: `${n(95)} used: the clock passed 16h on ${p}-233` }] : [],
+    waiting: world.contractTime.filter((t) => t.contract === key),
+    notCharged: [],
+    canDecide: true,
   };
+}
+
+// The waiting time shows on each contract's clock line.
+function withWaiting(c) {
+  const w = world.contractTime.filter((t) => t.contract === c.key);
+  return c.clock ? { ...c, clock: { ...c.clock, waitingSeconds: w.reduce((n, t) => n + t.seconds, 0), waiting: w.length } } : c;
 }
 
 function contractInsights() {
@@ -1269,6 +1284,11 @@ async function answer(p, q, method, body) {
   }
   if (p === '/api/psc/orgs') return { orgs: CUSTOMERS.map((c, i) => ({ id: String(i + 1), name: c.name })) };
   if (p === '/api/psc/pickup') return pscPickup(body.key);
+  if (p === '/api/psc/charge') {
+    const item = world.psc.find((x) => x.key === body.key);
+    if (item) { item.chargeable = body.chargeable ? 'yes' : 'no'; refreshPsc(item); }
+    return { ok: true, saved: true };
+  }
   if (p === '/api/psc/assign') {
     const item = world.psc.find((x) => x.key === body.key);
     const person = [{ id: me.id, name: me.name }, ...PEOPLE].find((x) => x.id === body.accountId);
@@ -1308,7 +1328,18 @@ async function answer(p, q, method, body) {
   if (p === '/api/contracts') {
     return { started: ago(40 * DAY), clockStart: addDays(today(), -40), clockChanged: ago(2 * HOUR), syncedAt: ago(4 * MIN), error: null,
       flags: world.contractFlags, canInsights: Boolean(me.user?.isLead || me.user?.isAdmin || me.user?.can?.oversight), isAdmin: false, today: today(),
-      bankHoliday: { today: null, next: { name: 'Christmas Day', date: `${today().slice(0, 4)}-12-25` } }, contracts: world.contracts };
+      bankHoliday: { today: null, next: { name: 'Christmas Day', date: `${today().slice(0, 4)}-12-25` } }, contracts: world.contracts.map(withWaiting) };
+  }
+  if (p === '/api/contracts/mine') return { time: world.contractTime.filter((t) => t.mine).map((t) => ({ worklog_id: t.worklogId, work_date: t.date, seconds: t.seconds, issue_key: t.key, customer: 'Northgate Bakery' })) };
+  if (p === '/api/contracts/charge') {
+    const t = world.contractTime.find((x) => x.worklogId === String(body.worklogId));
+    world.contractTime = world.contractTime.filter((x) => x !== t);
+    const c = t && world.contracts.find((x) => x.key === t.contract);
+    if (c?.clock && body.chargeable) {
+      const seconds = c.clock.seconds + t.seconds;
+      c.clock = { ...c.clock, seconds, towardsNext: seconds % (4 * 3600) };
+    }
+    return { ok: true, contract: t?.contract };
   }
   if (p === '/api/contracts/detail') return contractDetail(q.get('key'));
   if (p === '/api/contracts/insights') return contractInsights();

@@ -258,7 +258,7 @@ export async function stageHint(env, issueKey) {
 
 // ---------- Writing the worklog ----------
 
-export async function createWorklog(env, viewer, { issueId, issueKey, seconds, date, startTime, description }) {
+export async function createWorklog(env, viewer, { issueId, issueKey, seconds, date, startTime, description, chargeable }) {
   if (!viewer.accountId) throw new Error("Your account isn't linked to an engineer profile yet.");
   if (!issueId) throw new Error('Choose something to log against.');
   const secs = Math.round(Number(seconds));
@@ -286,6 +286,11 @@ export async function createWorklog(env, viewer, { issueId, issueKey, seconds, d
   });
   if (!res.ok) throw new Error(`Tempo wouldn't accept that (${res.status}): ${(await res.text()).slice(0, 200)}`);
   const worklog = await res.json();
+  // Time on a service contract item comes with whether it's chargeable, for the token clock.
+  if (typeof chargeable === 'boolean') {
+    const onContract = await env.DB.prepare('SELECT issue_key FROM contracts WHERE issue_id = ?').bind(String(issueId)).first().catch(() => null);
+    if (onContract) await (await import('./contracts.js')).saveTimeCharge(env, viewer, worklog.tempoWorklogId, issueId, chargeable);
+  }
   return { worklogId: String(worklog.tempoWorklogId), issueKey, seconds: secs, date: day };
 }
 

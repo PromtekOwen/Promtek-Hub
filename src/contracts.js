@@ -21,7 +21,18 @@ export const FIELDS = {
   tier: 'customfield_12700',
   bankHoliday: 'customfield_16764',
   org: 'customfield_12900',
+  chargeable: 'customfield_16884',
 };
+
+// The Chargable field on PSCs: only a chargeable PSC's time goes on the token clock.
+export const CHARGE = { yes: 'Chargable PSC', no: 'Promtek at Fault' };
+export function chargeOf(value) {
+  const v = String((value && typeof value === 'object' ? value.value ?? value.name : value) || '').trim().toLowerCase();
+  if (!v) return null;
+  if (v === CHARGE.yes.toLowerCase() || v === 'yes') return 'yes';
+  if (v === CHARGE.no.toLowerCase() || v === 'no') return 'no';
+  return null;
+}
 
 export const STATUS = {
   new: 'New',
@@ -287,7 +298,7 @@ async function lookupIssues(env, b, windowStart) {
     const part = queue.shift();
     let issues;
     try {
-      issues = await search(b, `id in (${part.join(',')})`, ['summary', 'issuetype', 'parent', FIELDS.org]);
+      issues = await search(b, `id in (${part.join(',')})`, ['summary', 'issuetype', 'parent', FIELDS.org, FIELDS.chargeable]);
     } catch (err) {
       if (err instanceof OutOfCalls) throw err;
       // One deleted or hidden item spoils the search; halve until it's found.
@@ -298,11 +309,11 @@ async function lookupIssues(env, b, windowStart) {
     }
     const now = new Date().toISOString();
     const stmts = issues.map((i) => env.DB.prepare(
-      `INSERT INTO contract_issues (issue_id, issue_key, issuetype, parent_id, org, summary, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO contract_issues (issue_id, issue_key, issuetype, parent_id, org, summary, chargeable, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, issuetype = excluded.issuetype, parent_id = excluded.parent_id,
-         org = excluded.org, summary = excluded.summary, checked_at = excluded.checked_at`
+         org = excluded.org, summary = excluded.summary, chargeable = excluded.chargeable, checked_at = excluded.checked_at`
     ).bind(String(i.id), i.key, i.fields.issuetype?.name || '', i.fields.parent?.id ? String(i.fields.parent.id) : null,
-      orgNames(i.fields[FIELDS.org]).join(' | ') || null, i.fields.summary || '', now));
+      orgNames(i.fields[FIELDS.org]).join(' | ') || null, i.fields.summary || '', chargeOf(i.fields[FIELDS.chargeable]), now));
     for (const s of chunk(stmts, 50)) await env.DB.batch(s);
     looked += issues.length;
   }
@@ -351,11 +362,19 @@ async function loadState(env) {
   if (!projects?.length) projects = [...new Map(contracts.map((c) => [c.project_key, { key: c.project_key, name: c.customer }])).values()];
   // Service items in customers' own projects (read by the PSC tile) count towards that customer's contract too.
   let psc = new Map();
+  const board = new Map();                      // Chargable on PSC board items, as the PSC tile last read it
   try {
-    const { results } = await env.DB.prepare("SELECT issue_id, issue_key, project_key, issuetype, summary FROM psc_items WHERE project_key != 'PSC'").all();
-    psc = new Map(results.map((r) => [r.issue_id, r]));
+    const { results } = await env.DB.prepare('SELECT issue_id, issue_key, project_key, issuetype, summary, chargeable FROM psc_items').all();
+    for (const r of results) {
+      if (r.project_key === 'PSC') board.set(r.issue_id, r.chargeable);
+      else psc.set(r.issue_id, r);
+    }
   } catch { /* the PSC tile isn't set up */ }
-  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), psc, projects, match: orgMatcher(projects, manual) };
+  // Whether time on the contract item itself is chargeable, as engineers have said.
+  const { results: decided } = await env.DB.prepare('SELECT worklog_id, chargeable FROM contract_time_charges').all();
+  const ruleFrom = await getState(env, 'charge_rule_from');
+  return { contracts, items, issues: new Map(issues.map((i) => [i.issue_id, i])), psc, board, projects, match: orgMatcher(projects, manual),
+    decisions: new Map(decided.map((d) => [String(d.worklog_id), d.chargeable ? 'yes' : 'no'])), ruleFrom };
 }
 
 async function worklogsSince(env, from) {
@@ -373,7 +392,31 @@ async function worklogsSince(env, from) {
 }
 
 // What a worklog counts towards: a contract, or a reason it doesn't.
+// From the day the Chargable field came in, only chargeable time goes on the clock: a PSC
+// marked Chargable PSC, or time on the contract item that the engineer said was chargeable.
+// Anything marked Promtek at Fault never counts. Time from before then counts as it always did.
+function chargeRule(placed, w, st, charge) {
+  if (!placed.contract) return placed;
+  const held = { held: placed.contract, via: placed.via, issue: placed.issue };
+  if (charge === 'no') return { skip: 'not-chargeable', ...held };
+  if (charge === 'yes' || !st.ruleFrom || w.work_date < st.ruleFrom) return placed;
+  return { skip: 'awaiting-charge', ...held };
+}
+
 export function placeWorklog(w, st) {
+  const placed = placeByIssue(w, st);
+  if (!placed.contract || placed.via === 'token') return placed;
+  if (placed.via === 'contract') return chargeRule(placed, w, st, w.worklog_id ? st.decisions?.get(String(w.worklog_id)) : null);
+  const own = st.psc?.get(String(w.issue_id));
+  if (own) return chargeRule(placed, w, st, own.chargeable || null);
+  const issue = st.issues.get(String(w.issue_id));
+  const parent = issue?.parent_id ? st.issues.get(issue.parent_id) : null;
+  const charge = st.board?.get(String(w.issue_id)) || issue?.chargeable
+    || (parent ? st.board?.get(parent.issue_id) || parent.chargeable : null) || null;
+  return chargeRule(placed, w, st, charge);
+}
+
+function placeByIssue(w, st) {
   // Time on the contract or its tokens after the contract has ended belongs to no contract.
   const ended = (c, issue) => (c.end_date && w.work_date > c.end_date ? { skip: 'no-contract', project: c.project_key, issue } : null);
   const contract = st.contracts.find((c) => c.issue_id === String(w.issue_id));
@@ -414,6 +457,15 @@ export function buildClocks(worklogs, st, clockStart) {
   for (const w of worklogs) {
     if (w.work_date < clockStart) continue;
     const p = placeWorklog(w, st);
+    if (p.held) {
+      // Time waiting for someone to say whether it's chargeable, or that isn't.
+      const key = p.held.issue_key;
+      if (!clocks.has(key)) clocks.set(key, { seconds: 0, logs: [] });
+      const c = clocks.get(key);
+      const list = p.skip === 'awaiting-charge' ? (c.waiting ||= []) : (c.notCharged ||= []);
+      list.push({ ...w, via: p.via, issue: p.issue || null });
+      continue;
+    }
     if (!p.contract) continue;
     const key = p.contract.issue_key;
     if (!clocks.has(key)) clocks.set(key, { seconds: 0, logs: [] });
@@ -817,7 +869,7 @@ export async function run(env, { force = false } = {}) {
     // logged or changed since, Jira refused a charge, or at least once an hour.
     let clockRun = {};
     try { clockRun = JSON.parse((await getState(env, 'contracts_clock_run')) || '{}'); } catch { /* run it */ }
-    const stamp = await ledgerStamp(env);
+    const stamp = `${await ledgerStamp(env)}|${(await getState(env, 'contracts_touched')) || ''}|${(await getState(env, 'psc_version')) || ''}`;
     const clockDue = force || retryDue || clockRun.stamp !== stamp || Date.now() - Number(clockRun.at || 0) >= CLOCK_EVERY_MS;
     if (started && clockStart && clockDue) {
       await setState(env, 'contracts_clock_run', JSON.stringify({ stamp, at: Date.now() }));
@@ -877,7 +929,7 @@ function mustSee(viewer, insights = false) {
 // or a contract doesn't add up all the worklogs again.
 let kept = null;
 async function stateAndClocks(env, head) {
-  const key = `${head.syncedAt}|${head.clockStart}|${await ledgerStamp(env)}|${(await getState(env, 'contracts_touched')) || ''}`;
+  const key = `${head.syncedAt}|${head.clockStart}|${await ledgerStamp(env)}|${(await getState(env, 'contracts_touched')) || ''}|${(await getState(env, 'psc_version')) || ''}`;
   if (kept?.key === key && Date.now() - kept.at < 60 * 60 * 1000) return kept;
   const st = await loadState(env);
   const clocks = head.clockStart ? buildClocks(await worklogsSince(env, head.clockStart), st, head.clockStart) : new Map();
@@ -903,7 +955,9 @@ function summarise(c, items, clock, charges, clockStart) {
     renewalSet: Boolean(c.renewal_date), end: c.end_date, live,
     visits: live ? count('visit') : null, calibration: live ? count('calibration') : null, obsolescence: live ? count('obsolescence') : null,
     tokens: live ? tokenCounts(mine) : null,
-    clock: clockStart && CLOCKED.includes(c.status) ? { seconds: clock?.seconds || 0, towardsNext: (clock?.seconds || 0) % TOKEN_SECONDS, charged: charges || 0, due: dues.due } : null,
+    clock: clockStart && CLOCKED.includes(c.status) ? { seconds: clock?.seconds || 0, towardsNext: (clock?.seconds || 0) % TOKEN_SECONDS, charged: charges || 0, due: dues.due,
+      waitingSeconds: (clock?.waiting || []).reduce((t, l) => t + l.seconds, 0), waiting: (clock?.waiting || []).length,
+      notChargedSeconds: (clock?.notCharged || []).reduce((t, l) => t + l.seconds, 0) } : null,
   };
 }
 
@@ -947,16 +1001,69 @@ export async function detail(env, viewer, key) {
   }
   const items = st.items.filter((i) => i.contract_key === key).sort((a, b) => issueNum(a.issue_key) - issueNum(b.issue_key))
     .map((i) => ({ key: i.issue_key, kind: i.kind, summary: i.summary, status: i.status, done: Boolean(i.done) }));
+  // Time waiting for a chargeable decision: on the contract item, each worklog is decided here;
+  // on a PSC, the PSC itself is marked in the PSC tile.
+  const ids = [...new Set([...(clock?.waiting || []), ...(clock?.notCharged || [])].map((l) => l.account_id).filter(Boolean))];
+  const names = new Map();
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT account_id, name FROM employees WHERE account_id IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+    results.forEach((r) => names.set(r.account_id, r.name));
+  }
+  const timeLine = (l) => ({
+    worklogId: String(l.worklog_id), date: l.work_date, seconds: l.seconds, who: names.get(l.account_id) || 'Someone without a profile',
+    kind: l.via === 'contract' ? 'contract' : 'psc', key: l.via === 'contract' ? c.issue_key : l.issue?.issue_key || '', summary: l.via === 'contract' ? 'Time on the contract' : l.issue?.summary || '',
+  });
+  const byDate = (a, b) => b.date.localeCompare(a.date);
   return {
     ...head,
     contract: summarise(c, st.items, clock, charges.length, head.clockStart),
     items,
     contributions: [...byIssue.values()].sort((a, b) => b.seconds - a.seconds),
+    waiting: (clock?.waiting || []).map(timeLine).sort(byDate),
+    notCharged: (clock?.notCharged || []).map(timeLine).sort(byDate).slice(0, 50),
+    canDecide: true,
     charges: charges.map((x) => ({ seq: x.seq, token: x.token_key, trigger: x.trigger_key, reason: x.reason, overdraft: Boolean(x.overdraft),
       done: x.step >= 3, at: x.done_at || x.created_at, error: x.step < 3 ? x.error : null })),
     events,
     problems: checkDates(c),
   };
+}
+
+// Whether some time on a contract item is chargeable. The person who logged it says,
+// or anyone who can see the contracts tile.
+export async function decideTime(env, viewer, { worklogId, chargeable }) {
+  const id = String(worklogId || '');
+  if (!/^\d+$/.test(id)) throw Object.assign(new Error('Which time?'), { status: 400 });
+  const log = await env.DB.prepare('SELECT worklog_id, account_id, issue_id FROM xp_ledger WHERE worklog_id = ?').bind(id).first();
+  if (!log) throw Object.assign(new Error('That time isn\'t in the hub any more.'), { status: 404 });
+  if (log.account_id !== viewer.accountId) mustSee(viewer);
+  const onContract = await env.DB.prepare('SELECT issue_key FROM contracts WHERE issue_id = ?').bind(log.issue_id).first();
+  if (!onContract) throw Object.assign(new Error('That time isn\'t on a service contract.'), { status: 400 });
+  await saveTimeCharge(env, viewer, id, log.issue_id, Boolean(chargeable));
+  return { ok: true, contract: onContract.issue_key };
+}
+
+export async function saveTimeCharge(env, viewer, worklogId, issueId, chargeable) {
+  await env.DB.prepare(
+    `INSERT INTO contract_time_charges (worklog_id, issue_id, chargeable, decided_by, decided_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(worklog_id) DO UPDATE SET chargeable = excluded.chargeable, decided_by = excluded.decided_by, decided_at = excluded.decided_at`
+  ).bind(String(worklogId), String(issueId), chargeable ? 1 : 0, viewer.employee?.name || viewer.email, new Date().toISOString()).run();
+  await touched(env);
+}
+
+// Time on contract items this person logged that nobody has said is chargeable or not.
+export async function myUndecided(env, accountId) {
+  const from = await getState(env, 'charge_rule_from');
+  if (!from || !accountId) return [];
+  const since = [from, londonDate(Date.now() - 60 * 86_400_000)].sort()[1];
+  const { results } = await env.DB.prepare(
+    `SELECT l.worklog_id, l.work_date, l.seconds, c.issue_key, c.customer FROM contracts c
+       JOIN xp_ledger l ON l.issue_id = c.issue_id AND l.work_date >= ?
+       LEFT JOIN contract_time_charges d ON d.worklog_id = l.worklog_id
+      WHERE l.account_id = ? AND d.worklog_id IS NULL ORDER BY l.work_date DESC LIMIT 20`
+  ).bind(since, accountId).all();
+  return results;
 }
 
 export async function resolveFlag(env, viewer, id) {
@@ -985,7 +1092,7 @@ export async function check(env, viewer, issueId) {
     issueId: i.issue_id, key: i.issue_key, label: i.issue_key, title: i.summary,
     sublabel: `${label[i.kind]}, ${i.done ? 'done' : 'to do'}`, done: Boolean(i.done), rate: 1,
   }));
-  return { contract: { key: c.issue_key, customer: c.customer }, visits };
+  return { contract: { key: c.issue_key, customer: c.customer }, visits, askCharge: true };
 }
 
 // ---------- settings ----------

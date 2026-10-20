@@ -334,6 +334,11 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/psc/pickup') return json(await Psc.pickUp(env, user, body.key));
     if (method === 'POST' && pathname === '/api/psc/assign') return json(await Psc.assign(env, user, body.key, body.accountId));
     if (method === 'POST' && pathname === '/api/psc/org') return json(await Psc.setOrg(env, user, body.key, body.orgId));
+    if (method === 'POST' && pathname === '/api/psc/charge') {
+      const r = await Psc.setCharge(env, user, body.key, body.chargeable);
+      await Audit.record(env, user, { area: 'PSC', action: body.chargeable ? 'Marked chargeable' : 'Marked Promtek at fault', subjectType: 'psc', subjectId: body.key, label: body.key });
+      return json(r);
+    }
     if (method === 'GET' && pathname === '/api/psc/settings') return json(await Psc.getSettings(env, user));
     if (method === 'POST' && pathname === '/api/psc/settings') {
       const r = await Psc.saveSettings(env, user, body);
@@ -353,6 +358,14 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/contracts/detail') return json(await Con.detail(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/contracts/insights') return json(await Con.insights(env, user));
     if (method === 'GET' && pathname === '/api/contracts/check') return json(await Con.check(env, user, url.searchParams.get('issueId') || ''));
+    // Someone's own time on contract items still needing a chargeable answer. Theirs only.
+    if (method === 'GET' && pathname === '/api/contracts/mine') return json({ time: await Con.myUndecided(env, user.accountId) });
+    if (method === 'POST' && pathname === '/api/contracts/charge') {
+      const r = await Con.decideTime(env, user, body);
+      await Audit.record(env, user, { area: 'Service contracts', action: body.chargeable ? 'Time marked chargeable' : 'Time marked Promtek at fault',
+        subjectType: 'contract', subjectId: r.contract, label: r.contract, changes: [{ label: 'Worklog', before: '', after: String(body.worklogId) }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/contracts/resolve') {
       const r = await Con.resolveFlag(env, user, body.id);
       await Audit.record(env, user, { area: 'Service contracts', action: 'Alert marked resolved', subjectType: 'contract', subjectId: r.flag.contract_key || r.flag.ref_key,

@@ -6311,7 +6311,32 @@ function conClockHtml(clock, big = false) {
   return `<div class="con-clock${big ? ' big' : ''}">
       <div class="con-clock-bar" aria-hidden="true"><span style="width:${pct}%"></span></div>
       <p><b>${duration(clock.towardsNext)}</b> towards the next token <span class="muted">· ${duration(clock.seconds)} on the clock</span></p>
+      ${clock.waitingSeconds ? `<p class="con-waiting">${duration(clock.waitingSeconds)} waiting for a chargeable answer</p>` : ''}
     </div>`;
+}
+
+// Time that only goes on the clock once someone says it's chargeable. Time on the contract
+// item is answered here, one worklog at a time; a PSC is answered once, in the PSC tile.
+function conChargeRow(l, { mine = false } = {}) {
+  return `<li class="con-charge-row">
+      <span class="con-log-date">${shortDate(l.date || l.work_date)}</span>
+      <span class="con-log-what">${l.key || l.issue_key ? jiraLink(l.key || l.issue_key) : ''} ${esc(l.summary || l.customer || 'Time on the contract')}
+        ${mine ? '' : `<span class="muted">${esc(l.who || '')}</span>`}</span>
+      <span class="con-log-time">${duration(l.seconds)}</span>
+      <span class="con-charge-actions">${l.kind === 'psc'
+        ? `<button class="btn secondary" data-con-psc="${esc(l.key)}">Answer in PSC</button>`
+        : `<button class="btn" data-con-charge="${esc(l.worklogId || l.worklog_id)}" data-value="yes">Chargeable</button>
+           <button class="btn secondary" data-con-charge="${esc(l.worklogId || l.worklog_id)}" data-value="no">Promtek at fault</button>`}</span>
+    </li>`;
+}
+
+function conMineHtml(mine) {
+  if (!mine?.length) return '';
+  return `<section class="card notice con-mine">
+      <h2 style="margin-top:0">Is your contract time chargeable?</h2>
+      <p class="muted">Time you logged on a service contract item. Only chargeable time goes on the customer's token clock.</p>
+      <ul class="con-logs">${mine.map((l) => conChargeRow(l, { mine: true })).join('')}</ul>
+    </section>`;
 }
 
 function conCardHtml(c, today) {
@@ -6368,7 +6393,7 @@ function conBankHolidayHtml(bh, contracts) {
 
 async function contractsHtml() {
   if (conOpen) return contractDetailHtml();
-  const data = await api('/api/contracts');
+  const [data, mine] = await Promise.all([api('/api/contracts'), api('/api/contracts/mine').catch(() => ({ time: [] }))]);
   if (conTab === 'insights' && data.canInsights) return conTabsHtml(data) + await contractInsightsHtml();
   const today = data.today;
   const count = (fn) => data.contracts.filter(fn).length;
@@ -6376,6 +6401,7 @@ async function contractsHtml() {
   const filter = CON_FILTERS.find((f) => f[0] === conFilter) || CON_FILTERS[0];
   const list = data.contracts.filter(filter[2]).filter((c) => !conTier || c.tier === conTier);
   return `${conTabsHtml(data)}
+    ${conMineHtml(mine.time)}
     ${conTrackingLine(data)}
     ${conBankHolidayHtml(data.bankHoliday, data.contracts)}
     ${conFlagsHtml(data.flags)}
@@ -6415,8 +6441,15 @@ async function contractDetailHtml() {
     </section>
     ${c.clock ? `<h2>Token clock</h2>
       <section class="card">${conClockHtml(c.clock, true)}
-        <p class="muted" style="margin:.4rem 0 0">Time on the contract item, its tokens and this customer's PSC items (not Snags) since ${fullDate(d.clockStart)}. Every 4 hours uses a token; at the end of the contract, an hour or more left over uses one more.</p>
+        <p class="muted" style="margin:.4rem 0 0">Chargeable time on the contract item, its tokens and this customer's chargeable PSC items (not Snags) since ${fullDate(d.clockStart)}. Every 4 hours uses a token; at the end of the contract, an hour or more left over uses one more.</p>
       </section>
+      ${d.waiting?.length ? `<h2>Waiting for a chargeable answer</h2>
+        <section class="card"><p class="muted" style="margin-top:0">Not on the clock until someone says it's chargeable. Promtek at fault time never is.</p>
+        <ul class="con-logs">${d.waiting.map((l) => conChargeRow(l)).join('')}</ul></section>` : ''}
+      ${d.notCharged?.length ? `<details class="con-not-charged"><summary>Promtek at fault: not charged (${duration(d.notCharged.reduce((t, l) => t + l.seconds, 0))})</summary>
+        <ul class="con-logs">${d.notCharged.map((l) => `<li><span class="con-log-date">${shortDate(l.date)}</span>
+          <span class="con-log-what">${l.key ? jiraLink(l.key) : ''} ${esc(l.summary || '')} <span class="muted">${esc(l.who)}</span></span>
+          <span class="con-log-time">${duration(l.seconds)}</span></li>`).join('')}</ul></details>` : ''}
       ${d.contributions.length ? `<ul class="list con-list">${d.contributions.map((x) => `<li><span class="title">${x.key ? jiraLink(x.key) : ''} ${esc(x.summary || '')}</span>
         <span class="xp">${duration(x.seconds)}</span></li>`).join('')}</ul>` : ''}` : ''}
     ${d.charges.length ? `<h2>Tokens used by the clock</h2><ul class="list con-list">${d.charges.map((x) => `<li>
@@ -6505,6 +6538,17 @@ async function contractsClick(event) {
   if (f) { conFilter = f.dataset.conFilter; return render(); }
   if (t('[data-con-flags]')) { conAllFlags = !conAllFlags; return render(); }
   if (t('[data-con-back]')) { conOpen = null; return render(); }
+  const charge = t('[data-con-charge]');
+  if (charge) {
+    charge.closest('li')?.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      await api('/api/contracts/charge', { method: 'POST', body: JSON.stringify({ worklogId: charge.dataset.conCharge, chargeable: charge.dataset.value === 'yes' }) });
+      toast(charge.dataset.value === 'yes' ? 'Added to the token clock' : 'Marked Promtek at fault');
+    } catch (err) { toast(err.message); }
+    return render();
+  }
+  const toPsc = t('[data-con-psc]');
+  if (toPsc) { pscOpen = toPsc.dataset.conPsc; pscFetchedAt = 0; location.hash = '#/psc'; return true; }
   const res = t('[data-con-resolve]');
   if (res) {
     res.disabled = true;
@@ -6663,7 +6707,12 @@ async function contractCheck() {
 
 function contractWarnHtml() {
   const c = logChosen.contractCheck;
-  const body = c.step === 'visits'
+  const body = c.step === 'charge'
+    ? `<h2 id="con-warn-title">Is this time chargeable?</h2>
+       <p>Only chargeable time goes on ${esc(c.contract.customer)}'s token clock. Choose Promtek at fault if the work was to put right something Promtek caused.</p>
+       <div class="modal-actions"><button class="btn" data-con-warn="charge-yes">Chargeable</button>
+         <button class="btn secondary" data-con-warn="charge-no">Promtek at fault</button></div>`
+    : c.step === 'visits'
     ? `<h2 id="con-warn-title">Which visit?</h2>
        ${c.visits.length ? `<div class="options">${c.visits.map(optionRow).join('')}</div>` : `<p>${esc(c.contract.customer)} has no contracted visits in Jira.</p>`}
        <div class="modal-actions"><button class="btn secondary" data-con-warn="back">Back</button></div>`
@@ -6680,9 +6729,17 @@ async function contractWarnClick(event) {
   const act = b.dataset.conWarn;
   if (act === 'visits') logChosen.contractCheck.step = 'visits';
   if (act === 'back') logChosen.contractCheck.step = 'warn';
-  if (act === 'continue') delete logChosen.contractCheck;
+  // Time on the contract item itself: is it chargeable? Asked once the visit question is answered.
+  if (act === 'continue') {
+    if (logChosen.contractCheck.askCharge) logChosen.contractCheck.step = 'charge';
+    else delete logChosen.contractCheck;
+  }
+  if (act === 'charge-yes' || act === 'charge-no') {
+    logChosen.chargeable = act === 'charge-yes';
+    delete logChosen.contractCheck;
+  }
   await render();
-  if (act === 'continue' && logMode) { updateXpPreview(); loadStageHint(); }
+  if ((act === 'continue' || act.startsWith('charge-')) && !logChosen?.contractCheck && logMode) { updateXpPreview(); loadStageHint(); }
   return true;
 }
 
@@ -6742,7 +6799,7 @@ function pscStatePill(d) {
 }
 
 function pscTierBadge(d) {
-  if (d.tier === 'none') return `<span class="psc-tier t-none" title="Chargeable: support is paid for as needed">${d.contract ? esc(d.contract.tier || 'Bronze') : 'No contract'} · chargeable</span>`;
+  if (d.tier === 'none') return `<span class="psc-tier t-none" title="No contract cover: support is paid for as needed">${d.contract ? esc(d.contract.tier || 'Bronze') : 'No contract'} · pay as you go</span>`;
   return `<span class="psc-tier t-${d.tier}" title="${esc(d.contract?.key || '')}">${esc(d.tierName)}</span>${d.contract?.tokensFree != null ? `<span class="psc-chip plain">${d.contract.tokensFree} ${d.contract.tokensFree === 1 ? 'token' : 'tokens'} free</span>` : ''}${d.contract?.bankHoliday ? bankHolidayIcon() : ''}`;
 }
 
@@ -6798,15 +6855,25 @@ function pscOrgSelect(d) {
 }
 
 function pscTriageActions(d) {
-  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it' };
+  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it', charge: 'Chargeable not set' };
   return `<div class="psc-triage">
       <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${need[m]}</span>`).join('')}</p>
       <div class="psc-actions">
         ${d.missing.includes('response') || d.assigneeId !== pscData?.me ? '<button class="btn" data-psc-pickup="KEY">I\'m on it</button>'.replace('KEY', esc(d.key)) : ''}
         ${pscPeopleSelect(d)}
         ${d.missing.includes('org') ? pscOrgSelect(d) : ''}
+        ${d.missing.includes('charge') ? pscChargeSelect(d) : ''}
       </div>
     </div>`;
+}
+
+// Chargable PSC or Promtek at Fault: only chargeable PSCs go on a customer's token clock.
+function pscChargeSelect(d) {
+  return `<select data-psc-charge="${esc(d.key)}" aria-label="Is ${esc(d.key)} chargeable?">
+      <option value="">${d.chargeable === 'yes' ? 'Chargable PSC' : d.chargeable === 'no' ? 'Promtek at Fault' : 'Chargeable?'}</option>
+      <option value="yes"${d.chargeable === 'yes' ? ' disabled' : ''}>Chargable PSC</option>
+      <option value="no"${d.chargeable === 'no' ? ' disabled' : ''}>Promtek at Fault</option>
+    </select>`;
 }
 
 function pscTabsHtml(data) {
@@ -6830,8 +6897,8 @@ async function pscHtml() {
     const list = data.items.filter((d) => !d.orderWork && d.missing.length);
     if (list.some((d) => d.missing.includes('org')) && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
     return `${pscTabsHtml(data)}${pscHeadLine(data)}
-      <p class="help">New items, and any missing an Organization or an owner. Each leaves this list once it has all three.</p>
-      <div class="psc-list">${list.map((d) => pscCardHtml(d, { triage: true })).join('') || '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner and a first look.</p></div>'}</div>`;
+      <p class="help">New items, and any missing an Organization, an owner, a first look, or whether it's chargeable. Each leaves this list once it has them all.</p>
+      <div class="psc-list">${list.map((d) => pscCardHtml(d, { triage: true })).join('') || '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner, a first look and a chargeable answer.</p></div>'}</div>`;
   }
   const base = data.items.filter((d) => (pscSnags || !d.orderWork) && (pscShow === 'resolved' ? d.state === 'resolved' : d.state !== 'resolved'));
   const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
@@ -6884,6 +6951,8 @@ async function pscItemHtml() {
         <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
         <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
         <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
+        <div><dt>Chargeable</dt><dd>${d.chargeable === 'yes' ? 'Chargable PSC: its time goes on the token clock' : d.chargeable === 'no' ? 'Promtek at Fault: its time isn\'t charged' : '<b class="con-late">Not set yet</b>'}
+          ${d.orderWork ? '' : `<div style="margin-top:.4rem">${pscChargeSelect(d)}</div>`}</dd></div>
         <div><dt>First look due</dt><dd>${when(d.response.dueAt)}, ${workText(d.response.targetMs)} after ${d.cover.raisedInCover ? 'it was raised' : `${esc(d.tierName)} cover began`}</dd></div>
       </dl>
       ${pscTermsHtml(d)}
@@ -7005,6 +7074,7 @@ async function pscChange(event) {
   };
   if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
   if (el.matches('[data-psc-org]') && el.value) { await send('/api/psc/org', { key: el.dataset.pscOrg, orgId: el.value }, 'Organization saved'); return true; }
+  if (el.matches('[data-psc-charge]') && el.value) { await send('/api/psc/charge', { key: el.dataset.pscCharge, chargeable: el.value === 'yes' }, el.value === 'yes' ? 'Marked chargeable' : 'Marked Promtek at fault'); return true; }
   if (el.matches('[data-psc-customer]')) { pscCustomer = el.value; render(); return true; }
   if (el.matches('[data-psc-tier]')) { pscTier = el.value; render(); return true; }
   if (el.matches('[data-psc-sort]')) { pscSort = el.value; render(); return true; }
@@ -7590,6 +7660,7 @@ async function logAction(action, button) {
           date: document.getElementById('log-date').value,
           startTime: document.getElementById('log-start').value,
           description: document.getElementById('log-note').value,
+          ...(typeof logChosen.chargeable === 'boolean' ? { chargeable: logChosen.chargeable } : {}),
         }),
       });
       toast(`${duration(result.seconds)} logged against ${result.issueKey}`);

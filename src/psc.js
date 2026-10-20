@@ -8,7 +8,7 @@
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam } from './permissions.js';
-import { orgMatcher, tokenCounts, holidaysFor } from './contracts.js';
+import { orgMatcher, tokenCounts, holidaysFor, chargeOf, CHARGE } from './contracts.js';
 
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
 export const ORDER_TYPES = ['Snag', 'Sub-Snag'];                        // order work, shown only when asked for
@@ -16,6 +16,7 @@ export const RESOLVED_STATUSES = ['Resolved [Promtek]', 'Verified [Customer]'];
 // Statuses left off the tile altogether (compared without capitals).
 export const HIDDEN_STATUSES = ['admin'];
 const ORG_FIELD = 'customfield_12900';
+const CHARGE_FIELD = 'customfield_16884';
 const PSC_PROJECT = 'PSC';
 export const DEFAULTS = { targets: { platinum: 1, gold: 2, silver: 4, none: 8 }, shiftStart: 8, shiftEnd: 17, staleDays: 2 };
 
@@ -51,10 +52,10 @@ const FULL_EVERY_MS = 24 * 3600 * 1000;
 const REFRESH_GAP_MS = 60 * 1000;
 const RECENT_DAYS = 30;
 // Moved on whenever deriveItem changes what it works out.
-const DERIVE_VERSION = '2';
+const DERIVE_VERSION = '3';
 const RUN_CALLS = 30;
 const ORGS_FOR_MS = 6 * 3600 * 1000;
-const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, 'comment', 'parent', 'issuelinks'];
+const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, CHARGE_FIELD, 'comment', 'parent', 'issuelinks'];
 
 const placeholders = (n) => Array(n).fill('?').join(',');
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
@@ -218,6 +219,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
     timeline: JSON.stringify(events.slice(-25).reverse()),
     links: JSON.stringify((f.issuelinks || []).map((l) => l.outwardIssue?.key || l.inwardIssue?.key).filter(Boolean)),
     parent_key: f.parent?.key || null,
+    chargeable: chargeOf(f[CHARGE_FIELD]),
     synced_at: now,
   };
 }
@@ -225,7 +227,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
 async function saveItems(env, rows) {
   const cols = ['issue_id', 'issue_key', 'project_key', 'org', 'summary', 'issuetype', 'status', 'done', 'priority', 'assignee_id', 'assignee_name',
     'reporter_name', 'reporter_team', 'created_at', 'updated_at', 'resolved_at', 'team_first_at', 'team_first_by', 'team_first_how', 'team_last_at',
-    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'parent_key', 'synced_at'];
+    'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'parent_key', 'chargeable', 'synced_at'];
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
@@ -334,6 +336,8 @@ async function applyWrite(b, w) {
     await b.call(`/rest/api/3/issue/${w.issue_key}/assignee`, { method: 'PUT', body: JSON.stringify({ accountId: p.accountId }) });
   } else if (w.kind === 'org') {
     await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [ORG_FIELD]: [Number(p.orgId)] } }) });
+  } else if (w.kind === 'charge') {
+    await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [CHARGE_FIELD]: { value: p.value } } }) });
   } else if (w.kind === 'progress') {
     // Moves it to In Progress, which is what counts as its first look.
     const { transitions = [] } = await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`);
@@ -465,6 +469,7 @@ function merged(row) {
     team_first_at: first?.at || null, team_first_by: first?.by || null, team_first_how: first?.how || null,
     team_last_at: last?.at || null, team_last_by: last?.by || null, team_last_what: last?.what || null,
     customer_last_at: cust?.at || null, customer_last_by: cust?.by || null,
+    chargeable: row.chargeable || src.chargeable || null,
     timeline: JSON.stringify(kept.reverse().slice(0, 30)),
     ids: [row.issue_id, src.issue_id],
   };
@@ -509,6 +514,8 @@ export function describe(original, ctx, now = new Date().toISOString()) {
   if (!resolved && isPsc && !row.org) missing.push('org');
   if (!resolved && !row.assignee_id) missing.push('assignee');
   if (!resolved && !first) missing.push('response');
+  // Whether it's chargeable decides if its time goes on the customer's token clock.
+  if (!row.chargeable && !ORDER_TYPES.includes(row.issuetype) && !resolved) missing.push('charge');
 
   let state = 'active';
   if (resolved) state = 'resolved';
@@ -531,6 +538,7 @@ export function describe(original, ctx, now = new Date().toISOString()) {
       : { at: null, waitMs, late: lateNow, dueAt, targetMs: target, leftMs: ms(dueAt) - ms(now) },
     lastTeam, customerLast: row.customer_last_at ? { at: row.customer_last_at, by: row.customer_last_by } : null,
     customerWaiting: Boolean(customerWaiting), customerWaitMs, quietMs, stale: Boolean(stale),
+    chargeable: row.chargeable || null, sourceKey: row.source?.issue_key || null,
     missing, state, rank,
     copyOf: row.source?.issue_key || null,
     uncopied: Boolean(original.uncopied),
@@ -616,6 +624,20 @@ export async function assign(env, viewer, key, accountId) {
   const who = await env.DB.prepare('SELECT name FROM employees WHERE account_id = ?').bind(String(accountId || '')).first();
   if (!who) throw new Error('Choose someone from the list.');
   return queueWrite(env, viewer, row.issue_key, 'assign', { accountId }, `Assigning to ${who.name}`);
+}
+
+// Chargable PSC or Promtek at Fault. Set on the item shown and, for a PSC board item
+// copied into the customer's project, on the original too, so both agree.
+export async function setCharge(env, viewer, key, chargeable) {
+  mustSee(viewer);
+  const row = await rowFor(env, key);
+  const value = chargeable ? CHARGE.yes : CHARGE.no;
+  const label = chargeable ? 'Marking it chargeable' : 'Marking it Promtek at fault';
+  const ctx = await context(env);
+  const shown = ctx.items.find((r) => r.issue_key === row.issue_key);
+  const result = await queueWrite(env, viewer, row.issue_key, 'charge', { value }, label);
+  if (shown?.source?.issue_key) await queueWrite(env, viewer, shown.source.issue_key, 'charge', { value }, label);
+  return result;
 }
 
 export async function setOrg(env, viewer, key, orgId) {

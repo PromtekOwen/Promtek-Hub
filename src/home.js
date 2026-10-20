@@ -123,6 +123,15 @@ async function systemAlerts(env, viewer) {
         body: 'For Condor tickets of yours going in the release notes.', link: '#/condor?notes' });
     }
 
+    // Time on a service contract item that hasn't been said to be chargeable or not.
+    const undecided = await (await import('./contracts.js')).myUndecided(env, me).catch(() => []);
+    if (undecided.length) {
+      const first = undecided[0];
+      out.push({ key: 'contract-charge', tone: 'important', title: undecided.length === 1 ? `Is your time on ${first.issue_key} chargeable?` : `${plural(undecided.length, 'bit')} of contract time need a chargeable answer`,
+        body: undecided.length === 1 ? `${first.customer || first.issue_key}, ${first.work_date}. Only chargeable time goes on their token clock.`
+          : 'Only chargeable time goes on a customer\'s token clock.', link: `#/contracts?charge` });
+    }
+
     const timer = await env.DB.prepare('SELECT current FROM active_timers WHERE account_id = ?').bind(me).first().catch(() => null);
     const cur = parse(timer?.current, null);
     if (cur?.startedAt && Date.now() - Date.parse(cur.startedAt) > 10 * 3600_000) {

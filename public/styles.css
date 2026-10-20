@@ -1096,3 +1096,13 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .reads-queries { margin-top: 1rem; }
 .reads-queries summary { cursor: pointer; font-weight: 600; }
 .reads-queries code { font-size: .82rem; white-space: normal; word-break: break-word; }
+
+/* Chargeable time on contracts */
+.con-waiting { margin: .3rem 0 0; color: var(--gold); font-weight: 600; font-size: .9rem; }
+.con-logs li.con-charge-row { grid-template-columns: 4rem minmax(0, 1fr) auto; align-items: center; }
+.con-charge-actions { grid-column: 1 / -1; display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+.con-charge-actions .btn { padding: .4rem .8rem; font-size: .9rem; }
+.con-mine { margin-bottom: 1rem; }
+.con-mine .con-logs { border-left-color: var(--gold); }
+.con-not-charged { margin: .5rem 0 1rem; }
+.con-not-charged summary { cursor: pointer; font-weight: 600; color: var(--muted); }
