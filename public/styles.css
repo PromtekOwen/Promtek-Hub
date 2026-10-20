@@ -1106,3 +1106,12 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .con-mine .con-logs { border-left-color: var(--gold); }
 .con-not-charged { margin: .5rem 0 1rem; }
 .con-not-charged summary { cursor: pointer; font-weight: 600; color: var(--muted); }
+
+/* Resolving a PSC */
+.psc-resolve { max-width: 34rem; }
+.psc-resolve-q { margin: 1rem 0 .4rem; }
+.psc-resolve-charge { display: flex; max-width: 100%; }
+.psc-resolve-charge .seg { flex: 1 1 0; }
+.psc-resolve-cause { display: block; margin-top: 1rem; }
+.psc-resolve-cause textarea { display: block; width: 100%; margin-top: .35rem; font: inherit; padding: .6rem .75rem; border: 1px solid var(--line); border-radius: 10px; resize: vertical; }
+.psc-card-actions { margin-top: .75rem; }

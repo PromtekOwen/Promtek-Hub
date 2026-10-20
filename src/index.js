@@ -334,6 +334,12 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/psc/pickup') return json(await Psc.pickUp(env, user, body.key));
     if (method === 'POST' && pathname === '/api/psc/assign') return json(await Psc.assign(env, user, body.key, body.accountId));
     if (method === 'POST' && pathname === '/api/psc/org') return json(await Psc.setOrg(env, user, body.key, body.orgId));
+    if (method === 'POST' && pathname === '/api/psc/resolve') {
+      const r = await Psc.resolve(env, user, body);
+      await Audit.record(env, user, { area: 'PSC', action: `Resolved (${body.chargeable ? 'chargeable' : 'Promtek at fault'})`, subjectType: 'psc', subjectId: body.key, label: body.key,
+        changes: [{ label: 'Root cause', before: '', after: String(body.rootCause || '').slice(0, 300) }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/psc/charge') {
       const r = await Psc.setCharge(env, user, body.key, body.chargeable);
       await Audit.record(env, user, { area: 'PSC', action: body.chargeable ? 'Marked chargeable' : 'Marked Promtek at fault', subjectType: 'psc', subjectId: body.key, label: body.key });

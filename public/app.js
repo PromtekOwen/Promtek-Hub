@@ -6822,8 +6822,16 @@ function pscResponseChip(d) {
   return `<span class="psc-chip${r.late ? ' bad' : ''}">First look ${r.late ? 'took' : 'in'} ${workText(r.waitMs)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}</span>`;
 }
 
+const PSC_IN_PROGRESS = /in progress/i;
+const pscCanResolve = (d) => d.state !== 'resolved' && PSC_IN_PROGRESS.test(d.status || '');
+
 function pscUpdateChips(d) {
   const out = [];
+  if (!d.orderWork) {
+    out.push(d.chargeable === 'yes' ? '<span class="psc-chip plain">Chargeable</span>'
+      : d.chargeable === 'no' ? '<span class="psc-chip plain">Promtek at fault</span>'
+      : '<span class="psc-chip warn">Chargeable not set</span>');
+  }
   if (d.customerWaiting) out.push(`<span class="psc-chip warn">${esc((d.customerLast.by || 'Customer').split(' ')[0])} replied ${agoText(d.customerLast.at)}, waiting on us</span>`);
   if (d.lastTeam && d.response.at) out.push(`<span class="psc-chip${d.stale ? ' warn' : ''}">Last update ${agoText(d.lastTeam.at)}: ${esc((d.lastTeam.by || '').split(' ')[0])} ${esc(d.lastTeam.what || '')}</span>`);
   return out.join('');
@@ -6837,7 +6845,7 @@ function pscCardHtml(d, { triage = false } = {}) {
       <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>
         <span class="muted">· ${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'} · ${esc(d.status)} · raised ${agoText(d.created)}</span></p>
       <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}${d.uncopied ? `<span class="psc-chip warn" title="It has an Organization but no copy in the customer's project has been found">Not copied to ${esc(d.customer || 'the customer')}'s project</span>` : ''}</div>
-      ${triage ? pscTriageActions(d) : ''}
+      ${triage ? pscTriageActions(d) : pscCanResolve(d) ? `<div class="psc-actions psc-card-actions"><button class="btn secondary" data-psc-resolve="${esc(d.key)}">Resolve</button></div>` : ''}
     </article>`;
 }
 
@@ -6867,6 +6875,70 @@ function pscTriageActions(d) {
     </div>`;
 }
 
+// Resolving a PSC from the tile: was it chargeable, and what was the root cause? Both go
+// to Jira (the root cause into PSC solution), then it moves to Resolved [Promtek].
+let pscResolving = null;         // { key, summary, chargeable, cause, busy }
+
+function pscResolveModal() {
+  const r = pscResolving;
+  if (!r) return '';
+  const seg = (v, label) => `<button type="button" class="seg${r.chargeable === v ? ' on' : ''}" data-psc-res-charge="${v ? 'yes' : 'no'}">${label}</button>`;
+  return `<div class="modal-backdrop"><div class="modal card psc-resolve" role="dialog" aria-modal="true" aria-labelledby="psc-resolve-title">
+      <h2 id="psc-resolve-title">Resolve ${esc(r.key)}</h2>
+      <p class="muted" style="margin-top:0">${esc(r.summary || '')}</p>
+      <p class="psc-resolve-q"><strong>Was it chargeable?</strong></p>
+      <div class="segment psc-resolve-charge">${seg(true, 'Chargable PSC')}${seg(false, 'Promtek at Fault')}</div>
+      <p class="help">A chargeable PSC's time goes on the customer's token clock. Promtek at Fault is for problems Promtek caused, and is never charged.</p>
+      <label class="psc-resolve-cause"><strong>Root cause</strong>
+        <textarea data-psc-cause rows="4" placeholder="What was wrong, and what put it right">${esc(r.cause || '')}</textarea></label>
+      <p class="help">Saved to the PSC solution field in Jira.</p>
+      <div class="result" id="psc-resolve-result" role="status"></div>
+      <div class="modal-actions">
+        <button class="btn" data-psc-res="go"${r.busy ? ' disabled' : ''}>Resolve</button>
+        <button class="btn secondary" data-psc-res="cancel">Cancel</button>
+      </div>
+    </div></div>`;
+}
+
+async function pscResolveClick(t) {
+  const cause = document.querySelector('[data-psc-cause]');
+  if (cause && pscResolving) pscResolving.cause = cause.value;
+  const open = t('[data-psc-resolve]');
+  if (open) {
+    const d = pscData?.items.find((x) => x.key === open.dataset.pscResolve) || null;
+    pscResolving = { key: open.dataset.pscResolve, summary: d?.summary || '', chargeable: d?.chargeable === 'yes' ? true : d?.chargeable === 'no' ? false : null, cause: '' };
+    await render();
+    document.querySelector('[data-psc-cause]')?.focus({ preventScroll: true });
+    return true;
+  }
+  if (!pscResolving) return false;
+  const charge = t('[data-psc-res-charge]');
+  if (charge) { pscResolving.chargeable = charge.dataset.pscResCharge === 'yes'; await render(); return true; }
+  const act = t('[data-psc-res]')?.dataset.pscRes;
+  if (act === 'cancel') { pscResolving = null; await render(); return true; }
+  if (act === 'go') {
+    const out = document.getElementById('psc-resolve-result');
+    const say = (text) => { if (out) { out.textContent = text; out.className = 'result bad'; } };
+    if (pscResolving.chargeable === null) { say('Choose whether it was chargeable.'); return true; }
+    if ((pscResolving.cause || '').trim().length < 5) { say('Give the root cause: what was wrong and what put it right.'); return true; }
+    pscResolving.busy = true;
+    try {
+      const r = await api('/api/psc/resolve', { method: 'POST', body: JSON.stringify({ key: pscResolving.key, chargeable: pscResolving.chargeable, rootCause: pscResolving.cause }) });
+      toast(r.saved ? `${pscResolving.key} resolved` : r.message);
+      pscResolving = null;
+      pscFetchedAt = 0;
+      await render();
+      return true;
+    } catch (err) {
+      pscResolving.busy = false;
+      await render();
+      say(err.message);
+      return true;
+    }
+  }
+  return false;
+}
+
 // Chargable PSC or Promtek at Fault: only chargeable PSCs go on a customer's token clock.
 function pscChargeSelect(d) {
   return `<select data-psc-charge="${esc(d.key)}" aria-label="Is ${esc(d.key)} chargeable?">
@@ -6890,6 +6962,10 @@ function pscHeadLine(data) {
 }
 
 async function pscHtml() {
+  return `${await pscPageHtml()}${pscResolveModal()}`;
+}
+
+async function pscPageHtml() {
   if (pscOpen) return pscItemHtml();
   const data = await pscLoad();
   if (pscTab === 'insights') return pscTabsHtml(data) + await pscInsightsHtml();
@@ -6957,7 +7033,8 @@ async function pscItemHtml() {
       </dl>
       ${pscTermsHtml(d)}
       <div class="psc-actions">
-        ${d.state !== 'resolved' ? `<button class="btn" data-psc-pickup="${esc(d.key)}">I'm on it</button>` : ''}
+        ${d.state !== 'resolved' && !pscCanResolve(d) ? `<button class="btn" data-psc-pickup="${esc(d.key)}">I'm on it</button>` : ''}
+        ${pscCanResolve(d) ? `<button class="btn" data-psc-resolve="${esc(d.key)}">Resolve</button>` : ''}
         <button class="btn secondary" data-psc-log="${esc(d.key)}">Log time</button>
         ${pscPeopleSelect(d)}
         ${d.project === 'PSC' ? pscOrgSelect(d) : ''}
@@ -7029,7 +7106,9 @@ async function pscInsightsHtml() {
 
 async function pscClick(event) {
   const t = (sel) => event.target.closest(sel);
-  if (t('a') || t('select') || t('input') || t('label')) return false;
+  if (t('a') || t('select') || t('input') || t('textarea')) return false;
+  if (await pscResolveClick(t)) return true;
+  if (t('label')) return false;
   const tab = t('[data-psc-tab]');
   if (tab) { pscTab = tab.dataset.pscTab; pscOpen = null; return render(); }
   const who = t('[data-psc-who]');
@@ -7094,7 +7173,7 @@ function pscInput(event) {
 // anything has changed, which costs almost nothing, and only then reloads.
 setInterval(async () => {
   if (currentRoute() !== '#/psc' || settingsOpen || document.visibilityState !== 'visible') return;
-  if (document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
+  if (pscResolving || document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
   const before = pscData;
   await pscLoad().catch(() => null);
   if (pscData !== before && currentRoute() === '#/psc') render();

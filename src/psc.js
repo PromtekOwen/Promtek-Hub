@@ -17,6 +17,8 @@ export const RESOLVED_STATUSES = ['Resolved [Promtek]', 'Verified [Customer]'];
 export const HIDDEN_STATUSES = ['admin'];
 const ORG_FIELD = 'customfield_12900';
 const CHARGE_FIELD = 'customfield_16884';
+const SOLUTION_FIELD = 'customfield_15180';               // PSC solution: the root cause, written when it's resolved
+export const RESOLVE_TO = 'Resolved [Promtek]';
 const PSC_PROJECT = 'PSC';
 export const DEFAULTS = { targets: { platinum: 1, gold: 2, silver: 4, none: 8 }, shiftStart: 8, shiftEnd: 17, staleDays: 2 };
 
@@ -336,6 +338,25 @@ async function applyWrite(b, w) {
     await b.call(`/rest/api/3/issue/${w.issue_key}/assignee`, { method: 'PUT', body: JSON.stringify({ accountId: p.accountId }) });
   } else if (w.kind === 'org') {
     await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [ORG_FIELD]: [Number(p.orgId)] } }) });
+  } else if (w.kind === 'resolve') {
+    // The root cause and chargeable answer first, so they're in Jira before the status moves.
+    const put = (solution) => b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT',
+      body: JSON.stringify({ fields: { [CHARGE_FIELD]: { value: p.charge }, [SOLUTION_FIELD]: solution } }) });
+    try {
+      await put({ type: 'doc', version: 1, content: String(p.solution).split(/\n{2,}/).map((para) => ({ type: 'paragraph', content: [{ type: 'text', text: para }] })) });
+    } catch (err) {
+      // A plain text field takes the words as they are.
+      if (err.status !== 400) throw err;
+      await put(String(p.solution));
+    }
+    const { transitions = [] } = await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`);
+    const go = transitions.find((t) => String(t.to?.name || t.name || '').toLowerCase() === RESOLVE_TO.toLowerCase());
+    if (!go) {
+      const now = await b.call(`/rest/api/3/issue/${w.issue_key}?fields=status`);
+      if (String(now?.fields?.status?.name || '').toLowerCase() === RESOLVE_TO.toLowerCase()) return;   // already there
+      throw new Error(`Jira offers no way to move it to ${RESOLVE_TO} from ${now?.fields?.status?.name || 'where it is'}.`);
+    }
+    await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
   } else if (w.kind === 'charge') {
     await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [CHARGE_FIELD]: { value: p.value } } }) });
   } else if (w.kind === 'progress') {
@@ -637,6 +658,24 @@ export async function setCharge(env, viewer, key, chargeable) {
   const shown = ctx.items.find((r) => r.issue_key === row.issue_key);
   const result = await queueWrite(env, viewer, row.issue_key, 'charge', { value }, label);
   if (shown?.source?.issue_key) await queueWrite(env, viewer, shown.source.issue_key, 'charge', { value }, label);
+  return result;
+}
+
+// Resolving from the tile: whether it was chargeable and what the root cause was, both
+// written to Jira, then the status moved to Resolved [Promtek]. A chargeable PSC's time
+// goes on the customer's token clock; Promtek at Fault time never does.
+export async function resolve(env, viewer, { key, chargeable, rootCause }) {
+  mustSee(viewer);
+  if (typeof chargeable !== 'boolean') throw Object.assign(new Error('Say whether it was chargeable.'), { status: 400 });
+  const solution = String(rootCause || '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
+  if (solution.length < 5) throw Object.assign(new Error('Give the root cause: what was wrong and what put it right.'), { status: 400 });
+  const row = await rowFor(env, key);
+  if (row.done || RESOLVED_STATUSES.includes(row.status)) throw Object.assign(new Error('That PSC is already resolved.'), { status: 409 });
+  const charge = chargeable ? CHARGE.yes : CHARGE.no;
+  const ctx = await context(env);
+  const shown = ctx.items.find((r) => r.issue_key === row.issue_key);
+  const result = await queueWrite(env, viewer, row.issue_key, 'resolve', { charge, solution }, `Resolving it (${chargeable ? 'chargeable' : 'Promtek at fault'})`);
+  if (shown?.source?.issue_key) await queueWrite(env, viewer, shown.source.issue_key, 'charge', { value: charge }, 'Setting chargeable on the PSC board original');
   return result;
 }
 

@@ -1284,6 +1284,15 @@ async function answer(p, q, method, body) {
   }
   if (p === '/api/psc/orgs') return { orgs: CUSTOMERS.map((c, i) => ({ id: String(i + 1), name: c.name })) };
   if (p === '/api/psc/pickup') return pscPickup(body.key);
+  if (p === '/api/psc/resolve') {
+    const item = world.psc.find((x) => x.key === body.key);
+    if (item) {
+      Object.assign(item, { status: 'Resolved [Promtek]', done: true, chargeable: body.chargeable ? 'yes' : 'no', resolvedAt: iso(now()) });
+      item.timeline.unshift({ at: iso(now()), by: me.name, team: true, kind: 'status', text: 'In Progress → Resolved [Promtek]' });
+      refreshPsc(item);
+    }
+    return { ok: true, saved: true };
+  }
   if (p === '/api/psc/charge') {
     const item = world.psc.find((x) => x.key === body.key);
     if (item) { item.chargeable = body.chargeable ? 'yes' : 'no'; refreshPsc(item); }
