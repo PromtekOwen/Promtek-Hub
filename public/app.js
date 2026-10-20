@@ -1,5 +1,6 @@
 import { MODULES } from './modules.js';
 import { TOURS } from './tours.js';
+import { suggestionsFor, closeDropdown } from './dropdown.js';
 
 const view = document.getElementById('view');
 const band = document.getElementById('band');
@@ -1703,7 +1704,7 @@ function obsFieldChanged(path, picked) {
 
 // A value that exactly matches a suggestion counts as picked.
 function obsIsPick(input) {
-  const list = input.list;
+  const list = suggestionsFor(input);
   if (!list) return false;
   const value = obsNorm(input.value);
   return Boolean(value) && [...list.options].some((o) => obsNorm(o.value) === value);
@@ -1882,7 +1883,6 @@ function obsSurveyHtml() {
     const t = obsSurvey.title;
     return `${progress}<div class="card">
         <h2 style="margin-top:0">Site details</h2>
-        <p class="muted">Filled in from Jira where possible.</p>
         ${obsField('title.client', 'Client', t.client)}
         ${obsField('title.contractNo', 'Contract number', t.contractNo)}
         ${obsField('title.siteContact', 'Site contact', t.siteContact)}
@@ -1930,9 +1930,6 @@ function obsSurveyHtml() {
   return `${progress}
     <div class="card">
       <h2 style="margin-top:0">${esc(section.name)}</h2>
-      <p class="muted">${items.length ? `${items.length} recorded.` : 'Nothing recorded yet.'} ${section.cards
-        ? 'Pick a manufacturer first and the part numbers narrow to theirs; a known part number fills in the rest. Tick Copy on cards to put them in another panel.'
-        : 'Each field suggests what Promtek has seen before, narrowed by the fields above it.'}</p>
       <div class="row obs-add-row">${addButton}</div>
     </div>
     ${items.map((item, i) => (section.cards ? panelCard(section, item, i) : itemCard(section, item, i))).join('')}
@@ -7252,6 +7249,7 @@ function tourCardHtml() {
 }
 
 async function showStep() {
+  closeDropdown();                 // a list left open from the last step mustn't cover this one
   const t = tour;
   if (!t) return;
   const token = ++t.token;
@@ -7413,6 +7411,8 @@ function practiceBar() {
 function tourGate(event) {
   if (!tour || !event.isTrusted) return;
   if (event.target.closest?.('.tour-card, .practice-bar')) return;
+  // A drop-down only opens from a field the step allowed, so choosing in it is allowed too.
+  if (event.target.closest?.('.dd-panel')) return;
   const step = tour.steps[tour.i];
   const inTarget = tour.ready && step.act && liveTarget()?.contains(event.target);
   if (!inTarget) {
