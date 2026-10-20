@@ -1037,3 +1037,10 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .q-open-count { margin: 1rem 0 .5rem; }
 .q-status { display: inline-block; background: var(--tint); color: var(--blue-deep); border-radius: 999px; padding: 0 .55rem; font-weight: 600; font-size: .85rem; }
 .q-team-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin-top: .75rem; }
+
+/* Drafts: continue, or delete with a quick confirm. */
+.draft-actions { display: inline-flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .35rem .9rem; }
+.muted-link { color: var(--muted); font-weight: 500; }
+.muted-link:hover { color: var(--danger); }
+.draft-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem .6rem; font-size: .92rem; color: var(--ink); font-weight: 600; }
+.chip-btn.danger { background: var(--danger); color: #fff; border-color: var(--danger); }

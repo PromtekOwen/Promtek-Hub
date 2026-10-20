@@ -1162,10 +1162,15 @@ async function answer(p, q, method, body) {
     const c = customer(k.split('-')[0]);
     return { projectKey: c.key, customer: c.name, site: { NGB: 'Unit 4, Northgate Road', HBM: 'The Old Quay, Harbour Lane', ASF: 'Ashby Mill, Station Road' }[c.key], contact: { NGB: 'Hannah Price', HBM: 'Rob Fenwick', ASF: 'Leah Grant' }[c.key], contactPhone: '01632 960000', contactEmail: '' };
   }
-  if (p === '/api/pow/draft') return { ok: true };
-  if (p === '/api/pow/form') return { data: null };
+  if (p === '/api/pow/draft') {
+    const row = { id: body.id, issue_key: body.issueKey, customer: body.details?.customer, status: 'draft', updated_at: iso(now()), data: body };
+    world.pow = [row, ...world.pow.filter((f) => f.id !== body.id)];
+    return { id: body.id, status: 'draft' };
+  }
+  if (p === '/api/pow/form') return { data: world.pow.find((f) => f.id === q.get('id'))?.data || null };
+  if (p === '/api/pow/delete') { world.pow = world.pow.filter((f) => !(f.id === body.id && f.status === 'draft')); return { ok: true }; }
   if (p === '/api/pow/submit') {
-    world.pow.unshift({ id: body.id, issue_key: body.issueKey, customer: body.details?.customer, status: 'submitted', submitted_at: iso(now()) });
+    world.pow = [{ id: body.id, issue_key: body.issueKey, customer: body.details?.customer, status: 'submitted', submitted_at: iso(now()) }, ...world.pow.filter((f) => f.id !== body.id)];
     return { id: body.id, jiraAttached: true, driveFileId: 'example', notes: [] };
   }
 
@@ -1176,10 +1181,15 @@ async function answer(p, q, method, body) {
     { key: 'HBM-31', client: 'Harbour Mills', status: 'Survey due', projectKey: 'HBM', serviceContract: 'Platinum', contractNo: 'HBM-40', siteContact: 'Rob Fenwick' },
     { key: 'NGB-77', client: 'Northgate Bakery', status: 'Up to date', projectKey: 'NGB', serviceContract: 'Gold', contractNo: 'NGB-90', siteContact: 'Hannah Price' },
   ] };
-  if (p === '/api/obs/draft') return { ok: true };
-  if (p === '/api/obs/survey') return { data: null };
+  if (p === '/api/obs/draft') {
+    const row = { id: body.id, client: body.title?.client, report_key: body.reportKey, status: 'draft', updated_at: iso(now()), data: body };
+    world.obs = [row, ...world.obs.filter((s) => s.id !== body.id)];
+    return { id: body.id, status: 'draft' };
+  }
+  if (p === '/api/obs/survey') return { data: world.obs.find((s) => s.id === q.get('id'))?.data || null };
+  if (p === '/api/obs/delete') { world.obs = world.obs.filter((s) => !(s.id === body.id && s.status === 'draft')); return { ok: true }; }
   if (p === '/api/obs/submit') {
-    world.obs.unshift({ id: body.id, client: body.title?.client, report_key: body.reportKey, status: 'submitted', submitted_at: iso(now()) });
+    world.obs = [{ id: body.id, client: body.title?.client, report_key: body.reportKey, status: 'submitted', submitted_at: iso(now()) }, ...world.obs.filter((x) => x.id !== body.id)];
     return { notes: [] };
   }
   if (p === '/api/obs/sales') return { reports: world.obsSales };

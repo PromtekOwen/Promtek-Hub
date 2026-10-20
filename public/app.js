@@ -1453,6 +1453,37 @@ function obsChooserHtml() {
     </div>`;
 }
 
+// Unfinished drafts can be thrown away, with one tap to confirm.
+let draftDeleting = null;   // the draft waiting for "Delete it"
+function draftActionsHtml(kind, id) {
+  if (draftDeleting === `${kind}:${id}`) {
+    return `<span class="draft-confirm">Delete this draft?
+      <button class="chip-btn danger" data-draft-delete-yes="${kind}" data-id="${esc(id)}">Delete it</button>
+      <button class="linklike" data-draft-delete-no>Keep it</button></span>`;
+  }
+  return `<button class="linklike" data-${kind}-open="${esc(id)}">Continue</button>
+    <button class="linklike muted-link" data-draft-delete="${kind}" data-id="${esc(id)}" aria-label="Delete this draft">Delete</button>`;
+}
+
+async function draftDeleteClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const ask = t('[data-draft-delete]');
+  if (ask) { draftDeleting = `${ask.dataset.draftDelete}:${ask.dataset.id}`; render(); return true; }
+  if (t('[data-draft-delete-no]')) { draftDeleting = null; render(); return true; }
+  const yes = t('[data-draft-delete-yes]');
+  if (!yes) return false;
+  const kind = yes.dataset.draftDeleteYes, id = yes.dataset.id;
+  yes.disabled = true;
+  try {
+    await api(`/api/${kind}/delete`, { method: 'POST', body: JSON.stringify({ id }) });
+    if (kind === 'pow') localDrafts.remove(id);
+    draftDeleting = null;
+    toast('Draft deleted');
+    render();
+  } catch (err) { toast(err.message); yes.disabled = false; }
+  return true;
+}
+
 function obsHomeHtml(data) {
   const drafts = data.surveys.filter((s) => s.status === 'draft');
   const done = data.surveys.filter((s) => s.status !== 'draft');
@@ -1460,8 +1491,8 @@ function obsHomeHtml(data) {
       <span class="title">${esc(s.client || 'No client')} ${s.report_key ? `<span class="muted">${esc(s.report_key)}</span>` : ''}</span>
       <span class="sub">${s.status === 'draft' ? `Draft, last touched ${shortDate((s.updated_at || '').slice(0, 10))}`
         : `Completed ${shortDate((s.submitted_at || '').slice(0, 10))}`}${s.delivery_note ? ', needs filing by hand' : ''}</span>
-      <span class="xp">${s.status === 'draft'
-        ? `<button class="linklike" data-obs-open="${esc(s.id)}">Continue</button>`
+      <span class="xp draft-actions">${s.status === 'draft'
+        ? draftActionsHtml('obs', s.id)
         : `<a class="linklike" href="/api/obs/pdf?id=${encodeURIComponent(s.id)}" target="_blank" rel="noopener">PDF</a>`}</span>
     </li>`;
   return `
@@ -2435,8 +2466,8 @@ function powHomeHtml(forms) {
   const row = (f) => `<li>
       <span class="title">${esc(f.issue_key || 'No job number')} ${esc(f.customer || '')}</span>
       <span class="sub">${f.status === 'draft' ? 'Draft' : `Submitted ${shortDate((f.submitted_at || '').slice(0, 10))}`}${f.job_missing ? ', job not in Jira' : ''}${f.delivery_note ? ', needs filing by hand' : ''}</span>
-      <span class="xp">${f.status === 'draft'
-        ? `<button class="linklike" data-pow-open="${esc(f.id)}">Continue</button>`
+      <span class="xp draft-actions">${f.status === 'draft'
+        ? draftActionsHtml('pow', f.id)
         : `<a class="linklike" href="/api/pow/pdf?id=${encodeURIComponent(f.id)}" target="_blank" rel="noopener">PDF</a>`}</span>
     </li>`;
   return `
@@ -7561,6 +7592,7 @@ view.addEventListener('click', async (event) => {
     return;
   }
 
+  if (await draftDeleteClick(event)) return;
   const obsBtn = event.target.closest('[data-obs]');
   if (obsBtn) return obsControl(obsBtn.dataset.obs);
   const obsClient = event.target.closest('[data-obs-client]');
