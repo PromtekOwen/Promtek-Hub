@@ -3,8 +3,8 @@
 // when it last moved, and anything missing that the team needs to fill in.
 //
 // Jira is read in a few searches by the background job and kept in the hub's
-// database, so the tile opens straight away. Time logged and "I'm on it" come
-// from the hub itself, so they count the moment they happen.
+// database, so the tile opens straight away. The first look is the first time
+// an item is moved to In Progress in Jira, read from its history.
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam } from './permissions.js';
@@ -43,9 +43,12 @@ export function tierOf(contract) {
 }
 
 const SYNC_EVERY_MS = 10 * 60 * 1000;
+const RETRY_EVERY_MS = 5 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
 const REFRESH_GAP_MS = 60 * 1000;
 const RECENT_DAYS = 30;
+// Moved on whenever deriveItem changes what it works out.
+const DERIVE_VERSION = '2';
 const RUN_CALLS = 30;
 const ORGS_FOR_MS = 6 * 3600 * 1000;
 const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, 'comment', 'parent', 'issuelinks'];
@@ -134,6 +137,30 @@ const isTeam = (u) => u?.accountType === 'atlassian';
 const isApp = (u) => u?.accountType === 'app';
 const orgNames = (v) => (Array.isArray(v) ? v : v ? [v] : []).map((o) => (typeof o === 'object' ? o.name ?? o.value : o)).filter(Boolean).map(String);
 
+// The first look is the first time the item was moved to an In Progress status,
+// whoever (or whatever) moved it. One closed without ever being In Progress
+// counts from when it was closed; one raised straight into In Progress, from when it was raised.
+export const IN_PROGRESS = /in progress/i;
+export function firstLook(issue) {
+  const f = issue.fields || {};
+  const moves = [];
+  for (const h of issue.changelog?.histories || []) {
+    for (const item of h.items || []) {
+      if (String(item.field || '').toLowerCase() === 'status') moves.push({ at: h.created, by: h.author?.displayName || 'Automation', to: item.toString || '', from: item.fromString || '' });
+    }
+  }
+  moves.sort((a, b) => ms(a.at) - ms(b.at));
+  const started = moves.find((m) => IN_PROGRESS.test(m.to));
+  if (started) return { at: started.at, by: started.by, how: `moved it to ${started.to}` };
+  if (!moves.length && IN_PROGRESS.test(f.status?.name || '')) return { at: f.created, by: f.reporter?.displayName || null, how: `raised it as ${f.status.name}` };
+  if (f.status?.statusCategory?.key === 'done' || RESOLVED_STATUSES.includes(f.status?.name)) {
+    const closed = moves.find((m) => RESOLVED_STATUSES.includes(m.to)) || moves[moves.length - 1];
+    if (closed) return { at: closed.at, by: closed.by, how: `moved it to ${closed.to}` };
+    if (f.resolutiondate) return { at: f.resolutiondate, by: null, how: 'closed it' };
+  }
+  return null;
+}
+
 // The team's first and last touch, the customer's last word, and a short history.
 export function deriveItem(issue, now = new Date().toISOString()) {
   const f = issue.fields || {};
@@ -155,7 +182,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
   }
   events.sort((a, b) => ms(a.at) - ms(b.at));
   const team = events.filter((e) => e.team && (e.kind !== 'created'));
-  const first = reporterTeam ? { at: created, by: f.reporter?.displayName, how: 'raised by the team' } : team[0] ? { at: team[0].at, by: team[0].by, how: team[0].kind } : null;
+  const first = firstLook(issue);
   const lastTeam = reporterTeam ? [events[0], ...team].pop() : team[team.length - 1];
   const customer = events.filter((e) => !e.team && (e.kind === 'comment' || e.kind === 'created'));
   const lastCustomer = customer[customer.length - 1];
@@ -199,6 +226,31 @@ async function saveItems(env, rows) {
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
+  if (rows.length) await changed(env);
+}
+
+// ---------- what the list is built from, kept between page loads ----------
+
+// Anything that changes what the list shows moves this on, so pages and the
+// open list can tell whether there is anything new without reading it all.
+export async function changed(env) {
+  await setState(env, 'psc_version', String(Date.now()));
+}
+export const version = async (env) => (await getState(env, 'psc_version')) || '0';
+
+// The list is worked out from every item, "I'm on it" and the contracts. That
+// is kept in memory and reused until something changes, so opening the tile,
+// switching tabs or opening an item doesn't read it all again. How long items
+// have waited is worked out fresh on every request, so nothing goes stale while
+// it's kept. It's read afresh at least hourly to pick up contract changes.
+const CONTEXT_FOR_MS = 60 * 60 * 1000;
+let kept = null;
+async function context(env, { fresh = false } = {}) {
+  const v = await version(env);
+  if (!fresh && kept && kept.version === v && Date.now() - kept.at < CONTEXT_FOR_MS) return kept.ctx;
+  const ctx = await readContext(env);
+  kept = { version: v, at: Date.now(), ctx };
+  return ctx;
 }
 
 export const BASE_JQL = `issuetype in (${quoted(PSC_TYPES)}) AND (statusCategory != Done OR resolved >= -${RECENT_DAYS}d)`;
@@ -236,7 +288,9 @@ export async function sync(env, b, { full = false } = {}) {
   const last = Number((await getState(env, 'psc_items_at')) || 0);
   const fullAt = Number((await getState(env, 'psc_full_at')) || 0);
   let fullStarted = (await getState(env, 'psc_full_started')) || '';
-  const fullDue = full || !fullAt || Date.now() - fullAt >= FULL_EVERY_MS;
+  // When how items are read changes, every item is read again so they all agree.
+  const deriveChanged = (await getState(env, 'psc_derive')) !== DERIVE_VERSION;
+  const fullDue = full || deriveChanged || !fullAt || Date.now() - fullAt >= FULL_EVERY_MS;
 
   // Start (or carry on with) a full read.
   if (fullStarted || fullDue) {
@@ -249,6 +303,8 @@ export async function sync(env, b, { full = false } = {}) {
     const r = await readPages(env, b, `${BASE_JQL} ORDER BY created ASC`, { resumeKey: 'psc_full_token', started: fullStarted });
     // Items no longer found (deleted, moved out, or closed long ago) leave the list.
     await env.DB.prepare('DELETE FROM psc_items WHERE synced_at < ?').bind(fullStarted).run();
+    await setState(env, 'psc_derive', DERIVE_VERSION);
+    await changed(env);
     await setState(env, 'psc_full_started', '');
     await setState(env, 'psc_full_at', Date.now());
     await setState(env, 'psc_items_at', Date.now());
@@ -275,6 +331,12 @@ async function applyWrite(b, w) {
     await b.call(`/rest/api/3/issue/${w.issue_key}/assignee`, { method: 'PUT', body: JSON.stringify({ accountId: p.accountId }) });
   } else if (w.kind === 'org') {
     await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [ORG_FIELD]: [Number(p.orgId)] } }) });
+  } else if (w.kind === 'progress') {
+    // Moves it to In Progress, which is what counts as its first look.
+    const { transitions = [] } = await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`);
+    const go = transitions.find((t) => IN_PROGRESS.test(t.to?.name || t.name || ''));
+    if (!go) throw new Error('Jira offers no way to move it to In Progress from where it is.');
+    await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
   } else throw new Error(`Unknown change ${w.kind}`);
 }
 
@@ -287,10 +349,12 @@ async function queueWrite(env, viewer, key, kind, payload, label) {
   try {
     await applyWrite(b, w);
     await env.DB.prepare('UPDATE psc_writes SET done_at = ? WHERE id = ?').bind(new Date().toISOString(), w.id).run();
+    await changed(env);
     try { await refreshOne(env, b, key); } catch { /* the next read picks it up */ }
     return { ok: true, saved: true };
   } catch (err) {
     await env.DB.prepare('UPDATE psc_writes SET attempts = 1, error = ? WHERE id = ?').bind(String(err.message).slice(0, 400), w.id).run();
+    await changed(env);
     return { ok: true, saved: false, message: 'Jira didn\'t take it just now. The hub keeps it and tries again.' };
   }
 }
@@ -302,6 +366,7 @@ async function retryWrites(env, b) {
     try {
       await applyWrite(b, w);
       await env.DB.prepare('UPDATE psc_writes SET done_at = ?, error = NULL WHERE id = ?').bind(new Date().toISOString(), w.id).run();
+      await changed(env);
       await refreshOne(env, b, w.issue_key).catch(() => {});
     } catch (err) {
       if (err instanceof OutOfCalls) break;
@@ -317,13 +382,11 @@ async function retryWrites(env, b) {
 
 // ---------- putting it together ----------
 
-async function context(env) {
+async function readContext(env) {
   const settings = await loadSettings(env);
-  const [{ results: items }, { results: actions }, { results: logs }, { results: manual }, { results: contracts }, { results: tokens }, { results: emps }] = await Promise.all([
+  const [{ results: items }, { results: actions }, { results: manual }, { results: contracts }, { results: tokens }, { results: emps }] = await Promise.all([
     env.DB.prepare('SELECT * FROM psc_items').all(),
-    env.DB.prepare('SELECT * FROM psc_actions ORDER BY at').all(),
-    env.DB.prepare(`SELECT l.issue_id, l.account_id, l.seconds, COALESCE(l.logged_at, l.created_at) AS at, e.name FROM xp_ledger l
-      LEFT JOIN employees e ON e.account_id = l.account_id WHERE l.issue_id IN (SELECT issue_id FROM psc_items) ORDER BY at`).all(),
+    env.DB.prepare('SELECT * FROM psc_actions WHERE issue_id IN (SELECT issue_id FROM psc_items) ORDER BY at').all(),
     env.DB.prepare('SELECT * FROM contract_org_map').all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Required Renewal')").all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contract_items WHERE kind = 'token'").all().catch(() => ({ results: [] })),
@@ -334,7 +397,7 @@ async function context(env) {
   let bankHolidays = new Set();
   try { bankHolidays = new Set((await holidaysFor(env)).map((h) => h.date)); } catch { /* none known */ }
   const match = orgMatcher(projects, manual);
-  return { settings, items: pairCopies(items, match), actions, logs, match, projects, contracts, tokens, emps, bankHolidays };
+  return { settings, items: pairCopies(items, match), actions, match, projects, contracts, tokens, emps, bankHolidays };
 }
 
 // A PSC board item with an Organization is copied into the customer's project
@@ -407,17 +470,10 @@ export function describe(original, ctx, now = new Date().toISOString()) {
   const row = merged(original);
   const ids = row.ids || [row.issue_id];
   const { settings } = ctx;
-  const logs = ctx.logs.filter((l) => ids.includes(l.issue_id));
   const acts = ctx.actions.filter((a) => ids.includes(a.issue_id));
-  const touches = [
-    row.team_first_at && { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how },
-    logs[0] && { at: logs[0].at, by: logs[0].name, how: 'logged time' },
-    acts[0] && { at: acts[0].at, by: acts[0].name, how: 'picked it up' },
-  ].filter(Boolean).filter((t) => ms(t.at) >= ms(row.created_at) - 60000).sort((a, b) => ms(a.at) - ms(b.at));
-  const first = touches[0] || null;
+  const first = row.team_first_at ? { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how } : null;
   const lastCandidates = [
     row.team_last_at && { at: row.team_last_at, by: row.team_last_by, what: row.team_last_what },
-    logs.length && { at: logs[logs.length - 1].at, by: logs[logs.length - 1].name, what: 'logged time' },
     acts.length && { at: acts[acts.length - 1].at, by: acts[acts.length - 1].name, what: 'picked it up' },
   ].filter(Boolean).sort((a, b) => ms(b.at) - ms(a.at));
   const lastTeam = lastCandidates[0] || null;
@@ -470,7 +526,6 @@ export function describe(original, ctx, now = new Date().toISOString()) {
       : { at: null, waitMs, late: lateNow, dueAt, targetMs: target, leftMs: ms(dueAt) - ms(now) },
     lastTeam, customerLast: row.customer_last_at ? { at: row.customer_last_at, by: row.customer_last_by } : null,
     customerWaiting: Boolean(customerWaiting), customerWaitMs, quietMs, stale: Boolean(stale),
-    logged: logs.reduce((a, l) => a + l.seconds, 0),
     missing, state, rank,
     copyOf: row.source?.issue_key || null,
     uncopied: Boolean(original.uncopied),
@@ -500,6 +555,7 @@ export async function overview(env, viewer) {
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
   const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
   return {
+    version: await version(env),
     items, people, pending, settings: ctx.settings, me: viewer.accountId, tiers: TIERS, surcharge: OUT_OF_HOURS_SURCHARGE,
     reading: (await getState(env, 'psc_full_started')) ? { count: Number((await getState(env, 'psc_full_count')) || 0) } : null,
     syncedAt: Number((await getState(env, 'psc_items_at')) || 0) ? new Date(Number(await getState(env, 'psc_items_at'))).toISOString() : null,
@@ -516,7 +572,6 @@ export async function item(env, viewer, key) {
   const m = merged(row);
   const ids = m.ids || [row.issue_id];
   const timeline = JSON.parse(m.timeline || '[]');
-  for (const l of ctx.logs.filter((x) => ids.includes(x.issue_id))) timeline.push({ at: l.at, by: l.name || 'Someone', team: true, kind: 'time', text: `Logged ${Math.round(l.seconds / 60)} minutes` });
   for (const a of ctx.actions.filter((x) => ids.includes(x.issue_id))) timeline.push({ at: a.at, by: a.name, team: true, kind: 'hub', text: 'Picked it up in the hub' });
   timeline.sort((a, b) => ms(b.at) - ms(a.at));
   return { item: d, timeline: timeline.slice(0, 40) };
@@ -536,8 +591,18 @@ export async function pickUp(env, viewer, key) {
   const row = await rowFor(env, key);
   await env.DB.prepare('INSERT INTO psc_actions (issue_id, issue_key, account_id, name, action, at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(row.issue_id, row.issue_key, viewer.accountId, viewer.employee?.name || viewer.email, 'pickup', new Date().toISOString()).run();
-  if (row.assignee_id === viewer.accountId) return { ok: true, saved: true };
-  return queueWrite(env, viewer, row.issue_key, 'assign', { accountId: viewer.accountId }, `Assigning to ${viewer.employee?.name || viewer.email}`);
+  await changed(env);
+  // Picking it up assigns it and moves it to In Progress, which starts its first look.
+  let result = { ok: true, saved: true };
+  if (row.assignee_id !== viewer.accountId) {
+    result = await queueWrite(env, viewer, row.issue_key, 'assign', { accountId: viewer.accountId }, `Assigning to ${viewer.employee?.name || viewer.email}`);
+  }
+  const started = row.done || RESOLVED_STATUSES.includes(row.status) || IN_PROGRESS.test(row.status || '');
+  if (!started) {
+    const moved = await queueWrite(env, viewer, row.issue_key, 'progress', {}, 'Moving to In Progress');
+    if (!moved.saved) result = moved;
+  }
+  return result;
 }
 
 export async function assign(env, viewer, key, accountId) {
@@ -626,14 +691,22 @@ async function alerts(env, ctx) {
 export async function run(env, { force = false } = {}) {
   const last = Number((await getState(env, 'psc_items_at')) || 0);
   const { results } = await env.DB.prepare('SELECT COUNT(*) AS n FROM psc_writes WHERE done_at IS NULL AND attempts < 10').all();
+  // Jira changes that failed are tried again every few minutes, not on every run.
+  const retryDue = Boolean(results[0]?.n) && Date.now() - Number((await getState(env, 'psc_retry_at')) || 0) >= RETRY_EVERY_MS;
   const reading = Boolean(await getState(env, 'psc_full_started'));
-  if (!force && !reading && Date.now() - last < SYNC_EVERY_MS && !results[0]?.n) return { idle: true };
+  if (!force && !reading && Date.now() - last < SYNC_EVERY_MS && !retryDue) return { idle: true };
   const b = budget(env, RUN_CALLS);
   const out = {};
   try {
-    await retryWrites(env, b);
+    if (results[0]?.n) { await setState(env, 'psc_retry_at', Date.now()); await retryWrites(env, b); }
     if (force || reading || Date.now() - last >= SYNC_EVERY_MS) out.read = await sync(env, b);
-    await alerts(env, await context(env));
+    // Alerts look at every item, so they're worked out once a read has finished, or at most
+    // every 10 minutes during a long one, rather than after every page.
+    const stillReading = Boolean(await getState(env, 'psc_full_started'));
+    if (force || !stillReading || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= SYNC_EVERY_MS) {
+      await alerts(env, await context(env, { fresh: true }));
+      await setState(env, 'psc_alerts_at', Date.now());
+    }
     await setState(env, 'psc_error', '');
   } catch (err) {
     if (!(err instanceof OutOfCalls)) { await setState(env, 'psc_error', `${new Date().toISOString()} ${err.message}`); throw err; }
@@ -710,5 +783,6 @@ export async function saveSettings(env, viewer, input) {
   if (s.shiftEnd <= s.shiftStart) throw new Error('The day shift has to end after it starts.');
   const before = await loadSettings(env);
   await setState(env, 'psc_settings', JSON.stringify(s));
+  await changed(env);
   return { ok: true, before, after: s };
 }

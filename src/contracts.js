@@ -46,6 +46,7 @@ export const TOKEN_SECONDS = 4 * 3600;
 export const END_MIN_SECONDS = 3600;                                // what's left at the end uses a token from an hour
 const CHASE_DAYS = 14;
 const SYNC_EVERY_MS = 20 * 60 * 1000;
+const RETRY_EVERY_MS = 5 * 60 * 1000;
 const FULL_EVERY_MS = 24 * 3600 * 1000;
 const LOOKBACK_DAYS = 90;
 const TIME_DAYS = 30;
@@ -789,7 +790,11 @@ async function orgReminders(env, st, since) {
 export async function run(env, { force = false } = {}) {
   const last = Number((await getState(env, 'contracts_sync_at')) || 0);
   const pending = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_charges WHERE step < 3 AND attempts < ?').bind(MAX_ATTEMPTS).first();
-  if (!force && Date.now() - last < SYNC_EVERY_MS && !pending?.n) return { idle: true };
+  // Charges Jira refused are tried again every few minutes, not on every run, as each
+  // try works out every contract's clock from the worklogs.
+  const retryDue = Boolean(pending?.n) && Date.now() - Number((await getState(env, 'contracts_retry_at')) || 0) >= RETRY_EVERY_MS;
+  if (!force && Date.now() - last < SYNC_EVERY_MS && !retryDue) return { idle: true };
+  if (pending?.n) await setState(env, 'contracts_retry_at', Date.now());
 
   const b = budget(env, RUN_CALLS);
   const started = await getState(env, 'contracts_started');

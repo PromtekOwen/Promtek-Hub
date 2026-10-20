@@ -222,13 +222,6 @@ function logWorklog({ issueKey, seconds, date, description }) {
   };
   world.worklogs.push(w);
   world.employee.progress = { ...world.employee.progress, xp: world.employee.progress.xp + w.xp };
-  const p = world.psc.find((x) => x.key === issueKey);
-  if (p) {
-    p.logged = (p.logged || 0) + seconds;
-    if (!p.response.at) Object.assign(p.response, { at: iso(now()), by: me.name, how: 'logged time', waitMs: now() - Date.parse(p.created), late: false });
-    p.lastTeam = { at: iso(now()), by: me.name, what: 'logged time' };
-    refreshPsc(p);
-  }
   return { seconds, issueKey, worklogId: w.worklog_id };
 }
 
@@ -691,7 +684,7 @@ function pscItem(myId, x) {
     raisedByTeam: false,
     response: { at: null, by: null, how: null, waitMs: 0, late: false, dueAt: iso(Date.parse(created) + TARGET_H[tier] * HOUR), targetMs: TARGET_H[tier] * HOUR, leftMs: 0 },
     lastTeam: null, customerLast: x.customerLast || { at: created, by: x.reporter }, customerWaiting: false, customerWaitMs: 0, quietMs: 0, stale: false,
-    logged: x.logged || 0, missing: [], state: 'new', rank: 0, copyOf: null, uncopied: false, done: false,
+    missing: [], state: 'new', rank: 0, copyOf: null, uncopied: false, done: false,
     timeline: x.timeline || [{ at: created, by: x.reporter, team: false, kind: 'created', text: x.firstText || 'Raised' }],
   };
   if (x.response) Object.assign(item.response, x.response);
@@ -735,7 +728,7 @@ function initPsc(myId) {
       ] }),
     pscItem(myId, { key: 'HBM-233', project: 'HBM', summary: 'Intake conveyor trips when the silo is full', type: 'Problem', reporter: 'Rob Fenwick', ageMins: 5 * DAY / MIN,
       assignee: me ? me.name : 'You', assigneeId: myId, response: { at: ago((5 * DAY) / 1 - 40 * MIN), by: 'Sam Turner', how: 'status', waitMs: 40 * MIN, late: false },
-      lastTeam: team('Sam Turner', 4 * 24 * 60, 'moved it on'), logged: 3 * 3600,
+      lastTeam: team('Sam Turner', 4 * 24 * 60, 'moved it on'),
       timeline: [
         { at: ago(4 * DAY), by: 'Sam Turner', team: true, kind: 'status', text: 'Moved to Investigating' },
         { at: ago(4 * DAY + HOUR), by: 'Sam Turner', team: true, kind: 'comment', internal: true, text: 'Likely the high level probe. Needs a site visit if it happens again.' },
@@ -763,10 +756,11 @@ function pscPickup(key) {
   const p = world.psc.find((x) => x.key === key);
   p.assignee = me.name;
   p.assigneeId = me.id;
-  if (!p.response.at) Object.assign(p.response, { at: iso(now()), by: me.name, how: 'picked it up', waitMs: now() - Date.parse(p.created), late: false });
+  if (!p.response.at) Object.assign(p.response, { at: iso(now()), by: me.name, how: 'moved it to In Progress', waitMs: now() - Date.parse(p.created), late: false });
   p.lastTeam = { at: iso(now()), by: me.name, what: 'picked it up' };
+  p.timeline.unshift({ at: iso(now()), by: me.name, team: true, kind: 'status', text: `${p.status} → In Progress` });
   p.timeline.unshift({ at: iso(now()), by: me.name, team: true, kind: 'hub', text: 'Picked it up in the hub' });
-  if (p.status === 'Open') p.status = 'In Progress';
+  if (!/in progress/i.test(p.status)) p.status = 'In Progress';
   refreshPsc(p);
   return { saved: true };
 }

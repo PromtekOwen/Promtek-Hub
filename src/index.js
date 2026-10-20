@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
+import { getState, setState, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -22,6 +22,7 @@ import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
+import { metered, addReads, readsReport } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
@@ -53,10 +54,27 @@ const json = (data, status = 200) =>
     headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
 
+// Rows read by each page, kept in memory and saved about once a minute, so the
+// count costs almost nothing. Counts from other copies of the Worker add up too.
+const pageReads = {};
+let pageReadsSaved = Date.now();
+const pageName = (method, pathname) => `${method} ${pathname.replace(/\/[A-Z]+-\d+/g, '/KEY').replace(/\/\d+(?=\/|$)/g, '/ID')}`;
+
+async function savePageReads(rawEnv) {
+  const counts = { ...pageReads };
+  for (const k of Object.keys(pageReads)) delete pageReads[k];
+  pageReadsSaved = Date.now();
+  try { await addReads(rawEnv, 'd1_reads_web', counts); } catch (err) { console.warn('Read count not saved:', err.message); }
+}
+
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, rawEnv, ctx) {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+    if (!url.pathname.startsWith('/api/')) return rawEnv.ASSETS.fetch(request);
+
+    const name = pageName(request.method, url.pathname);
+    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows) => { pageReads[name] = (pageReads[name] || 0) + rows; }) };
+    if (Date.now() - pageReadsSaved > 60_000 && Object.keys(pageReads).length) ctx.waitUntil(savePageReads(rawEnv));
 
     const user = await getUser(request, env);
     if (!user) return json({ error: 'Sign in with your Promtek Google account to continue.' }, 401);
@@ -83,7 +101,7 @@ async function resolveViewer(env, user) {
 }
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
-const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
+const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/reads', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
   '/api/admin/bitbucket-poll', '/api/admin/send-alerts', '/api/admin/test-8x8']);
 
 async function route(request, env, url, user) {
@@ -289,6 +307,7 @@ async function route(request, env, url, user) {
     const Psc = await import('./psc.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/psc') return json(await Psc.overview(env, user));
+    if (method === 'GET' && pathname === '/api/psc/version') return json({ version: await Psc.version(env) });
     if (method === 'GET' && pathname === '/api/psc/item') return json(await Psc.item(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/psc/insights') return json(await Psc.insights(env, user));
     if (method === 'GET' && pathname === '/api/psc/orgs') return json(await Psc.orgOptions(env, user));
@@ -572,6 +591,12 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
+    if (method === 'GET' && pathname === '/api/admin/reads') return json(await readsReport(env));
+    if (method === 'POST' && pathname === '/api/admin/reads-carry-on') {
+      await setState(env, 'd1_carry_on_day', new Date().toISOString().slice(0, 10));
+      await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on today', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
+      return json({ ok: true });
+    }
     if (method === 'GET' && pathname === '/api/admin/home-messages') return json(await Home.adminList(env));
     if (method === 'POST' && pathname === '/api/admin/home-messages') return json(await Home.send(env, user, body));
     if (method === 'POST' && pathname === '/api/admin/home-messages/end') return json(await Home.end(env, user, body.id));

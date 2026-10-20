@@ -146,7 +146,7 @@ export async function rateStep(env, { limit = STEP_SIZE, worklogsFor } = {}) {
         WHERE c.kind = 'category' AND m.category_id IS NULL AND c.done_date >= ? AND c.done_date <= ?
         ORDER BY c.done_date, c.issue_id LIMIT ?`
     ).bind(from, settled, limit).all();
-    if (!cats.length) return { rated: 0, skipped: 0 };
+    if (!cats.length) return { rated: 0, skipped: 0, idle: true };
 
     const { results: emps } = await env.DB.prepare('SELECT account_id, elo, active FROM employees').all();
     const employees = new Map(emps.map((e) => [e.account_id, e]));

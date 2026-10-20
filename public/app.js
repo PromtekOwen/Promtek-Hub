@@ -415,7 +415,7 @@ const pages = {
     async render() {
       if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData, elo] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo')]);
+      const [data, peopleData, elo, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'), api('/api/admin/reads').catch(() => null)]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -434,6 +434,8 @@ const pages = {
           </div>
           <div class="result" id="sync-result" role="status"></div>
         </div>
+
+        ${readsHtml(reads)}
 
         <h2>Start the XP ledger</h2>
         <div class="card">
@@ -5830,8 +5832,43 @@ function personAccessHtml(p) {
     </div>`;
 }
 
+// What the hub has read from the database today, against Cloudflare's free daily limit.
+function readsHtml(r) {
+  if (!r) return '';
+  const today = new Date().toISOString().slice(0, 10);
+  const day = r.days.find((d) => d.day === today) || { background: { total: 0, top: [], runs: 0 }, pages: { total: 0, top: [] } };
+  const total = day.background.total + day.pages.total;
+  const pct = Math.min(100, total / r.limit * 100);
+  const rows = (list) => list.length
+    ? `<ul class="list" style="box-shadow:none;margin-top:.5rem">${list.map(([name, rows]) => `<li><span class="title">${esc(name)}</span><span class="xp">${n(rows)}</span></li>`).join('')}</ul>`
+    : '<p class="muted">Nothing counted yet.</p>';
+  const earlier = r.days.filter((d) => d.day !== today);
+  return `<h2>Database reads</h2>
+    <div class="card">
+      <p style="margin-top:0">Cloudflare's free plan allows ${n(r.limit)} rows read a day, reset at midnight UTC (1am UK time in summer).
+      Background jobs stop for the day at ${n(r.backgroundLimit)} so there is always plenty left for people using the hub.</p>
+      ${r.paused ? `<div class="card notice error" style="margin:0 0 1rem"><p style="margin:0"><strong>Background jobs are paused until midnight UTC.</strong>
+        Tempo time still syncs. Jira lists, PSC items, contracts and ratings catch up tomorrow.</p>
+        <div class="row" style="margin-top:.75rem"><button class="btn secondary" data-action="reads-carry-on">Let them carry on today</button></div></div>` : ''}
+      <dl class="state">
+        <dt>Read today</dt><dd>${n(total)} of ${n(r.limit)}</dd>
+        <dt>Background jobs</dt><dd>${n(day.background.total)} over ${n(day.background.runs)} runs</dd>
+        <dt>Pages</dt><dd>${n(day.pages.total)}</dd>
+      </dl>
+      <div class="bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
+      <div class="result" id="reads-result" role="status"></div>
+      <h3 style="margin-bottom:0">Busiest background jobs today</h3>${rows(day.background.top)}
+      <h3 style="margin-bottom:0">Busiest pages today</h3>${rows(day.pages.top)}
+      ${earlier.length ? `<h3 style="margin-bottom:0">Earlier days</h3>
+        <ul class="list" style="box-shadow:none;margin-top:.5rem">${earlier.map((d) => `<li><span class="title">${esc(d.day)}</span>
+          <span class="sub">Background ${n(d.background.total)}, pages ${n(d.pages.total)}${d.background.top[0] ? `. Busiest: ${esc(d.background.top[0][0])}` : ''}</span>
+          <span class="xp">${n(d.background.total + d.pages.total)}</span></li>`).join('')}</ul>` : ''}
+    </div>`;
+}
+
 async function developerAdminHtml() {
-  const [data, bitbucket] = await Promise.all([api('/api/admin/overview'), api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }))]);
+  const [data, bitbucket, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null })),
+    api('/api/admin/reads').catch(() => null)]);
   const s = data.state;
   const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
   return `${s.last_error ? `<div class="card notice error" style="margin-bottom:1rem"><p><strong>Last sync problem</strong></p><p>${esc(s.last_error)}</p></div>` : '<div class="card notice" style="margin-bottom:1rem"><p style="margin:0">No sync problems.</p></div>'}
@@ -5841,7 +5878,8 @@ async function developerAdminHtml() {
       </dl>
       <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button></div>
       <div class="result" id="sync-result" role="status"></div></div>
-    ${bitbucketAdminHtml(bitbucket)}`;
+    ${bitbucketAdminHtml(bitbucket)}
+    ${readsHtml(reads)}`;
 }
 
 // ---------- Admin sections that open and close ----------
@@ -6660,12 +6698,29 @@ let pscSort = 'attention';
 let pscTier = '';
 let pscOrgs = null;             // the service desk's Organizations, once loaded
 let pscData = null;
+let pscFetchedAt = 0;
+const PSC_KEEP_MS = 5 * 60 * 1000;
+
+// The list is kept on the page and only fetched again when something has
+// changed, or after 5 minutes so how long items have waited stays right.
+// Switching tabs, filtering and sorting use what is already here.
+async function pscLoad({ force = false } = {}) {
+  const age = Date.now() - pscFetchedAt;
+  if (!force && pscData && age < PSC_KEEP_MS) {
+    if (age < 60_000) return pscData;
+    const { version } = await api('/api/psc/version').catch(() => ({}));
+    if (version && version === pscData.version) return pscData;
+  }
+  pscData = await api('/api/psc');
+  pscFetchedAt = Date.now();
+  return pscData;
+}
 
 const PSC_STATE = {
   late: ['late', 'Late'], waiting: ['amber', 'Customer waiting'], new: ['blue', 'New'],
   quiet: ['amber', 'Quiet'], active: ['green', 'In hand'], resolved: ['grey', 'Resolved'],
 };
-const HOW_TEXT = { comment: 'commented', status: 'moved it on', assignee: 'assigned it', 'raised by the team': 'raised it', 'logged time': 'logged time', 'picked it up': 'picked it up' };
+const HOW_TEXT = { comment: 'commented', status: 'moved it on', assignee: 'assigned it', 'raised by the team': 'raised it', 'logged time': 'logged time', 'picked it up': 'picked it up', 'closed it': 'closed it' };
 
 function agoText(iso) {
   if (!iso) return '';
@@ -6714,7 +6769,6 @@ function pscUpdateChips(d) {
   const out = [];
   if (d.customerWaiting) out.push(`<span class="psc-chip warn">${esc((d.customerLast.by || 'Customer').split(' ')[0])} replied ${agoText(d.customerLast.at)}, waiting on us</span>`);
   if (d.lastTeam && d.response.at) out.push(`<span class="psc-chip${d.stale ? ' warn' : ''}">Last update ${agoText(d.lastTeam.at)}: ${esc((d.lastTeam.by || '').split(' ')[0])} ${esc(d.lastTeam.what || '')}</span>`);
-  if (d.logged) out.push(`<span class="psc-chip plain">${duration(d.logged)} logged</span>`);
   return out.join('');
 }
 
@@ -6770,8 +6824,7 @@ function pscHeadLine(data) {
 
 async function pscHtml() {
   if (pscOpen) return pscItemHtml();
-  pscData = await api('/api/psc');
-  const data = pscData;
+  const data = await pscLoad();
   if (pscTab === 'insights') return pscTabsHtml(data) + await pscInsightsHtml();
   if (pscTab === 'triage') {
     const list = data.items.filter((d) => !d.orderWork && d.missing.length);
@@ -6815,7 +6868,7 @@ async function pscHtml() {
 
 async function pscItemHtml() {
   const { item: d, timeline } = await api(`/api/psc/item?key=${encodeURIComponent(pscOpen)}`);
-  if (!pscData) pscData = await api('/api/psc');
+  await pscLoad();
   if (d.project === 'PSC' && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
   const when = (iso) => (iso ? `${new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} (${agoText(iso)})` : '—');
   const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub' };
@@ -6831,7 +6884,6 @@ async function pscItemHtml() {
         <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
         <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
         <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
-        <div><dt>Time logged</dt><dd>${d.logged ? duration(d.logged) : 'None yet'}</dd></div>
         <div><dt>First look due</dt><dd>${when(d.response.dueAt)}, ${workText(d.response.targetMs)} after ${d.cover.raisedInCover ? 'it was raised' : `${esc(d.tierName)} cover began`}</dd></div>
       </dl>
       ${pscTermsHtml(d)}
@@ -6917,6 +6969,7 @@ async function pscClick(event) {
   if (t('[data-psc-refresh]')) {
     const b = t('[data-psc-refresh]'); b.disabled = true;
     try { const r = await api('/api/psc/refresh', { method: 'POST', body: '{}' }); toast(r.skipped ? 'Read from Jira under a minute ago' : r.reading ? `${r.count} read so far; the rest follows shortly` : 'Up to date with Jira'); } catch (err) { toast(err.message); }
+    pscFetchedAt = 0;
     return render();
   }
   if (t('[data-psc-load-orgs]')) { pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
@@ -6924,6 +6977,7 @@ async function pscClick(event) {
   if (pick) {
     pick.disabled = true;
     try { const r = await api('/api/psc/pickup', { method: 'POST', body: JSON.stringify({ key: pick.dataset.pscPickup }) }); toast(r.saved ? 'It\'s yours' : r.message); } catch (err) { toast(err.message); }
+    pscFetchedAt = 0;
     return render();
   }
   const log = t('[data-psc-log]');
@@ -6946,6 +7000,7 @@ async function pscChange(event) {
   const send = async (path, body, done) => {
     el.disabled = true;
     try { const r = await api(path, { method: 'POST', body: JSON.stringify(body) }); toast(r.saved ? done : r.message); } catch (err) { toast(err.message); }
+    pscFetchedAt = 0;
     render();
   };
   if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
@@ -6965,11 +7020,14 @@ function pscInput(event) {
   return true;
 }
 
-// The list keeps itself current while it's open.
-setInterval(() => {
+// The list keeps itself current while it's open: every 2 minutes it asks whether
+// anything has changed, which costs almost nothing, and only then reloads.
+setInterval(async () => {
   if (currentRoute() !== '#/psc' || settingsOpen || document.visibilityState !== 'visible') return;
   if (document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
-  render();
+  const before = pscData;
+  await pscLoad().catch(() => null);
+  if (pscData !== before && currentRoute() === '#/psc') render();
 }, 120000);
 
 function settingsPscHtml() {
@@ -7635,11 +7693,14 @@ async function adminAction(action, button) {
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'test-live-calls': 'eight8-result', 'lib-list': 'lib-result',
-    'elo-start': 'elo-result', 'elo-stop': 'elo-result', 'elo-step': 'elo-result',
+    'elo-start': 'elo-result', 'elo-stop': 'elo-result', 'elo-step': 'elo-result', 'reads-carry-on': 'reads-result',
  }[action];
   button.disabled = true;
   try {
-    if (action === 'sync-now') {
+    if (action === 'reads-carry-on') {
+      await api('/api/admin/reads-carry-on', { method: 'POST' });
+      out(target, 'Background jobs will run again from the next run, until midnight UTC.');
+    } else if (action === 'sync-now') {
       const r = await api('/api/admin/sync-now', { method: 'POST' });
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
     } else if (action === 'start-ledger') {

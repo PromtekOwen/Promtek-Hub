@@ -1,5 +1,6 @@
 // Keeps the XP ledger in step with Tempo and the employee list in step with Jira.
 import { fetchWorklogs } from './tempo.js';
+import { metered, addReads, readsToday, tidyReads, utcDay, BACKGROUND_ROW_LIMIT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
 
@@ -350,8 +351,12 @@ export function mondayOf(dateIso) {
 export async function snapshotWeek(env, weekStart) {
   const monday = weekStart || mondayOf(londonDate(Date.now() - 7 * 86_400_000));
   const sunday = londonDate(Date.parse(`${monday}T12:00:00Z`) + 6 * 86_400_000);
+  if (!weekStart && (await getState(env, 'snapshot_week')) === monday) return { skipped: `${monday} already recorded` };
   const existing = await env.DB.prepare('SELECT COUNT(*) AS n FROM weekly_snapshots WHERE week_start = ?').bind(monday).first();
-  if (existing.n > 0) return { skipped: `${monday} already recorded` };
+  if (existing.n > 0) {
+    if (!weekStart) await setState(env, 'snapshot_week', monday);
+    return { skipped: `${monday} already recorded` };
+  }
 
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.opening_xp, e.elo,
@@ -373,6 +378,7 @@ export async function snapshotWeek(env, weekStart) {
     ).bind(r.account_id, monday, xp, levelFromXp(xp), r.elo, r.seconds, r.worklogs, r.days_logged, r.avg_lag, now);
   });
   await runBatches(env, stmts);
+  if (!weekStart) await setState(env, 'snapshot_week', monday);
   return { week: monday, engineers: stmts.length };
 }
 
@@ -381,20 +387,64 @@ export async function snapshotWeek(env, weekStart) {
 // The free Workers plan allows 50 outside calls per run. Each run does the
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
+const RECONCILE_EVERY_MS = 10 * 60 * 1000;
 const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'lists', 'alerts'];
 
-export async function runScheduled(env) {
-  if (!(await getState(env, 'ledger_start'))) return;
+export async function runScheduled(rawEnv) {
+  if (!(await getState(rawEnv, 'ledger_start'))) return;
+  // Every row read is counted against the job that read it.
+  const reads = {};
+  let current = 'Scheduler';
+  const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows) => { reads[current] = (reads[current] || 0) + rows; }) };
   const errors = [];
   const attempt = async (label, fn) => {
+    const before = current;
+    current = label;
     try { return await fn(); } catch (err) { errors.push(`${label}: ${err.message}`); console.error(label, err); return null; }
+    finally { current = before; }
   };
+  const finish = async () => {
+    current = 'Scheduler';
+    await setState(env, 'last_scheduled_run', new Date().toISOString());
+    await setState(env, 'last_error', errors.length ? `${new Date().toISOString()} ${errors.join(' | ')}` : '');
+    try { await addReads(rawEnv, 'd1_reads_bg', reads, { runs: 1 }); } catch (err) { console.warn('Read count not saved:', err.message); }
+  };
+
+  // Once background work has used its share of the day's reads, it stops until
+  // midnight UTC so the hub itself keeps working. Tempo still syncs, as it's cheap.
+  const today = utcDay();
+  const used = await readsToday(rawEnv, 'd1_reads_bg');
+  const allowed = (await getState(env, 'd1_carry_on_day')) === today;
+  if ((used.total || 0) >= BACKGROUND_ROW_LIMIT && !allowed) {
+    await attempt('Tempo sync', () => pollRecent(env, { force: true }));
+    if ((await getState(env, 'd1_paused_day')) !== today) {
+      await setState(env, 'd1_paused_day', today);
+      const top = Object.entries(used.jobs || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+      await raiseAlert(env, {
+        kind: 'd1-reads',
+        dedupe: `d1-reads:${today}`,
+        subject: 'Hub background jobs paused for the rest of today',
+        body: `Background jobs have read ${used.total.toLocaleString('en-GB')} database rows today (UTC), so they are paused until midnight UTC `
+          + `to keep the free plan's 5 million daily reads for people using the hub. Tempo time still syncs.\n\nBusiest jobs today:\n`
+          + top.map(([name, rows]) => `  ${name}: ${rows.toLocaleString('en-GB')}`).join('\n')
+          + '\n\nAdmin, Database reads shows the detail, and can let them carry on today.',
+      });
+      await attempt('Alert email', () => sendAlerts(env));
+    }
+    return finish();
+  }
+  if (new Date().getUTCMinutes() < 2) await attempt('Tidy read counts', () => tidyReads(rawEnv));
+
   // These make no outside calls, and the freeze must come before Monday's first time is counted.
   const Elo = await import('./elo.js');
   await attempt('Weekly snapshot', () => snapshotWeek(env));
   await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
-  await attempt('Deletion check', () => reconcileNextDay(env));
+  // One of the last 14 days is re-read every 10 minutes, so each day is checked every couple of hours.
+  if (Date.now() - Number((await getState(env, 'reconcile_at')) || 0) >= RECONCILE_EVERY_MS) {
+    await setState(env, 'reconcile_at', Date.now());
+    await attempt('Deletion check', () => reconcileNextDay(env));
+  }
 
   const hourKey = new Date().toISOString().slice(0, 13);
   const onceAnHour = async (slot, fn) => {
@@ -408,7 +458,7 @@ export async function runScheduled(env) {
     categories: async () => attempt('Finished categories', async () => (await import('./jobs.js')).scanCategories(env)),
     elo: async () => {
       const r = await attempt('ELO ratings', async () => (await import('./elo.js')).rateStep(env, { limit: 2 }));
-      return typeof r?.skipped === 'string' ? { idle: true } : r;
+      return typeof r?.skipped === 'string' || r?.idle ? { idle: true } : r;
     },
     bitbucket: async () => attempt('Bitbucket', async () => {
       const r = await (await import('./devtime.js')).poll(env);
@@ -479,11 +529,19 @@ export async function runScheduled(env) {
   for (let tries = 0; tries < SLOTS.length; tries++) {
     const slot = SLOTS[pointer % SLOTS.length];
     pointer = (pointer + 1) % SLOTS.length;
+    current = SLOT_NAMES[slot] || slot;
     const r = await jobs[slot]();
+    current = 'Scheduler';
     if (!r?.idle) break;
   }
   await setState(env, 'slot_pointer', pointer);
-
-  await setState(env, 'last_scheduled_run', new Date().toISOString());
-  await setState(env, 'last_error', errors.length ? `${new Date().toISOString()} ${errors.join(' | ')}` : '');
+  await finish();
 }
+
+// How each job is named in Admin's database reads.
+const SLOT_NAMES = {
+  orders: 'Job backfill', categories: 'Finished categories', elo: 'ELO ratings', bitbucket: 'Bitbucket', mes: 'Condor Dev tickets',
+  'mes-sync': 'Condor Dev to Jira', 'stage-split': 'Stage estimates', 'stage-types': 'Stage types', tracker: 'Timer stretches',
+  'hourly-scan': 'Hourly: profiles and reminders', 'hourly-jobs': 'Hourly: estimates and disputes', 'hourly-quotes': 'Hourly: quotes and chart',
+  contracts: 'Service contracts', psc: 'PSC items', lists: 'Customer lists', alerts: 'Alert email',
+};
