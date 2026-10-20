@@ -1,6 +1,6 @@
 // 8x8 Work calls: fetched only when someone asks for them, matched to the
 // engineer who took them, and turned into time logs or service items.
-import { searchJql, customerProjects } from './jira.js';
+import { searchJql, customerProjects, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { londonDate } from './sync.js';
 
 const PSC_TYPES = ['Snag', 'Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request'];
@@ -176,7 +176,8 @@ export async function markHandled(env, viewer, { callId, action, issueKey, workl
 
 // The open service items for a customer, plus their contract, for the
 // "does this call relate to one of these?" step.
-export async function openPscs(env, projectKey) {
+export async function openPscs(env, rawProjectKey) {
+  const projectKey = await mustBeHubIssue(env, projectKeyOf(rawProjectKey));
   const [open, contracts] = await Promise.all([
     searchJql(env,
       `project = "${projectKey}" AND issuetype in (${PSC_TYPES.map((t) => `"${t}"`).join(', ')})`

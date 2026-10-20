@@ -472,16 +472,22 @@ export async function saveIntro(env, viewer, { versionId, intro, number }) {
 }
 
 // A screenshot from Jira, only ever one belonging to a ticket in a release the hub has read.
+const PICTURE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
 export async function image(env, { issueId, attachmentId }) {
   const item = await env.DB.prepare('SELECT attachments FROM mes_note_items WHERE issue_id = ?').bind(String(issueId)).first();
   const att = parse(item?.attachments, []).find((a) => a.id === String(attachmentId));
   if (!att) return new Response('Not found', { status: 404 });
+  // Only pictures are passed on, so a file attached in Jira can never run as a page in the hub.
+  const type = String(att.mimeType || '').toLowerCase();
+  if (!PICTURE_TYPES.includes(type)) return new Response('Not a picture', { status: 415 });
   const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/attachment/content/${encodeURIComponent(att.id)}`, {
     headers: { Authorization: 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`) },
   });
   if (!res.ok) return new Response('Jira didn\'t send the picture', { status: 502 });
   return new Response(res.body, {
-    headers: { 'content-type': att.mimeType || res.headers.get('content-type') || 'application/octet-stream', 'cache-control': 'private, max-age=86400' },
+    headers: { 'content-type': type, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'; sandbox", 'content-disposition': 'inline' },
   });
 }
 

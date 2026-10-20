@@ -1,6 +1,6 @@
 // Point of work risk assessments: picking the job, keeping drafts, and
 // delivering the finished PDF to Jira and Google Drive.
-import { jira, searchJql, customerProjects } from './jira.js';
+import { jira, searchJql, customerProjects, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { buildPowPdf } from './pow-pdf.js';
 import { SITE_VISIT_TYPES, DEFAULT_RA_LIBRARY, BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, RISK_LEVELS } from './pow-data.js';
@@ -84,7 +84,8 @@ function branchOfParent(parent) {
   return null;                                     // team not set on the order
 }
 
-async function visitsFor(env, projectKey, branch) {
+async function visitsFor(env, rawProjectKey, branch) {
+  const projectKey = projectKeyOf(rawProjectKey);
   const visits = await searchJql(env,
     `project = "${projectKey}" AND issuetype in (${SITE_VISIT_TYPES.map((t) => `"${t}"`).join(', ')})`
     + ' AND statusCategory != Done ORDER BY updated DESC', VISIT_FIELDS, { limit: 80 });
@@ -159,7 +160,7 @@ export async function browseVisits(env, node = 'root') {
 
 // Everything the form can fill in for itself.
 export async function visitDetails(env, issueKey) {
-  const issue = (await searchJql(env, `key = "${issueKey}"`, VISIT_FIELDS))[0];
+  const issue = (await searchJql(env, `key = "${issueKeyOf(issueKey)}"`, VISIT_FIELDS))[0];
   if (!issue) throw new Error('That item no longer exists in Jira.');
   const f = issue.fields || {};
   return {
@@ -179,8 +180,17 @@ export async function visitDetails(env, issueKey) {
 
 const newId = () => `pow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+// A form can only be saved over by the person who started it, and only while it's a draft.
+async function mustOwn(env, viewer, id, { draftOnly = true } = {}) {
+  const row = await env.DB.prepare('SELECT account_id, status FROM pow_forms WHERE id = ?').bind(String(id)).first();
+  if (!row) return;
+  if (row.account_id !== viewer.accountId) throw Object.assign(new Error('That form belongs to someone else.'), { status: 403 });
+  if (draftOnly && row.status !== 'draft') throw Object.assign(new Error('That form has already been sent.'), { status: 409 });
+}
+
 export async function saveDraft(env, viewer, form) {
   const id = form.id || newId();
+  await mustOwn(env, viewer, id);
   const now = new Date().toISOString();
   const details = form.details || {};
   await env.DB.prepare(
@@ -224,6 +234,7 @@ export async function deleteDraft(env, viewer, id) {
 
 export async function submitForm(env, viewer, form) {
   const id = form.id || newId();
+  await mustOwn(env, viewer, id, { draftOnly: false });
   const now = new Date();
   const completedAt = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -306,7 +317,8 @@ export async function renderPdf(env, viewer, id) {
 
 // ---------- Delivery ----------
 
-async function attachToJira(env, issueKey, filename, bytes) {
+async function attachToJira(env, rawIssueKey, filename, bytes) {
+  const issueKey = await mustBeHubIssue(env, issueKeyOf(rawIssueKey));
   const body = new FormData();
   body.append('file', new Blob([bytes], { type: 'application/pdf' }), filename);
   const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {

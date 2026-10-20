@@ -1,6 +1,6 @@
 // Company vehicles: who has what when, the walkaround check before driving,
 // defects, and keeping MOT, insurance, tax and service dates in view.
-import { jira, searchJql } from './jira.js';
+import { jira, searchJql, issueKeyOf, mustBeHubIssue } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { ON_SITE_STATUS } from './pow-data.js';
 
@@ -193,7 +193,8 @@ export async function submitCheck(env, viewer, { vehicleId, bookingId, issueKey,
 }
 
 // Moves a site visit to Commissioning or Visit In-Progress, whichever applies.
-async function moveToOnSite(env, issueKey) {
+async function moveToOnSite(env, rawIssueKey) {
+  const issueKey = await mustBeHubIssue(env, issueKeyOf(rawIssueKey));
   const issue = (await searchJql(env, `key = "${issueKey}"`, ['issuetype', 'status']))[0];
   if (!issue) return 'the item no longer exists';
   const type = issue.fields?.issuetype?.name;

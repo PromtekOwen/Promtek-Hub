@@ -1,6 +1,6 @@
 // IT support: raises Jira Service Management requests on behalf of the person
 // asking, and shows them what happened next.
-import { jira, searchJql } from './jira.js';
+import { jira, searchJql, issueKeyOf, getIssue } from './jira.js';
 
 const IT_PROJECT = 'PROMTEKIT';
 const ASSET_PROJECT = 'ASSET';
@@ -113,6 +113,7 @@ export async function myAssets(env, accountId, query = '') {
 export async function raise(env, viewer, { category, urgency, summary, description, assetKey, attachments = [] }) {
   const text = String(summary || '').trim();
   if (!text) throw new Error('A short summary is needed.');
+  if (assetKey && !new RegExp(`^${ASSET_PROJECT}-\\d+$`, 'i').test(String(assetKey))) throw new Error('That isn\'t an asset.');
   const map = await requestTypeMap(env);
   const mapping = map.get(category);
   if (!mapping) throw new Error('That kind of request is not set up yet. Ask an admin to map it on the Admin page.');
@@ -213,8 +214,15 @@ export async function myRequests(env, viewer, { all = false } = {}) {
   }
 }
 
-export async function comment(env, viewer, { key, text }) {
+export async function comment(env, viewer, { key: rawKey, text }) {
   if (!String(text || '').trim()) throw new Error('Nothing to say.');
+  // Only on the person's own IT request (or any, for a lead), never anywhere else in Jira.
+  const key = issueKeyOf(rawKey);
+  if (!key.startsWith(`${IT_PROJECT}-`)) throw Object.assign(new Error('That isn\'t an IT request.'), { status: 400 });
+  const issue = await getIssue(env, key, ['reporter']);
+  if (!issue || (issue.fields?.reporter?.accountId !== viewer.accountId && !viewer.isLead)) {
+    throw Object.assign(new Error('That request isn\'t yours.'), { status: 403 });
+  }
   await jira(env, `/rest/api/3/issue/${key}/comment`, {
     method: 'POST',
     body: JSON.stringify({

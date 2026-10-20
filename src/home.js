@@ -89,7 +89,7 @@ async function systemAlerts(env, viewer) {
 
     const { results: pscs } = await env.DB.prepare(
       `SELECT issue_key, summary, org, project_key, team_first_at, team_last_at, customer_last_at, customer_last_by FROM psc_items
-        WHERE assignee_id = ? AND done = 0 AND issuetype NOT IN ('Snag', 'Sub-Snag')`
+        WHERE assignee_id = ? AND done = 0 AND issuetype NOT IN ('Snag', 'Sub-Snag') AND LOWER(TRIM(COALESCE(status, ''))) != 'admin'`
     ).bind(me).all();
     const waiting = pscs.filter((p) => p.customer_last_at && p.team_first_at && p.customer_last_at > (p.team_last_at || ''));
     if (waiting.length === 1) {

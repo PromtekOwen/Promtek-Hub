@@ -19,11 +19,14 @@ const FALLBACK_RECIPIENT = 'owen.hume@promtek.com';
 function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
-    if (payload.secret !== SHARED_SECRET) {
+    if (SHARED_SECRET.indexOf('CHANGE-ME') === 0 || payload.secret !== SHARED_SECRET) {
       return ContentService.createTextOutput('Rejected');
     }
+    // Only ever sends to Promtek addresses, so the relay can't be used to email anyone else.
+    const to = String(payload.to || '').split(',').map(function (a) { return a.trim(); })
+      .filter(function (a) { return /^[^@\s]+@promtek\.com$/i.test(a); }).join(',') || FALLBACK_RECIPIENT;
     GmailApp.sendEmail(
-      payload.to || FALLBACK_RECIPIENT,
+      to,
       payload.subject || 'Promtek Hub alert',
       payload.body || ''
     );

@@ -13,6 +13,8 @@ import { orgMatcher, tokenCounts, holidaysFor } from './contracts.js';
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
 export const ORDER_TYPES = ['Snag', 'Sub-Snag'];                        // order work, shown only when asked for
 export const RESOLVED_STATUSES = ['Resolved [Promtek]', 'Verified [Customer]'];
+// Statuses left off the tile altogether (compared without capitals).
+export const HIDDEN_STATUSES = ['admin'];
 const ORG_FIELD = 'customfield_12900';
 const PSC_PROJECT = 'PSC';
 export const DEFAULTS = { targets: { platinum: 1, gold: 2, silver: 4, none: 8 }, shiftStart: 8, shiftEnd: 17, staleDays: 2 };
@@ -397,7 +399,9 @@ async function readContext(env) {
   let bankHolidays = new Set();
   try { bankHolidays = new Set((await holidaysFor(env)).map((h) => h.date)); } catch { /* none known */ }
   const match = orgMatcher(projects, manual);
-  return { settings, items: pairCopies(items, match), actions, match, projects, contracts, tokens, emps, bankHolidays };
+  // Items in the Admin status are kept for the contracts tile, but aren't PSC work to show here.
+  const shown = pairCopies(items, match).filter((r) => !HIDDEN_STATUSES.includes(String(r.status || '').trim().toLowerCase()));
+  return { settings, items: shown, actions, match, projects, contracts, tokens, emps, bankHolidays };
 }
 
 // A PSC board item with an Organization is copied into the customer's project

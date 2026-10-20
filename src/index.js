@@ -51,8 +51,18 @@ async function auditedPerson(env, user, id, action, run) {
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' },
   });
+
+// Changes only come from the hub's own pages. A page on another site can't make a
+// signed-in person's browser send one, even though their sign-in cookie would go with it.
+function fromAnotherSite(request, url) {
+  if (request.method === 'GET' || request.method === 'HEAD') return false;
+  const site = request.headers.get('sec-fetch-site');
+  if (site && site !== 'same-origin' && site !== 'none') return true;
+  const origin = request.headers.get('origin');
+  return Boolean(origin && origin !== url.origin);
+}
 
 // Rows read by each page, kept in memory and saved about once a minute, so the
 // count costs almost nothing. Counts from other copies of the Worker add up too.
@@ -71,6 +81,8 @@ export default {
   async fetch(request, rawEnv, ctx) {
     const url = new URL(request.url);
     if (!url.pathname.startsWith('/api/')) return rawEnv.ASSETS.fetch(request);
+
+    if (fromAnotherSite(request, url)) return json({ error: 'That request didn\'t come from the hub.' }, 403);
 
     const name = pageName(request.method, url.pathname);
     const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows) => { pageReads[name] = (pageReads[name] || 0) + rows; }) };
@@ -463,7 +475,6 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/it/assets') return json({ assets: await It.myAssets(env, user.accountId, url.searchParams.get('q')) });
     if (method === 'GET' && pathname === '/api/it/requests') return json(await It.myRequests(env, user, { all: url.searchParams.get('all') === '1' }));
     if (method === 'POST' && pathname === '/api/it/raise') return json(await It.raise(env, user, body));
-    if (method === 'POST' && pathname === '/api/it/comment') return json(await It.comment(env, user, body));
   }
 
   if (pathname.startsWith('/api/vehicles')) {

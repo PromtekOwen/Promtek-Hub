@@ -1,6 +1,6 @@
 // Obsolescence surveys: the equipment library, the client list from Jira,
 // the survey itself, and the sales review that follows it.
-import { jira, searchJql } from './jira.js';
+import { jira, searchJql, issueKeyOf } from './jira.js';
 import { raiseAlert, londonDate, getState, setState } from './sync.js';
 import { LIBRARY_SEED, LIBRARY_VERSION } from './obs-library.js';
 import { buildSurveyPdf } from './obs-pdf.js';
@@ -174,8 +174,25 @@ export async function listReports(env, { status = null } = {}) {
 
 // ---------- Surveys ----------
 
+// A survey can only be saved over by the person who started it, and only while it's a draft.
+async function mustOwn(env, viewer, id, { draftOnly = true } = {}) {
+  const row = await env.DB.prepare('SELECT account_id, status FROM obs_surveys WHERE id = ?').bind(String(id)).first();
+  if (!row) return;
+  if (row.account_id !== viewer.accountId) throw Object.assign(new Error('That survey belongs to someone else.'), { status: 403 });
+  if (draftOnly && row.status !== 'draft') throw Object.assign(new Error('That survey has already been filed.'), { status: 409 });
+}
+
+// The report a survey is filed against has to be an obsolescence report in Jira.
+async function checkReport(env, reportKey) {
+  const key = issueKeyOf(reportKey);
+  const found = (await searchJql(env, `key = "${key}" AND issuetype = "${REPORT_ISSUE_TYPE}"`, ['project']))[0];
+  if (!found) throw Object.assign(new Error('That isn\'t an obsolescence report in Jira.'), { status: 400 });
+  return { key: found.key, projectKey: found.fields?.project?.key || key.split('-')[0] };
+}
+
 export async function saveSurvey(env, viewer, survey) {
   const id = survey.id || newId('obs');
+  await mustOwn(env, viewer, id);
   const now = new Date().toISOString();
   await env.DB.prepare(
     `INSERT INTO obs_surveys (id, account_id, status, report_key, project_key, client, survey_date, data, created_at, updated_at)
@@ -216,6 +233,11 @@ export async function deleteSurvey(env, viewer, id) {
 
 export async function submitSurvey(env, viewer, survey) {
   const id = survey.id || newId('obs');
+  await mustOwn(env, viewer, id, { draftOnly: false });
+  if (survey.reportKey) {
+    const report = await checkReport(env, survey.reportKey);
+    survey = { ...survey, reportKey: report.key, projectKey: report.projectKey };
+  }
   const now = new Date();
   const completedAt = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
@@ -361,8 +383,10 @@ export async function salesQueue(env) {
   };
 }
 
-export async function quoteDecision(env, viewer, { reportKey, projectKey, surveyDate, needed }) {
-  if (!reportKey || !projectKey) throw new Error('Which report is this about?');
+export async function quoteDecision(env, viewer, input) {
+  if (!input.reportKey) throw new Error('Which report is this about?');
+  const { key: reportKey, projectKey } = await checkReport(env, input.reportKey);
+  const { surveyDate, needed } = input;
   const result = { reportKey, quoteKey: null, notes: [] };
 
   if (needed) {

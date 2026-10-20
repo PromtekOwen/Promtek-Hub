@@ -410,7 +410,7 @@ export const TOURS = {
       { act: 'click', target: '[data-log-mode="manual"]', title: 'Time already done', text: 'Tap Add time already done.' },
       { act: 'click', target: '[data-mins="30"]', title: 'How long', text: 'Tap 30m.' },
       { act: 'click', target: '[data-action="save-log"]', title: 'Log it', text: 'Tap Log this time.' },
-      { target: withText('.list li', 'NGB-140'), title: 'Logged', text: 'Time on a contracted customer\'s PSC counts towards their token clock, and time logged before anyone has looked at an item counts as its first look.' },
+      { target: withText('.list li', 'NGB-140'), title: 'Logged', text: 'Time on a contracted customer\'s PSC counts towards their token clock.' },
     ],
   },
 

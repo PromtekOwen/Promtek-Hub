@@ -5,6 +5,10 @@ function authHeader(env) {
 }
 
 export async function jira(env, path, init = {}) {
+  // An issue in a path is always a plain key or id, so nothing typed into the hub
+  // can steer a request to a different part of Jira.
+  const issue = String(path).match(/^\/rest\/(?:api\/3|agile\/1\.0)\/issue\/([^/?#]+)/);
+  if (issue && !/^([A-Za-z][A-Za-z0-9_]*-\d+|\d+)$/.test(decodeURIComponent(issue[1]))) throw badInput('That isn\'t a Jira item.');
   const res = await fetch(env.JIRA_BASE_URL + path, {
     ...init,
     headers: {
@@ -38,8 +42,37 @@ export const HUB_PROJECTS = ['MES', 'PSC', 'PMB', 'PROMTEKIT', 'ASSET',
   'GOALS', 'LEGAL', 'HEALTH', 'COMPLIANCE', 'FINANCE', 'INNOV', 'IS', 'MARKETING', 'SUGGEST', 'QA'];
 // Never shown, even if one is ever put in a customer category by mistake.
 export const BLOCKED_PROJECTS = ['CSIMS', 'CSIMSB', 'CSIMST', 'ARCHIVE', 'TEST', 'TPB'];
+// Left out of every list and search like the others, but an item can still be opened
+// by its key, so the hub can be tried out on it.
+const TESTING_PROJECTS = ['TEST'];
+const blockedForLookup = (key) => BLOCKED_PROJECTS.includes(key) && !TESTING_PROJECTS.includes(key);
 
 const projectOf = (keyOrIssueKey) => String(keyOrIssueKey || '').split('-')[0].toUpperCase();
+
+// ---------- checking what people send ----------
+// Keys go into searches and addresses, so anything else is turned away.
+export function badInput(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+export function issueKeyOf(value) {
+  const key = String(value ?? '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{0,19}-\d{1,9}$/.test(key)) throw badInput('That isn\'t a Jira key.');
+  return key;
+}
+export function projectKeyOf(value) {
+  const key = String(value ?? '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{0,19}$/.test(key)) throw badInput('That isn\'t a Jira project.');
+  return key;
+}
+// An item or project the hub works with: a customer project or one of the hub's own, never a blocked one.
+export async function mustBeHubIssue(env, keyOrProject) {
+  if (TESTING_PROJECTS.includes(projectOf(keyOrProject))) return keyOrProject;
+  const ok = await projectFilter(env);
+  if (!ok(keyOrProject)) throw badInput('The hub doesn\'t work with that project.');
+  return keyOrProject;
+}
 const PROJECT_LIST_MS = 6 * 3600 * 1000;
 let listCache = null;
 
@@ -120,6 +153,9 @@ export async function searchPage(env, call, jql, params) {
     // The JQL clause already did this when it worked; checking again costs nothing once the list is held.
     const ok = scoped ? (key) => !BLOCKED_PROJECTS.includes(projectOf(key)) : await projectFilter(env);
     data.issues = (data.issues || []).filter((i) => ok(i.key));
+  } else {
+    // Lookups by key or parent never return a blocked project's items either (TEST aside, for trying things out).
+    data.issues = (data.issues || []).filter((i) => !blockedForLookup(projectOf(i.key)));
   }
   return data;
 }

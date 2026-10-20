@@ -1,5 +1,5 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
-import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS } from './jira.js';
+import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { stageNameOf } from './jobs.js';
 
@@ -96,7 +96,7 @@ export async function browse(env, node = 'root') {
       return {
         title: `${IMS_PROJECTS.find(([k]) => k === rest[1])?.[1] || rest[1]}`,
         subtitle: 'Open items',
-        options: await issuesFor(env, `project = "${rest[1]}" AND statusCategory != Done ORDER BY updated DESC`),
+        options: await issuesFor(env, `project = "${projectKeyOf(rest[1])}" AND statusCategory != Done ORDER BY updated DESC`),
       };
     }
     if (rest[0] === 'general') {
@@ -123,8 +123,9 @@ export async function browse(env, node = 'root') {
         ],
       };
     }
-    const [region, projectKey, branch, ...tail] = rest;
-    if (!projectKey) return { title: 'Which customer?', options: await customerProjectOptions(env, region) };
+    const [region, rawProject, branch, ...tail] = rest;
+    if (!rawProject) return { title: 'Which customer?', options: await customerProjectOptions(env, region) };
+    const projectKey = projectKeyOf(rawProject);
 
     if (!branch) {
       return {
@@ -179,7 +180,7 @@ export async function browse(env, node = 'root') {
 
   // An order: its categories, then the stages underneath.
   if (head === 'epic') {
-    const epicKey = rest[0];
+    const epicKey = issueKeyOf(rest[0]);
     const children = await issuesFor(env, `parent = "${epicKey}" ORDER BY summary ASC`, { next: 'parent' });
     const epic = (await searchJql(env, `key = "${epicKey}"`, LIST_FIELDS))[0];
     return {
@@ -190,7 +191,7 @@ export async function browse(env, node = 'root') {
   }
 
   if (head === 'parent') {
-    const parentKey = rest[0];
+    const parentKey = issueKeyOf(rest[0]);
     const children = await issuesFor(env, `parent = "${parentKey}" ORDER BY summary ASC`);
     const parent = (await searchJql(env, `key = "${parentKey}"`, LIST_FIELDS))[0];
     return {
@@ -243,7 +244,8 @@ export async function search(env, query) {
 
 // What this kind of stage usually takes, from finished work.
 export async function stageHint(env, issueKey) {
-  const issue = (await searchJql(env, `key = "${issueKey}"`, ['summary', 'parent']))[0];
+  if (!issueKey) return null;
+  const issue = (await searchJql(env, `key = "${issueKeyOf(issueKey)}"`, ['summary', 'parent']))[0];
   if (!issue) return null;
   const name = stageNameOf(issue.fields?.summary, issue.key);
   const row = await env.DB.prepare(
@@ -291,6 +293,7 @@ export async function createWorklog(env, viewer, { issueId, issueKey, seconds, d
 export async function createPsc(env, viewer, { projectKey, issueType, summary, description }) {
   if (!PSC_TYPES.includes(issueType)) throw new Error('Choose a service item type.');
   if (!projectKey || !String(summary || '').trim()) throw new Error('A project and a summary are needed.');
+  projectKey = await mustBeHubIssue(env, projectKeyOf(projectKey));
 
   const created = await jira(env, '/rest/api/3/issue', {
     method: 'POST',

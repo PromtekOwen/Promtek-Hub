@@ -18,7 +18,13 @@ export async function getUser(request, env) {
   let email = null;
 
   if (env.DEV_EMAIL) {
-    // Local development only (set in .dev.vars). Never set this in production.
+    // Local development only (set in .dev.vars). Never set this in production: it is
+    // refused for any address other than this computer, so it can't open the live hub.
+    const host = new URL(request.url).hostname;
+    if (!(host === 'localhost' || host === '127.0.0.1' || !host.includes('.'))) {
+      console.error('DEV_EMAIL is set on a live Worker and has been ignored. Remove it.');
+      return null;
+    }
     email = env.DEV_EMAIL;
   } else {
     const token = tokenFrom(request);
