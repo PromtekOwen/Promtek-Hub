@@ -74,8 +74,8 @@ export async function engineerReport(env, accountId, { weeks = 12 } = {}) {
       `SELECT l.work_date, l.seconds, l.xp, l.rate, l.job_elo, l.engineer_elo, l.override, l.logged_at,
               l.description, j.issue_key, j.summary
          FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
-        WHERE l.account_id = ? ORDER BY l.work_date DESC, l.created_at DESC LIMIT 100`
-    ).bind(accountId).all(),
+        WHERE l.account_id = ? AND l.work_date <= ? ORDER BY l.work_date DESC, l.created_at DESC LIMIT 100`
+    ).bind(accountId, londonDate()).all(),
   ]);
   if (!employee) return null;
 
@@ -109,11 +109,13 @@ export async function leaderboard(env, { period = 'week', metric = 'xp', account
   // Everyone's totals from the ledger are kept until the ledger changes, so the board
   // reads the ledger once per change rather than on every visit.
   const from = period === 'month' ? londonDate().slice(0, 8) + '01' : period === 'all' ? '0000-00-00' : mondayOf(londonDate());
-  const sums = await remembered(env, `leaderboard:${from}`, await ledgerStamp(env), async () => (await env.DB.prepare(
+  // Time logged ahead doesn't count until its day, so the totals are also worked out afresh each day.
+  const today = londonDate();
+  const sums = await remembered(env, `leaderboard:${from}`, `${await ledgerStamp(env)}|${today}`, async () => (await env.DB.prepare(
     `SELECT account_id, COALESCE(SUM(CASE WHEN work_date >= ? THEN xp END), 0) AS xp,
             COALESCE(SUM(CASE WHEN work_date >= ? THEN seconds END), 0) AS seconds, COALESCE(SUM(xp), 0) AS ledger
-       FROM xp_ledger GROUP BY account_id`
-  ).bind(from, from).all()).results);
+       FROM xp_ledger WHERE work_date <= ? GROUP BY account_id`
+  ).bind(from, from, today).all()).results);
   const byId = new Map(sums.map((r) => [r.account_id, r]));
   const { results: people } = await env.DB.prepare('SELECT account_id, name, teams, team, opening_xp FROM employees').all();
   let rows = people.map((e) => {

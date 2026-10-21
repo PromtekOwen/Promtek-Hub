@@ -558,7 +558,7 @@ function weekSlideHtml(w) {
   return `<div class="feed-week">
       <p class="feed-week-head"><strong>${duration(w.seconds)}</strong> logged this week <span>of ${duration(w.target)}</span></p>
       <div class="feed-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
-      <ol class="feed-days">${w.days.map((d) => `<li class="${d.seconds ? 'done' : d.past ? 'missing' : ''}${d.today ? ' today' : ''}" title="${esc(longDate(d.date))}: ${d.seconds ? duration(d.seconds) : 'nothing logged'}">
+      <ol class="feed-days" style="--days:${w.days.length}">${w.days.map((d) => `<li class="${d.seconds ? 'done' : d.past ? 'missing' : ''}${d.today ? ' today' : ''}" title="${esc(longDate(d.date))}: ${d.seconds ? duration(d.seconds) : 'nothing logged'}">
         <span>${dateOf(d.date).toLocaleDateString('en-GB', { weekday: 'short' })}</span><b>${d.seconds ? duration(d.seconds) : d.past ? 'None' : '—'}</b></li>`).join('')}</ol>
       <p class="feed-week-note">${names.length ? `Nothing logged on ${esc(words)} yet. <a href="#/log">Log time</a>` : 'Every day so far this week has time logged.'}</p>
     </div>`;

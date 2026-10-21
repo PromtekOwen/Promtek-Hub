@@ -170,21 +170,24 @@ async function systemAlerts(env, viewer) {
   return out;
 }
 
-// The days so far this week, and which weekdays before today have nothing logged.
+// Monday to today, and which weekdays before today have nothing logged. Saturday and
+// Sunday show only when time was logged on them. Time logged ahead doesn't count yet.
 async function weekSoFar(env, viewer) {
   const today = londonDate();
   const monday = mondayOf(today);
-  const days = Array.from({ length: 5 }, (_, i) => new Date(Date.parse(`${monday}T12:00:00Z`) + i * DAY_MS).toISOString().slice(0, 10));
+  const all = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${monday}T12:00:00Z`) + i * DAY_MS).toISOString().slice(0, 10));
   if (!viewer.accountId) return null;
   const { results } = await env.DB.prepare(
-    'SELECT work_date, SUM(seconds) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date >= ? GROUP BY work_date'
-  ).bind(viewer.accountId, monday).all();
+    'SELECT work_date, SUM(seconds) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ? GROUP BY work_date'
+  ).bind(viewer.accountId, monday, today).all();
   const by = new Map(results.map((r) => [r.work_date, r.seconds]));
+  const weekdays = all.slice(0, 5);
+  const days = [...weekdays, ...all.slice(5).filter((d) => by.get(d))];
   return {
     seconds: results.reduce((t, r) => t + r.seconds, 0),
     target: 37.5 * 3600,
     days: days.map((d) => ({ date: d, seconds: by.get(d) || 0, past: d < today, today: d === today })),
-    missing: days.filter((d) => d < today && !by.get(d)),
+    missing: weekdays.filter((d) => d < today && !by.get(d)),
   };
 }
 

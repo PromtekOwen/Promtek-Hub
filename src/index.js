@@ -878,19 +878,21 @@ async function getMe(env, user) {
   if (!emp) return { ...base, linked: false };
 
   const monday = weekStart();
+  // Time logged ahead in Tempo (holiday, say) doesn't count until its day.
+  const today = londonDate();
   const [totals, week, recent] = await Promise.all([
     env.DB.prepare('SELECT COALESCE(SUM(xp), 0) AS xp FROM xp_ledger WHERE account_id = ?').bind(emp.account_id).first(),
     env.DB.prepare(
-      'SELECT COALESCE(SUM(xp), 0) AS xp, COALESCE(SUM(seconds), 0) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date >= ?'
-    ).bind(emp.account_id, monday).first(),
+      'SELECT COALESCE(SUM(xp), 0) AS xp, COALESCE(SUM(seconds), 0) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?'
+    ).bind(emp.account_id, monday, today).first(),
     env.DB.prepare(
       `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.job_elo, l.engineer_elo, l.override, l.rate, l.xp,
               j.issue_key, j.summary
          FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
-        WHERE l.account_id = ?
+        WHERE l.account_id = ? AND l.work_date <= ?
         ORDER BY l.work_date DESC, l.updated_at DESC
         LIMIT 50`
-    ).bind(emp.account_id).all(),
+    ).bind(emp.account_id, today).all(),
   ]);
 
   const xp = emp.opening_xp + totals.xp;
@@ -921,12 +923,13 @@ async function getTime(env, user, url) {
   const requested = url.searchParams.get('week');
   const monday = /^\d{4}-\d{2}-\d{2}$/.test(requested || '') ? requested : weekStart();
   const sunday = londonDate(Date.parse(`${monday}T12:00:00Z`) + 6 * 86_400_000);
+  const today = londonDate();
   const { results } = await env.DB.prepare(
     `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.xp, j.issue_key, j.summary
        FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
       WHERE l.account_id = ? AND l.work_date BETWEEN ? AND ?
       ORDER BY l.work_date, l.created_at`
-  ).bind(emp.account_id, monday, sunday).all();
+  ).bind(emp.account_id, monday, sunday < today ? sunday : today).all();
   return { linked: true, week: monday, entries: results, jiraBaseUrl: env.JIRA_BASE_URL };
 }
 
