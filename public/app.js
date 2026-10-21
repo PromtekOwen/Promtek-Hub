@@ -186,7 +186,7 @@ const pages = {
         <div class="card xp-head">
           ${ring(p, 128, true)}
           <div>
-            <h3>${esc(p.title)}${e.medal ? ` <a class="chip eotq-chip" href="#/eotq?about" title="Employee of the Quarter ${e.medal.wins === 1 ? 'once' : `${e.medal.wins} times`}">${medalHtml(e.medal.tier)}${MEDAL_NAMES[e.medal.tier]}</a>` : ''}</h3>
+            <h3>${esc(p.title)}${e.medal ? ` <a class="medal-link" href="#/eotq?about" title="${MEDAL_NAMES[e.medal.tier]} medal, Employee of the Quarter ${e.medal.wins === 1 ? 'once' : `${e.medal.wins} times`}" aria-label="${MEDAL_NAMES[e.medal.tier]} medal, Employee of the Quarter">${medalHtml(e.medal.tier)}</a>` : ''}</h3>
             <div class="bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
             <span class="muted">${n(p.xpIntoLevel)} of ${n(p.levelSpan)} XP through level ${n(p.level)}.
             ${p.nextTitle ? `${esc(p.nextTitle)} at level ${n(p.nextTitleLevel)}.` : 'You hold the highest title.'}</span>
@@ -533,7 +533,7 @@ function levelSlideHtml() {
       <div>
         <strong>${esc(e.progress.title)}</strong>
         <span class="meta">${n(e.progress.xp)} XP. ${n(e.progress.xpToNextLevel)} to level ${n(e.progress.level + 1)}.</span>
-        ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}${e.medal ? ` <span class="chip eotq-chip">${medalHtml(e.medal.tier)}${MEDAL_NAMES[e.medal.tier]}</span>` : ''}
+        ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}${e.medal ? ` <span class="feed-medal" title="${MEDAL_NAMES[e.medal.tier]} medal, Employee of the Quarter ${e.medal.wins === 1 ? 'once' : `${e.medal.wins} times`}">${medalHtml(e.medal.tier)}</span>` : ''}
       </div>
     </a>`;
 }
@@ -602,8 +602,8 @@ function homeGo(id, { smooth = true } = {}) {
   if (!slide) return;
   homeSlide = id;
   track.scrollTo({ left: slide.offsetLeft - track.offsetLeft, behavior: smooth && !reducedMotion.matches ? 'smooth' : 'instant' });
-  // As tall as the tallest slide, so the tiles underneath don't jump as it turns.
-  track.style.height = `${Math.max(...[...track.children].map((x) => x.offsetHeight))}px`;
+  // As tall as the slide showing, easing to the next one's height as it turns.
+  track.style.height = `${slide.offsetHeight}px`;
   document.querySelectorAll('#home-feed [data-feed-tab]').forEach((t) => {
     const on = t.dataset.feedTab === id;
     t.classList.toggle('on', on);
@@ -6296,7 +6296,7 @@ function medalHtml(tier, { label = false } = {}) {
 }
 
 function eotqTabs(canManage) {
-  const tabs = [['nominate', 'Nominate'], ['about', 'About you'], ['history', 'History'], ...(canManage ? [['manage', 'Management']] : [])];
+  const tabs = [['nominate', 'Nominate'], ['about', 'About you'], ...(canManage ? [['history', 'History'], ['manage', 'Management']] : [])];
   return `<div class="tabs eotq-tabs" style="margin-bottom:1rem">${tabs.map(([id, label]) =>
     `<button class="tab${id === eotqView ? ' on' : ''}" data-eotq-view="${id}">${label}</button>`).join('')}</div>`;
 }
@@ -6504,7 +6504,8 @@ async function eotqHtml() {
   const tab = location.hash.split('?')[1];
   if (EOTQ_VIEWS.includes(tab)) { eotqView = tab; history.replaceState(null, '', `${location.pathname}${location.search}#/eotq`); }
   const d = await api('/api/eotq');
-  if (eotqView === 'manage' && !d.canManage) eotqView = 'nominate';
+  // History and Management are for the management team and admins only.
+  if (['history', 'manage'].includes(eotqView) && !d.canManage) eotqView = 'nominate';
   if (eotqView === 'about') api('/api/eotq/seen', { method: 'POST' }).catch(() => {});
   const body = eotqView === 'about' ? eotqAboutHtml(d)
     : eotqView === 'history' ? await eotqHistoryHtml() : eotqView === 'manage' ? await eotqManageHtml() : eotqNominateHtml(d);

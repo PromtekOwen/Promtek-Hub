@@ -445,7 +445,7 @@ export const TOURS = {
 
   '#/eotq': {
     practice: true,
-    intro: 'Nominate someone who has gone above and beyond, read what people have said about you, and see past winners.',
+    intro: 'Nominate someone who has gone above and beyond, and read what people have said about you.',
     steps: [
       { target: '.eotq-intro', title: 'Employee of the Quarter', text: 'Nominate as many people as you like, each of them once a round. The management team chooses the winner after nominations close.' },
       { act: 'pick', target: '[data-eotq="nominee"]', value: 'ex-ellie', title: 'Who?', text: 'Choose Ellie Morgan.' },
@@ -454,12 +454,12 @@ export const TOURS = {
       { target: '.eotq-mine', title: 'Your nominations', text: 'Everyone you\'ve nominated this round. Change what you wrote, or withdraw it, until nominations close.' },
       { act: 'click', target: '[data-eotq-view="about"]', title: 'About you', text: 'Tap About you.' },
       { target: () => document.querySelector('.eotq-medal-card') || document.querySelector('.eotq-quotes'), title: 'What people said', text: 'Your medal, if you\'ve won before, and everything written about you, round by round, without anyone\'s name. Medals go Bronze, Silver, Gold, then Diamond.' },
-      { act: 'click', target: '[data-eotq-view="history"]', title: 'History', text: 'Tap History.' },
-      { target: '.eotq-pies', title: 'Who has been nominated', text: 'Each person\'s share of the nominations, over every round and in this one so far.' },
-      { target: '.eotq-history', title: 'Past winners', text: 'Every round and who won it.' },
-      { act: 'click', target: () => document.querySelector('[data-eotq-cert]'), title: 'The certificate', text: 'Tap Certificate.' },
-      { target: '.eotq-cert-img', title: 'Their certificate', text: 'Made from their picture and name. Download it as a PDF to print, or as a picture.' },
-      { act: 'click', target: '[data-eotq-cert-close]', title: 'Close it', text: 'Tap Close.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, act: 'click', target: '[data-eotq-view="history"]', title: 'History', text: 'Tap History.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, target: '.eotq-pies', title: 'Who has been nominated', text: 'Each person\'s share of the nominations, over every round and in this one so far.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, target: '.eotq-history', title: 'Past winners', text: 'Every round and who won it.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, act: 'click', target: () => document.querySelector('[data-eotq-cert]'), title: 'The certificate', text: 'Tap Certificate.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, target: '.eotq-cert-img', title: 'Their certificate', text: 'Made from their picture and name. Download it as a PDF to print, or as a picture.' },
+      { when: (me) => me.user.isAdmin || me.user.can?.eotq, act: 'click', target: '[data-eotq-cert-close]', title: 'Close it', text: 'Tap Close.' },
       { when: (me) => me.user.isAdmin || me.user.can?.eotq, act: 'click', target: '[data-eotq-view="manage"]', title: 'Management', text: 'As management, tap Management.' },
       { when: (me) => me.user.isAdmin || me.user.can?.eotq, target: '.eotq-round', title: 'When nominations close', text: 'The date is set with the cog at the top of the page, usually to the management meeting. Reminders count down to it, and the next round starts the day after.' },
       { when: (me) => me.user.isAdmin || me.user.can?.eotq, act: 'click', target: '[data-eotq-turnout]', title: 'Who has nominated', text: 'Tap to see who has and hasn\'t nominated yet.' },

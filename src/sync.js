@@ -115,7 +115,9 @@ export async function processWorklogs(env, worklogs) {
   if (!ledgerStart) return { processed: 0, changed: 0 };
 
   // Only worklogs dated on/after go-live: earlier time is already in opening_xp.
-  const wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart);
+  // Time logged ahead (a holiday booked into Tempo, say) counts from its day, not before.
+  const today = londonDate();
+  const wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart && w.startDate <= today);
   if (!wls.length) return { processed: 0, changed: 0 };
 
   const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, condor_elo, condor_elo_week, baseline FROM employees').all();
@@ -270,6 +272,23 @@ export async function pollRecent(env, { force = false } = {}) {
   const result = await processWorklogs(env, worklogs);
   await setState(env, 'tempo_cursor', now);
   return { fetched: worklogs.length, ...result };
+}
+
+// Once a day, just after midnight: the day's time from Tempo, so anything logged
+// ahead of time is counted now its day has come, and anything dated later than
+// today is taken back out until then.
+export async function catchUpToday(env) {
+  const today = londonDate();
+  if ((await getState(env, 'ledger_day')) === today) return { idle: true };
+  await setState(env, 'ledger_day', today);
+  const worklogs = await fetchWorklogs(env, { from: today, to: today });
+  const result = await processWorklogs(env, worklogs);
+  const out = await env.DB.batch([
+    env.DB.prepare('DELETE FROM xp_ledger WHERE work_date > ?').bind(today),
+    env.DB.prepare('DELETE FROM unmatched_worklogs WHERE work_date > ?').bind(today),
+  ]);
+  if (out[0].meta?.changes) await ledgerChanged(env);
+  return { fetched: worklogs.length, changed: result.changed, removed: out[0].meta?.changes || 0 };
 }
 
 // Re-check one of the last 14 days per run, removing XP for deleted worklogs.
@@ -493,6 +512,7 @@ export async function runScheduled(rawEnv) {
   await attempt('Weekly snapshot', () => snapshotWeek(env));
   await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
+  await attempt('Time logged ahead', () => catchUpToday(env));
   // New time puts its author in Promtek Staff Involved within minutes, a few at a time
   // so the job that follows still has its calls. Its own turn below clears any backlog.
   await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });

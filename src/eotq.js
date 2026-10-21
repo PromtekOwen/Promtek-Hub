@@ -184,6 +184,7 @@ export async function withdraw(env, viewer, input = {}) {
 // ---------- history: every finished round and its winner ----------
 
 export async function history(env, viewer) {
+  mustManage(viewer, 'see the history');
   const today = londonDate();
   const { results } = await env.DB.prepare(
     `SELECT r.*, (SELECT COUNT(*) FROM eotq_votes v WHERE v.round_id = r.id) AS nominations,
@@ -241,6 +242,7 @@ async function shares(env, today) {
 
 // What the certificate shows, for the browser to draw.
 export async function certificateData(env, viewer, roundId) {
+  mustManage(viewer, 'see certificates');
   const r = await roundById(env, roundId);
   if (!r.winner_id) throw fail('That round has no winner yet.', 404);
   const emp = await env.DB.prepare('SELECT name, avatar, pronouns FROM employees WHERE account_id = ?').bind(r.winner_id).first();
@@ -278,7 +280,8 @@ export async function removeCertificate(env, viewer, roundId) {
   return { ok: true };
 }
 
-export async function certificateFile(env, roundId) {
+export async function certificateFile(env, viewer, roundId) {
+  mustManage(viewer, 'see certificates');
   const row = await env.DB.prepare('SELECT mime, filename, data FROM eotq_certificates WHERE round_id = ?').bind(Number(roundId) || 0).first();
   if (!row) throw fail('There\'s no certificate for that round.', 404);
   return { mime: row.mime, filename: row.filename, bytes: row.data instanceof Uint8Array ? row.data : new Uint8Array(row.data) };
@@ -393,7 +396,7 @@ export async function chooseWinner(env, viewer, input = {}) {
     const ends = new Date(Date.now() + ANNOUNCE_DAYS * DAY_MS).toISOString();
     const res = await env.DB.prepare(
       `INSERT INTO home_messages (kind, title, body, link, tone, audience, starts_at, ends_at, emailed, created_by, created_by_name, created_at)
-       VALUES ('announcement', ?, ?, '#/eotq?history', 'important', ?, ?, ?, 0, ?, ?, ?)`
+       VALUES ('announcement', ?, ?, '#/eotq', 'important', ?, ?, ?, 0, ?, ?, ?)`
     ).bind(`${emp.name} is Employee of the Quarter`, `${award}. Chosen by the management team for ${roundLabel(r)}. Congratulations!`,
       JSON.stringify({ everyone: true, teams: [], people: [] }), now, ends, viewer.email, viewer.employee?.name || viewer.email, now).run();
     messageId = res.meta.last_row_id;

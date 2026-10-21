@@ -559,7 +559,7 @@ async function route(request, env, url, user) {
     // A certificate arrives as the file itself.
     if (method === 'POST' && pathname === '/api/eotq/certificate') return json(await Eotq.uploadCertificate(env, user, q('round'), request));
     if (method === 'GET' && pathname === '/api/eotq/certificate') {
-      const f = await Eotq.certificateFile(env, q('round'));
+      const f = await Eotq.certificateFile(env, user, q('round'));
       return new Response(f.bytes, { headers: { 'content-type': f.mime, 'content-disposition': `inline; filename="${f.filename.replace(/"/g, '')}"`, 'cache-control': 'private, max-age=300' } });
     }
     if (method === 'GET' && pathname === '/api/eotq/export.csv') {

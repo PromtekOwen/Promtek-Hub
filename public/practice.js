@@ -1503,6 +1503,7 @@ function eotqAnswer(p, q, post, body) {
   }
   if (p === '/api/eotq/shoutout-remove') { E.shoutouts = E.shoutouts.filter((x) => x.id !== Number(body.id)); return { ok: true }; }
   if (p === '/api/eotq/history') {
+    if (!lead) throw new Error('Only the management team can see the history.');
     const done = E.rounds.filter((r) => r.closes <= d || r.winner);
     const count = new Map(); const tier = new Map();
     for (const r of [...done].reverse()) if (r.winner) { count.set(r.winner, (count.get(r.winner) || 0) + 1); tier.set(r.id, EOTQ_MEDALS[Math.min(count.get(r.winner), 4) - 1]); }
