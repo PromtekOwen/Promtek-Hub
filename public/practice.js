@@ -1506,7 +1506,9 @@ function eotqAnswer(p, q, post, body) {
     const done = E.rounds.filter((r) => r.closes <= d || r.winner);
     const count = new Map(); const tier = new Map();
     for (const r of [...done].reverse()) if (r.winner) { count.set(r.winner, (count.get(r.winner) || 0) + 1); tier.set(r.id, EOTQ_MEDALS[Math.min(count.get(r.winner), 4) - 1]); }
-    return { canManage: lead, rounds: done.map((r) => ({ id: r.id, label: eotqLabel(r), opens: r.opens, closes: r.closes, open: false, imported: false,
+    const share = (list) => { const m = new Map(); for (const v of list) m.set(v.nominee, (m.get(v.nominee) || 0) + 1);
+      return [...m].map(([id, c]) => ({ key: id, name: eotqName(id), n: c })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name)); };
+    return { canManage: lead, shares: { all: share(E.votes), current: { label: eotqLabel(round), people: share(E.votes.filter((v) => v.round === round.id)) } }, rounds: done.map((r) => ({ id: r.id, label: eotqLabel(r), opens: r.opens, closes: r.closes, open: false, imported: false,
       nominations: lead ? E.votes.filter((v) => v.round === r.id).length : undefined,
       winner: r.winner ? { id: r.winner, name: eotqName(r.winner), medal: tier.get(r.id) } : null, award: r.award || null, certificate: r.winner ? { made: true } : null })) };
   }

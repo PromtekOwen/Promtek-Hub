@@ -201,6 +201,7 @@ export async function history(env, viewer) {
   }
   return {
     canManage: canManage(viewer),
+    shares: await shares(env, today),
     rounds: results.map((r) => ({
       id: r.id, label: roundLabel(r), opens: r.opens_on, closes: r.closes_on, imported: Boolean(r.imported), open: r.closes_on >= today && !r.imported,
       nominations: canManage(viewer) ? r.nominations : undefined,
@@ -209,6 +210,33 @@ export async function history(env, viewer) {
       certificate: r.uploaded ? { uploaded: true, pdf: r.upload_mime === 'application/pdf' } : r.winner_id ? { made: true } : null,
     })),
   };
+}
+
+// How many nominations each person has had, over every round and in the one open
+// now. A name typed into the old form counts as the person it's linked to; until
+// then, the same name however it was typed counts as one.
+async function shares(env, today) {
+  const current = await currentRound(env, today);
+  const [{ results: votes }, { results: people }] = await Promise.all([
+    env.DB.prepare('SELECT round_id, nominee_id, nominee_name FROM eotq_votes').all(),
+    env.DB.prepare('SELECT account_id, name FROM employees').all(),
+  ]);
+  const name = new Map(people.map((p) => [p.account_id, p.name]));
+  const byName = new Map();
+  for (const p of people) if (p.name) byName.set(nameKey(p.name), byName.has(nameKey(p.name)) ? null : p.account_id);
+  const tidy = (t) => String(t || '').trim().replace(/\s+/g, ' ').replace(/(^|[\s-])(\p{Ll})/gu, (m, a, b) => a + b.toUpperCase());
+  const count = (list) => {
+    const m = new Map();
+    for (const v of list) {
+      const id = v.nominee_id || byName.get(nameKey(v.nominee_name));
+      const key = id ? `id:${id}` : `name:${nameKey(v.nominee_name)}`;
+      const e = m.get(key) || { key, name: (id && name.get(id)) || tidy(v.nominee_name), n: 0 };
+      e.n++;
+      m.set(key, e);
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  };
+  return { all: count(votes), current: { label: roundLabel(current), people: count(votes.filter((v) => v.round_id === current.id)) } };
 }
 
 // What the certificate shows, for the browser to draw.
@@ -276,7 +304,7 @@ export async function manage(env, viewer, roundParam) {
   const current = await currentRound(env, today);
   const round = roundParam ? await roundById(env, roundParam) : current;
   const people = await everyone(env, { includeLeft: true });
-  if (round.imported) await linkByName(env, round.id, people);
+  await linkByName(env, round.id, people);
   const [{ results: rounds }, { results: votes }] = await Promise.all([
     env.DB.prepare(`SELECT r.id, r.name, r.opens_on, r.closes_on, r.winner_name, r.imported, (SELECT COUNT(*) FROM eotq_votes v WHERE v.round_id = r.id) AS n
       FROM eotq_rounds r ORDER BY r.closes_on DESC`).all(),
@@ -416,38 +444,77 @@ export async function settings(env, viewer) {
 
 const MAX_IMPORT = 5000;
 
-// Nominations from before the hub, a round at a time. Bringing the same ones in
-// again changes nothing.
+// Nominations from before the hub, a round (a vote cycle) at a time. Those marked
+// as current join the round open now. Bringing the same sheet in again changes
+// nothing, and a nomination already brought in is moved if its cycle has changed.
 export async function importHistory(env, viewer, input = {}) {
   mustManage(viewer, 'bring in past nominations');
   const rounds = Array.isArray(input.rounds) ? input.rounds : [];
   if (!rounds.length) throw fail('There\'s nothing to bring in.');
   if (rounds.length > 60 || rounds.reduce((t, r) => t + (r.nominations?.length || 0), 0) > MAX_IMPORT) throw fail('That\'s more than the hub can bring in at once.');
   const now = new Date().toISOString();
-  let added = 0, skipped = 0, made = 0;
+  const today = londonDate();
+  const current = await currentRound(env, today);
+  // People are matched by their full name, where only one person has it.
+  const byName = new Map();
+  for (const p of await everyone(env, { includeLeft: true })) byName.set(nameKey(p.name), byName.has(nameKey(p.name)) ? null : p.account_id);
+  const idOf = (name) => byName.get(nameKey(name)) || null;
+  // Past rounds that held nominations before, so any left empty by a move can be tidied away.
+  const { results: before } = await env.DB.prepare('SELECT DISTINCT v.round_id AS id FROM eotq_votes v JOIN eotq_rounds r ON r.id = v.round_id WHERE r.imported = 1').all();
+  let added = 0, moved = 0, skipped = 0, made = 0;
   for (const r of rounds) {
     const noms = (Array.isArray(r.nominations) ? r.nominations : []).map((x) => ({
       at: Number.isNaN(Date.parse(x.at)) ? null : new Date(x.at).toISOString(),
       nominee: clean(x.nominee, 120), reason: clean(x.reason, MAX_REASON) || '(nothing written)', voter: clean(x.voter, 120) || null,
     })).filter((x) => x.at && x.nominee);
     if (!noms.length) continue;
-    const days = noms.map((x) => londonDate(Date.parse(x.at))).sort();
-    const opens = days[0], closes = days[days.length - 1];
-    const res = await env.DB.prepare(
-      `INSERT INTO eotq_rounds (name, opens_on, closes_on, imported, created_at) SELECT ?, ?, ?, 1, ?
-        WHERE NOT EXISTS (SELECT 1 FROM eotq_rounds WHERE imported = 1 AND opens_on = ? AND closes_on = ?)`
-    ).bind(clean(r.name, 80) || null, opens, closes, now, opens, closes).run();
-    if (res.meta?.changes) made++;
-    const round = await env.DB.prepare('SELECT id FROM eotq_rounds WHERE imported = 1 AND opens_on = ? AND closes_on = ?').bind(opens, closes).first();
-    for (let i = 0; i < noms.length; i += 40) {
-      const out = await env.DB.batch(noms.slice(i, i + 40).map((x) => env.DB.prepare(
-        `INSERT INTO eotq_votes (round_id, voter_id, voter_name, nominee_id, nominee_name, reason, created_at) SELECT ?, NULL, ?, NULL, ?, ?, ?
-          WHERE NOT EXISTS (SELECT 1 FROM eotq_votes WHERE created_at = ? AND nominee_name = ?)`
-      ).bind(round.id, x.voter, x.nominee, x.reason, x.at, x.at, x.nominee)));
-      for (const o of out) { if (o.meta?.changes) added++; else skipped++; }
+    let roundId;
+    const live = Boolean(r.current);
+    if (live) {
+      roundId = current.id;
+      // The round open now started when its first nomination came in, even if that was on the old form.
+      const first = noms.map((x) => londonDate(Date.parse(x.at))).sort()[0];
+      if (first < current.opens_on) await env.DB.prepare('UPDATE eotq_rounds SET opens_on = ? WHERE id = ?').bind(first, current.id).run();
+    } else {
+      const days = noms.map((x) => londonDate(Date.parse(x.at))).sort();
+      const opens = days[0], closes = days[days.length - 1];
+      const name = clean(r.name, 80) || (r.cycle != null && String(r.cycle).trim() ? `Vote cycle ${clean(r.cycle, 20)}` : null);
+      let round = name ? await env.DB.prepare('SELECT id FROM eotq_rounds WHERE imported = 1 AND name = ?').bind(name).first() : null;
+      round ||= await env.DB.prepare('SELECT id FROM eotq_rounds WHERE imported = 1 AND opens_on = ? AND closes_on = ?').bind(opens, closes).first();
+      if (round) {
+        await env.DB.prepare('UPDATE eotq_rounds SET opens_on = ?, closes_on = ?, name = COALESCE(?, name) WHERE id = ?').bind(opens, closes, name, round.id).run();
+        roundId = round.id;
+      } else {
+        const res = await env.DB.prepare('INSERT INTO eotq_rounds (name, opens_on, closes_on, imported, created_at) VALUES (?, ?, ?, 1, ?)').bind(name, opens, closes, now).run();
+        roundId = res.meta.last_row_id;
+        made++;
+      }
+    }
+    for (let i = 0; i < noms.length; i += 20) {
+      const part = noms.slice(i, i + 20);
+      const stmts = part.flatMap((x) => {
+        const voterId = live ? idOf(x.voter) : null, nomineeId = idOf(x.nominee);
+        return [
+          env.DB.prepare(`UPDATE OR IGNORE eotq_votes SET round_id = ?, voter_id = COALESCE(voter_id, ?), nominee_id = COALESCE(nominee_id, ?)
+            WHERE created_at = ? AND nominee_name = ? AND round_id != ?`).bind(roundId, voterId, nomineeId, x.at, x.nominee, roundId),
+          env.DB.prepare(`INSERT OR IGNORE INTO eotq_votes (round_id, voter_id, voter_name, nominee_id, nominee_name, reason, created_at) SELECT ?, ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM eotq_votes WHERE created_at = ? AND nominee_name = ?)`).bind(roundId, voterId, x.voter, nomineeId, x.nominee, x.reason, x.at, x.at, x.nominee),
+        ];
+      });
+      const out = await env.DB.batch(stmts);
+      for (let k = 0; k < part.length; k++) {
+        if (out[k * 2].meta?.changes) moved++;
+        else if (out[k * 2 + 1].meta?.changes) added++;
+        else skipped++;
+      }
     }
   }
-  return { rounds: made, added, skipped };
+  // A past round emptied by moving its nominations, with no winner or certificate, goes.
+  for (const { id } of before) {
+    await env.DB.prepare(`DELETE FROM eotq_rounds WHERE id = ? AND imported = 1 AND winner_id IS NULL
+      AND NOT EXISTS (SELECT 1 FROM eotq_votes WHERE round_id = ?) AND NOT EXISTS (SELECT 1 FROM eotq_certificates WHERE round_id = ?)`).bind(id, id, id).run();
+  }
+  return { rounds: made, added, moved, skipped };
 }
 
 // A round from before the hub with no nominations to bring in, so its winner and certificate can be added.

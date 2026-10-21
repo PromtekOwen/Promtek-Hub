@@ -455,6 +455,7 @@ export const TOURS = {
       { act: 'click', target: '[data-eotq-view="about"]', title: 'About you', text: 'Tap About you.' },
       { target: () => document.querySelector('.eotq-medal-card') || document.querySelector('.eotq-quotes'), title: 'What people said', text: 'Your medal, if you\'ve won before, and everything written about you, round by round, without anyone\'s name. Medals go Bronze, Silver, Gold, then Diamond.' },
       { act: 'click', target: '[data-eotq-view="history"]', title: 'History', text: 'Tap History.' },
+      { target: '.eotq-pies', title: 'Who has been nominated', text: 'Each person\'s share of the nominations, over every round and in this one so far.' },
       { target: '.eotq-history', title: 'Past winners', text: 'Every round and who won it.' },
       { act: 'click', target: () => document.querySelector('[data-eotq-cert]'), title: 'The certificate', text: 'Tap Certificate.' },
       { target: '.eotq-cert-img', title: 'Their certificate', text: 'Made from their picture and name. Download it as a PDF to print, or as a picture.' },

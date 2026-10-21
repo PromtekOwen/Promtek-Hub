@@ -6344,8 +6344,43 @@ function eotqAboutHtml(d) {
       <div class="eotq-quotes">${q.reasons.map((r) => `<blockquote class="card eotq-quote pre-wrap">${esc(r)}</blockquote>`).join('')}</div>`).join('')}`;
 }
 
+// Six colours, tested to be told apart side by side (including with colour blindness), then grey for everyone else.
+const PIE_COLOURS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
+const PIE_OTHER = '#8a9099';
+
+// A pie of who has been nominated, largest first, with a legend naming each slice.
+function eotqPieHtml(title, people) {
+  const total = people.reduce((t, p) => t + p.n, 0);
+  if (!total) return `<div class="eotq-pie"><h3>${esc(title)}</h3><p class="muted">No nominations yet.</p></div>`;
+  const named = people.slice(0, people.length > PIE_COLOURS.length ? PIE_COLOURS.length : people.length);
+  const rest = people.slice(named.length);
+  const slices = named.map((p, i) => ({ name: p.name, n: p.n, colour: PIE_COLOURS[i] }));
+  if (rest.length) slices.push({ name: rest.length === 1 ? rest[0].name : `Everyone else (${rest.length} people)`, n: rest.reduce((t, p) => t + p.n, 0), colour: PIE_OTHER, other: true });
+  const pct = (v) => { const x = (v / total) * 100; return x >= 10 || x === 0 ? `${Math.round(x)}%` : `${x.toFixed(1)}%`; };
+  const R = 90, C = 100;
+  let angle = -Math.PI / 2;
+  const paths = slices.map((sl) => {
+    const label = `${sl.name}: ${pct(sl.n)}, ${n(sl.n)} nomination${sl.n === 1 ? '' : 's'}`;
+    if (sl.n === total) return `<circle cx="${C}" cy="${C}" r="${R}" fill="${sl.colour}"><title>${esc(label)}</title></circle>`;
+    const a = (sl.n / total) * Math.PI * 2;
+    const x1 = C + R * Math.cos(angle), y1 = C + R * Math.sin(angle);
+    angle += a;
+    const x2 = C + R * Math.cos(angle), y2 = C + R * Math.sin(angle);
+    return `<path d="M${C} ${C}L${x1.toFixed(2)} ${y1.toFixed(2)}A${R} ${R} 0 ${a > Math.PI ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}Z" fill="${sl.colour}"><title>${esc(label)}</title></path>`;
+  }).join('');
+  return `<div class="eotq-pie"><h3>${esc(title)}</h3><p class="muted">${n(total)} nomination${total === 1 ? '' : 's'} for ${n(people.length)} ${people.length === 1 ? 'person' : 'people'}</p>
+    <div class="eotq-pie-body"><svg viewBox="0 0 200 200" role="img" aria-label="${esc(`${title}: ${slices.map((sl) => `${sl.name} ${pct(sl.n)}`).join(', ')}`)}">${paths}</svg>
+    <ul class="eotq-legend">${slices.map((sl) => `<li${sl.other ? ' class="other"' : ''}><span class="swatch" style="background:${sl.colour}"></span><span class="who">${esc(sl.name)}</span><span class="pct">${pct(sl.n)}</span><span class="cnt">${n(sl.n)}</span></li>`).join('')}</ul></div></div>`;
+}
+
 async function eotqHistoryHtml() {
   const h = await api('/api/eotq/history');
+  const pies = h.shares ? `<div class="card eotq-pies">${eotqPieHtml('Every round', h.shares.all)}${eotqPieHtml(`This round, ${h.shares.current.label}`, h.shares.current.people)}</div>` : '';
+  if (!h.rounds.length) return pies + '<div class="card" style="margin-top:1rem"><p style="margin:0">No finished rounds yet. Each round appears here once nominations close, with its winner.</p></div>';
+  return pies + `<h2>Rounds</h2>` + await eotqRoundsHtml(h);
+}
+
+async function eotqRoundsHtml(h) {
   if (!h.rounds.length) return '<div class="card"><p style="margin:0">Nothing here yet. Each round appears once nominations close, with its winner.</p></div>';
   return `<ul class="list req-list eotq-history">${h.rounds.map((r) => {
     const cert = !r.certificate ? '' : r.certificate.uploaded
@@ -6403,11 +6438,11 @@ async function eotqManageHtml() {
       </div></div>`;
 
   const tally = m.tally.length ? `<h2>Who was nominated</h2><ul class="list eotq-tally">${m.tally.map((x) => `<li>
-      <span class="title">${esc(x.name)}${r.imported && x.typed !== x.name ? ` <span class="sub">typed as "${esc(x.typed)}"</span>` : ''}</span>
+      <span class="title">${esc(x.name)}${x.typed && x.typed !== x.name ? ` <span class="sub">typed as "${esc(x.typed)}"</span>` : ''}</span>
       <span class="xp">${n(x.votes)} nomination${x.votes === 1 ? '' : 's'}</span>
-      ${r.imported ? `<label class="eotq-link">Who is this? <select data-eotq-link="${esc(x.typed)}"><option value="">Not linked to anyone</option>${m.people.map((p) =>
+      ${r.imported || !x.id ? `<label class="eotq-link">Who is this? <select data-eotq-link="${esc(x.typed)}"><option value="">Not linked to anyone</option>${m.people.map((p) =>
         `<option value="${esc(p.id)}"${x.id === p.id ? ' selected' : ''}>${esc(p.name)}${p.left ? ' (left)' : ''}</option>`).join('')}</select></label>` : ''}</li>`).join('')}</ul>
-      ${r.imported ? '<p class="muted">Names from the old form are linked to people where they match exactly. Link the rest, so people can read what was written about them.</p>' : ''}` : '';
+      ${r.imported || m.tally.some((x) => !x.id) ? '<p class="muted">Names from the old form are linked to people where they match exactly. Link the rest, so people can read what was written about them.</p>' : ''}` : '';
 
   return `<div class="row jobs-tools eotq-tools">${picker}${downloads}</div>
     ${settings}${turnout}${winner}${tally}
@@ -6510,8 +6545,8 @@ function settingsEotqHtml() {
   if (s?.error) return `<div class="card"><p class="bad">${esc(s.error)}</p></div>`;
   const r = s.round;
   const preview = eotqImport ? `<div class="eotq-import">
-      ${eotqImport.error ? `<p class="bad">${esc(eotqImport.error)}</p>` : `<p style="margin-top:0"><strong>${n(eotqImport.total)} nominations in ${n(eotqImport.rounds.length)} round${eotqImport.rounds.length === 1 ? '' : 's'}</strong>, one for each colour:</p>
-      <ul class="list eotq-tally">${eotqImport.rounds.map((x) => `<li><span class="title">${esc(eotqDay(x.opens))} to ${esc(eotqDay(x.closes))}</span>
+      ${eotqImport.error ? `<p class="bad">${esc(eotqImport.error)}</p>` : `<p style="margin-top:0"><strong>${n(eotqImport.total)} nominations in ${n(eotqImport.rounds.length)} round${eotqImport.rounds.length === 1 ? '' : 's'}</strong>, ${eotqImport.byCycle ? 'one for each vote cycle' : 'one for each colour'}:</p>
+      <ul class="list eotq-tally">${eotqImport.rounds.map((x) => `<li><span class="title">${x.current ? `This round, ${esc(r.label)}` : x.cycle ? `Vote cycle ${esc(x.cycle)}` : ''} <span class="sub">${esc(eotqDay(x.opens))} to ${esc(eotqDay(x.closes))}</span></span>
         <span class="sub">${esc(x.names)}</span><span class="xp">${n(x.nominations.length)}</span></li>`).join('')}</ul>
       <div class="row"><button class="btn" data-eotqs-import>Bring them in</button><button class="btn secondary" data-eotqs-import-cancel>Cancel</button></div>`}</div>` : '';
   return `<div class="card req-form">
@@ -6525,7 +6560,8 @@ function settingsEotqHtml() {
     <div class="card req-form" style="margin-top:1rem">
       <h2 style="margin-top:0">Nominations from the old form</h2>
       <p class="muted eotq-privacy">Choose the form's response sheet, saved as an Excel file (.xlsx). In Google Sheets: File, Download, Microsoft Excel.
-        Each fill colour on the nominee column becomes its own round. Bringing in the same sheet again adds only what's new.</p>
+        Rows with the same number in a Vote cycle column become one round, and rows marked Current join this round. Without that column, each fill colour on the nominee column becomes a round.
+        Bringing a sheet in again adds only what's new, and moves anything whose round has changed.</p>
       <div class="row"><label class="btn secondary" for="eotqs-file">Choose the spreadsheet</label><input id="eotqs-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></div>
       ${preview}</div>
 
@@ -6551,15 +6587,28 @@ async function eotqReadSheet(file) {
     const sheet = await readSheet(file);
     const head = sheet.rows[0] || [];
     const col = (re, fallback) => { const i = head.findIndex((h) => re.test(String(h.value || ''))); return i >= 0 ? i : fallback; };
-    const cAt = col(/timestamp/i, 0), cWho = col(/nominat/i, 1), cWhy = col(/why/i, 2), cBy = col(/your name/i, 3);
+    const cCycle = col(/cycle/i, -1);
+    const cAt = col(/timestamp/i, cCycle === 0 ? 1 : 0), cWho = col(/nominat/i, cAt + 1), cWhy = col(/why/i, cAt + 2), cBy = col(/your name/i, cAt + 3);
+    // With a Vote cycle column, rows sharing a number are one round, and "Current" joins the round open now.
+    // Without one, each fill colour on the nominee column is a round.
     const rounds = [];
+    const byCycle = new Map();
     let last = null;
     for (const row of sheet.rows.slice(1)) {
       const at = row[cAt]?.date, who = String(row[cWho]?.value ?? '').trim();
       if (!at || !who) continue;
-      const colour = row[cWho]?.fill || 'none';
-      if (!last || last.colour !== colour) { last = { colour, nominations: [] }; rounds.push(last); }
-      last.nominations.push({ at, nominee: who, reason: String(row[cWhy]?.value ?? '').trim(), voter: String(row[cBy]?.value ?? '').trim() });
+      const nomination = { at, nominee: who, reason: String(row[cWhy]?.value ?? '').trim(), voter: String(row[cBy]?.value ?? '').trim() };
+      if (cCycle >= 0) {
+        const raw = String(row[cCycle]?.value ?? '').trim();
+        const current = /^current$/i.test(raw);
+        const key = current ? 'current' : raw.replace(/\.0+$/, '') || '?';
+        if (!byCycle.has(key)) { const r = current ? { current: true, nominations: [] } : { cycle: key, nominations: [] }; byCycle.set(key, r); rounds.push(r); }
+        byCycle.get(key).nominations.push(nomination);
+      } else {
+        const colour = row[cWho]?.fill || 'none';
+        if (!last || last.colour !== colour) { last = { colour, nominations: [] }; rounds.push(last); }
+        last.nominations.push(nomination);
+      }
     }
     if (!rounds.length) throw new Error('No nominations were found. It needs the form\'s columns: Timestamp, who was nominated, why, and your name.');
     const londonDay = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Europe/London' });
@@ -6569,7 +6618,7 @@ async function eotqReadSheet(file) {
       const names = [...new Set(r.nominations.map((x) => x.nominee))];
       r.names = names.slice(0, 4).join(', ') + (names.length > 4 ? ` and ${names.length - 4} more` : '');
     }
-    eotqImport = { rounds, total: rounds.reduce((t, r) => t + r.nominations.length, 0) };
+    eotqImport = { rounds, total: rounds.reduce((t, r) => t + r.nominations.length, 0), byCycle: cCycle >= 0 };
   } catch (err) { eotqImport = { error: err.message }; }
   render();
 }
@@ -6589,9 +6638,10 @@ async function eotqSettingsClick(event) {
   if (imp) {
     imp.disabled = true;
     try {
-      const r = await api('/api/eotq/import', { method: 'POST', body: JSON.stringify({ rounds: eotqImport.rounds.map((x) => ({ nominations: x.nominations })) }) });
+      const r = await api('/api/eotq/import', { method: 'POST', body: JSON.stringify({ rounds: eotqImport.rounds.map((x) => ({ cycle: x.cycle, current: x.current, nominations: x.nominations })) }) });
       eotqImport = null;
-      toast(r.added ? `${n(r.added)} nomination${r.added === 1 ? '' : 's'} brought in` : 'Nothing new to bring in');
+      const said = [r.added ? `${n(r.added)} brought in` : '', r.moved ? `${n(r.moved)} moved to the right round` : ''].filter(Boolean);
+      toast(said.length ? `Nominations: ${said.join(', ')}` : 'Nothing new to bring in');
       render();
     } catch (err) { toast(err.message); imp.disabled = false; }
     return true;

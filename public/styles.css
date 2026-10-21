@@ -1162,3 +1162,18 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .menu .medal svg { width: 20px; height: 20px; }
 .eotq-modal .modal { max-height: calc(100vh - 2rem); overflow-y: auto; }
 .eotq-history .req-head { flex-wrap: wrap; gap: .25rem .75rem; }
+
+/* Employee of the Quarter: who has been nominated */
+.eotq-pies { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.5rem; margin-bottom: 1rem; }
+.eotq-pie h3 { margin: 0; font-size: 1.05rem; }
+.eotq-pie > .muted { margin: .2rem 0 .75rem; font-size: .9rem; }
+.eotq-pie-body { display: grid; grid-template-columns: minmax(8rem, 11rem) 1fr; gap: 1rem; align-items: center; }
+.eotq-pie svg { width: 100%; height: auto; display: block; }
+.eotq-pie svg path, .eotq-pie svg circle { stroke: #fff; stroke-width: 2; stroke-linejoin: round; }
+.eotq-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; font-size: .92rem; }
+.eotq-legend li { display: grid; grid-template-columns: .8rem 1fr auto auto; gap: .5rem; align-items: center; }
+.eotq-legend .swatch { width: .8rem; height: .8rem; border-radius: 3px; }
+.eotq-legend .pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.eotq-legend .cnt { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 1.5rem; text-align: right; }
+.eotq-legend .other .who { color: var(--muted); }
+@media (max-width: 420px) { .eotq-pie-body { grid-template-columns: 1fr; } .eotq-pie svg { max-width: 12rem; margin: 0 auto; } }
