@@ -6344,34 +6344,83 @@ function eotqAboutHtml(d) {
       <div class="eotq-quotes">${q.reasons.map((r) => `<blockquote class="card eotq-quote pre-wrap">${esc(r)}</blockquote>`).join('')}</div>`).join('')}`;
 }
 
-// Six colours, tested to be told apart side by side (including with colour blindness), then grey for everyone else.
-const PIE_COLOURS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300'];
-const PIE_OTHER = '#8a9099';
+// The five with the most nominations have strong colours and are listed beside the pie.
+// Everyone else has a lighter colour of their own, never the same family as the slice either side.
+const PIE_TOP = [['#2a78d6', 'blue'], ['#eb6834', 'orange'], ['#1baf7a', 'aqua'], ['#eda100', 'yellow'], ['#e87ba4', 'pink']];
+const PIE_LIGHT = [['#6cbf6c', 'green'], ['#a99cf0', 'violet'], ['#ef9493', 'red'], ['#8ab8ee', 'blue'], ['#f4a582', 'orange'], ['#7fd3b4', 'aqua'], ['#f3cc6b', 'yellow'], ['#f2a7c3', 'pink']];
 
-// A pie of who has been nominated, largest first, with a legend naming each slice.
+function pieColours(count) {
+  const out = PIE_TOP.slice(0, Math.min(count, PIE_TOP.length));
+  let at = 0;
+  for (let i = out.length; i < count; i++) {
+    const before = out[i - 1][1];
+    const last = i === count - 1;
+    let pick = null;
+    for (let tries = 0; tries < PIE_LIGHT.length && !pick; tries++) {
+      const c = PIE_LIGHT[(at + tries) % PIE_LIGHT.length];
+      if (c[1] !== before && !(last && c[1] === out[0][1])) { pick = c; at = (at + tries + 1) % PIE_LIGHT.length; }
+    }
+    out.push(pick || PIE_LIGHT[at]);
+  }
+  return out.map((c) => c[0]);
+}
+
+// A pie of who has been nominated, a slice each, largest first.
 function eotqPieHtml(title, people) {
   const total = people.reduce((t, p) => t + p.n, 0);
   if (!total) return `<div class="eotq-pie"><h3>${esc(title)}</h3><p class="muted">No nominations yet.</p></div>`;
-  const named = people.slice(0, people.length > PIE_COLOURS.length ? PIE_COLOURS.length : people.length);
-  const rest = people.slice(named.length);
-  const slices = named.map((p, i) => ({ name: p.name, n: p.n, colour: PIE_COLOURS[i] }));
-  if (rest.length) slices.push({ name: rest.length === 1 ? rest[0].name : `Everyone else (${rest.length} people)`, n: rest.reduce((t, p) => t + p.n, 0), colour: PIE_OTHER, other: true });
+  const colours = pieColours(people.length);
   const pct = (v) => { const x = (v / total) * 100; return x >= 10 || x === 0 ? `${Math.round(x)}%` : `${x.toFixed(1)}%`; };
+  const tip = (p) => `${p.name}: ${n(p.n)} nomination${p.n === 1 ? '' : 's'} (${pct(p.n)})`;
   const R = 90, C = 100;
   let angle = -Math.PI / 2;
-  const paths = slices.map((sl) => {
-    const label = `${sl.name}: ${pct(sl.n)}, ${n(sl.n)} nomination${sl.n === 1 ? '' : 's'}`;
-    if (sl.n === total) return `<circle cx="${C}" cy="${C}" r="${R}" fill="${sl.colour}"><title>${esc(label)}</title></circle>`;
-    const a = (sl.n / total) * Math.PI * 2;
+  const slices = people.map((p, i) => {
+    const attrs = `fill="${colours[i]}" data-tip="${esc(tip(p))}" tabindex="0" aria-label="${esc(tip(p))}"`;
+    if (p.n === total) return `<circle cx="${C}" cy="${C}" r="${R}" ${attrs}></circle>`;
+    const a = (p.n / total) * Math.PI * 2;
     const x1 = C + R * Math.cos(angle), y1 = C + R * Math.sin(angle);
     angle += a;
     const x2 = C + R * Math.cos(angle), y2 = C + R * Math.sin(angle);
-    return `<path d="M${C} ${C}L${x1.toFixed(2)} ${y1.toFixed(2)}A${R} ${R} 0 ${a > Math.PI ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}Z" fill="${sl.colour}"><title>${esc(label)}</title></path>`;
+    return `<path d="M${C} ${C}L${x1.toFixed(2)} ${y1.toFixed(2)}A${R} ${R} 0 ${a > Math.PI ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}Z" ${attrs}></path>`;
   }).join('');
+  const top = people.slice(0, PIE_TOP.length);
+  const more = people.length - top.length;
   return `<div class="eotq-pie"><h3>${esc(title)}</h3><p class="muted">${n(total)} nomination${total === 1 ? '' : 's'} for ${n(people.length)} ${people.length === 1 ? 'person' : 'people'}</p>
-    <div class="eotq-pie-body"><svg viewBox="0 0 200 200" role="img" aria-label="${esc(`${title}: ${slices.map((sl) => `${sl.name} ${pct(sl.n)}`).join(', ')}`)}">${paths}</svg>
-    <ul class="eotq-legend">${slices.map((sl) => `<li${sl.other ? ' class="other"' : ''}><span class="swatch" style="background:${sl.colour}"></span><span class="who">${esc(sl.name)}</span><span class="pct">${pct(sl.n)}</span><span class="cnt">${n(sl.n)}</span></li>`).join('')}</ul></div></div>`;
+    <div class="eotq-pie-body"><svg viewBox="0 0 200 200" role="group" aria-label="${esc(title)}">${slices}</svg>
+    <div><ul class="eotq-legend">${top.map((p, i) => `<li><span class="swatch" style="background:${colours[i]}"></span><span class="who">${esc(p.name)}</span><span class="pct">${pct(p.n)}</span><span class="cnt">${n(p.n)}</span></li>`).join('')}</ul>
+    ${more ? `<p class="muted eotq-pie-more">${n(more)} more ${more === 1 ? 'person' : 'people'} in the lighter slices. Point at or tap a slice to see who.</p>` : ''}</div></div></div>`;
 }
+
+// The name and count over a slice, as you point at it, tap it or tab to it.
+let pieTip = null;
+function pieTipShow(el, x, y) {
+  if (!pieTip) { pieTip = document.createElement('div'); pieTip.className = 'eotq-tip'; pieTip.setAttribute('role', 'tooltip'); document.body.appendChild(pieTip); }
+  pieTip.textContent = el.dataset.tip;
+  pieTip.hidden = false;
+  if (x == null) { const r = el.getBoundingClientRect(); x = r.left + r.width / 2; y = r.top + r.height / 2; }
+  const w = pieTip.offsetWidth, h = pieTip.offsetHeight;
+  pieTip.style.left = `${Math.max(8, Math.min(x + 14, innerWidth - w - 8))}px`;
+  pieTip.style.top = `${Math.max(8, y - h - 12)}px`;
+  document.querySelectorAll('.eotq-pie [data-tip].on').forEach((s) => s.classList.remove('on'));
+  el.classList.add('on');
+}
+function pieTipHide() {
+  if (pieTip) pieTip.hidden = true;
+  document.querySelectorAll('.eotq-pie [data-tip].on').forEach((s) => s.classList.remove('on'));
+}
+document.addEventListener('pointermove', (e) => {
+  const el = e.target.closest?.('.eotq-pie [data-tip]');
+  if (el && e.pointerType === 'mouse') pieTipShow(el, e.clientX, e.clientY);
+  else if (!el && e.pointerType === 'mouse' && pieTip && !pieTip.hidden) pieTipHide();
+});
+document.addEventListener('click', (e) => {
+  const el = e.target.closest?.('.eotq-pie [data-tip]');
+  if (el) pieTipShow(el, e.clientX, e.clientY); else if (pieTip && !pieTip.hidden) pieTipHide();
+});
+document.addEventListener('focusin', (e) => { if (e.target.matches?.('.eotq-pie [data-tip]')) pieTipShow(e.target); });
+document.addEventListener('focusout', (e) => { if (e.target.matches?.('.eotq-pie [data-tip]')) pieTipHide(); });
+addEventListener('scroll', () => { if (pieTip && !pieTip.hidden) pieTipHide(); }, true);
+addEventListener('hashchange', pieTipHide);
 
 async function eotqHistoryHtml() {
   const h = await api('/api/eotq/history');
@@ -6429,13 +6478,9 @@ async function eotqManageHtml() {
     ? `<div class="card"><h2 style="margin-top:0">The winner</h2><p style="margin:0">Nominations are open until ${esc(r.closesWords)}. The winner can be chosen from that day.</p></div>`
     : `<div class="card req-form eotq-win">
       <h2 style="margin-top:0">The winner</h2>
-      ${r.winner && !eotqChanging ? `<p class="eotq-winner" style="margin:0"><strong>${esc(r.winner.name)}</strong><span class="sub">${esc(r.award)}${r.announced ? `. Announced ${eotqDay(r.announced)}` : ''}</span></p>
+      ${r.winner && !eotqChanging ? `<p class="eotq-winner eotq-winner-card" style="margin:0"><strong>${esc(r.winner.name)}</strong><span class="sub">${esc(r.award)}${r.announced ? `. Announced ${eotqDay(r.announced)}` : ''}</span></p>
         <div class="row req-actions"><button class="btn secondary" data-eotq-cert="${r.id}">Certificate</button><button class="btn secondary" data-eotq-win-change>Change</button><button class="btn secondary" data-eotq-win-remove>Remove winner</button></div>` : winnerForm}
-      <div class="eotq-upload">
-        <p class="muted" style="margin:0">${r.imported ? 'Add the certificate that was given, as a PDF or a picture.' : 'The certificate is made from their picture and name. To use one made elsewhere instead, add it as a PDF or a picture.'}</p>
-        <div class="row"><label class="btn secondary" for="eotq-cert-file">Add a certificate</label><input id="eotq-cert-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" hidden>
-        <button class="btn secondary" data-eotq-cert-remove>Remove an added one</button></div>
-      </div></div>`;
+      </div>`;
 
   const tally = m.tally.length ? `<h2>Who was nominated</h2><ul class="list eotq-tally">${m.tally.map((x) => `<li>
       <span class="title">${esc(x.name)}${x.typed && x.typed !== x.name ? ` <span class="sub">typed as "${esc(x.typed)}"</span>` : ''}</span>
@@ -6515,26 +6560,6 @@ document.addEventListener('click', async (event) => {
     eotqSave(file.blob, file.name);
   }
 });
-
-// A picture is made smaller before it's sent; a PDF goes as it is.
-async function eotqUpload(file) {
-  if (!file) return;
-  let blob = file, type = file.type;
-  if (type.startsWith('image/')) {
-    const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('That picture couldn\'t be opened.')); i.src = URL.createObjectURL(file); });
-    const scale = Math.min(1, 2600 / Math.max(img.width, img.height));
-    const c = document.createElement('canvas');
-    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
-    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
-    blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
-    type = 'image/jpeg';
-  } else if (type !== 'application/pdf') { toast('Certificates need to be a PDF or a picture.'); return; }
-  try {
-    await api(`/api/eotq/certificate?round=${encodeURIComponent(eotqRound)}`, { method: 'POST', body: blob,
-      headers: { 'content-type': type, 'x-filename': encodeURIComponent(file.name) } });
-    toast('Certificate added'); render();
-  } catch (err) { toast(err.message); }
-}
 
 // ---------- Employee of the Quarter settings ----------
 
@@ -6733,13 +6758,6 @@ async function eotqClick(event) {
     catch (err) { toast(err.message); }
     return true;
   }
-  const uncert = t('[data-eotq-cert-remove]');
-  if (uncert) {
-    if (!twice(uncert, 'Tap again to remove it')) return true;
-    try { await api('/api/eotq/certificate-remove', { method: 'POST', body: JSON.stringify({ roundId: eotqRound }) }); toast('Removed'); return render(); }
-    catch (err) { toast(err.message); }
-    return true;
-  }
   return false;
 }
 
@@ -6752,7 +6770,6 @@ document.addEventListener('change', async (event) => {
   const d = el.dataset || {};
   if (d.eotq) eotqDraft[d.eotq] = el.value;
   if (el.matches?.('[data-eotq-round]')) { eotqRound = Number(el.value); eotqChanging = false; eotqTurnout = false; render(); }
-  if (el.id === 'eotq-cert-file') eotqUpload(el.files[0]);
   if (el.id === 'eotqs-file' && el.files[0]) eotqReadSheet(el.files[0]);
   if (d.eotqLink !== undefined) {
     try { await api('/api/eotq/link', { method: 'POST', body: JSON.stringify({ roundId: eotqRound, typed: d.eotqLink, accountId: el.value }) }); toast('Linked'); render(); }

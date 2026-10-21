@@ -207,7 +207,7 @@ export async function history(env, viewer) {
       nominations: canManage(viewer) ? r.nominations : undefined,
       winner: r.winner_id ? { id: r.winner_id, name: r.winner_name, medal: tierAt.get(r.id) } : null,
       award: r.award, announced: r.announced_at,
-      certificate: r.uploaded ? { uploaded: true, pdf: r.upload_mime === 'application/pdf' } : r.winner_id ? { made: true } : null,
+      certificate: r.winner_id ? { made: true } : r.uploaded ? { uploaded: true, pdf: r.upload_mime === 'application/pdf' } : null,
     })),
   };
 }
