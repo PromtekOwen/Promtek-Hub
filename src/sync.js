@@ -1,6 +1,6 @@
 // Keeps the XP ledger in step with Tempo and the employee list in step with Jira.
 import { fetchWorklogs } from './tempo.js';
-import { metered, addReads, readsToday, tidyReads, utcDay, queryName, BACKGROUND_ROW_LIMIT } from './d1-meter.js';
+import { metered, addReads, readsToday, monthSoFar, overBudget, tidyReads, utcDay, utcMonth, daysInMonth, queryName, MONTHLY_READ_LIMIT, MONTHLY_WRITE_LIMIT, BACKGROUND_SHARE, PACE_ALERT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
 import { noteStatements } from './staff.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
@@ -423,12 +423,16 @@ export async function runScheduled(rawEnv) {
   if (!(await getState(rawEnv, 'ledger_start'))) return;
   // Every row read is counted against the job that read it.
   const reads = {};
+  const writes = {};
   const queries = {};
   let current = 'Scheduler';
-  const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql) => {
-    reads[current] = (reads[current] || 0) + rows;
-    const q = `${current}: ${queryName(sql)}`;
-    queries[q] = (queries[q] || 0) + rows;
+  const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql, written) => {
+    if (rows) {
+      reads[current] = (reads[current] || 0) + rows;
+      const q = `${current}: ${queryName(sql)}`;
+      queries[q] = (queries[q] || 0) + rows;
+    }
+    if (written) writes[current] = (writes[current] || 0) + written;
   }) };
   const errors = [];
   const attempt = async (label, fn) => {
@@ -441,31 +445,46 @@ export async function runScheduled(rawEnv) {
     current = 'Scheduler';
     await setState(env, 'last_scheduled_run', new Date().toISOString());
     await setState(env, 'last_error', errors.length ? `${new Date().toISOString()} ${errors.join(' | ')}` : '');
-    try { await addReads(rawEnv, 'd1_reads_bg', reads, { runs: 1, queries }); } catch (err) { console.warn('Read count not saved:', err.message); }
+    try { await addReads(rawEnv, 'd1_reads_bg', reads, { runs: 1, queries, writes }); } catch (err) { console.warn('Read count not saved:', err.message); }
   };
 
-  // Once background work has used its share of the day's reads, it stops until
-  // midnight UTC so the hub itself keeps working. Tempo still syncs, as it's cheap.
+  // Once the month's reads or writes are nearly used up, background work stops until
+  // the month ends so the hub itself keeps working. Tempo still syncs, as it's cheap.
   const today = utcDay();
-  const used = await readsToday(rawEnv, 'd1_reads_bg');
-  const allowed = (await getState(env, 'd1_carry_on_day')) === today;
-  if ((used.total || 0) >= BACKGROUND_ROW_LIMIT && !allowed) {
+  const month = await monthSoFar(rawEnv);
+  const allowed = (await getState(env, 'd1_carry_on_month')) === utcMonth();
+  const fmt = (v) => Math.round(v).toLocaleString('en-GB');
+  if (overBudget(month) && !allowed) {
     await attempt('Tempo sync', () => pollRecent(env, { force: true }));
-    if ((await getState(env, 'd1_paused_day')) !== today) {
-      await setState(env, 'd1_paused_day', today);
-      const top = Object.entries(used.jobs || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    if ((await getState(env, 'd1_paused_month')) !== utcMonth()) {
+      await setState(env, 'd1_paused_month', utcMonth());
       await raiseAlert(env, {
         kind: 'd1-reads',
-        dedupe: `d1-reads:${today}`,
-        subject: 'Hub background jobs paused for the rest of today',
-        body: `Background jobs have read ${used.total.toLocaleString('en-GB')} database rows today (UTC), so they are paused until midnight UTC `
-          + `to keep the free plan's 5 million daily reads for people using the hub. Tempo time still syncs.\n\nBusiest jobs today:\n`
-          + top.map(([name, rows]) => `  ${name}: ${rows.toLocaleString('en-GB')}`).join('\n')
-          + '\n\nAdmin, Database reads shows the detail, and can let them carry on today.',
+        dedupe: `d1-month:${utcMonth()}`,
+        subject: 'Hub background jobs paused for the rest of the month',
+        body: `This month the database has read ${fmt(month.reads)} of ${fmt(MONTHLY_READ_LIMIT)} rows and written ${fmt(month.writes)} of ${fmt(MONTHLY_WRITE_LIMIT)}. `
+          + `Background jobs stop at ${Math.round(BACKGROUND_SHARE * 100)}% of either, so they are paused until the month ends to keep the rest for people using the hub. Tempo time still syncs.`
+          + '\n\nAdmin, Database use shows the detail, and can let them carry on.',
       });
       await attempt('Alert email', () => sendAlerts(env));
     }
     return finish();
+  }
+  // A day using far more than its even share of the month is flagged once, without stopping anything.
+  const used = await readsToday(rawEnv, 'd1_reads_bg');
+  const web = await readsToday(rawEnv, 'd1_reads_web');
+  const share = (limit) => (limit / daysInMonth()) * PACE_ALERT;
+  const dayReads = (used.total || 0) + (web.total || 0), dayWrites = (used.writes || 0) + (web.writes || 0);
+  if (dayReads > share(MONTHLY_READ_LIMIT) || dayWrites > share(MONTHLY_WRITE_LIMIT)) {
+    const top = Object.entries(used.jobs || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    await raiseAlert(env, {
+      kind: 'd1-reads',
+      dedupe: `d1-pace:${today}`,
+      subject: 'The hub is using its database much faster than usual today',
+      body: `Today (UTC) the database has read ${fmt(dayReads)} rows and written ${fmt(dayWrites)}, more than twice an even share of the month's `
+        + `${fmt(MONTHLY_READ_LIMIT)} reads and ${fmt(MONTHLY_WRITE_LIMIT)} writes. Nothing has been stopped.\n\nBusiest background jobs today:\n`
+        + top.map(([name, rows]) => `  ${name}: ${fmt(rows)}`).join('\n') + '\n\nAdmin, Database use shows the detail.',
+    });
   }
   if (new Date().getUTCMinutes() < 2) await attempt('Tidy read counts', () => tidyReads(rawEnv));
 

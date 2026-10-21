@@ -2,7 +2,8 @@
 // management set, usually their meeting. Anyone can nominate anyone else, as many
 // people as they like but each person once a round. People read what was written
 // about them without the names; management see everything, choose the winner,
-// and the hub announces it. Shout-outs let management thank someone at any time.
+// and the hub announces it. Shout-outs, sent from Admin's home screen messages,
+// let management thank someone at any time.
 import { londonDate, mondayOf, remembered } from './sync.js';
 
 const DAY_MS = 86_400_000;
@@ -113,13 +114,12 @@ export async function page(env, viewer) {
   mustBeLinked(viewer);
   const today = londonDate();
   const round = await currentRound(env, today);
-  const [all, mineRes, aboutRes, shoutRes, myMedal] = await Promise.all([
+  const [all, mineRes, aboutRes, myMedal] = await Promise.all([
     everyone(env),
     env.DB.prepare('SELECT id, nominee_id, nominee_name, reason, created_at FROM eotq_votes WHERE voter_id = ? AND round_id = ? ORDER BY id')
       .bind(viewer.accountId, round.id).all(),
     env.DB.prepare(`SELECT v.id, v.reason, r.id AS round_id, r.name, r.opens_on, r.closes_on FROM eotq_votes v JOIN eotq_rounds r ON r.id = v.round_id
       WHERE v.nominee_id = ? ORDER BY r.closes_on DESC`).bind(viewer.accountId).all(),
-    env.DB.prepare('SELECT message, created_at FROM shoutouts WHERE account_id = ? ORDER BY created_at DESC LIMIT 50').bind(viewer.accountId).all(),
     medal(env, viewer.accountId),
   ]);
   const nominated = new Set(mineRes.results.map((v) => v.nominee_id));
@@ -134,7 +134,6 @@ export async function page(env, viewer) {
     people: all.filter((p) => p.account_id !== viewer.accountId).map((p) => ({ id: p.account_id, name: p.name, nominated: nominated.has(p.account_id) })),
     mine: mineRes.results.map((v) => ({ id: v.id, nomineeId: v.nominee_id, nominee: v.nominee_name, reason: v.reason, at: v.created_at })),
     aboutMe: [...rounds.values()].map((r) => ({ ...r, reasons: r.reasons.sort((a, b) => scramble(a.id) - scramble(b.id)).map((v) => v.reason) })),
-    shoutouts: shoutRes.results.map((s) => ({ message: s.message, at: s.created_at })),
     canManage: canManage(viewer),
   };
 }
@@ -398,16 +397,84 @@ export async function csv(env, viewer, roundParam) {
   return { body: `\ufeff${lines.join('\r\n')}\r\n`, filename: `Employee of the Quarter ${all ? 'all rounds' : roundLabel(round)}.csv` };
 }
 
-// ---------- shout-outs ----------
+// ---------- settings: the date, and rounds from before the hub ----------
 
-export async function shoutouts(env, viewer) {
-  const { results } = await env.DB.prepare('SELECT id, account_id, name, message, given_by_name, created_at FROM shoutouts ORDER BY created_at DESC LIMIT 100').all();
+export async function settings(env, viewer) {
+  mustManage(viewer, 'change Employee of the Quarter settings');
+  const today = londonDate();
+  const r = await currentRound(env, today);
+  const { results } = await env.DB.prepare(
+    `SELECT r.id, r.name, r.opens_on, r.closes_on, r.winner_name, (SELECT COUNT(*) FROM eotq_votes v WHERE v.round_id = r.id) AS n
+       FROM eotq_rounds r WHERE r.imported = 1 ORDER BY r.closes_on DESC`
+  ).all();
   return {
-    canManage: canManage(viewer),
-    people: canManage(viewer) ? (await everyone(env)).map((p) => ({ id: p.account_id, name: p.name })) : [],
-    shoutouts: results.map((s) => ({ id: s.id, accountId: s.account_id, name: s.name, message: s.message, from: s.given_by_name, at: s.created_at, mine: s.account_id === viewer.accountId })),
+    today,
+    round: { id: r.id, name: r.name || '', label: roundLabel(r), opens: r.opens_on, closes: r.closes_on },
+    past: results.map((x) => ({ id: x.id, label: roundLabel(x), opens: x.opens_on, closes: x.closes_on, count: x.n, winner: x.winner_name })),
   };
 }
+
+const MAX_IMPORT = 5000;
+
+// Nominations from before the hub, a round at a time. Bringing the same ones in
+// again changes nothing.
+export async function importHistory(env, viewer, input = {}) {
+  mustManage(viewer, 'bring in past nominations');
+  const rounds = Array.isArray(input.rounds) ? input.rounds : [];
+  if (!rounds.length) throw fail('There\'s nothing to bring in.');
+  if (rounds.length > 60 || rounds.reduce((t, r) => t + (r.nominations?.length || 0), 0) > MAX_IMPORT) throw fail('That\'s more than the hub can bring in at once.');
+  const now = new Date().toISOString();
+  let added = 0, skipped = 0, made = 0;
+  for (const r of rounds) {
+    const noms = (Array.isArray(r.nominations) ? r.nominations : []).map((x) => ({
+      at: Number.isNaN(Date.parse(x.at)) ? null : new Date(x.at).toISOString(),
+      nominee: clean(x.nominee, 120), reason: clean(x.reason, MAX_REASON) || '(nothing written)', voter: clean(x.voter, 120) || null,
+    })).filter((x) => x.at && x.nominee);
+    if (!noms.length) continue;
+    const days = noms.map((x) => londonDate(Date.parse(x.at))).sort();
+    const opens = days[0], closes = days[days.length - 1];
+    const res = await env.DB.prepare(
+      `INSERT INTO eotq_rounds (name, opens_on, closes_on, imported, created_at) SELECT ?, ?, ?, 1, ?
+        WHERE NOT EXISTS (SELECT 1 FROM eotq_rounds WHERE imported = 1 AND opens_on = ? AND closes_on = ?)`
+    ).bind(clean(r.name, 80) || null, opens, closes, now, opens, closes).run();
+    if (res.meta?.changes) made++;
+    const round = await env.DB.prepare('SELECT id FROM eotq_rounds WHERE imported = 1 AND opens_on = ? AND closes_on = ?').bind(opens, closes).first();
+    for (let i = 0; i < noms.length; i += 40) {
+      const out = await env.DB.batch(noms.slice(i, i + 40).map((x) => env.DB.prepare(
+        `INSERT INTO eotq_votes (round_id, voter_id, voter_name, nominee_id, nominee_name, reason, created_at) SELECT ?, NULL, ?, NULL, ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM eotq_votes WHERE created_at = ? AND nominee_name = ?)`
+      ).bind(round.id, x.voter, x.nominee, x.reason, x.at, x.at, x.nominee)));
+      for (const o of out) { if (o.meta?.changes) added++; else skipped++; }
+    }
+  }
+  return { rounds: made, added, skipped };
+}
+
+// A round from before the hub with no nominations to bring in, so its winner and certificate can be added.
+export async function addPastRound(env, viewer, input = {}) {
+  mustManage(viewer, 'add past rounds');
+  const opens = String(input.opens || ''), closes = String(input.closes || '');
+  if (!isDate(opens) || !isDate(closes)) throw fail('Give the dates the round ran.');
+  if (closes < opens) throw fail('The round can\'t end before it starts.');
+  if (closes >= londonDate()) throw fail('A past round has to have ended already.');
+  const res = await env.DB.prepare('INSERT INTO eotq_rounds (name, opens_on, closes_on, imported, created_at) VALUES (?, ?, ?, 1, ?)')
+    .bind(clean(input.name, 80) || null, opens, closes, new Date().toISOString()).run();
+  return { ok: true, id: res.meta.last_row_id };
+}
+
+export async function removePastRound(env, viewer, input = {}) {
+  mustManage(viewer, 'remove past rounds');
+  const r = await roundById(env, input.id);
+  if (!r.imported) throw fail('Only rounds from before the hub can be removed.');
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM eotq_votes WHERE round_id = ?').bind(r.id),
+    env.DB.prepare('DELETE FROM eotq_certificates WHERE round_id = ?').bind(r.id),
+    env.DB.prepare('DELETE FROM eotq_rounds WHERE id = ?').bind(r.id),
+  ]);
+  return { ok: true };
+}
+
+// ---------- shout-outs ----------
 
 export async function giveShoutout(env, viewer, input = {}) {
   mustManage(viewer, 'give shout-outs');
@@ -419,20 +486,11 @@ export async function giveShoutout(env, viewer, input = {}) {
   const from = viewer.employee?.name || viewer.email;
   const res = await env.DB.prepare(
     `INSERT INTO home_messages (kind, title, body, link, tone, audience, starts_at, ends_at, emailed, created_by, created_by_name, created_at)
-     VALUES ('announcement', ?, ?, '#/eotq?shoutouts', 'info', ?, ?, ?, 0, ?, ?, ?)`
+     VALUES ('announcement', ?, ?, NULL, 'info', ?, ?, ?, 0, ?, ?, ?)`
   ).bind(`Shout-out for ${person.name}`, message, JSON.stringify({ everyone: true, teams: [], people: [] }), now,
     new Date(Date.now() + SHOUTOUT_DAYS * DAY_MS).toISOString(), viewer.email, from, now).run();
   await env.DB.prepare('INSERT INTO shoutouts (account_id, name, message, given_by, given_by_name, message_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .bind(person.account_id, person.name, message, viewer.accountId || viewer.email, from, res.meta.last_row_id, now).run();
-  return { ok: true };
-}
-
-export async function removeShoutout(env, viewer, input = {}) {
-  mustManage(viewer, 'remove shout-outs');
-  const s = await env.DB.prepare('SELECT id, message_id FROM shoutouts WHERE id = ?').bind(Number(input.id) || 0).first();
-  if (!s) return { ok: true };
-  if (s.message_id) await env.DB.prepare('UPDATE home_messages SET ended_at = ? WHERE id = ? AND ended_at IS NULL').bind(new Date().toISOString(), s.message_id).run();
-  await env.DB.prepare('DELETE FROM shoutouts WHERE id = ?').bind(s.id).run();
   return { ok: true };
 }
 

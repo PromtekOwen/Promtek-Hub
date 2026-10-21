@@ -68,17 +68,20 @@ function fromAnotherSite(request, url) {
 // Rows read by each page, kept in memory and saved about once a minute, so the
 // count costs almost nothing. Counts from other copies of the Worker add up too.
 const pageReads = {};
+const pageWrites = {};
 const pageQueries = {};
 let pageReadsSaved = Date.now();
 const pageName = (method, pathname) => `${method} ${pathname.replace(/\/[A-Z]+-\d+/g, '/KEY').replace(/\/\d+(?=\/|$)/g, '/ID')}`;
 
 async function savePageReads(rawEnv) {
   const counts = { ...pageReads };
+  const writes = { ...pageWrites };
   const queries = { ...pageQueries };
   for (const k of Object.keys(pageReads)) delete pageReads[k];
+  for (const k of Object.keys(pageWrites)) delete pageWrites[k];
   for (const k of Object.keys(pageQueries)) delete pageQueries[k];
   pageReadsSaved = Date.now();
-  try { await addReads(rawEnv, 'd1_reads_web', counts, { queries }); } catch (err) { console.warn('Read count not saved:', err.message); }
+  try { await addReads(rawEnv, 'd1_reads_web', counts, { queries, writes }); } catch (err) { console.warn('Read count not saved:', err.message); }
 }
 
 export default {
@@ -89,12 +92,15 @@ export default {
     if (fromAnotherSite(request, url)) return json({ error: 'That request didn\'t come from the hub.' }, 403);
 
     const name = pageName(request.method, url.pathname);
-    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql) => {
-      pageReads[name] = (pageReads[name] || 0) + rows;
-      const q = `${name}: ${queryName(sql)}`;
-      pageQueries[q] = (pageQueries[q] || 0) + rows;
+    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql, written) => {
+      if (rows) {
+        pageReads[name] = (pageReads[name] || 0) + rows;
+        const q = `${name}: ${queryName(sql)}`;
+        pageQueries[q] = (pageQueries[q] || 0) + rows;
+      }
+      if (written) pageWrites[name] = (pageWrites[name] || 0) + written;
     }) };
-    if (Date.now() - pageReadsSaved > 60_000 && Object.keys(pageReads).length) ctx.waitUntil(savePageReads(rawEnv));
+    if (Date.now() - pageReadsSaved > 60_000 && (Object.keys(pageReads).length || Object.keys(pageWrites).length)) ctx.waitUntil(savePageReads(rawEnv));
 
     const user = await getUser(request, env);
     if (!user) return json({ error: 'Sign in with your Promtek Google account to continue.' }, 401);
@@ -571,11 +577,12 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/eotq/certificate-remove') return json(await Eotq.removeCertificate(env, user, body.roundId));
     if (method === 'GET' && pathname === '/api/eotq/manage') return json(await Eotq.manage(env, user, q('round')));
     if (method === 'POST' && pathname === '/api/eotq/round') return json(await Eotq.saveRound(env, user, body));
+    if (method === 'GET' && pathname === '/api/eotq/settings') return json(await Eotq.settings(env, user));
+    if (method === 'POST' && pathname === '/api/eotq/import') return json(await Eotq.importHistory(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/past-round') return json(await Eotq.addPastRound(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/past-round-remove') return json(await Eotq.removePastRound(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/link') return json(await Eotq.link(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
-    if (method === 'GET' && pathname === '/api/eotq/shoutouts') return json(await Eotq.shoutouts(env, user));
-    if (method === 'POST' && pathname === '/api/eotq/shoutout') return json(await Eotq.giveShoutout(env, user, body));
-    if (method === 'POST' && pathname === '/api/eotq/shoutout-remove') return json(await Eotq.removeShoutout(env, user, body));
   }
 
   if (method === 'POST' && pathname === '/api/home/dismiss') {
@@ -662,8 +669,8 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
     if (method === 'GET' && pathname === '/api/admin/reads') return json(await readsReport(env));
     if (method === 'POST' && pathname === '/api/admin/reads-carry-on') {
-      await setState(env, 'd1_carry_on_day', new Date().toISOString().slice(0, 10));
-      await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on today', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
+      await setState(env, 'd1_carry_on_month', new Date().toISOString().slice(0, 7));
+      await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on this month', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
       return json({ ok: true });
     }
     if (method === 'GET' && pathname === '/api/admin/home-messages') return json(await Home.adminList(env));

@@ -691,7 +691,7 @@ addEventListener('resize', () => { if (document.getElementById('home-feed')) hom
 
 let homeAdmin = null;
 let homeDraft = null;
-const blankHomeDraft = () => ({ kind: 'alert', everyone: false, teams: [], people: [], title: '', body: '', link: '', linkWeb: '', tone: 'info', until: '', email: false, find: '' });
+const blankHomeDraft = () => ({ kind: 'alert', shoutFor: '', everyone: false, teams: [], people: [], title: '', body: '', link: '', linkWeb: '', tone: 'info', until: '', email: false, find: '' });
 
 function homeAdminHtml() {
   const a = homeAdmin, d = homeDraft;
@@ -700,8 +700,16 @@ function homeAdminHtml() {
   const found = d.find.trim().length > 1 ? a.people.filter((p) => !d.people.includes(p.id) && p.name.toLowerCase().includes(d.find.trim().toLowerCase())).slice(0, 8) : [];
   const form = `<div class="card hm-form">
       <p class="muted">What is it?</p>
-      ${seg('kind', d.kind, [['alert', 'An alert'], ['announcement', 'News']])}
-      <p class="help">${d.kind === 'alert' ? 'Alerts show under Alerts, for the people you choose. Use them for things someone needs to act on.' : 'News shows under News. Use it for things everyone, or a team, should know.'}</p>
+      ${seg('kind', d.kind, [['alert', 'An alert'], ['announcement', 'News'], ['shoutout', 'A shout-out']])}
+      <p class="help">${d.kind === 'alert' ? 'Alerts show under Alerts, for the people you choose. Use them for things someone needs to act on.'
+        : d.kind === 'shoutout' ? 'A shout-out thanks one person for their effort. Everyone sees it under News for a week, with your name.'
+        : 'News shows under News. Use it for things everyone, or a team, should know.'}</p>
+      ${d.kind === 'shoutout' ? `<label>Who's it for? <select data-hm-field="shoutFor"><option value="">Choose someone</option>${a.people.map((p) =>
+          `<option value="${esc(p.id)}"${d.shoutFor === p.id ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+        <label>What did they do? <textarea data-hm-field="body" rows="3" maxlength="600" placeholder="For example: stayed late to get Northgate's line running again">${esc(d.body)}</textarea></label>
+        <div class="row"><button class="btn" data-hm-send>Send the shout-out</button></div>
+        <div class="result" id="hm-result" role="status"></div>
+      </div>` : `
       <p class="muted">Who for?</p>
       ${seg('everyone', d.everyone ? 'yes' : 'no', [['yes', 'Everyone'], ['no', 'Choose teams or people']])}
       ${d.everyone ? '' : `<div class="chips" style="margin-top:.6rem">${a.teams.map((t) => `<button class="chip${d.teams.includes(t) ? ' on' : ''}" data-hm-team="${esc(t)}">${esc(t)}</button>`).join('')}</div>
@@ -723,7 +731,7 @@ function homeAdminHtml() {
       </div>
       <div class="row"><button class="btn" data-hm-send>Send</button></div>
       <div class="result" id="hm-result" role="status"></div>
-    </div>`;
+    </div>`}`;
   const rows = a.messages.map((m) => `<li>
       <span class="title">${m.tone === 'important' ? '<span class="psc-chip warn">Important</span> ' : ''}${esc(m.title)}</span>
       <span class="xp"><small>${m.kind === 'alert' ? 'Alert' : 'News'}</small></span>
@@ -778,8 +786,9 @@ async function homeAdminClick(event) {
     send.disabled = true;
     const out = document.getElementById('hm-result');
     try {
-      const r = await api('/api/admin/home-messages', { method: 'POST', body: JSON.stringify({ ...d, link: d.link === 'web' ? d.linkWeb : d.link }) });
-      toast(r.emailed ? `Sent, and emailed to ${n(r.emailed)}` : 'Sent');
+      const r = await api('/api/admin/home-messages', { method: 'POST', body: JSON.stringify(d.kind === 'shoutout'
+        ? { kind: 'shoutout', accountId: d.shoutFor, message: d.body } : { ...d, link: d.link === 'web' ? d.linkWeb : d.link }) });
+      toast(d.kind === 'shoutout' ? 'Shout-out sent' : r.emailed ? `Sent, and emailed to ${n(r.emailed)}` : 'Sent');
       homeDraft = blankHomeDraft();
       homeFeedAt = 0;
       await loadHomeAdmin();
@@ -1257,6 +1266,7 @@ async function renderSettings(route) {
   if (route === '#/psc') settingsData.psc = await api('/api/psc/settings').catch((err) => ({ error: err.message }));
   if (route === '#/contracts') settingsData.contracts = await api('/api/contracts/settings').catch((err) => ({ error: err.message }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
+  if (route === '#/eotq') settingsData.eotq = await api('/api/eotq/settings').catch((err) => ({ error: err.message }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
 }
@@ -5839,36 +5849,49 @@ function personAccessHtml(p) {
 function readsHtml(r) {
   if (!r) return '';
   const today = new Date().toISOString().slice(0, 10);
-  const day = r.days.find((d) => d.day === today) || { background: { total: 0, top: [], runs: 0 }, pages: { total: 0, top: [] }, queries: [] };
-  const total = day.background.total + day.pages.total;
-  const pct = Math.min(100, total / r.limit * 100);
+  const blank = { total: 0, writes: 0, top: [], topWrites: [], runs: 0 };
+  const day = r.days.find((d) => d.day === today) || { background: blank, pages: blank, queries: [] };
+  const m = r.month;
+  const pct = (v, limit) => Math.min(100, (v / limit) * 100);
+  const big = (v) => (v >= 1e9 ? `${(v / 1e9).toFixed(v >= 1e10 ? 1 : 2)} billion` : v >= 1e6 ? `${(v / 1e6).toFixed(v >= 1e7 ? 1 : 2)} million` : n(v));
+  const monthName = new Date(`${m.name}-01T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const rows = (list) => list.length
-    ? `<ul class="list" style="box-shadow:none;margin-top:.5rem">${list.map(([name, rows]) => `<li><span class="title">${esc(name)}</span><span class="xp">${n(rows)}</span></li>`).join('')}</ul>`
+    ? `<ul class="list" style="box-shadow:none;margin-top:.5rem">${list.map(([name, v]) => `<li><span class="title">${esc(name)}</span><span class="xp">${n(v)}</span></li>`).join('')}</ul>`
     : '<p class="muted">Nothing counted yet.</p>';
   const earlier = r.days.filter((d) => d.day !== today);
-  return `<h2>Database reads</h2>
+  const writesToday = [...day.background.topWrites || [], ...day.pages.topWrites || []].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  return `<h2>Database use</h2>
     <div class="card">
-      <p style="margin-top:0">Cloudflare's free plan allows ${n(r.limit)} rows read a day, reset at midnight UTC (1am UK time in summer).
-      Background jobs stop for the day at ${n(r.backgroundLimit)} so there is always plenty left for people using the hub.</p>
-      ${r.paused ? `<div class="card notice error" style="margin:0 0 1rem"><p style="margin:0"><strong>Background jobs are paused until midnight UTC.</strong>
-        Tempo time still syncs. Jira lists, PSC items, contracts and ratings catch up tomorrow.</p>
-        <div class="row" style="margin-top:.75rem"><button class="btn secondary" data-action="reads-carry-on">Let them carry on today</button></div></div>` : ''}
+      <p style="margin-top:0">The Workers Paid plan includes ${big(r.readLimit)} rows read and ${big(r.writeLimit)} rows written a month.
+      Background jobs stop for the rest of the month at ${Math.round(r.share * 100)}% of either, so there is always plenty left for people using the hub.</p>
+      ${r.paused ? `<div class="card notice error" style="margin:0 0 1rem"><p style="margin:0"><strong>Background jobs are paused until the month ends.</strong>
+        Tempo time still syncs. Jira lists, PSC items, contracts and ratings catch up next month.</p>
+        <div class="row" style="margin-top:.75rem"><button class="btn secondary" data-action="reads-carry-on">Let them carry on this month</button></div></div>` : ''}
+      <h3 style="margin-bottom:.25rem">${esc(monthName)}, day ${n(m.day)} of ${n(m.daysIn)}</h3>
       <dl class="state">
-        <dt>Read today</dt><dd>${n(total)} of ${n(r.limit)}</dd>
-        <dt>Background jobs</dt><dd>${n(day.background.total)} over ${n(day.background.runs)} runs</dd>
-        <dt>Pages</dt><dd>${n(day.pages.total)}</dd>
+        <dt>Rows read</dt><dd>${big(m.reads)} of ${big(r.readLimit)}</dd>
       </dl>
-      <div class="bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
+      <div class="bar" aria-hidden="true"><span style="width:${pct(m.reads, r.readLimit).toFixed(2)}%"></span></div>
+      <dl class="state" style="margin-top:.75rem">
+        <dt>Rows written</dt><dd>${big(m.writes)} of ${big(r.writeLimit)}</dd>
+      </dl>
+      <div class="bar" aria-hidden="true"><span style="width:${pct(m.writes, r.writeLimit).toFixed(2)}%"></span></div>
+      <h3 style="margin-bottom:.25rem">Today</h3>
+      <dl class="state">
+        <dt>Read</dt><dd>${n(day.background.total + day.pages.total)}: background ${n(day.background.total)} over ${n(day.background.runs)} runs, pages ${n(day.pages.total)}</dd>
+        <dt>Written</dt><dd>${n((day.background.writes || 0) + (day.pages.writes || 0))}: background ${n(day.background.writes || 0)}, pages ${n(day.pages.writes || 0)}</dd>
+      </dl>
       <div class="result" id="reads-result" role="status"></div>
       <h3 style="margin-bottom:0">Busiest background jobs today</h3>${rows(day.background.top)}
       <h3 style="margin-bottom:0">Busiest pages today</h3>${rows(day.pages.top)}
+      <h3 style="margin-bottom:0">Most writes today</h3>${rows(writesToday)}
       ${day.queries?.length ? `<details class="reads-queries"><summary>Busiest database queries today</summary>
         <ul class="list" style="box-shadow:none;margin-top:.5rem">${day.queries.map((x) => `<li><span class="title"><code>${esc(x.q)}</code></span>
           <span class="sub">${esc(x.where)}</span><span class="xp">${n(x.n)}</span></li>`).join('')}</ul></details>` : ''}
-      ${earlier.length ? `<h3 style="margin-bottom:0">Earlier days</h3>
+      ${earlier.length ? `<details class="reads-queries"><summary>Earlier days</summary>
         <ul class="list" style="box-shadow:none;margin-top:.5rem">${earlier.map((d) => `<li><span class="title">${esc(d.day)}</span>
-          <span class="sub">Background ${n(d.background.total)}, pages ${n(d.pages.total)}${d.background.top[0] ? `. Busiest: ${esc(d.background.top[0][0])}` : ''}</span>
-          <span class="xp">${n(d.background.total + d.pages.total)}</span></li>`).join('')}</ul>` : ''}
+          <span class="sub">Read: background ${n(d.background.total)}, pages ${n(d.pages.total)}. Written ${n((d.background.writes || 0) + (d.pages.writes || 0))}${d.background.top[0] ? `. Busiest: ${esc(d.background.top[0][0])}` : ''}</span>
+          <span class="xp">${n(d.background.total + d.pages.total)}</span></li>`).join('')}</ul></details>` : ''}
     </div>`;
 }
 
@@ -6258,14 +6281,13 @@ async function requestsClick(event) {
 
 // ---------- Employee of the Quarter ----------
 
-let eotqView = 'nominate';     // nominate, about, shoutouts, history, manage
+let eotqView = 'nominate';     // nominate, about, history, manage
 let eotqRound = null;          // the round management are looking at, by id
 let eotqEditing = null;        // the nomination being changed, by id
 let eotqDraft = { nominee: '', reason: '' };
-let eotqShout = { person: '', message: '' };
 let eotqTurnout = false;       // the list of who has and hasn't nominated
 let eotqChanging = false;      // changing a winner already chosen
-const EOTQ_VIEWS = ['nominate', 'about', 'shoutouts', 'history', 'manage'];
+const EOTQ_VIEWS = ['nominate', 'about', 'history', 'manage'];
 const MEDAL_NAMES = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold', diamond: 'Diamond' };
 
 function medalHtml(tier, { label = false } = {}) {
@@ -6274,7 +6296,7 @@ function medalHtml(tier, { label = false } = {}) {
 }
 
 function eotqTabs(canManage) {
-  const tabs = [['nominate', 'Nominate'], ['about', 'About you'], ['shoutouts', 'Shout-outs'], ['history', 'History'], ...(canManage ? [['manage', 'Management']] : [])];
+  const tabs = [['nominate', 'Nominate'], ['about', 'About you'], ['history', 'History'], ...(canManage ? [['manage', 'Management']] : [])];
   return `<div class="tabs eotq-tabs" style="margin-bottom:1rem">${tabs.map(([id, label]) =>
     `<button class="tab${id === eotqView ? ' on' : ''}" data-eotq-view="${id}">${label}</button>`).join('')}</div>`;
 }
@@ -6301,8 +6323,6 @@ function eotqNominateHtml(d) {
       <h2 style="margin-top:0">Nominate someone</h2>
       <label>Who should be nominated? <select data-eotq="nominee"><option value="">Choose someone</option>${options}</select></label>
       <label>Why have you nominated this person? <textarea data-eotq="reason" rows="6" maxlength="3000" placeholder="What did they do, and what difference did it make?">${esc(eotqDraft.reason)}</textarea></label>
-      <label>Your name <input value="${esc(d.me.name)}" readonly aria-readonly="true"></label>
-      <p class="muted eotq-privacy">They're told they've been nominated and can read what you wrote, but not who wrote it. Only the management team can see your name.</p>
       <div class="row"><button class="btn" data-eotq-send>Nominate</button></div>
       <div class="result" id="eotq-result" role="status"></div></div>`
     : '<div class="card"><p style="margin:0">You\'ve nominated everyone you can this round.</p></div>'}
@@ -6314,33 +6334,14 @@ function eotqAboutHtml(d) {
   const m = d.me.medal;
   const medal = m ? `<div class="card eotq-medal-card">${medalHtml(m.tier)}<div><strong>${MEDAL_NAMES[m.tier]} medal</strong>
       <span class="muted">Employee of the Quarter ${m.wins === 1 ? 'once' : `${n(m.wins)} times`}.${m.tier !== 'diamond' ? ` ${MEDAL_NAMES[{ bronze: 'silver', silver: 'gold', gold: 'diamond' }[m.tier]]} comes with the next win.` : ''}</span></div></div>` : '';
-  const shouts = d.shoutouts.length ? `<h2>Shout-outs for you</h2><div class="eotq-quotes">${d.shoutouts.map((s) =>
-    `<blockquote class="card eotq-quote eotq-shout pre-wrap">${esc(s.message)}<span class="sub">${eotqDay(s.at)}</span></blockquote>`).join('')}</div>` : '';
   if (!d.aboutMe.length) {
     const none = '<div class="card"><p style="margin:0">Nobody has nominated you yet. When someone does, you\'ll get an alert, and what they wrote appears here without their name.</p></div>';
-    return `${medal}${shouts}${shouts ? '<h2>Nominations</h2>' : ''}${none}`;
+    return `${medal}${none}`;
   }
   const total = d.aboutMe.reduce((t, q) => t + q.reasons.length, 0);
-  return `${medal}${shouts}<h2>Nominations</h2><p class="muted" style="margin-top:0">You've been nominated ${total === 1 ? 'once' : `${n(total)} times`}. Who wrote each one isn't shown.</p>
+  return `${medal}<p class="muted" style="margin-top:0">You've been nominated ${total === 1 ? 'once' : `${n(total)} times`}. Who wrote each one isn't shown.</p>
     ${d.aboutMe.map((q) => `<h3 class="eotq-round-head">${esc(q.label)}${q.current ? ' <span class="muted eotq-so-far">so far</span>' : ''}</h3>
       <div class="eotq-quotes">${q.reasons.map((r) => `<blockquote class="card eotq-quote pre-wrap">${esc(r)}</blockquote>`).join('')}</div>`).join('')}`;
-}
-
-async function eotqShoutoutsHtml() {
-  const s = await api('/api/eotq/shoutouts');
-  const form = s.canManage ? `<div class="card req-form eotq-shout-form">
-      <h2 style="margin-top:0">Give a shout-out</h2>
-      <label>Who for? <select data-eotq-shout="person"><option value="">Choose someone</option>${s.people.map((p) =>
-        `<option value="${esc(p.id)}"${p.id === eotqShout.person ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
-      <label>What did they do? <textarea data-eotq-shout="message" rows="4" maxlength="600" placeholder="For example: stayed late to get Northgate's line running again">${esc(eotqShout.message)}</textarea></label>
-      <p class="muted eotq-privacy">It goes on everyone's home screen for a week, with your name, and stays here.</p>
-      <div class="row"><button class="btn" data-eotq-shout-send>Give shout-out</button></div>
-      <div class="result" id="eotq-shout-result" role="status"></div></div>` : '';
-  return `${form}${s.shoutouts.length ? `<ul class="list req-list eotq-shouts">${s.shoutouts.map((x) => `<li data-eotq-shout-id="${x.id}">
-      <div class="req-head"><span class="title">${esc(x.name)}</span><span class="sub">${eotqDay(x.at)}</span></div>
-      <p class="pre-wrap req-details">${esc(x.message)}</p><span class="sub">From ${esc(x.from || 'the management team')}</span>
-      ${s.canManage ? '<div class="row req-actions"><button class="btn secondary" data-eotq-shout-remove>Remove</button></div>' : ''}</li>`).join('')}</ul>`
-    : `<div class="card"><p style="margin:0">No shout-outs yet.${s.canManage ? '' : ' When the management team thanks someone, it appears here and on the home screen.'}</p></div>`}`;
 }
 
 async function eotqHistoryHtml() {
@@ -6368,13 +6369,8 @@ async function eotqManageHtml() {
       <a class="btn secondary" href="/api/eotq/export.csv?round=${r.id}" download>Download this round</a>
       <a class="btn secondary" href="/api/eotq/export.csv?round=all" download>Download all</a></span>`;
 
-  const settings = `<div class="card req-form eotq-round">
-      <h2 style="margin-top:0">${r.open ? 'This round' : 'The round'}</h2>
-      <label>Name <input data-eotq-round-field="name" maxlength="80" value="${esc(r.name)}" placeholder="${esc(r.label)}"></label>
-      ${r.open ? `<label>Nominations close on <input type="date" data-eotq-round-field="closesOn" value="${esc(r.closes)}" min="${esc(m.today)}"></label>
-        <p class="muted eotq-privacy">Usually the day of the management meeting. Everyone is reminded weekly, then daily in the last week if they haven't nominated. The next round starts the day after.</p>`
-        : `<p class="muted eotq-privacy">${eotqDay(r.opens)} to ${eotqDay(r.closes)}.</p>`}
-      <div class="row"><button class="btn secondary" data-eotq-round-save>Save</button></div></div>`;
+  const settings = r.open ? `<div class="card eotq-round"><p style="margin:0">Nominations for ${esc(r.label)} close on <strong>${esc(eotqDay(r.closes))}</strong>.</p>
+      ${PRACTICE ? '' : '<div class="row" style="margin-top:.75rem"><button class="btn secondary" data-eotq-settings>Change the date</button></div>'}</div>` : '';
 
   const t = m.turnout;
   const turnout = t ? `<div class="card eotq-turnout">
@@ -6430,7 +6426,7 @@ async function eotqHtml() {
   const d = await api('/api/eotq');
   if (eotqView === 'manage' && !d.canManage) eotqView = 'nominate';
   if (eotqView === 'about') api('/api/eotq/seen', { method: 'POST' }).catch(() => {});
-  const body = eotqView === 'about' ? eotqAboutHtml(d) : eotqView === 'shoutouts' ? await eotqShoutoutsHtml()
+  const body = eotqView === 'about' ? eotqAboutHtml(d)
     : eotqView === 'history' ? await eotqHistoryHtml() : eotqView === 'manage' ? await eotqManageHtml() : eotqNominateHtml(d);
   return eotqTabs(d.canManage) + body;
 }
@@ -6505,6 +6501,119 @@ async function eotqUpload(file) {
   } catch (err) { toast(err.message); }
 }
 
+// ---------- Employee of the Quarter settings ----------
+
+let eotqImport = null;          // what's been read from the old form's spreadsheet, waiting to come in
+
+function settingsEotqHtml() {
+  const s = settingsData.eotq;
+  if (s?.error) return `<div class="card"><p class="bad">${esc(s.error)}</p></div>`;
+  const r = s.round;
+  const preview = eotqImport ? `<div class="eotq-import">
+      ${eotqImport.error ? `<p class="bad">${esc(eotqImport.error)}</p>` : `<p style="margin-top:0"><strong>${n(eotqImport.total)} nominations in ${n(eotqImport.rounds.length)} round${eotqImport.rounds.length === 1 ? '' : 's'}</strong>, one for each colour:</p>
+      <ul class="list eotq-tally">${eotqImport.rounds.map((x) => `<li><span class="title">${esc(eotqDay(x.opens))} to ${esc(eotqDay(x.closes))}</span>
+        <span class="sub">${esc(x.names)}</span><span class="xp">${n(x.nominations.length)}</span></li>`).join('')}</ul>
+      <div class="row"><button class="btn" data-eotqs-import>Bring them in</button><button class="btn secondary" data-eotqs-import-cancel>Cancel</button></div>`}</div>` : '';
+  return `<div class="card req-form">
+      <h2 style="margin-top:0">This round</h2>
+      <label>Nominations close on <input type="date" data-eotqs="closesOn" value="${esc(r.closes)}" min="${esc(s.today)}"></label>
+      <p class="muted eotq-privacy">Usually the day of the management meeting. Everyone is reminded each week, then daily in the last week if they haven't nominated. The winner can be chosen from this day, and the next round starts the day after.</p>
+      <label>Name, optional <input data-eotqs="name" maxlength="80" value="${esc(r.name)}" placeholder="${esc(r.label)}"></label>
+      <div class="row"><button class="btn" data-eotqs-save>Save</button></div>
+      <div class="result" id="eotqs-result" role="status"></div></div>
+
+    <div class="card req-form" style="margin-top:1rem">
+      <h2 style="margin-top:0">Nominations from the old form</h2>
+      <p class="muted eotq-privacy">Choose the form's response sheet, saved as an Excel file (.xlsx). In Google Sheets: File, Download, Microsoft Excel.
+        Each fill colour on the nominee column becomes its own round. Bringing in the same sheet again adds only what's new.</p>
+      <div class="row"><label class="btn secondary" for="eotqs-file">Choose the spreadsheet</label><input id="eotqs-file" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></div>
+      ${preview}</div>
+
+    <div class="card req-form" style="margin-top:1rem">
+      <h2 style="margin-top:0">A past round by hand</h2>
+      <p class="muted eotq-privacy">For a round with no nominations to bring in, so its winner and certificate can still be added.</p>
+      <div class="row"><label>From <input type="date" data-eotqs-past="opens" max="${esc(s.today)}"></label><label>To <input type="date" data-eotqs-past="closes" max="${esc(s.today)}"></label></div>
+      <label>Name, optional <input data-eotqs-past="name" maxlength="80" placeholder="For example: January to March 2024"></label>
+      <div class="row"><button class="btn secondary" data-eotqs-past-add>Add the round</button></div></div>
+
+    <h2>Rounds from before the hub</h2>
+    ${s.past.length ? `<ul class="list req-list eotq-history">${s.past.map((x) => `<li data-eotqs-round="${x.id}">
+        <div class="req-head"><span class="title">${esc(x.label)}</span><span class="sub">${esc(eotqDay(x.opens))} to ${esc(eotqDay(x.closes))}</span></div>
+        <p class="muted eotq-winner">${n(x.count)} nomination${x.count === 1 ? '' : 's'}. ${x.winner ? `Winner: ${esc(x.winner)}.` : 'No winner chosen yet.'}</p>
+        <div class="row req-actions"><button class="btn secondary" data-eotqs-open="${x.id}">${x.winner ? 'Open' : 'Choose the winner'}</button><button class="btn secondary" data-eotqs-remove>Remove</button></div></li>`).join('')}</ul>`
+      : '<div class="card"><p style="margin:0">None yet.</p></div>'}`;
+}
+
+async function eotqReadSheet(file) {
+  eotqImport = null;
+  try {
+    const { readSheet } = await import('/xlsx-read.js');
+    const sheet = await readSheet(file);
+    const head = sheet.rows[0] || [];
+    const col = (re, fallback) => { const i = head.findIndex((h) => re.test(String(h.value || ''))); return i >= 0 ? i : fallback; };
+    const cAt = col(/timestamp/i, 0), cWho = col(/nominat/i, 1), cWhy = col(/why/i, 2), cBy = col(/your name/i, 3);
+    const rounds = [];
+    let last = null;
+    for (const row of sheet.rows.slice(1)) {
+      const at = row[cAt]?.date, who = String(row[cWho]?.value ?? '').trim();
+      if (!at || !who) continue;
+      const colour = row[cWho]?.fill || 'none';
+      if (!last || last.colour !== colour) { last = { colour, nominations: [] }; rounds.push(last); }
+      last.nominations.push({ at, nominee: who, reason: String(row[cWhy]?.value ?? '').trim(), voter: String(row[cBy]?.value ?? '').trim() });
+    }
+    if (!rounds.length) throw new Error('No nominations were found. It needs the form\'s columns: Timestamp, who was nominated, why, and your name.');
+    const londonDay = (iso) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Europe/London' });
+    for (const r of rounds) {
+      const days = r.nominations.map((x) => londonDay(x.at)).sort();
+      r.opens = days[0]; r.closes = days[days.length - 1];
+      const names = [...new Set(r.nominations.map((x) => x.nominee))];
+      r.names = names.slice(0, 4).join(', ') + (names.length > 4 ? ` and ${names.length - 4} more` : '');
+    }
+    eotqImport = { rounds, total: rounds.reduce((t, r) => t + r.nominations.length, 0) };
+  } catch (err) { eotqImport = { error: err.message }; }
+  render();
+}
+
+async function eotqSettingsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const value = (sel) => view.querySelector(sel)?.value;
+  if (t('[data-eotqs-save]')) {
+    try {
+      await api('/api/eotq/round', { method: 'POST', body: JSON.stringify({ id: settingsData.eotq.round.id, name: value('[data-eotqs="name"]'), closesOn: value('[data-eotqs="closesOn"]') }) });
+      toast('Saved'); render();
+    } catch (err) { document.getElementById('eotqs-result').textContent = err.message; }
+    return true;
+  }
+  if (t('[data-eotqs-import-cancel]')) { eotqImport = null; render(); return true; }
+  const imp = t('[data-eotqs-import]');
+  if (imp) {
+    imp.disabled = true;
+    try {
+      const r = await api('/api/eotq/import', { method: 'POST', body: JSON.stringify({ rounds: eotqImport.rounds.map((x) => ({ nominations: x.nominations })) }) });
+      eotqImport = null;
+      toast(r.added ? `${n(r.added)} nomination${r.added === 1 ? '' : 's'} brought in` : 'Nothing new to bring in');
+      render();
+    } catch (err) { toast(err.message); imp.disabled = false; }
+    return true;
+  }
+  if (t('[data-eotqs-past-add]')) {
+    const f = (k) => value(`[data-eotqs-past="${k}"]`);
+    try { await api('/api/eotq/past-round', { method: 'POST', body: JSON.stringify({ opens: f('opens'), closes: f('closes'), name: f('name') }) }); toast('Round added'); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  const open = t('[data-eotqs-open]');
+  if (open) { settingsOpen = null; eotqView = 'manage'; eotqRound = Number(open.dataset.eotqsOpen); eotqChanging = false; render(); return true; }
+  const remove = t('[data-eotqs-remove]');
+  if (remove) {
+    if (!remove.dataset.sure) { remove.dataset.sure = '1'; remove.textContent = 'Tap again to remove it and its nominations'; remove.classList.add('danger'); return true; }
+    try { await api('/api/eotq/past-round-remove', { method: 'POST', body: JSON.stringify({ id: Number(remove.closest('[data-eotqs-round]').dataset.eotqsRound) }) }); toast('Removed'); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}
+
 async function eotqClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('[data-eotq-view]')) { eotqView = t('[data-eotq-view]').dataset.eotqView; eotqEditing = null; eotqChanging = false; return render(); }
@@ -6512,6 +6621,7 @@ async function eotqClick(event) {
   if (t('[data-eotq-cert]')) { eotqCertificate(t('[data-eotq-cert]').dataset.eotqCert); return true; }
   if (t('[data-eotq-cert-view]')) { eotqUploaded(t('[data-eotq-cert-view]').dataset.eotqCertView); return true; }
   if (t('[data-eotq-turnout]')) { eotqTurnout = !eotqTurnout; return render(); }
+  if (t('[data-eotq-settings]')) { settingsOpen = '#/eotq'; return render(); }
 
   const send = t('[data-eotq-send]');
   if (send) {
@@ -6552,31 +6662,6 @@ async function eotqClick(event) {
     return true;
   }
 
-  const shout = t('[data-eotq-shout-send]');
-  if (shout) {
-    shout.disabled = true;
-    try {
-      await api('/api/eotq/shoutout', { method: 'POST', body: JSON.stringify({ accountId: eotqShout.person, message: eotqShout.message }) });
-      eotqShout = { person: '', message: '' }; toast('Shout-out given'); return render();
-    } catch (err) { document.getElementById('eotq-shout-result').textContent = err.message; shout.disabled = false; }
-    return true;
-  }
-  const unshout = t('[data-eotq-shout-remove]');
-  if (unshout) {
-    if (!twice(unshout, 'Tap again to remove')) return true;
-    try { await api('/api/eotq/shoutout-remove', { method: 'POST', body: JSON.stringify({ id: Number(unshout.closest('[data-eotq-shout-id]').dataset.eotqShoutId) }) }); toast('Removed'); return render(); }
-    catch (err) { toast(err.message); }
-    return true;
-  }
-
-  if (t('[data-eotq-round-save]')) {
-    const value = (k) => view.querySelector(`[data-eotq-round-field="${k}"]`)?.value;
-    try {
-      await api('/api/eotq/round', { method: 'POST', body: JSON.stringify({ id: eotqRound, name: value('name'), ...(value('closesOn') !== undefined ? { closesOn: value('closesOn') } : {}) }) });
-      toast('Saved'); return render();
-    } catch (err) { toast(err.message); }
-    return true;
-  }
   if (t('[data-eotq-win-change]')) { eotqChanging = true; return render(); }
   if (t('[data-eotq-win-cancel]')) { eotqChanging = false; return render(); }
   const win = t('[data-eotq-win-save]');
@@ -6611,15 +6696,14 @@ async function eotqClick(event) {
 document.addEventListener('input', (event) => {
   const d = event.target.dataset || {};
   if (d.eotq) eotqDraft[d.eotq] = event.target.value;
-  if (d.eotqShout) eotqShout[d.eotqShout] = event.target.value;
 });
 document.addEventListener('change', async (event) => {
   const el = event.target;
   const d = el.dataset || {};
   if (d.eotq) eotqDraft[d.eotq] = el.value;
-  if (d.eotqShout) eotqShout[d.eotqShout] = el.value;
   if (el.matches?.('[data-eotq-round]')) { eotqRound = Number(el.value); eotqChanging = false; eotqTurnout = false; render(); }
   if (el.id === 'eotq-cert-file') eotqUpload(el.files[0]);
+  if (el.id === 'eotqs-file' && el.files[0]) eotqReadSheet(el.files[0]);
   if (d.eotqLink !== undefined) {
     try { await api('/api/eotq/link', { method: 'POST', body: JSON.stringify({ roundId: eotqRound, typed: d.eotqLink, accountId: el.value }) }); toast('Linked'); render(); }
     catch (err) { toast(err.message); }
@@ -6635,15 +6719,15 @@ let conOpen = null;            // the contract opened, by key
 let conAllFlags = false;
 
 const CON_FILTERS = [
-  ['active', 'Active', (c) => ['Contract Confirmed', 'In Contract', 'Required Renewal'].includes(c.status)],
-  ['renewal', 'Renewal due', (c) => c.status === 'Required Renewal'],
+  ['active', 'Active', (c) => ['Contract Confirmed', 'In Contract', 'Requires Renewal'].includes(c.status)],
+  ['renewal', 'Renewal due', (c) => c.status === 'Requires Renewal'],
   ['pending', 'Not yet accepted', (c) => ['New', 'Contract Sent', 'Needs Chasing'].includes(c.status)],
   ['expired', 'Expired', (c) => c.status === 'Contract Expired'],
   ['all', 'All', () => true],
 ];
 const CON_STATUS_CLASS = {
   'New': 'grey', 'Contract Sent': 'grey', 'Needs Chasing': 'amber', 'Contract Confirmed': 'blue',
-  'In Contract': 'green', 'Required Renewal': 'amber', 'Contract Expired': 'red',
+  'In Contract': 'green', 'Requires Renewal': 'amber', 'Contract Expired': 'red',
 };
 const FLAG_TITLES = {
   dates: 'Dates look wrong', 'start-passed': 'Start date passed, not accepted', 'psc-org': 'PSC with no Organization',
@@ -6760,7 +6844,7 @@ function conTrackingLine(data) {
 function conBankHolidayHtml(bh, contracts) {
   if (!bh) return '';
   if (bh.today) {
-    const covered = contracts.filter((c) => c.bankHoliday && ['In Contract', 'Required Renewal'].includes(c.status)).length;
+    const covered = contracts.filter((c) => c.bankHoliday && ['In Contract', 'Requires Renewal'].includes(c.status)).length;
     return `<div class="card notice con-bh-today"><p>${bankHolidayIcon()} <strong>Today is a bank holiday: ${esc(bh.today.name)}.</strong>
       Only contracts showing the bank holiday badge are covered today${covered ? ` (${covered} live)` : ''}.</p></div>`;
   }
@@ -6783,7 +6867,7 @@ async function contractsHtml() {
     ${conFlagsHtml(data.flags)}
     <dl class="stats con-stats">
       <div><dt>In contract</dt><dd>${count((c) => c.status === 'In Contract')}</dd></div>
-      <div><dt>Renewal due</dt><dd>${count((c) => c.status === 'Required Renewal')}</dd></div>
+      <div><dt>Renewal due</dt><dd>${count((c) => c.status === 'Requires Renewal')}</dd></div>
       <div><dt>Needs chasing</dt><dd>${count((c) => c.status === 'Needs Chasing')}</dd></div>
       <div><dt>Confirmed, not started</dt><dd>${count((c) => c.status === 'Contract Confirmed')}</dd></div>
     </dl>
@@ -8229,7 +8313,7 @@ async function adminAction(action, button) {
   try {
     if (action === 'reads-carry-on') {
       await api('/api/admin/reads-carry-on', { method: 'POST' });
-      out(target, 'Background jobs will run again from the next run, until midnight UTC.');
+      out(target, 'Background jobs will run again from the next run, until the month ends.');
     } else if (action === 'sync-now') {
       const r = await api('/api/admin/sync-now', { method: 'POST' });
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
@@ -8603,6 +8687,7 @@ view.addEventListener('click', async (event) => {
   if (settingsOpen === '#/org' && await orgSettingsClick(event)) return;
   if (settingsOpen === '#/contracts' && await contractsSettingsClick(event)) return;
   if (settingsOpen === '#/psc' && await pscSettingsClick(event)) return;
+  if (settingsOpen === '#/eotq' && await eotqSettingsClick(event)) return;
   if (event.target.closest('[data-audit-more]')) return loadAudit(true);
   const bb = event.target.closest('[data-bb]');
   if (bb) {
@@ -8706,12 +8791,14 @@ const TILE_SETTINGS = {
   '#/contracts': { label: 'Service contract settings', render: () => settingsContractsHtml() },
   '#/psc': { label: 'PSC settings', render: () => settingsPscHtml() },
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
+  '#/eotq': { label: 'Employee of the Quarter settings', render: () => settingsEotqHtml(), who: 'Management and admins.', can: 'eotq' },
 };
 let settingsOpen = null;
 let settingsData = null;
 
 function cogButton(route) {
-  if (PRACTICE || !me?.user?.isAdmin || !TILE_SETTINGS[route]) return '';
+  if (PRACTICE || !TILE_SETTINGS[route]) return '';
+  if (!me?.user?.isAdmin && !(TILE_SETTINGS[route].can && me?.user?.can?.[TILE_SETTINGS[route].can])) return '';
   return `<button class="cog" data-settings="${route}" aria-label="${esc(TILE_SETTINGS[route].label)}" title="${esc(TILE_SETTINGS[route].label)}">
       ${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}
     </button>`;
@@ -8745,7 +8832,7 @@ async function render() {
   back.hidden = route === '#/';
   avatar.textContent = initials();
   band.innerHTML = settingsOpen === route
-    ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>Admin only.</p>`
+    ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>${esc(TILE_SETTINGS[route].who || 'Admin only.')}</p>`
     : page.band() + tourButton(route) + cogButton(route);
 
   // Anything slow gets a spinner, but only while it is still the newest render.
@@ -8968,7 +9055,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
   if (currentRoute() !== '#/psc') pscOpen = null;
-  if (currentRoute() !== '#/eotq') { eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
+  if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }

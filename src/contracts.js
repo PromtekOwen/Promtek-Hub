@@ -40,11 +40,13 @@ export const STATUS = {
   chasing: 'Needs Chasing',
   confirmed: 'Contract Confirmed',
   inContract: 'In Contract',
-  renewal: 'Required Renewal',
+  renewal: 'Requires Renewal',
   expired: 'Contract Expired',
   archived: 'Archived',
   lost: 'Contract Lost',
 };
+// Jira has called this status both "Requires Renewal" and "Required Renewal", so either is read as the same.
+export const canonStatus = (name) => (/^requires?d? renewal$/i.test(String(name || '').trim()) ? STATUS.renewal : String(name || ''));
 const MANUAL = [STATUS.archived, STATUS.lost];                       // set by people; the hub leaves them alone
 const LIVE = [STATUS.confirmed, STATUS.inContract, STATUS.renewal, STATUS.expired]; // visits and tokens exist
 const CLOCKED = [STATUS.inContract, STATUS.renewal, STATUS.expired];
@@ -127,7 +129,7 @@ async function moveTo(b, key, target, via = []) {
   const steps = [...via];
   for (let hop = 0; hop < 4; hop++) {
     const { transitions = [] } = await b.call(`/rest/api/3/issue/${key}/transitions`);
-    const named = (name) => transitions.find((t) => String(t.to?.name || t.name).toLowerCase() === name.toLowerCase());
+    const named = (name) => transitions.find((t) => canonStatus(t.to?.name || t.name).toLowerCase() === canonStatus(name).toLowerCase());
     const direct = named(target);
     if (direct) {
       await b.call(`/rest/api/3/issue/${key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: direct.id } }) });
@@ -194,7 +196,7 @@ export function contractFromIssue(issue, now = new Date().toISOString()) {
     project_key: f.project?.key || issue.key.split('-')[0],
     customer: f.project?.name || f.project?.key || '',
     summary: f.summary || '',
-    status: f.status?.name || '',
+    status: canonStatus(f.status?.name),
     tier: text(f[FIELDS.tier]) || null,
     bank_holiday: hasValue(f[FIELDS.bankHoliday]) ? 1 : 0,
     start_date: date(f[FIELDS.start]),
@@ -355,7 +357,7 @@ async function loadState(env) {
     env.DB.prepare('SELECT * FROM contract_org_map').all(),
   ]);
   const allowed = await projectFilter(env);
-  const contracts = all.filter((c) => allowed(c.project_key));
+  const contracts = all.filter((c) => allowed(c.project_key)).map((c) => ({ ...c, status: canonStatus(c.status) }));
   // Customer projects from Jira; if Jira can't be reached, the ones with contracts.
   let projects;
   try { projects = await customerProjects(env); } catch { projects = null; }
@@ -669,7 +671,8 @@ export function checkDates(c) {
 const datesKey = (c) => `dates:${c.issue_key}:${c.start_date}|${c.renewal_date}|${c.end_date}`;
 
 // The status a contract should have today, or null to leave it.
-export function nextStatus(c, today) {
+export function nextStatus(contract, today) {
+  const c = { ...contract, status: canonStatus(contract.status) };
   const s = c.start_date, e = c.end_date, r = c.renewal_date || (e ? minusMonth(e) : null);
   if (c.status === STATUS.sent && s && daysBetween(today, s) <= CHASE_DAYS) return STATUS.chasing;
   if (c.status === STATUS.confirmed && s && s <= today) return e && e < today ? STATUS.expired : STATUS.inContract;

@@ -416,7 +416,7 @@ async function readContext(env) {
     env.DB.prepare('SELECT * FROM psc_items').all(),
     env.DB.prepare('SELECT * FROM psc_actions WHERE issue_id IN (SELECT issue_id FROM psc_items) ORDER BY at').all(),
     env.DB.prepare('SELECT * FROM contract_org_map').all().catch(() => ({ results: [] })),
-    env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Required Renewal')").all().catch(() => ({ results: [] })),
+    env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Requires Renewal', 'Required Renewal')").all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contract_items WHERE kind = 'token'").all().catch(() => ({ results: [] })),
     env.DB.prepare('SELECT account_id, name, email, teams, team FROM employees WHERE active = 1').all(),
   ]);

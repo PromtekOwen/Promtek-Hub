@@ -216,6 +216,8 @@ export async function adminList(env) {
 }
 
 export async function send(env, viewer, input) {
+  // A shout-out goes to everyone as news for a week, thanking one person.
+  if (input.kind === 'shoutout') return Eotq.giveShoutout(env, viewer, input);
   const kind = KINDS.includes(input.kind) ? input.kind : null;
   if (!kind) throw new Error('Choose whether it\'s an alert or news.');
   const title = clean(input.title, 120);

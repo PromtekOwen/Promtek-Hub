@@ -787,7 +787,7 @@ function initContracts() {
     c('HBM-40', 'Harbour Mills', 'HBM', 'Platinum', 'In Contract', -200, 165, { bankHoliday: true, visits: { done: 2, total: 4 }, calibration: { done: 1, total: 2 },
       tokens: { total: 15, available: 9, used: 6, overdraft: 0, free: 9, allocated: 1, spent: 5, expired: 0 }, clock: { seconds: 21.5 * 3600, towardsNext: 1.5 * 3600, charged: 5, due: 5 } }),
     c('NGB-90', 'Northgate Bakery', 'NGB', 'Gold', 'In Contract', -300, 65, { bankHoliday: true }),
-    c('ASF-61', 'Ashby Feeds', 'ASF', 'Silver', 'Required Renewal', -340, 25, { visits: { done: 0, total: 1 }, calibration: null,
+    c('ASF-61', 'Ashby Feeds', 'ASF', 'Silver', 'Requires Renewal', -340, 25, { visits: { done: 0, total: 1 }, calibration: null,
       tokens: { total: 5, available: 2, used: 3, overdraft: 0, free: 2, allocated: 0, spent: 3, expired: 0 }, clock: { seconds: 13 * 3600, towardsNext: 1 * 3600, charged: 3, due: 3 } }),
     c('KWD-12', 'Kingsway Dairies', 'KWD', 'Bronze', 'Needs Chasing', -4, 361, { live: false, visits: null, calibration: null, obsolescence: null, tokens: null, clock: null }),
   ];
@@ -840,7 +840,7 @@ function contractInsights() {
   const day = today();
   return {
     today: day,
-    renewals: { upcoming: [{ key: 'ASF-61', customer: 'Ashby Feeds', status: 'Required Renewal', end: addDays(day, 25), days: 25 }, { key: 'NGB-90', customer: 'Northgate Bakery', status: 'In Contract', end: addDays(day, 65), days: 65 }],
+    renewals: { upcoming: [{ key: 'ASF-61', customer: 'Ashby Feeds', status: 'Requires Renewal', end: addDays(day, 25), days: 25 }, { key: 'NGB-90', customer: 'Northgate Bakery', status: 'In Contract', end: addDays(day, 65), days: 65 }],
       chasing: [{ key: 'KWD-12', customer: 'Kingsway Dairies', status: 'Needs Chasing', start: addDays(day, -4), late: true }], renewed: 7, lost: 2, undecided: 0 },
     pace: [
       { key: 'HBM-40', customer: 'Harbour Mills', end: addDays(day, 165), total: 15, used: 5, allocated: 1, overdraft: 0, timeShare: 0.55, tokenShare: 0.4, runsOut: null, left: 9, early: false },
