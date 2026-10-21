@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS eotq_rounds (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, opens_on TEXT NOT NULL, closes_on TEXT NOT NULL, winner_id TEXT, winner_name TEXT, award TEXT, citation TEXT, announced_at TEXT, announced_by TEXT, message_id INTEGER, imported INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_eotq_rounds_closes ON eotq_rounds(imported, closes_on);
+CREATE INDEX IF NOT EXISTS idx_eotq_rounds_winner ON eotq_rounds(winner_id);
+CREATE TABLE IF NOT EXISTS eotq_votes (id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER NOT NULL, voter_id TEXT, voter_name TEXT, nominee_id TEXT, nominee_name TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_eotq_votes_once ON eotq_votes(round_id, voter_id, nominee_id);
+CREATE INDEX IF NOT EXISTS idx_eotq_votes_voter ON eotq_votes(voter_id, round_id);
+CREATE INDEX IF NOT EXISTS idx_eotq_votes_nominee ON eotq_votes(nominee_id, round_id);
+CREATE TABLE IF NOT EXISTS eotq_dismissals (account_id TEXT NOT NULL, period TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (account_id, period));
+CREATE TABLE IF NOT EXISTS eotq_seen (account_id TEXT PRIMARY KEY, last_vote_id INTEGER NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS eotq_certificates (round_id INTEGER PRIMARY KEY, mime TEXT NOT NULL, filename TEXT, data BLOB NOT NULL, uploaded_by TEXT, uploaded_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS shoutouts (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, name TEXT NOT NULL, message TEXT NOT NULL, given_by TEXT, given_by_name TEXT, message_id INTEGER, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_shoutouts_person ON shoutouts(account_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_shoutouts_created ON shoutouts(created_at);
+ALTER TABLE employees ADD COLUMN start_date TEXT;

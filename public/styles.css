@@ -1115,3 +1115,50 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .psc-resolve-cause { display: block; margin-top: 1rem; }
 .psc-resolve-cause textarea { display: block; width: 100%; margin-top: .35rem; font: inherit; padding: .6rem .75rem; border: 1px solid var(--line); border-radius: 10px; resize: vertical; }
 .psc-card-actions { margin-top: .75rem; }
+
+/* Employee of the Quarter */
+.eotq-intro p { line-height: 1.5; }
+.eotq-form input[readonly] { background: var(--tint); color: var(--muted); }
+.eotq-privacy { margin: 0; font-size: .9rem; }
+.eotq-quotes { display: grid; gap: .6rem; }
+.eotq-quote { margin: 0; border-left: 4px solid var(--blue); font-style: italic; line-height: 1.5; }
+.eotq-so-far { font-size: .85rem; font-weight: 400; }
+.eotq-tools { flex-wrap: wrap; align-items: flex-end; gap: .75rem; }
+.eotq-quarter select { display: block; margin-top: .3rem; }
+.eotq-downloads { gap: .5rem; flex-wrap: wrap; }
+.eotq-all .sub { display: block; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.eotq-tabs { flex-wrap: wrap; }
+.eotq-round-head { margin: 1.25rem 0 .5rem; }
+.eotq-shout .sub { display: block; margin-top: .5rem; font-style: normal; }
+.eotq-history .eotq-winner { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin: .5rem 0 0; }
+.eotq-winner .sub { flex-basis: 100%; }
+.eotq-history .eotq-winner .sub { flex-basis: auto; }
+.eotq-turnout-btn { font-size: 1rem; text-align: left; }
+.eotq-turnout-lists { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; margin-top: .75rem; }
+.eotq-turnout-lists h3 { margin: 0 0 .4rem; font-size: 1rem; }
+.eotq-names { margin: 0; padding-left: 1.1rem; columns: 2 10rem; }
+.eotq-tally li { flex-wrap: wrap; }
+.eotq-link { flex-basis: 100%; margin-top: .4rem; font-size: .9rem; }
+.eotq-link select { display: block; width: 100%; margin-top: .25rem; }
+.eotq-upload { display: grid; gap: .5rem; border-top: 1px solid var(--line); padding-top: .75rem; }
+.eotq-medal-card { display: flex; align-items: center; gap: .9rem; margin-bottom: 1rem; }
+.eotq-medal-card .medal svg { width: 44px; height: 44px; }
+.eotq-medal-card .muted { display: block; }
+.eotq-cert-modal { max-width: min(60rem, 96vw); }
+.eotq-cert-img { display: block; width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 12px rgba(9, 30, 45, .18); }
+.eotq-cert-actions { grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.eotq-chip { display: inline-flex; align-items: center; gap: .3rem; text-decoration: none; vertical-align: middle; }
+.eotq-chip .medal svg { width: 18px; height: 18px; }
+
+/* Medals: bronze, silver, gold, diamond */
+.medal { display: inline-flex; align-items: center; gap: .35rem; flex: none; }
+.medal svg { width: 26px; height: 26px; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.medal-bronze svg { stroke: #8a4b1c; } .medal-bronze svg circle { fill: #e0a36b; }
+.medal-silver svg { stroke: #5b6670; } .medal-silver svg circle { fill: #d5dbe0; }
+.medal-gold svg { stroke: #8a6400; } .medal-gold svg circle { fill: #f5c542; }
+.medal-diamond svg { stroke: #1f6f99; } .medal-diamond svg circle { fill: #bfeaff; }
+.medal svg path:last-child { fill: #fff; stroke-width: 1; }
+.menu .medal svg { width: 20px; height: 20px; }
+.eotq-modal .modal { max-height: calc(100vh - 2rem); overflow-y: auto; }
+.eotq-history .req-head { flex-wrap: wrap; gap: .25rem .75rem; }

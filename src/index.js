@@ -21,6 +21,7 @@ import * as Obs from './obsolescence.js';
 import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
+import * as Eotq from './eotq.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
 import { metered, addReads, readsReport, queryName } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
@@ -546,6 +547,37 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/home') return json(await Home.feed(env, user));
+
+  if (pathname.startsWith('/api/eotq')) {
+    const q = (k) => url.searchParams.get(k);
+    // A certificate arrives as the file itself.
+    if (method === 'POST' && pathname === '/api/eotq/certificate') return json(await Eotq.uploadCertificate(env, user, q('round'), request));
+    if (method === 'GET' && pathname === '/api/eotq/certificate') {
+      const f = await Eotq.certificateFile(env, q('round'));
+      return new Response(f.bytes, { headers: { 'content-type': f.mime, 'content-disposition': `inline; filename="${f.filename.replace(/"/g, '')}"`, 'cache-control': 'private, max-age=300' } });
+    }
+    if (method === 'GET' && pathname === '/api/eotq/export.csv') {
+      const { body: text, filename } = await Eotq.csv(env, user, q('round'));
+      return new Response(text, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${filename}"`, 'cache-control': 'no-store' } });
+    }
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/eotq') return json(await Eotq.page(env, user));
+    if (method === 'POST' && pathname === '/api/eotq/vote') return json(await Eotq.vote(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/edit') return json(await Eotq.edit(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/withdraw') return json(await Eotq.withdraw(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/seen') return json(await Eotq.markSeen(env, user));
+    if (method === 'GET' && pathname === '/api/eotq/history') return json(await Eotq.history(env, user));
+    if (method === 'GET' && pathname === '/api/eotq/certificate-data') return json(await Eotq.certificateData(env, user, q('round')));
+    if (method === 'POST' && pathname === '/api/eotq/certificate-remove') return json(await Eotq.removeCertificate(env, user, body.roundId));
+    if (method === 'GET' && pathname === '/api/eotq/manage') return json(await Eotq.manage(env, user, q('round')));
+    if (method === 'POST' && pathname === '/api/eotq/round') return json(await Eotq.saveRound(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/link') return json(await Eotq.link(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
+    if (method === 'GET' && pathname === '/api/eotq/shoutouts') return json(await Eotq.shoutouts(env, user));
+    if (method === 'POST' && pathname === '/api/eotq/shoutout') return json(await Eotq.giveShoutout(env, user, body));
+    if (method === 'POST' && pathname === '/api/eotq/shoutout-remove') return json(await Eotq.removeShoutout(env, user, body));
+  }
+
   if (method === 'POST' && pathname === '/api/home/dismiss') {
     const body = await request.json().catch(() => ({}));
     return json(await Home.dismiss(env, user, body.id));
@@ -867,6 +899,7 @@ async function getMe(env, user) {
       elo: emp.elo,
       baseline: emp.baseline,
       rank: Elo.rankWithPeak(emp.elo, peak),
+      medal: await Eotq.medal(env, emp.account_id),
       progress: progressFor(xp),
       week: { xp: week.xp, seconds: week.seconds, from: monday },
     },

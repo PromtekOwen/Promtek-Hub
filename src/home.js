@@ -6,6 +6,7 @@ import { record } from './audit.js';
 import { teamsOf, TEAMS } from './permissions.js';
 import { pendingDisputes } from './disputes.js';
 import * as Modifiers from './modifiers.js';
+import * as Eotq from './eotq.js';
 
 const DAY_MS = 86_400_000;
 const KINDS = ['alert', 'announcement'];
@@ -52,16 +53,18 @@ export async function feed(env, viewer) {
     ).bind(m.id, reader, now)));
   }
 
-  const [system, week] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer)]);
+  const [system, week, anniversaries] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer),
+    Eotq.anniversaries(env).catch(() => [])]);
   const important = (a) => (a.tone === 'important' ? 0 : 1);
   return {
     alerts: [...mine.filter((m) => m.kind === 'alert').map(shape), ...system].sort((a, b) => important(a) - important(b)),
-    news: mine.filter((m) => m.kind === 'announcement').map(shape).sort((a, b) => important(a) - important(b)),
+    news: [...Eotq.anniversaryNews(anniversaries, viewer), ...mine.filter((m) => m.kind === 'announcement').map(shape)].sort((a, b) => important(a) - important(b)),
     week,
   };
 }
 
 export async function dismiss(env, viewer, id) {
+  if (String(id).startsWith('eotq:')) return Eotq.dismiss(env, viewer, id);
   await env.DB.prepare(
     `INSERT INTO home_message_reads (message_id, account_id, seen_at, dismissed_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(message_id, account_id) DO UPDATE SET dismissed_at = excluded.dismissed_at`
@@ -131,6 +134,12 @@ async function systemAlerts(env, viewer) {
         body: undecided.length === 1 ? `${first.customer || first.issue_key}, ${first.work_date}. Only chargeable time goes on their token clock.`
           : 'Only chargeable time goes on a customer\'s token clock.', link: `#/contracts?charge` });
     }
+
+    // Employee of the Quarter: weekly, then daily in the last week for anyone yet to nominate,
+    // and a note when someone has nominated them.
+    const [eotq, nominated] = await Promise.all([Eotq.reminder(env, viewer).catch(() => null), Eotq.nominatedAlert(env, viewer).catch(() => null)]);
+    if (nominated) out.push(nominated);
+    if (eotq) out.push(eotq);
 
     const timer = await env.DB.prepare('SELECT current FROM active_timers WHERE account_id = ?').bind(me).first().catch(() => null);
     const cur = parse(timer?.current, null);

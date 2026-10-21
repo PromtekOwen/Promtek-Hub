@@ -186,7 +186,7 @@ const pages = {
         <div class="card xp-head">
           ${ring(p, 128, true)}
           <div>
-            <h3>${esc(p.title)}</h3>
+            <h3>${esc(p.title)}${e.medal ? ` <a class="chip eotq-chip" href="#/eotq?about" title="Employee of the Quarter ${e.medal.wins === 1 ? 'once' : `${e.medal.wins} times`}">${medalHtml(e.medal.tier)}${MEDAL_NAMES[e.medal.tier]}</a>` : ''}</h3>
             <div class="bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
             <span class="muted">${n(p.xpIntoLevel)} of ${n(p.levelSpan)} XP through level ${n(p.level)}.
             ${p.nextTitle ? `${esc(p.nextTitle)} at level ${n(p.nextTitleLevel)}.` : 'You hold the highest title.'}</span>
@@ -374,6 +374,11 @@ const pages = {
     render: () => requestsHtml(),
   },
 
+  '#/eotq': {
+    band: () => '<h1>Employee of the Quarter</h1><p>Nominate someone who has gone above and beyond.</p>',
+    render: () => eotqHtml(),
+  },
+
   '#/condor': {
     band: () => '<h1>Condor Dev</h1><p>Logging, estimating and planning work on Condor.</p>',
     render: () => condorHtml(),
@@ -528,7 +533,7 @@ function levelSlideHtml() {
       <div>
         <strong>${esc(e.progress.title)}</strong>
         <span class="meta">${n(e.progress.xp)} XP. ${n(e.progress.xpToNextLevel)} to level ${n(e.progress.level + 1)}.</span>
-        ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}
+        ${e.rank ? `<br><span class="chip">${esc(e.rank.name)}</span>` : ''}${e.medal ? ` <span class="chip eotq-chip">${medalHtml(e.medal.tier)}${MEDAL_NAMES[e.medal.tier]}</span>` : ''}
       </div>
     </a>`;
 }
@@ -872,6 +877,7 @@ function personEditHtml() {
       ${field('email', 'Work email', p.email, 'type="email" placeholder="name@promtek.com"')}
       ${field('pronouns', 'Pronouns, optional', p.pronouns, 'placeholder="He/Him"')}
       ${field('jobTitle', 'Job title', p.jobTitle)}
+      ${field('startDate', 'Start date, for work anniversaries', p.startDate, `type="date" max="${todayIso()}"`)}
 
       <p class="muted" style="margin:1.5rem 0 0">Where they sit</p>
       <label style="margin-top:.75rem">Department <select data-person="department">
@@ -6250,6 +6256,376 @@ async function requestsClick(event) {
   return false;
 }
 
+// ---------- Employee of the Quarter ----------
+
+let eotqView = 'nominate';     // nominate, about, shoutouts, history, manage
+let eotqRound = null;          // the round management are looking at, by id
+let eotqEditing = null;        // the nomination being changed, by id
+let eotqDraft = { nominee: '', reason: '' };
+let eotqShout = { person: '', message: '' };
+let eotqTurnout = false;       // the list of who has and hasn't nominated
+let eotqChanging = false;      // changing a winner already chosen
+const EOTQ_VIEWS = ['nominate', 'about', 'shoutouts', 'history', 'manage'];
+const MEDAL_NAMES = { bronze: 'Bronze', silver: 'Silver', gold: 'Gold', diamond: 'Diamond' };
+
+function medalHtml(tier, { label = false } = {}) {
+  if (!tier) return '';
+  return `<span class="medal medal-${tier}" title="${MEDAL_NAMES[tier]} medal">${svgIcon('<path d="M8 3h3l1.5 5M16 3h-3l-1.5 5"/><circle cx="12" cy="15" r="6"/><path d="M12 12.2l.9 1.8 2 .3-1.45 1.4.35 2-1.8-.95-1.8.95.35-2-1.45-1.4 2-.3z"/>')}${label ? `<span>${MEDAL_NAMES[tier]}</span>` : ''}</span>`;
+}
+
+function eotqTabs(canManage) {
+  const tabs = [['nominate', 'Nominate'], ['about', 'About you'], ['shoutouts', 'Shout-outs'], ['history', 'History'], ...(canManage ? [['manage', 'Management']] : [])];
+  return `<div class="tabs eotq-tabs" style="margin-bottom:1rem">${tabs.map(([id, label]) =>
+    `<button class="tab${id === eotqView ? ' on' : ''}" data-eotq-view="${id}">${label}</button>`).join('')}</div>`;
+}
+
+const eotqWhen = (iso) => new Date(iso).toLocaleString('en-GB', { timeZone: 'Europe/London', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+const eotqDay = (iso) => new Date(`${iso.slice(0, 10)}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+function eotqNominateHtml(d) {
+  const open = d.people.filter((p) => !p.nominated);
+  const options = d.people.map((p) => `<option value="${esc(p.id)}"${p.nominated ? ' disabled' : ''}${p.id === eotqDraft.nominee ? ' selected' : ''}>${esc(p.name)}${p.nominated ? ' (nominated)' : ''}</option>`).join('');
+  const mine = d.mine.map((v) => (eotqEditing === v.id
+    ? `<li data-eotq-id="${v.id}"><span class="title">${esc(v.nominee)}</span>
+        <label class="req-reply">Why have you nominated this person?<textarea rows="5" maxlength="3000" data-eotq-edit-text>${esc(v.reason)}</textarea></label>
+        <div class="row req-actions"><button class="btn" data-eotq-save>Save</button><button class="btn secondary" data-eotq-cancel>Cancel</button></div></li>`
+    : `<li data-eotq-id="${v.id}"><div class="req-head"><span class="title">${esc(v.nominee)}</span><span class="sub">${eotqWhen(v.at)}</span></div>
+        <p class="pre-wrap req-details">${esc(v.reason)}</p>
+        <div class="row req-actions"><button class="btn secondary" data-eotq-change>Change</button><button class="btn secondary" data-eotq-withdraw>Withdraw</button></div></li>`)).join('');
+  return `<div class="card eotq-intro">
+      <p style="margin-top:0">Nominate anyone who has gone above and beyond. Nominate as many people as you like, each of them once a round.</p>
+      <p style="margin-bottom:0">The management team chooses the winner, who receives a <strong>£50 gift card</strong> of their choice.
+        Nominations for ${esc(d.round.label)} close on <strong>${esc(d.round.closesDay)} ${esc(d.round.closesWords)}</strong>.</p>
+    </div>
+    ${open.length ? `<div class="card req-form eotq-form">
+      <h2 style="margin-top:0">Nominate someone</h2>
+      <label>Who should be nominated? <select data-eotq="nominee"><option value="">Choose someone</option>${options}</select></label>
+      <label>Why have you nominated this person? <textarea data-eotq="reason" rows="6" maxlength="3000" placeholder="What did they do, and what difference did it make?">${esc(eotqDraft.reason)}</textarea></label>
+      <label>Your name <input value="${esc(d.me.name)}" readonly aria-readonly="true"></label>
+      <p class="muted eotq-privacy">They're told they've been nominated and can read what you wrote, but not who wrote it. Only the management team can see your name.</p>
+      <div class="row"><button class="btn" data-eotq-send>Nominate</button></div>
+      <div class="result" id="eotq-result" role="status"></div></div>`
+    : '<div class="card"><p style="margin:0">You\'ve nominated everyone you can this round.</p></div>'}
+    <h2>Your nominations this round</h2>
+    ${d.mine.length ? `<ul class="list req-list eotq-mine">${mine}</ul>` : '<div class="card"><p style="margin:0">None yet.</p></div>'}`;
+}
+
+function eotqAboutHtml(d) {
+  const m = d.me.medal;
+  const medal = m ? `<div class="card eotq-medal-card">${medalHtml(m.tier)}<div><strong>${MEDAL_NAMES[m.tier]} medal</strong>
+      <span class="muted">Employee of the Quarter ${m.wins === 1 ? 'once' : `${n(m.wins)} times`}.${m.tier !== 'diamond' ? ` ${MEDAL_NAMES[{ bronze: 'silver', silver: 'gold', gold: 'diamond' }[m.tier]]} comes with the next win.` : ''}</span></div></div>` : '';
+  const shouts = d.shoutouts.length ? `<h2>Shout-outs for you</h2><div class="eotq-quotes">${d.shoutouts.map((s) =>
+    `<blockquote class="card eotq-quote eotq-shout pre-wrap">${esc(s.message)}<span class="sub">${eotqDay(s.at)}</span></blockquote>`).join('')}</div>` : '';
+  if (!d.aboutMe.length) {
+    const none = '<div class="card"><p style="margin:0">Nobody has nominated you yet. When someone does, you\'ll get an alert, and what they wrote appears here without their name.</p></div>';
+    return `${medal}${shouts}${shouts ? '<h2>Nominations</h2>' : ''}${none}`;
+  }
+  const total = d.aboutMe.reduce((t, q) => t + q.reasons.length, 0);
+  return `${medal}${shouts}<h2>Nominations</h2><p class="muted" style="margin-top:0">You've been nominated ${total === 1 ? 'once' : `${n(total)} times`}. Who wrote each one isn't shown.</p>
+    ${d.aboutMe.map((q) => `<h3 class="eotq-round-head">${esc(q.label)}${q.current ? ' <span class="muted eotq-so-far">so far</span>' : ''}</h3>
+      <div class="eotq-quotes">${q.reasons.map((r) => `<blockquote class="card eotq-quote pre-wrap">${esc(r)}</blockquote>`).join('')}</div>`).join('')}`;
+}
+
+async function eotqShoutoutsHtml() {
+  const s = await api('/api/eotq/shoutouts');
+  const form = s.canManage ? `<div class="card req-form eotq-shout-form">
+      <h2 style="margin-top:0">Give a shout-out</h2>
+      <label>Who for? <select data-eotq-shout="person"><option value="">Choose someone</option>${s.people.map((p) =>
+        `<option value="${esc(p.id)}"${p.id === eotqShout.person ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>
+      <label>What did they do? <textarea data-eotq-shout="message" rows="4" maxlength="600" placeholder="For example: stayed late to get Northgate's line running again">${esc(eotqShout.message)}</textarea></label>
+      <p class="muted eotq-privacy">It goes on everyone's home screen for a week, with your name, and stays here.</p>
+      <div class="row"><button class="btn" data-eotq-shout-send>Give shout-out</button></div>
+      <div class="result" id="eotq-shout-result" role="status"></div></div>` : '';
+  return `${form}${s.shoutouts.length ? `<ul class="list req-list eotq-shouts">${s.shoutouts.map((x) => `<li data-eotq-shout-id="${x.id}">
+      <div class="req-head"><span class="title">${esc(x.name)}</span><span class="sub">${eotqDay(x.at)}</span></div>
+      <p class="pre-wrap req-details">${esc(x.message)}</p><span class="sub">From ${esc(x.from || 'the management team')}</span>
+      ${s.canManage ? '<div class="row req-actions"><button class="btn secondary" data-eotq-shout-remove>Remove</button></div>' : ''}</li>`).join('')}</ul>`
+    : `<div class="card"><p style="margin:0">No shout-outs yet.${s.canManage ? '' : ' When the management team thanks someone, it appears here and on the home screen.'}</p></div>`}`;
+}
+
+async function eotqHistoryHtml() {
+  const h = await api('/api/eotq/history');
+  if (!h.rounds.length) return '<div class="card"><p style="margin:0">Nothing here yet. Each round appears once nominations close, with its winner.</p></div>';
+  return `<ul class="list req-list eotq-history">${h.rounds.map((r) => {
+    const cert = !r.certificate ? '' : r.certificate.uploaded
+      ? (r.certificate.pdf ? `<a class="btn secondary" href="/api/eotq/certificate?round=${r.id}" target="_blank" rel="noopener">Certificate</a>`
+        : `<button class="btn secondary" data-eotq-cert-view="${r.id}">Certificate</button>`)
+      : `<button class="btn secondary" data-eotq-cert="${r.id}">Certificate</button>`;
+    return `<li><div class="req-head"><span class="title">${esc(r.label)}</span><span class="sub">${eotqDay(r.opens)} to ${eotqDay(r.closes)}</span></div>
+      ${r.winner ? `<p class="eotq-winner">${medalHtml(r.winner.medal)}<strong>${esc(r.winner.name)}</strong>${r.award ? `<span class="sub">${esc(r.award)}</span>` : ''}</p>`
+        : `<p class="muted eotq-winner">${r.open ? 'Nominations close today.' : 'No winner chosen yet.'}</p>`}
+      <div class="row req-actions">${cert}${h.canManage ? `<button class="btn secondary" data-eotq-manage="${r.id}">${r.winner ? 'Nominations' : 'Choose the winner'}${r.nominations != null ? ` (${n(r.nominations)})` : ''}</button>` : ''}</div></li>`;
+  }).join('')}</ul>`;
+}
+
+async function eotqManageHtml() {
+  const m = await api(`/api/eotq/manage${eotqRound ? `?round=${encodeURIComponent(eotqRound)}` : ''}`);
+  eotqRound = m.round.id;
+  const r = m.round;
+  const picker = `<label class="eotq-quarter">Round <select data-eotq-round>${m.rounds.map((x) =>
+    `<option value="${x.id}"${x.id === r.id ? ' selected' : ''}>${esc(x.label)}${x.current ? ', open now' : x.winner ? `, ${esc(x.winner)}` : ''} (${n(x.count)})</option>`).join('')}</select></label>`;
+  const downloads = PRACTICE ? '' : `<span class="row eotq-downloads">
+      <a class="btn secondary" href="/api/eotq/export.csv?round=${r.id}" download>Download this round</a>
+      <a class="btn secondary" href="/api/eotq/export.csv?round=all" download>Download all</a></span>`;
+
+  const settings = `<div class="card req-form eotq-round">
+      <h2 style="margin-top:0">${r.open ? 'This round' : 'The round'}</h2>
+      <label>Name <input data-eotq-round-field="name" maxlength="80" value="${esc(r.name)}" placeholder="${esc(r.label)}"></label>
+      ${r.open ? `<label>Nominations close on <input type="date" data-eotq-round-field="closesOn" value="${esc(r.closes)}" min="${esc(m.today)}"></label>
+        <p class="muted eotq-privacy">Usually the day of the management meeting. Everyone is reminded weekly, then daily in the last week if they haven't nominated. The next round starts the day after.</p>`
+        : `<p class="muted eotq-privacy">${eotqDay(r.opens)} to ${eotqDay(r.closes)}.</p>`}
+      <div class="row"><button class="btn secondary" data-eotq-round-save>Save</button></div></div>`;
+
+  const t = m.turnout;
+  const turnout = t ? `<div class="card eotq-turnout">
+      <button class="linklike eotq-turnout-btn" data-eotq-turnout aria-expanded="${eotqTurnout}"><strong>${n(t.voted.length)} of ${n(t.total)}</strong> people have nominated ${r.open ? 'so far' : 'this round'}</button>
+      ${eotqTurnout ? `<div class="eotq-turnout-lists">
+        <div><h3>Not yet (${n(t.notYet.length)})</h3>${t.notYet.length ? `<ul class="eotq-names">${t.notYet.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="muted">Everyone has.</p>'}</div>
+        <div><h3>Nominated (${n(t.voted.length)})</h3>${t.voted.length ? `<ul class="eotq-names">${t.voted.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="muted">Nobody yet.</p>'}</div>
+      </div>` : ''}</div>` : '';
+
+  const nominees = m.tally.filter((x) => x.id);
+  const others = m.people.filter((p) => !nominees.some((x) => x.id === p.id));
+  const winnerForm = `<label>Winner <select data-eotq-win="accountId"><option value="">Choose the winner</option>
+        ${nominees.length ? `<optgroup label="Nominated">${nominees.map((x) => `<option value="${esc(x.id)}"${r.winner?.id === x.id ? ' selected' : ''}>${esc(x.name)} (${n(x.votes)})</option>`).join('')}</optgroup>` : ''}
+        <optgroup label="${nominees.length ? 'Everyone else' : 'Everyone'}">${others.map((p) => `<option value="${esc(p.id)}"${r.winner?.id === p.id ? ' selected' : ''}>${esc(p.name)}${p.left ? ' (left)' : ''}</option>`).join('')}</optgroup></select></label>
+      <label>What it's for <input data-eotq-win="award" maxlength="60" value="${esc(r.award)}"></label>
+      <label>The words on the certificate <textarea data-eotq-win="citation" rows="3" maxlength="400" placeholder="For their invaluable work and team involvement, the company recognise them as the most outstanding employee of the quarter. Thank you for your effort, congratulations!">${esc(r.citation)}</textarea></label>
+      <label class="inline-check"><input type="checkbox" data-eotq-win="announce"${r.imported ? '' : ' checked'}> Announce it on everyone's home screen</label>
+      <div class="row"><button class="btn" data-eotq-win-save>${r.winner ? 'Save' : 'Choose winner'}</button>${r.winner ? '<button class="btn secondary" data-eotq-win-cancel>Cancel</button>' : ''}</div>
+      <div class="result" id="eotq-win-result" role="status"></div>`;
+  const winner = r.open && r.closes > m.today
+    ? `<div class="card"><h2 style="margin-top:0">The winner</h2><p style="margin:0">Nominations are open until ${esc(r.closesWords)}. The winner can be chosen from that day.</p></div>`
+    : `<div class="card req-form eotq-win">
+      <h2 style="margin-top:0">The winner</h2>
+      ${r.winner && !eotqChanging ? `<p class="eotq-winner" style="margin:0"><strong>${esc(r.winner.name)}</strong><span class="sub">${esc(r.award)}${r.announced ? `. Announced ${eotqDay(r.announced)}` : ''}</span></p>
+        <div class="row req-actions"><button class="btn secondary" data-eotq-cert="${r.id}">Certificate</button><button class="btn secondary" data-eotq-win-change>Change</button><button class="btn secondary" data-eotq-win-remove>Remove winner</button></div>` : winnerForm}
+      <div class="eotq-upload">
+        <p class="muted" style="margin:0">${r.imported ? 'Add the certificate that was given, as a PDF or a picture.' : 'The certificate is made from their picture and name. To use one made elsewhere instead, add it as a PDF or a picture.'}</p>
+        <div class="row"><label class="btn secondary" for="eotq-cert-file">Add a certificate</label><input id="eotq-cert-file" type="file" accept="application/pdf,image/png,image/jpeg,image/webp" hidden>
+        <button class="btn secondary" data-eotq-cert-remove>Remove an added one</button></div>
+      </div></div>`;
+
+  const tally = m.tally.length ? `<h2>Who was nominated</h2><ul class="list eotq-tally">${m.tally.map((x) => `<li>
+      <span class="title">${esc(x.name)}${r.imported && x.typed !== x.name ? ` <span class="sub">typed as "${esc(x.typed)}"</span>` : ''}</span>
+      <span class="xp">${n(x.votes)} nomination${x.votes === 1 ? '' : 's'}</span>
+      ${r.imported ? `<label class="eotq-link">Who is this? <select data-eotq-link="${esc(x.typed)}"><option value="">Not linked to anyone</option>${m.people.map((p) =>
+        `<option value="${esc(p.id)}"${x.id === p.id ? ' selected' : ''}>${esc(p.name)}${p.left ? ' (left)' : ''}</option>`).join('')}</select></label>` : ''}</li>`).join('')}</ul>
+      ${r.imported ? '<p class="muted">Names from the old form are linked to people where they match exactly. Link the rest, so people can read what was written about them.</p>' : ''}` : '';
+
+  return `<div class="row jobs-tools eotq-tools">${picker}${downloads}</div>
+    ${settings}${turnout}${winner}${tally}
+    <h2>Every nomination</h2>
+    ${m.votes.length ? `<ul class="list req-list eotq-all">${m.votes.map((v) => `<li><div class="req-head"><span class="title">${esc(v.nominee)}</span><span class="sub">${eotqWhen(v.at)}</span></div>
+        <p class="pre-wrap req-details">${esc(v.reason)}</p>
+        <span class="sub">Nominated by ${esc(v.by || 'someone who has left')}${v.edited ? ', changed since' : ''}</span></li>`).join('')}</ul>`
+      : '<div class="card"><p style="margin:0">No nominations in this round yet.</p></div>'}`;
+}
+
+async function eotqHtml() {
+  if (!me.linked) return notLinkedCard();
+  // A link can open a tab, as #/eotq?about from the alert.
+  const tab = location.hash.split('?')[1];
+  if (EOTQ_VIEWS.includes(tab)) { eotqView = tab; history.replaceState(null, '', `${location.pathname}${location.search}#/eotq`); }
+  const d = await api('/api/eotq');
+  if (eotqView === 'manage' && !d.canManage) eotqView = 'nominate';
+  if (eotqView === 'about') api('/api/eotq/seen', { method: 'POST' }).catch(() => {});
+  const body = eotqView === 'about' ? eotqAboutHtml(d) : eotqView === 'shoutouts' ? await eotqShoutoutsHtml()
+    : eotqView === 'history' ? await eotqHistoryHtml() : eotqView === 'manage' ? await eotqManageHtml() : eotqNominateHtml(d);
+  return eotqTabs(d.canManage) + body;
+}
+
+// ---------- certificates ----------
+
+function eotqModal(inner) {
+  document.querySelector('.eotq-modal')?.remove();
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop eotq-modal';
+  host.innerHTML = `<div class="modal card eotq-cert-modal" role="dialog" aria-modal="true" aria-label="Certificate">${inner}</div>`;
+  document.body.appendChild(host);
+  return host;
+}
+
+async function eotqCertificate(roundId) {
+  const host = eotqModal(`${loaderHtml('Drawing the certificate', 'small')}`);
+  try {
+    const [data, C] = await Promise.all([api(`/api/eotq/certificate-data?round=${encodeURIComponent(roundId)}`), import('/certificate.js')]);
+    const canvas = await C.draw(data);
+    host.querySelector('.eotq-cert-modal').innerHTML = `<img class="eotq-cert-img" src="${canvas.toDataURL('image/jpeg', 0.9)}" alt="Certificate for ${esc(data.name)}">
+      <div class="modal-actions eotq-cert-actions"><button class="btn" data-eotq-cert-pdf>Download PDF</button><button class="btn secondary" data-eotq-cert-png>Download picture</button>
+      <button class="btn secondary" data-eotq-cert-close>Close</button></div>`;
+    host.eotq = { data, canvas, C };
+    host.querySelector('[data-eotq-cert-pdf]').focus();
+  } catch (err) { host.remove(); toast(err.message); }
+}
+
+function eotqUploaded(roundId) {
+  const host = eotqModal(`<img class="eotq-cert-img" src="/api/eotq/certificate?round=${encodeURIComponent(roundId)}" alt="Certificate">
+    <div class="modal-actions eotq-cert-actions"><a class="btn" href="/api/eotq/certificate?round=${encodeURIComponent(roundId)}" download>Download</a>
+    <button class="btn secondary" data-eotq-cert-close>Close</button></div>`);
+  host.querySelector('[data-eotq-cert-close]').focus();
+}
+
+function eotqSave(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+
+document.addEventListener('click', async (event) => {
+  const host = event.target.closest('.eotq-modal');
+  if (!host) return;
+  if (event.target === host || event.target.closest('[data-eotq-cert-close]')) { host.remove(); return; }
+  const kind = event.target.closest('[data-eotq-cert-pdf]') ? 'pdf' : event.target.closest('[data-eotq-cert-png]') ? 'png' : null;
+  if (kind && host.eotq) {
+    const { data, canvas, C } = host.eotq;
+    const file = await C[kind](data, canvas);
+    eotqSave(file.blob, file.name);
+  }
+});
+
+// A picture is made smaller before it's sent; a PDF goes as it is.
+async function eotqUpload(file) {
+  if (!file) return;
+  let blob = file, type = file.type;
+  if (type.startsWith('image/')) {
+    const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = () => reject(new Error('That picture couldn\'t be opened.')); i.src = URL.createObjectURL(file); });
+    const scale = Math.min(1, 2600 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height); ctx.drawImage(img, 0, 0, c.width, c.height);
+    blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+    type = 'image/jpeg';
+  } else if (type !== 'application/pdf') { toast('Certificates need to be a PDF or a picture.'); return; }
+  try {
+    await api(`/api/eotq/certificate?round=${encodeURIComponent(eotqRound)}`, { method: 'POST', body: blob,
+      headers: { 'content-type': type, 'x-filename': encodeURIComponent(file.name) } });
+    toast('Certificate added'); render();
+  } catch (err) { toast(err.message); }
+}
+
+async function eotqClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-eotq-view]')) { eotqView = t('[data-eotq-view]').dataset.eotqView; eotqEditing = null; eotqChanging = false; return render(); }
+  if (t('[data-eotq-manage]')) { eotqView = 'manage'; eotqRound = Number(t('[data-eotq-manage]').dataset.eotqManage); eotqChanging = false; eotqTurnout = false; return render(); }
+  if (t('[data-eotq-cert]')) { eotqCertificate(t('[data-eotq-cert]').dataset.eotqCert); return true; }
+  if (t('[data-eotq-cert-view]')) { eotqUploaded(t('[data-eotq-cert-view]').dataset.eotqCertView); return true; }
+  if (t('[data-eotq-turnout]')) { eotqTurnout = !eotqTurnout; return render(); }
+
+  const send = t('[data-eotq-send]');
+  if (send) {
+    send.disabled = true;
+    try {
+      await api('/api/eotq/vote', { method: 'POST', body: JSON.stringify({ nomineeId: eotqDraft.nominee, reason: eotqDraft.reason }) });
+      const name = view.querySelector('[data-eotq="nominee"]')?.selectedOptions[0]?.textContent || 'them';
+      eotqDraft = { nominee: '', reason: '' };
+      toast(`Nominated ${name}`); return render();
+    } catch (err) { document.getElementById('eotq-result').textContent = err.message; send.disabled = false; }
+    return true;
+  }
+  const item = t('[data-eotq-id]');
+  const id = item ? Number(item.dataset.eotqId) : null;
+  if (t('[data-eotq-change]')) { eotqEditing = id; await render(); view.querySelector('[data-eotq-edit-text]')?.focus(); return true; }
+  if (t('[data-eotq-cancel]')) { eotqEditing = null; return render(); }
+  const save = t('[data-eotq-save]');
+  if (save) {
+    save.disabled = true;
+    try {
+      await api('/api/eotq/edit', { method: 'POST', body: JSON.stringify({ id, reason: item.querySelector('[data-eotq-edit-text]').value }) });
+      eotqEditing = null; toast('Saved'); return render();
+    } catch (err) { toast(err.message); save.disabled = false; }
+    return true;
+  }
+  // Removing asks for a second tap, so one slip doesn't lose anything.
+  const twice = (btn, words) => {
+    if (btn.dataset.sure) return true;
+    btn.dataset.sure = '1'; btn.textContent = words; btn.classList.add('danger');
+    return false;
+  };
+  const withdraw = t('[data-eotq-withdraw]');
+  if (withdraw) {
+    if (!twice(withdraw, 'Tap again to withdraw')) return true;
+    withdraw.disabled = true;
+    try { await api('/api/eotq/withdraw', { method: 'POST', body: JSON.stringify({ id }) }); toast('Withdrawn'); return render(); }
+    catch (err) { toast(err.message); withdraw.disabled = false; }
+    return true;
+  }
+
+  const shout = t('[data-eotq-shout-send]');
+  if (shout) {
+    shout.disabled = true;
+    try {
+      await api('/api/eotq/shoutout', { method: 'POST', body: JSON.stringify({ accountId: eotqShout.person, message: eotqShout.message }) });
+      eotqShout = { person: '', message: '' }; toast('Shout-out given'); return render();
+    } catch (err) { document.getElementById('eotq-shout-result').textContent = err.message; shout.disabled = false; }
+    return true;
+  }
+  const unshout = t('[data-eotq-shout-remove]');
+  if (unshout) {
+    if (!twice(unshout, 'Tap again to remove')) return true;
+    try { await api('/api/eotq/shoutout-remove', { method: 'POST', body: JSON.stringify({ id: Number(unshout.closest('[data-eotq-shout-id]').dataset.eotqShoutId) }) }); toast('Removed'); return render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+
+  if (t('[data-eotq-round-save]')) {
+    const value = (k) => view.querySelector(`[data-eotq-round-field="${k}"]`)?.value;
+    try {
+      await api('/api/eotq/round', { method: 'POST', body: JSON.stringify({ id: eotqRound, name: value('name'), ...(value('closesOn') !== undefined ? { closesOn: value('closesOn') } : {}) }) });
+      toast('Saved'); return render();
+    } catch (err) { toast(err.message); }
+    return true;
+  }
+  if (t('[data-eotq-win-change]')) { eotqChanging = true; return render(); }
+  if (t('[data-eotq-win-cancel]')) { eotqChanging = false; return render(); }
+  const win = t('[data-eotq-win-save]');
+  if (win) {
+    const field = (k) => view.querySelector(`[data-eotq-win="${k}"]`);
+    if (!field('accountId').value) { document.getElementById('eotq-win-result').textContent = 'Choose the winner.'; return true; }
+    win.disabled = true;
+    try {
+      await api('/api/eotq/winner', { method: 'POST', body: JSON.stringify({ roundId: eotqRound, accountId: field('accountId').value,
+        award: field('award').value, citation: field('citation').value, announce: field('announce').checked }) });
+      eotqChanging = false; toast(field('announce').checked ? 'Winner chosen and announced' : 'Winner saved'); return render();
+    } catch (err) { document.getElementById('eotq-win-result').textContent = err.message; win.disabled = false; }
+    return true;
+  }
+  const unwin = t('[data-eotq-win-remove]');
+  if (unwin) {
+    if (!twice(unwin, 'Tap again to remove the winner')) return true;
+    try { await api('/api/eotq/winner', { method: 'POST', body: JSON.stringify({ roundId: eotqRound, accountId: '' }) }); toast('Winner removed'); return render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  const uncert = t('[data-eotq-cert-remove]');
+  if (uncert) {
+    if (!twice(uncert, 'Tap again to remove it')) return true;
+    try { await api('/api/eotq/certificate-remove', { method: 'POST', body: JSON.stringify({ roundId: eotqRound }) }); toast('Removed'); return render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}
+
+document.addEventListener('input', (event) => {
+  const d = event.target.dataset || {};
+  if (d.eotq) eotqDraft[d.eotq] = event.target.value;
+  if (d.eotqShout) eotqShout[d.eotqShout] = event.target.value;
+});
+document.addEventListener('change', async (event) => {
+  const el = event.target;
+  const d = el.dataset || {};
+  if (d.eotq) eotqDraft[d.eotq] = el.value;
+  if (d.eotqShout) eotqShout[d.eotqShout] = el.value;
+  if (el.matches?.('[data-eotq-round]')) { eotqRound = Number(el.value); eotqChanging = false; eotqTurnout = false; render(); }
+  if (el.id === 'eotq-cert-file') eotqUpload(el.files[0]);
+  if (d.eotqLink !== undefined) {
+    try { await api('/api/eotq/link', { method: 'POST', body: JSON.stringify({ roundId: eotqRound, typed: d.eotqLink, accountId: el.value }) }); toast('Linked'); render(); }
+    catch (err) { toast(err.message); }
+  }
+});
+
 // ---------- service contracts ----------
 
 let conTab = 'contracts';      // contracts, insights
@@ -7648,6 +8024,7 @@ function renderAccount() {
         <ul class="menu">
           <li><a href="#/xp" data-account="close">${svgIcon('<path d="M12 3l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.8z"/>')}Level<span class="value">${n(e.progress.level)}</span></a></li>
           <li><a href="#/xp" data-account="close">${svgIcon('<circle cx="12" cy="9" r="5"/><path d="M8.5 13.5L7 21l5-2.5 5 2.5-1.5-7.5"/>')}Rank<span class="value">${esc(e.rank?.name || '—')}</span></a></li>
+          ${e.medal ? `<li><a href="#/eotq?about" data-account="close">${medalHtml(e.medal.tier)}Employee of the Quarter<span class="value">${MEDAL_NAMES[e.medal.tier]}</span></a></li>` : ''}
           ${e.profileKey ? `<li><a href="${esc(me.jiraBaseUrl)}/browse/${esc(e.profileKey)}" target="_blank" rel="noopener">${svgIcon('<path d="M14 4h6v6M20 4l-8 8"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/>')}Jira profile<span class="value">${esc(e.profileKey)}</span></a></li>` : ''}
         </ul>
       </section>` : ''}
@@ -8211,6 +8588,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
+  if (currentRoute() === '#/eotq' && await eotqClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
@@ -8590,6 +8968,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
   if (currentRoute() !== '#/psc') pscOpen = null;
+  if (currentRoute() !== '#/eotq') { eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }

@@ -28,6 +28,17 @@ function cleanAvatar(value) {
   return text;
 }
 
+// A start date, for work anniversaries. Never in the future.
+function startDateOf(value) {
+  const v = String(value || '').trim();
+  if (!v) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(`${v}T12:00:00Z`))) throw new Error('The start date isn\'t a date.');
+  if (v > new Date().toISOString().slice(0, 10)) throw new Error('The start date can\'t be in the future.');
+  return v;
+}
+// Today's anniversaries are worked out once a day, so a changed start date shows straight away.
+const forgetAnniversaries = (env) => env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:anniversaries'").run().catch(() => null);
+
 const clean = (value, max = 160) => (value === undefined || value === null ? null : String(value).trim().slice(0, max) || null);
 
 export async function listPeople(env, { includeInactive = true } = {}) {
@@ -49,6 +60,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         name: e.name,
         email: e.email,
         pronouns: e.pronouns,
+        startDate: e.start_date || '',
         jobTitle: e.job_title,
         department: e.department,
         managerId: e.manager_id,
@@ -94,25 +106,27 @@ export async function savePerson(env, person) {
   if (!existing) {
     await env.DB.prepare(
       `INSERT INTO employees (account_id, name, email, pronouns, job_title, department, manager_id, org_order,
-         role, team, groups, teams, lead_of, extension, baseline, elo, icons, avatar, notes, jira_xp, opening_xp, active, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
+         role, team, groups, teams, lead_of, extension, baseline, elo, icons, avatar, notes, start_date, jira_xp, opening_xp, active, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 1, ?)`
     ).bind(accountId, name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
       clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
       acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
       Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
-      cleanAvatar(person.avatar), clean(person.notes, 500), now).run();
+      cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), now).run();
+    await forgetAnniversaries(env);
     return { accountId, created: true };
   }
 
   await env.DB.prepare(
     `UPDATE employees SET name = ?, email = ?, pronouns = ?, job_title = ?, department = ?, manager_id = ?,
        org_order = ?, role = ?, team = ?, groups = ?, teams = ?, lead_of = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
-       notes = ?, active = ?, updated_at = ? WHERE account_id = ?`
+       notes = ?, start_date = ?, active = ?, updated_at = ? WHERE account_id = ?`
   ).bind(name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
     clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
     acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE,
-    icons, cleanAvatar(person.avatar), clean(person.notes, 500), person.active === false ? 0 : 1, now, accountId).run();
+    icons, cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), person.active === false ? 0 : 1, now, accountId).run();
+  await forgetAnniversaries(env);
 
   const edited = person.eloLoaded === undefined || String(person.elo ?? '') !== String(person.eloLoaded ?? '');
   if (edited) await setEloByHand(env, accountId, person.elo === '' || person.elo === null ? null : Number(person.elo));

@@ -139,6 +139,7 @@ function initWorld(real) {
     ],
     psc: initPsc(myId),
     pscActions: [],
+    eotq: initEotq(myId),
     contracts: initContracts(),
     contractFlags: initFlags(),
     // Time on contracts still needing a chargeable answer.
@@ -1354,6 +1355,9 @@ async function answer(p, q, method, body) {
   if (p === '/api/contracts/insights') return contractInsights();
   if (p === '/api/contracts/resolve') { world.contractFlags = world.contractFlags.filter((f) => f.id !== Number(body.id)); return { ok: true }; }
 
+  // Employee of the Quarter
+  if (p.startsWith('/api/eotq')) return eotqAnswer(p, q, post, body);
+
   // Requests
   if (p === '/api/requests') {
     const dev = Boolean(me.user?.isAdmin || me.user?.can?.developer);
@@ -1429,4 +1433,122 @@ async function answer(p, q, method, body) {
 
   // Anything else is answered as done, so nothing in practice ever fails for want of a server.
   return post ? { ok: true, saved: true } : {};
+}
+
+// ---------- Employee of the Quarter ----------
+
+const EOTQ_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const eotqWords = (iso) => `${Number(iso.slice(8, 10))} ${EOTQ_MONTHS[Number(iso.slice(5, 7)) - 1]}`;
+const eotqDayName = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'UTC' });
+const eotqLabel = (r) => {
+  if (r.name) return r.name;
+  const [y1, m1] = r.opens.split('-').map(Number), [y2, m2] = r.closes.split('-').map(Number);
+  if (y1 === y2 && m1 === m2) return `${EOTQ_MONTHS[m1 - 1]} ${y1}`;
+  return y1 === y2 ? `${EOTQ_MONTHS[m1 - 1]} to ${EOTQ_MONTHS[m2 - 1]} ${y2}` : `${EOTQ_MONTHS[m1 - 1]} ${y1} to ${EOTQ_MONTHS[m2 - 1]} ${y2}`;
+};
+const EOTQ_MEDALS = ['bronze', 'silver', 'gold', 'diamond'];
+
+function initEotq(myId) {
+  const d = today();
+  const rounds = [
+    { id: 3, name: '', opens: addDays(d, -20), closes: addDays(d, 40), winner: null },
+    { id: 2, name: '', opens: addDays(d, -110), closes: addDays(d, -21), winner: 'ex-tom', award: 'Going the extra mile' },
+    { id: 1, name: '', opens: addDays(d, -200), closes: addDays(d, -111), winner: myId, award: 'Always there to help' },
+  ];
+  const v = (round, voter, nominee, reason, daysAgo) => ({ id: Number(nextId()), round, voter, nominee, reason, at: ago(daysAgo * DAY) });
+  return {
+    rounds,
+    votes: [
+      v(3, 'ex-sam', myId, 'Always willing to help and give training where they can. A big part of how quickly the new starters have picked things up.', 9),
+      v(3, 'ex-priya', 'ex-tom', 'Worked on site with Harbour Mills through the commissioning and kept the customer happy the whole way.', 6),
+      v(3, 'ex-dan', 'ex-tom', 'Mentored Amy on the new datatable package, which will save every project time.', 3),
+      v(2, 'ex-ellie', myId, 'Adapts to changes as soon as they come in and helps everyone else keep up.', 100),
+      v(2, 'ex-amy', 'ex-tom', 'Took the Ashby call-out on a Sunday and had them running by lunch.', 95),
+      v(1, 'ex-tom', myId, 'The go-to person for site work on both projects and service.', 150),
+    ],
+    shoutouts: [
+      { id: 1, accountId: 'ex-ellie', name: 'Ellie Morgan', message: 'Stayed late to get Northgate\'s line running again, and talked the night shift through it.', from: 'Priya Shah', at: ago(4 * DAY) },
+    ],
+  };
+}
+
+const eotqName = (id) => (id === me.id ? me.name : PEOPLE.find((p) => p.id === id)?.name || 'Someone');
+
+function eotqAnswer(p, q, post, body) {
+  const E = world.eotq;
+  const d = today();
+  const round = E.rounds.find((r) => r.closes >= d);
+  const lead = Boolean(me.user?.isAdmin || me.user?.can?.eotq);
+  const people = [...PEOPLE].sort((a, b) => a.name.localeCompare(b.name));
+  const wins = (id) => E.rounds.filter((r) => r.winner === id).length;
+  const medal = (id) => (wins(id) ? { tier: EOTQ_MEDALS[Math.min(wins(id), 4) - 1], wins: wins(id) } : null);
+  if (p === '/api/eotq/vote') {
+    if (!body.nomineeId) throw new Error('Choose who you\'re nominating.');
+    if (String(body.reason || '').trim().length < 10) throw new Error('Say why you\'ve nominated them.');
+    if (E.votes.some((v) => v.round === round.id && v.voter === me.id && v.nominee === body.nomineeId)) throw new Error(`You've already nominated ${eotqName(body.nomineeId)} this round. You can change what you wrote instead.`);
+    E.votes.push({ id: Number(nextId()), round: round.id, voter: me.id, nominee: body.nomineeId, reason: String(body.reason).trim(), at: iso(now()) });
+    return { ok: true };
+  }
+  if (p === '/api/eotq/edit') { const v = E.votes.find((x) => x.id === Number(body.id)); v.reason = String(body.reason || '').trim(); v.edited = iso(now()); return { ok: true }; }
+  if (p === '/api/eotq/withdraw') { E.votes = E.votes.filter((x) => x.id !== Number(body.id)); return { ok: true }; }
+  if (p === '/api/eotq/seen') return { ok: true };
+  if (p === '/api/eotq/shoutouts') {
+    return { canManage: lead, people: lead ? people.map((x) => ({ id: x.id, name: x.name })) : [], shoutouts: E.shoutouts.map((x) => ({ ...x, mine: x.accountId === me.id })) };
+  }
+  if (p === '/api/eotq/shoutout') {
+    if (!body.accountId) throw new Error('Choose who the shout-out is for.');
+    if (String(body.message || '').trim().length < 5) throw new Error('Say what they did.');
+    E.shoutouts.unshift({ id: Number(nextId()), accountId: body.accountId, name: eotqName(body.accountId), message: String(body.message).trim(), from: me.name, at: iso(now()) });
+    return { ok: true };
+  }
+  if (p === '/api/eotq/shoutout-remove') { E.shoutouts = E.shoutouts.filter((x) => x.id !== Number(body.id)); return { ok: true }; }
+  if (p === '/api/eotq/history') {
+    const done = E.rounds.filter((r) => r.closes <= d || r.winner);
+    const count = new Map(); const tier = new Map();
+    for (const r of [...done].reverse()) if (r.winner) { count.set(r.winner, (count.get(r.winner) || 0) + 1); tier.set(r.id, EOTQ_MEDALS[Math.min(count.get(r.winner), 4) - 1]); }
+    return { canManage: lead, rounds: done.map((r) => ({ id: r.id, label: eotqLabel(r), opens: r.opens, closes: r.closes, open: false, imported: false,
+      nominations: lead ? E.votes.filter((v) => v.round === r.id).length : undefined,
+      winner: r.winner ? { id: r.winner, name: eotqName(r.winner), medal: tier.get(r.id) } : null, award: r.award || null, certificate: r.winner ? { made: true } : null })) };
+  }
+  if (p === '/api/eotq/certificate-data') {
+    const r = E.rounds.find((x) => x.id === Number(q.get('round')));
+    return { round: r.id, label: eotqLabel(r), name: eotqName(r.winner), avatar: r.winner === me.id ? world.employee.avatar || null : null, award: r.award || 'Going the extra mile',
+      citation: 'For their invaluable work and team involvement, the company recognise them as the most outstanding employee of the quarter. Thank you for your effort, congratulations!' };
+  }
+  if (p === '/api/eotq/round') { const r = E.rounds.find((x) => x.id === Number(body.id)); r.name = body.name || ''; if (body.closesOn) r.closes = body.closesOn; return { ok: true }; }
+  if (p === '/api/eotq/winner') {
+    const r = E.rounds.find((x) => x.id === Number(body.roundId));
+    r.winner = body.accountId || null; r.award = body.award || 'Going the extra mile';
+    return { ok: true };
+  }
+  if (p === '/api/eotq/manage') {
+    if (!lead) throw new Error('Only the management team can see every nomination.');
+    const r = E.rounds.find((x) => x.id === Number(q.get('round'))) || round;
+    const votes = E.votes.filter((v) => v.round === r.id);
+    const tally = new Map();
+    for (const v of votes) { const t = tally.get(v.nominee) || { id: v.nominee, name: eotqName(v.nominee), typed: eotqName(v.nominee), votes: 0 }; t.votes++; tally.set(v.nominee, t); }
+    const everyone = [{ id: me.id, name: me.name }, ...people];
+    const voted = new Set(votes.map((v) => v.voter));
+    return {
+      round: { id: r.id, label: eotqLabel(r), name: r.name, opens: r.opens, closes: r.closes, closesWords: eotqWords(r.closes), current: r === round, imported: false, open: r.closes >= d,
+        winner: r.winner ? { id: r.winner, name: eotqName(r.winner) } : null, award: r.award || 'Going the extra mile', citation: '', announced: r.winner ? r.closes : null },
+      today: d,
+      rounds: E.rounds.map((x) => ({ id: x.id, label: eotqLabel(x), count: E.votes.filter((v) => v.round === x.id).length, winner: x.winner ? eotqName(x.winner) : null, current: x === round })),
+      tally: [...tally.values()].sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name)),
+      votes: votes.map((v) => ({ id: v.id, nomineeId: v.nominee, nominee: eotqName(v.nominee), typed: eotqName(v.nominee), by: eotqName(v.voter), reason: v.reason, at: v.at, edited: v.edited || null })),
+      turnout: r.closes >= addDays(d, -30) ? { total: everyone.length, voted: everyone.filter((x) => voted.has(x.id)).map((x) => x.name).sort(), notYet: everyone.filter((x) => !voted.has(x.id)).map((x) => x.name).sort() } : null,
+      people: everyone.map((x) => ({ id: x.id, name: x.name, left: false })),
+    };
+  }
+  const mine = E.votes.filter((v) => v.round === round.id && v.voter === me.id);
+  const about = E.votes.filter((v) => v.nominee === me.id);
+  return {
+    round: { id: round.id, label: eotqLabel(round), closes: round.closes, closesWords: eotqWords(round.closes), closesDay: eotqDayName(round.closes) },
+    me: { id: me.id, name: me.name, medal: medal(me.id) },
+    people: people.map((x) => ({ id: x.id, name: x.name, nominated: mine.some((v) => v.nominee === x.id) })),
+    mine: mine.map((v) => ({ id: v.id, nomineeId: v.nominee, nominee: eotqName(v.nominee), reason: v.reason, at: v.at })),
+    aboutMe: E.rounds.filter((r) => about.some((v) => v.round === r.id)).map((r) => ({ round: r.id, label: eotqLabel(r), current: r === round, reasons: about.filter((v) => v.round === r.id).map((v) => v.reason) })),
+    shoutouts: E.shoutouts.filter((x) => x.accountId === me.id).map((x) => ({ message: x.message, at: x.at })),
+    canManage: lead,
+  };
 }

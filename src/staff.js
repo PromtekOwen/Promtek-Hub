@@ -1,11 +1,12 @@
 // Adds whoever logs time on a Jira item to its "Promtek Staff Involved" field.
 // New worklogs are noted as Tempo syncs, and a scheduled job writes them to Jira
-// a few at a time. Jira's "add" keeps everyone already in the field.
+// a few at a time. Jira's "add" keeps everyone already in the field. They're
+// also made a watcher of the item.
 import { jira, blockedForLookup } from './jira.js';
 
 export const STAFF_FIELD = 'customfield_14523';
-const PER_RUN = 20;               // on its own turn, of the 50 outside calls a scheduled run may make
-export const EVERY_RUN = 5;       // every run, straight after Tempo, so new time goes through within minutes
+const PER_RUN = 15;               // people (two calls each) on its own turn, of the 50 outside calls a scheduled run may make
+export const EVERY_RUN = 4;       // every run, straight after Tempo, so new time goes through within minutes
 const MAX_TRIES = 10;
 const RETRY_BASE_MS = 5 * 60 * 1000;
 const RETRY_CAP_MS = 6 * 3600 * 1000;
@@ -43,6 +44,7 @@ export async function run(env, { raiseAlert, londonDate, limit = PER_RUN }) {
 
   let added = 0;
   const failed = [];
+  const watchFailed = [];
   for (const row of due) {
     const target = row.issue_key || row.issue_id;
     try {
@@ -50,8 +52,18 @@ export async function run(env, { raiseAlert, londonDate, limit = PER_RUN }) {
         method: 'PUT',
         body: JSON.stringify({ update: { [STAFF_FIELD]: [{ add: { accountId: row.account_id } }] } }),
       });
-      await env.DB.prepare(`UPDATE staff_involved SET status = 'done', error = NULL, done_at = ? WHERE issue_id = ? AND account_id = ?`)
-        .bind(new Date().toISOString(), row.issue_id, row.account_id).run();
+      // Jira ignores someone already watching. A busy Jira is tried again with the rest;
+      // a refusal (no permission to add watchers, say) doesn't hold up the field.
+      let watchError = null;
+      try {
+        await jira(env, `/rest/api/3/issue/${encodeURIComponent(target)}/watchers`, { method: 'POST', body: JSON.stringify(row.account_id) });
+      } catch (err) {
+        if (err.status === 429 || err.status >= 500) throw err;
+        watchError = String(err.message || err).slice(0, 500);
+        watchFailed.push({ target, message: watchError });
+      }
+      await env.DB.prepare(`UPDATE staff_involved SET status = 'done', error = ?, done_at = ? WHERE issue_id = ? AND account_id = ?`)
+        .bind(watchError, new Date().toISOString(), row.issue_id, row.account_id).run();
       added++;
     } catch (err) {
       // A deleted item can't take anyone, so it's let go.
@@ -78,5 +90,15 @@ export async function run(env, { raiseAlert, londonDate, limit = PER_RUN }) {
         + (failed.some((f) => f.giveUp) ? '\n\nSome have now been tried too many times and won\'t be tried again.' : ''),
     });
   }
-  return { added, failed: failed.length };
+  if (watchFailed.length) {
+    const first = watchFailed[0];
+    await raiseAlert(env, {
+      kind: 'staff-involved',
+      dedupe: `staff-watcher:${londonDate()}`,
+      subject: 'Someone who logged time could not be made a watcher in Jira',
+      body: `They were added to Promtek Staff Involved on ${first.target}, but Jira wouldn't add them as a watcher:\n\n  ${first.message}\n\n`
+        + 'The hub\'s Jira account needs the "Manage watchers" permission in that project, and the person needs to be able to see the item.',
+    });
+  }
+  return { added, failed: failed.length, watchFailed: watchFailed.length };
 }

@@ -113,6 +113,13 @@ export const MODULES = [
     detail: () => 'Book one, check it over, report faults',
   },
   {
+    id: 'eotq',
+    name: 'Employee of the Quarter',
+    route: '#/eotq',
+    icon: icon('<path d="M8 4h8v5a4 4 0 01-8 0z"/><path d="M8 5.5H5v1.5a3 3 0 003 3M16 5.5h3v1.5a3 3 0 01-3 3"/><path d="M12 13v3.5M8.5 20h7M9.5 20l.5-3.5h4l.5 3.5"/>'),
+    detail: () => 'Nominate someone who has gone above and beyond',
+  },
+  {
     id: 'shop',
     name: 'XP shop',
     route: '#/shop',
