@@ -7,6 +7,7 @@
 // history, once, a few dozen calls at a time on its own turn. What it reads is kept, so
 // reading a sheet in again only reads what's new.
 import { jira } from './jira.js';
+import { toMs } from './capacity.js';
 import { getState, setState, londonDate } from './sync.js';
 import {
   F, OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, isTokenInvoice, invoiceState, snapshotRows, historyRow, metrics, historyFrom,
@@ -129,6 +130,8 @@ export async function step(env) {
       }
     }
     if (s.phase === 'logs') {
+      // Histories read before times in milliseconds were understood are read again.
+      await env.DB.prepare(`UPDATE wip_past_items SET events = NULL WHERE events LIKE '%"t":null%'`).run();
       for (;;) {
         const { results } = await env.DB.prepare(`SELECT issue_id FROM wip_past_items WHERE events IS NULL LIMIT ${LOG_IDS}`).all();
         if (!results.length) { s.phase = 'compute'; await saveState(env, s); break; }
@@ -161,7 +164,8 @@ async function changelogs(b, ids, s) {
   const add = (issueId, histories) => {
     const list = out.get(String(issueId)) || [];
     for (const h of histories || []) {
-      const t = Date.parse(h.created);
+      const t = toMs(h.created);
+      if (!Number.isFinite(t)) continue;
       for (const it of h.items || []) {
         const field = it.fieldId || it.field;
         if (field === 'status') list.push({ t, f: 's', a: it.from ?? null, b: it.to ?? null });
@@ -225,7 +229,7 @@ function valueAt(events, kind, at, now) {
 }
 
 export function stateAt(order, items, at, statuses) {
-  const exists = (i) => i.created && Date.parse(i.created) <= at;
+  const exists = (i) => i.created && toMs(i.created) <= at;
   const statusOf = (i) => {
     const id = valueAt(i.ev, 's', at, i.status_id);
     const known = statuses[String(id)];

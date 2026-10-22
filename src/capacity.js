@@ -22,8 +22,20 @@ const JQL = 'assignee is not EMPTY AND statusCategory != Done ORDER BY updated D
 const INTERNAL = ['PMB', 'PROMTEKIT', 'ASSET', 'GOALS', 'LEGAL', 'HEALTH', 'COMPLIANCE', 'FINANCE', 'INNOV', 'IS', 'MARKETING', 'SUGGEST', 'QA'];
 
 const dayMs = 86_400_000;
-const daysSince = (iso, today) => (iso ? Math.max(0, Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(iso)) / dayMs)) : null);
-const dateOnly = (v) => (v ? londonDate(Date.parse(v)) : null);
+// Jira gives times as text, and the bulk history read as a count of milliseconds; either is read here.
+export const toMs = (v) => {
+  if (v === null || v === undefined || v === '') return NaN;
+  if (typeof v === 'number') return v;
+  const t = String(v).trim();
+  if (/^\d{10,}$/.test(t)) return Number(t);
+  return Date.parse(t);
+};
+const daysSince = (iso, today) => {
+  const t = toMs(iso);
+  return Number.isFinite(t) ? Math.max(0, Math.round((Date.parse(`${today}T12:00:00Z`) - t) / dayMs)) : null;
+};
+const dateOnly = (v) => { const t = toMs(v); return Number.isFinite(t) ? londonDate(t) : null; };
+const isoOf = (v) => { const t = toMs(v); return Number.isFinite(t) ? new Date(t).toISOString() : null; };
 
 function itemStatement(env, i, now) {
   const f = i.fields || {};
@@ -58,11 +70,11 @@ async function readHistories(env, b, rows) {
       token = data?.nextPageToken || null;
     } while (token);
     const stmts = part.map((r) => {
-      const list = (logs.get(r.issue_id) || []).sort((x, y) => Date.parse(x.at) - Date.parse(y.at));
+      const list = (logs.get(r.issue_id) || []).filter((e) => Number.isFinite(toMs(e.at))).sort((x, y) => toMs(x.at) - toMs(y.at));
       const assigned = list.filter((e) => e.field === 'assignee' && e.to === r.assignee_id).pop();
       const status = list.filter((e) => e.field === 'status').pop();
       return env.DB.prepare('UPDATE capacity_items SET assigned_at = ?, status_at = ?, log_stamp = ? WHERE issue_id = ?')
-        .bind(assigned?.at || r.created, status?.at || r.created, `${r.assignee_id}|${r.status}`, r.issue_id);
+        .bind(isoOf(assigned?.at) || r.created, isoOf(status?.at) || r.created, `${r.assignee_id}|${r.status}`, r.issue_id);
     });
     await env.DB.batch(stmts);
   }
