@@ -1069,7 +1069,8 @@ export async function settings(env, viewer) {
   const fields = await getState(env, 'wip_field_ids');
   let ids = null;
   try { ids = JSON.parse(fields || 'null'); } catch { /* not yet */ }
-  return { ...head, saStaff: staff, people, counts, failing, fields: ids ? { customerItem: ids.customerItem, documentation: ids.documentation } : null,
+  const rebuild = await (await import('./wip-history.js')).status(env);
+  return { ...head, saStaff: staff, people, counts, failing, rebuild, fields: ids ? { customerItem: ids.customerItem, documentation: ids.documentation } : null,
     canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')) };
 }
 
@@ -1215,21 +1216,31 @@ export async function importSheet(env, viewer, body) {
   const all = [...new Set([...listed.keys(), ...tabMonths])].sort();
   for (const month of all) {
     const has = await env.DB.prepare('SELECT data, source FROM wip_history WHERE month = ? AND region = ?').bind(month, region).first();
-    if (has && (has.source === 'hub' || bookOf(has.source) > book)) continue;
+    if (has?.source === 'hub') continue;
+    let before = {};
+    try { before = has ? JSON.parse(has.data) : {}; } catch { /* replaced */ }
+    // A newer workbook's figures win; this one only fills what it left out.
+    const newer = has && bookOf(has.source) > book;
     let fromTab = {};
     if (tabMonths.has(month)) {
       const rows = await snapshotRows(env, region, month);
       const prev = await historyRow(env, region, shiftMonth(month, -1));
       fromTab = historyFrom(metrics(rows, month), prev);
     }
-    const data = { ...fromTab };
-    for (const [k, v] of Object.entries(listed.get(month) || {})) if (v !== null && v !== undefined) data[k] = v;
-    if (!Object.keys(data).length) continue;
+    const mine = { ...fromTab };
+    for (const [k, v] of Object.entries(listed.get(month) || {})) if (v !== null && v !== undefined) mine[k] = v;
+    if (!Object.keys(mine).length) continue;
+    const data = newer ? { ...mine, ...Object.fromEntries(Object.entries(before).filter(([, v]) => v !== null && v !== undefined)) } : { ...before, ...mine };
     await env.DB.prepare(
       `INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, ?)
        ON CONFLICT(month, region) DO UPDATE SET data = excluded.data, source = excluded.source`
-    ).bind(month, region, JSON.stringify(data), `${listed.has(month) ? 'import' : 'sheet'}:${book}`).run();
+    ).bind(month, region, JSON.stringify(data), newer ? has.source : `${listed.has(month) ? 'import' : 'sheet'}:${book}`).run();
     result.history++;
   }
+  // Then each month's orders are rebuilt from Jira's own history, in the background.
+  if (result.months.length) { await (await import('./wip-history.js')).queue(env); result.rebuilding = true; }
   return result;
 }
+
+// Shared with the rebuild of past months from Jira's own history (wip-history.js).
+export { OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };

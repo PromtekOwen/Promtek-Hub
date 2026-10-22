@@ -7056,9 +7056,21 @@ async function wipHistoryHtml() {
   const table = `<div class="table-wrap wip-table"><table><thead><tr><th>Month</th>${cols.map(([l]) => `<th class="num">${l}</th>`).join('')}</tr></thead>
       <tbody>${[...d.rows].reverse().map((r) => `<tr><th scope="row">${esc(wipMonthName(r.month))}${r.source === 'live' ? ' <small>so far</small>' : ''}</th>${cols.map(([, f]) => `<td class="num">${f(r)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
   if (!d.rows.length) return `${wipControls()}<div class="card"><p style="margin:0">No months yet. Read in the old WIP sheet from the settings cog to bring its history across.</p></div>`;
+  const cmp = await api(`/api/wip/compare?region=${wipRegion}`).catch(() => ({ months: [] }));
+  const pct = (v) => (v === null || v === undefined ? '—' : wipPct(v));
+  const compare = cmp.months.length ? `<h2 class="wip-h">Jira's history against the old sheet</h2>
+    <p class="help" style="padding:0 0 .5rem">Past months are rebuilt from Jira. These are the orders where the sheet said something different by 5 points or more.</p>
+    ${cmp.months.map((m) => `<details class="card wip-group"><summary><h2>${esc(wipMonthName(m.month))} <span class="muted">${n(m.differ)} of ${n(m.orders)} orders differ</span></h2></summary>
+      ${m.rows.length ? `<div class="table-wrap wip-table"><table><thead><tr><th>Order</th><th>Status: sheet / Jira</th><th class="num">Complete: sheet / Jira</th>
+        <th class="num">Invoiced: sheet / Jira</th><th class="num">Paid: sheet / Jira</th></tr></thead><tbody>${m.rows.map((r) => `<tr>
+        <td class="wip-title"><b>${jiraLink(r.issue_key)}</b> <span class="wip-t">${esc(r.title || '')}</span><small>${esc(r.org || '')}</small></td>
+        <td>${esc(r.sheet_status || '—')} / ${wipStatusChip(r.status)}</td>
+        <td class="num${r.what.includes('progress') ? ' bad' : ''}">${pct(r.sheet_progress)} / ${pct(r.progress)}</td>
+        <td class="num${r.what.includes('invoiced') ? ' bad' : ''}">${pct(r.sheet_invoiced)} / ${pct(r.invoiced)}</td>
+        <td class="num${r.what.includes('paid') ? ' bad' : ''}">${pct(r.sheet_paid)} / ${pct(r.paid)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted" style="margin:0">They agree.</p>'}</details>`).join('')}` : '';
   return `${wipControls()}
-    <h2 class="wip-h">Month by month</h2>${table}
-    <p class="help">Each month is kept as it stood on its last day. Months before the hub took over come from the old WIP sheet.</p>`;
+    <h2 class="wip-h">Month by month</h2>${table}${compare}
+    <p class="help">Each month is kept as it stood on its last day. Months before the hub took over use the old WIP sheets for which orders were on and their value and division, with everything else rebuilt from Jira's history.</p>`;
 }
 
 // ---------- WIP: the finance overview ----------
@@ -7383,6 +7395,25 @@ function wipInput(event) {
 
 // ---------- WIP: settings ----------
 
+const WIP_REBUILD_PHASES = { statuses: 'Starting', keys: 'Finding each order in Jira', children: 'Reading what was under each order',
+  subs: 'Reading sub-tasks', logs: 'Reading each item\'s change history', compute: 'Working out each month' };
+function wipRebuildHtml(r) {
+  const c = r.counts || {};
+  const state = r.pending
+    ? `<p><strong>${esc(WIP_REBUILD_PHASES[r.phase] || 'Waiting to start')}.</strong> ${n(c.orders)} orders and ${n(c.items)} items found so far; history read for ${n(c.logs)} of them.
+        It carries on by itself a few minutes at a time, so this can take a few hours the first time.</p>`
+    : r.doneAt ? `<p>Last rebuilt ${whenText(r.doneAt)}: ${n(r.result?.rows)} order-months across ${n(r.result?.months)} months, from ${n(c.orders)} orders and ${n(c.items)} items.</p>`
+      : '<p>Nothing rebuilt yet. It starts by itself once an old WIP sheet is read in.</p>';
+  const missing = r.missingCount ? `<details><summary>${n(r.missingCount)} order${r.missingCount === 1 ? '' : 's'} on the old sheets couldn't be found in Jira, so keep the sheet's figures</summary>
+      <p class="muted">${r.missing.map((k) => esc(k)).join(', ')}${r.missingCount > r.missing.length ? '…' : ''}</p></details>` : '';
+  return `<div class="card" style="margin-top:1rem">
+      <h2>Past months from Jira's history</h2>
+      <p>The old sheets say which orders were on the WIP each month, with their value and division. Each order's status, progress, and what was invoiced and paid are then rebuilt from Jira's change history as they stood on the last day of that month. History compares the two.</p>
+      ${state}${r.error ? `<p class="bad">Last problem: ${esc(r.error)}</p>` : ''}${missing}
+      <div class="row"><button class="btn secondary" data-wips-rebuild="1"${r.pending ? ' disabled' : ''}>Rebuild again</button></div>
+    </div>`;
+}
+
 function settingsWipHtml() {
   const s = settingsData.wip;
   if (s.error) return `<div class="card notice error"><p>${esc(s.error)}</p></div>`;
@@ -7392,6 +7423,7 @@ function settingsWipHtml() {
   const impHtml = imp ? `<div class="card notice"><p><strong>Ready to read in the ${imp.region === 'sa' ? 'South Africa' : 'UK'} WIP.</strong></p>
       <ul>${imp.body.months.map((m) => `<li>${esc(wipMonthName(m.month))}: ${n(m.rows.length)} orders${m.month === imp.current ? ' (this month: used for each order\'s value, division, quote and acceptance date)' : ''}</li>`).join('')}
         <li>${n(imp.body.recurring.length)} service contracts</li>${imp.body.history.length ? `<li>${n(imp.body.history.length)} months of history</li>` : ''}</ul>
+      ${imp.converted?.length ? `<p><strong>Statuses brought up to date</strong></p><ul>${imp.converted.map(([what, count]) => `<li>${esc(what)}: ${n(count)} rows</li>`).join('')}</ul>` : ''}
       <div class="row"><button class="btn" data-wips-import-go="1">Read it in</button><button class="btn secondary" data-wips-import-cancel="1">Cancel</button></div></div>` : '';
   return `<div class="card">
       <h2>Reading Jira</h2>
@@ -7423,6 +7455,7 @@ function settingsWipHtml() {
       <div class="result" id="wips-result" role="status"></div>
       ${impHtml}
     </div>
+    ${wipRebuildHtml(s.rebuild || {})}
     <div class="card" style="margin-top:1rem">
       <h2>Promtek SA staff</h2>
       <p>Time these people log on an order shows as Promtek SA time.</p>
@@ -7451,34 +7484,69 @@ const wipCellPct = (c) => { const v = wipCellNum(c); return v === null ? null : 
 const wipCellText = (c) => (c && c.value !== undefined && c.value !== null ? String(c.value).trim() : '');
 const wipCellDate = (c) => (c?.date ? wipLondonDay(c.date) : null);
 
+// The old sheets' status names, as the statuses Jira uses now.
+const WIP_OLD_STATUS = {
+  'wip': 'Work in progress', 'ap': 'Awaiting Payment', 'complete': 'Done', 'completed': 'Done', 'awaiting documentation': 'Documentation Check',
+  'on hold': 'On Hold [Customer]', 'cancelled': 'Archive', 'canceled': 'Archive',
+};
+const WIP_CURRENT_STATUS = new Map(WIP_STATUS_ORDER.map((s) => [s.toLowerCase(), s]));
+function wipStatusNow(raw, converted) {
+  const s = String(raw || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase().replace(/\s+/g, ' ');
+  const now = WIP_CURRENT_STATUS.get(low) || WIP_OLD_STATUS[low] || null;
+  if (now && now !== s) converted.set(`${s} → ${now}`, (converted.get(`${s} → ${now}`) || 0) + 1);
+  if (!now) converted.set(`${s} (kept as it is)`, (converted.get(`${s} (kept as it is)`) || 0) + 1);
+  return now || s;
+}
+const WIP_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
+const wipRowKey = (r) => [r[1], r[0]].map((c) => wipCellText(c).toUpperCase()).find((k) => WIP_KEY.test(k)) || null;
+const wipHeads = (row) => (row || []).map((c) => wipCellText(c).toLowerCase().replace(/\s+/g, ' '));
+// A column by its heading, whatever position it is in; the older layouts moved them about.
+const wipCol = (head, ...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+const wipAt = (r, i) => (i >= 0 ? r[i] : undefined);
+function wipStatsMonth(name, fyStart) {
+  const m = String(name).trim().match(/^([A-Za-z]+)(?:\s+'?(\d{2,4}))?$/);
+  const mon = m && WIP_MONTHS[m[1].slice(0, 3).toLowerCase()];
+  if (!mon) return null;
+  const y = m[2] ? (m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2])) : fyStart === null ? null : mon >= 5 ? fyStart : fyStart + 1;
+  return y ? `${y}-${String(mon).padStart(2, '0')}` : null;
+}
+
 function wipParseBook(sheets) {
   const months = [];
   let recurring = [];
   const history = [];
+  const stats = [];
+  const converted = new Map();
   for (const sh of sheets) {
     const month = wipTabMonth(sh.name);
     if (month) {
-      const head = (sh.rows[0] || []).map((c) => wipCellText(c).toLowerCase());
-      const col = (name, fallback) => { const i = head.findIndex((h) => h === name); return i >= 0 ? i : fallback; };
-      const ix = { quote: col('custom quote number', 4), accepted: col('acceptance date', 5), done: col('date complete', 7), org: col('organisation', 8), title: col('title', 9),
-        upfront: col('upfront total', 10), status: col('quote status', 11), division: col('division', 12), progress: col('percentage complete', 15),
-        nonAdmin: col('non admin progress', 18), invoiced: col('percentage invoiced', 23), paid: col('percentage paid', 24) };
+      const head = wipHeads(sh.rows[0]);
+      const ix = { quote: wipCol(head, 'custom quote number'), accepted: wipCol(head, 'acceptance date', 'ordered date'), done: wipCol(head, 'date complete'),
+        org: wipCol(head, 'organisation', 'organization'), title: wipCol(head, 'title'), upfront: wipCol(head, 'upfront total'), status: wipCol(head, 'quote status', 'status'),
+        division: wipCol(head, 'division'), progress: wipCol(head, 'percentage complete'), nonAdmin: wipCol(head, 'non admin progress'),
+        invoiced: wipCol(head, 'percentage invoiced'), paid: wipCol(head, 'percentage paid') };
       const rows = [];
+      const seen = new Set();
       for (const r of sh.rows.slice(1)) {
-        const key = wipCellText(r[1]).toUpperCase();
-        if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(key)) continue;
-        const up = r[ix.upfront];
-        rows.push({ key, quoteNo: wipCellText(r[ix.quote]) || null, accepted: wipCellDate(r[ix.accepted]), doneAt: wipCellDate(r[ix.done]), org: wipCellText(r[ix.org]),
-          title: wipCellText(r[ix.title]), upfront: wipCellNum(up), upfrontText: /token/i.test(wipCellText(up)) ? wipCellText(up) : null, status: wipCellText(r[ix.status]),
-          division: wipCellText(r[ix.division]), progress: wipCellPct(r[ix.progress]), nonAdmin: wipCellPct(r[ix.nonAdmin]), invoiced: wipCellPct(r[ix.invoiced]), paid: wipCellPct(r[ix.paid]) });
+        const key = wipRowKey(r);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        const up = wipAt(r, ix.upfront);
+        rows.push({ key, quoteNo: wipCellText(wipAt(r, ix.quote)) || null, accepted: wipCellDate(wipAt(r, ix.accepted)), doneAt: wipCellDate(wipAt(r, ix.done)),
+          org: wipCellText(wipAt(r, ix.org)), title: wipCellText(wipAt(r, ix.title)), upfront: wipCellNum(up), upfrontText: /token/i.test(wipCellText(up)) ? wipCellText(up) : null,
+          status: wipStatusNow(wipCellText(wipAt(r, ix.status)), converted), division: wipCellText(wipAt(r, ix.division)),
+          progress: wipCellPct(wipAt(r, ix.progress)), nonAdmin: wipCellPct(wipAt(r, ix.nonAdmin)), invoiced: wipCellPct(wipAt(r, ix.invoiced)), paid: wipCellPct(wipAt(r, ix.paid)) });
       }
       months.push({ month, rows });
     } else if (/^monthly recurring$/i.test(sh.name.trim())) {
-      const head = (sh.rows[0] || []).map((c) => wipCellText(c).toLowerCase());
-      const col = (name, fallback) => { const i = head.findIndex((h) => h === name); return i >= 0 ? i : fallback; };
-      recurring = sh.rows.slice(1).map((r) => ({ key: wipCellText(r[1]).toUpperCase(), start: wipCellDate(r[col('start date', 2)]), end: wipCellDate(r[col('exp end', 3)]),
-        org: wipCellText(r[col('organisation', 5)]), title: wipCellText(r[col('title', 6)]), total: wipCellNum(r[col('recurring total', 7)]), division: wipCellText(r[col('division', 9)]) }))
-        .filter((r) => /^[A-Z][A-Z0-9_]*-\d+$/.test(r.key));
+      const head = wipHeads(sh.rows[0]);
+      const c = { start: wipCol(head, 'start date'), end: wipCol(head, 'exp end'), org: wipCol(head, 'organisation'), title: wipCol(head, 'title'),
+        total: wipCol(head, 'recurring total'), division: wipCol(head, 'division') };
+      recurring = sh.rows.slice(1).map((r) => ({ key: wipRowKey(r), start: wipCellDate(wipAt(r, c.start)), end: wipCellDate(wipAt(r, c.end)),
+        org: wipCellText(wipAt(r, c.org)), title: wipCellText(wipAt(r, c.title)), total: wipCellNum(wipAt(r, c.total)), division: wipCellText(wipAt(r, c.division)) }))
+        .filter((r) => r.key);
     } else if (/^overall data$/i.test(sh.name.trim())) {
       const keys = [null, 'newProjects', 'newService', 'completeProjects', 'completeService', 'projectsProgress', 'serviceProgress', 'projectsWork', 'serviceWork',
         'projectsValue', 'serviceValue', 'projectsWorkValue', 'serviceWorkValue', 'unrealisedProjects', 'unrealisedService', 'startInvoiced', 'startPaid',
@@ -7492,16 +7560,18 @@ function wipParseBook(sheets) {
         if (Object.keys(data).length) history.push({ month, data });
       }
     } else if (/^wip statistics$/i.test(sh.name.trim())) {
-      history.push(...sh.rows.slice(1).map((r) => ({ name: wipCellText(r[0]), projects: wipCellNum(r[1]), service: wipCellNum(r[2]) }))
-        .filter((r) => WIP_MONTHS[r.name.slice(0, 3).toLowerCase()] && (r.projects !== null || r.service !== null))
-        .map((r) => ({ statsMonth: WIP_MONTHS[r.name.slice(0, 3).toLowerCase()], data: { projectsProgress: r.projects, serviceProgress: r.service } })));
+      stats.push(...sh.rows.slice(1).map((r) => ({ name: wipCellText(r[0]), projects: wipCellNum(r[1]), service: wipCellNum(r[2]) }))
+        .filter((r) => r.projects !== null || r.service !== null));
     }
   }
-  // WIP Statistics names months only: its year runs from the first month tab's May.
+  // WIP Statistics names some months without a year: the year then runs from the first month tab's May.
   const first = months.map((m) => m.month).sort()[0];
   const fyStart = first ? Number(first.slice(0, 4)) - (Number(first.slice(5, 7)) < 5 ? 1 : 0) : null;
-  const hist = history.map((h) => (h.statsMonth ? (fyStart ? { month: `${h.statsMonth >= 5 ? fyStart : fyStart + 1}-${String(h.statsMonth).padStart(2, '0')}`, data: h.data } : null) : h)).filter(Boolean);
-  return { months, recurring, history: hist };
+  for (const r of stats) {
+    const month = wipStatsMonth(r.name, fyStart);
+    if (month) history.push({ month, data: { projectsProgress: r.projects, serviceProgress: r.service } });
+  }
+  return { months, recurring, history, converted: [...converted.entries()].sort((a, b) => b[1] - a[1]) };
 }
 
 async function wipSettingsClick(event) {
@@ -7532,20 +7602,25 @@ async function wipSettingsClick(event) {
       const body = wipParseBook(sheets);
       if (!body.months.length) throw new Error('No month tabs were found. They need names like "WIP Oct 26".');
       const region = document.getElementById('wips-region').value;
-      wipImport = { region, current: todayIso().slice(0, 7), body: { region, ...body } };
+      const { converted, ...rest } = body;
+      wipImport = { region, current: todayIso().slice(0, 7), converted, body: { region, ...rest } };
       out.textContent = '';
       render();
     } catch (err) { out.textContent = err.message; }
     return true;
   }
   if (t('[data-wips-import-cancel]')) { wipImport = null; render(); return true; }
+  if (t('[data-wips-rebuild]')) {
+    try { await api('/api/wip/rebuild', { method: 'POST', body: '{}' }); toast('Rebuilding the past months from Jira'); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
   if (t('[data-wips-import-go]')) {
     const b = t('[data-wips-import-go]');
     b.disabled = true;
     try {
       const r = await api('/api/wip/import', { method: 'POST', body: JSON.stringify(wipImport.body) });
       wipImport = null;
-      toast(`Read in ${r.months.length} months, ${r.seeded} orders and ${r.contracts} contracts${r.skipped.length ? `; ${r.skipped.length} months the hub already kept were left as they were` : ''}`);
+      toast(`Read in ${r.months.length} months, ${r.seeded} orders and ${r.contracts} contracts${r.skipped.length ? `; ${r.skipped.length} months the hub already kept were left as they were` : ''}${r.rebuilding ? '. Rebuilding them from Jira now' : ''}`);
       render();
     } catch (err) { toast(err.message); b.disabled = false; }
     return true;

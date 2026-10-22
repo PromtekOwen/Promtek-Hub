@@ -1275,7 +1275,7 @@ details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom:
 .wipc-bar.neg { border-radius: 0 0 4px 4px; }
 .wipc-set.stacked .wipc-bar { border-radius: 0; box-shadow: 0 2px 0 0 #fff inset; }
 .wipc-set.stacked .wipc-bar:last-child { border-radius: 4px 4px 0 0; }
-.wipc-x { position: absolute; top: 100%; left: -50%; right: -50%; text-align: center; font-size: .7rem; color: var(--muted); padding-top: .3rem; white-space: nowrap; overflow: hidden; }
+.wipc-x { position: absolute; top: 100%; left: -200%; right: -200%; text-align: center; font-size: .7rem; color: var(--muted); padding-top: .3rem; white-space: nowrap; overflow: hidden; }
 .wipc .wipc-plot + * { margin-top: 1.8rem; }
 .wipc-table { margin-top: 1.8rem; font-size: .88rem; }
 .wipc-table summary { cursor: pointer; color: var(--blue-deep); font-weight: 600; }

@@ -387,6 +387,12 @@ async function route(request, env, url, user) {
       return json({ ok: true });
     }
     if (method === 'POST' && pathname === '/api/wip/refresh') return json(await Wip.refresh(env, user));
+    if (method === 'GET' && pathname === '/api/wip/compare') return json(await (await import('./wip-history.js')).compare(env, user, { region: q('region') }));
+    if (method === 'POST' && pathname === '/api/wip/rebuild') {
+      const r = await (await import('./wip-history.js')).start(env, user);
+      await Audit.record(env, user, { area: 'WIP', action: 'Past months rebuilt from Jira history' });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/wip/import') {
       const r = await Wip.importSheet(env, user, body);
       await Audit.record(env, user, { area: 'WIP', action: 'Sheet read in', label: r.region.toUpperCase(),
