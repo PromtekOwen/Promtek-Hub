@@ -85,6 +85,14 @@ export const MODULES = [
     detail: () => 'Contracts, visits and tokens',
   },
   {
+    id: 'capacity',
+    name: 'Capacity',
+    route: '#/capacity',
+    needs: 'oversight',
+    icon: icon('<circle cx="8" cy="8" r="3"/><circle cx="16.5" cy="9.5" r="2.5"/><path d="M3 19c0-3 2.2-5 5-5s5 2 5 5"/><path d="M13.5 18.5c.3-2.4 1.6-4 3.5-4 2.2 0 3.5 1.8 3.5 4.5"/>'),
+    detail: () => 'Who has what on, and who has room',
+  },
+  {
     id: 'wip',
     name: 'WIP',
     route: '#/wip',

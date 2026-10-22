@@ -364,6 +364,14 @@ async function route(request, env, url, user) {
     }
   }
 
+  if (method === 'GET' && pathname === '/api/capacity') return json(await (await import('./capacity.js')).overview(env, user, { team: url.searchParams.get('team') }));
+  if (method === 'POST' && pathname === '/api/capacity/refresh') {
+    const Cap = await import('./capacity.js');
+    if (!Cap.canSee(user)) return json({ error: 'Capacity is for team leads and management.' }, 403);
+    await setState(env, 'capacity_sync_at', '0');
+    return json({ ok: true });
+  }
+
   if (pathname.startsWith('/api/wip')) {
     const Wip = await import('./wip.js');
     const q = (k) => url.searchParams.get(k);

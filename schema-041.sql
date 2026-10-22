@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS capacity_items (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, project_key TEXT, summary TEXT, issuetype TEXT, subtask INTEGER NOT NULL DEFAULT 0, status TEXT, status_cat TEXT, priority TEXT, assignee_id TEXT, assignee_name TEXT, parent_key TEXT, parent_summary TEXT, created TEXT, updated TEXT, due TEXT, estimate_left INTEGER, assigned_at TEXT, status_at TEXT, log_stamp TEXT, seen_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_capacity_assignee ON capacity_items(assignee_id);

@@ -374,6 +374,11 @@ const pages = {
     render: () => requestsHtml(),
   },
 
+  '#/capacity': {
+    band: () => '<h1>Capacity</h1><p>What everyone has on, how long they\'ve had it, and what they\'re working on now.</p>',
+    render: () => capTileHtml(),
+  },
+
   '#/wip': {
     band: () => '<h1>WIP</h1><p>Every order and service contract: progress, invoicing and payment.</p>',
     render: () => wipHtml(),
@@ -6784,6 +6789,116 @@ document.addEventListener('change', async (event) => {
   }
 });
 
+// ---------- capacity tile ----------
+
+let capTeam = 'all';
+let capSort = 'most';
+let capQuery = '';
+const CAP_KINDS = { job: 'Jobs', psc: 'PSCs', condor: 'Condor Dev', internal: 'Internal' };
+const CAP_KIND = { job: 'Job', psc: 'PSC', condor: 'Condor Dev', internal: 'Internal' };
+const capAge = (days) => (days === null || days === undefined ? '—' : days === 0 ? 'today' : days === 1 ? '1 day' : days < 14 ? `${days} days`
+  : days < 60 ? `${Math.round(days / 7)} weeks` : `${Math.round(days / 30.4)} months`);
+const capWhen = (day, today) => {
+  if (!day) return '—';
+  const d = Math.round((Date.parse(`${today}T12:00:00Z`) - Date.parse(`${day}T12:00:00Z`)) / 86_400_000);
+  return d <= 0 ? 'Today' : d === 1 ? 'Yesterday' : `${d} days ago`;
+};
+const capHours = (s) => `${(Math.round((s / 3600) * 10) / 10).toLocaleString('en-GB')}h`;
+
+async function capTileHtml() {
+  const d = await api(`/api/capacity${capTeam !== 'all' ? `?team=${encodeURIComponent(capTeam)}` : ''}`);
+  const inTeam = (p) => capTeam === 'all' || p.teams.includes(capTeam);
+  const q = capQuery.trim().toLowerCase();
+  let people = d.people.filter(inTeam);
+  const load = (p) => p.counts.job + p.counts.psc + p.counts.condor;
+  const sorts = {
+    most: (a, b) => load(b) - load(a) || b.week - a.week,
+    least: (a, b) => load(a) - load(b) || a.week - b.week,
+    hours: (a, b) => b.week / b.weekTarget - a.week / a.weekTarget,
+    name: (a, b) => a.name.localeCompare(b.name),
+  };
+  people = [...people].sort(sorts[capSort] || sorts.most);
+  const shown = people.filter((p) => !q || p.name.toLowerCase().includes(q) || p.items.some((i) => `${i.key} ${i.summary}`.toLowerCase().includes(q)));
+  const sum = (fn) => people.reduce((t, p) => t + fn(p), 0);
+  const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
+  const target = sum((p) => (p.away ? 0 : p.weekTarget));
+  const awayToday = people.filter((p) => p.away);
+  const stats = `<dl class="stats">
+      ${stat('Open jobs', n(sum((p) => p.counts.job + p.counts.condor)), `${n(people.length)} people`)}
+      ${stat('Open PSCs', n(sum((p) => p.counts.psc)), sum((p) => p.flags.waiting) ? `${n(sum((p) => p.flags.waiting))} with the customer waiting on us` : 'None waiting on us')}
+      ${stat('Logged this week', capHours(sum((p) => p.week)), target ? `${Math.round((sum((p) => p.week) / target) * 100)}% of ${capHours(target)} for the week` : '')}
+      ${stat('Needs a look', n(sum((p) => p.flags.quiet + p.flags.overdue)), `${n(sum((p) => p.flags.quiet))} gone quiet, ${n(sum((p) => p.flags.overdue))} past due`)}
+    </dl>`;
+  // Who could take something new: the lightest load of anyone here today.
+  const room = people.filter((p) => !p.away && (p.items.length || p.fourWeekAverage)).sort(sorts.least).slice(0, 3);
+  const roomHtml = room.length ? `<section class="card cap-room"><h2>Most room for something new</h2>
+      <ul class="cap-room-list">${room.map((p) => `<li><b>${esc(p.name)}</b><span>${n(load(p))} open (${n(p.counts.job + p.counts.condor)} jobs, ${n(p.counts.psc)} PSCs)</span>
+        <span>${capHours(p.week)} logged this week${p.nextAway ? `, away from ${shortDate(p.nextAway.from)}` : ''}</span></li>`).join('')}</ul>
+      ${awayToday.length ? `<p class="muted">Away today: ${awayToday.map((p) => esc(p.name)).join(', ')}.</p>` : ''}</section>` : '';
+  const teamsHere = d.teams.filter((t) => d.people.some((p) => p.teams.includes(t)));
+  const teamSeg = teamsHere.length > 1 ? `<span class="segment wip-seg">${[['all', 'All'], ...teamsHere.map((t) => [t, t])].map(([k, l]) =>
+    `<button class="seg${capTeam === k ? ' on' : ''}" data-cap-team="${esc(k)}">${esc(l)}</button>`).join('')}</span>` : '';
+  const tools = `<div class="row cap-tools">${teamSeg}
+      <label>Sort <select data-cap-sort>${[['most', 'Most on'], ['least', 'Least on'], ['hours', 'Hours this week'], ['name', 'Name']].map(([k, l]) =>
+        `<option value="${k}"${capSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <input type="search" id="cap-search" value="${esc(capQuery)}" placeholder="Search people or items" aria-label="Search people or items"></div>`;
+  const cards = shown.map((p) => capPersonHtml(p, d)).join('') || '<div class="card"><p style="margin:0">Nobody here.</p></div>';
+  const unassigned = (capTeam === 'all' || capTeam === 'Service') && d.unassigned.length ? `<section class="card cap-unassigned"><h2>Support requests nobody has yet <span class="muted">${n(d.unassigned.length)}</span></h2>
+      <ul class="list">${d.unassigned.map((u) => `<li><span class="title">${jiraLink(u.key)} ${esc(u.summary)}</span><span class="sub">${[u.org, u.status, u.priority].filter(Boolean).map(esc).join(' · ')}</span>
+        <span class="xp"><small>${capAge(u.days)} old</small></span></li>`).join('')}</ul></section>` : '';
+  return `${tools}<p class="help cap-sync">Read from Jira ${whenText(d.syncedAt)}. Gone quiet means assigned at least ${d.rules.quietDays} days with no time logged or change in ${d.rules.quietDays} days.
+      ${d.error && (me.user.isAdmin || me.user.can?.developer) ? `<span class="bad">Last problem: ${esc(d.error)}</span>` : ''}</p>
+    ${stats}${roomHtml}<div class="cap-grid">${cards}</div>${unassigned}`;
+}
+
+function capPersonHtml(p, d) {
+  const pct = p.weekTarget ? Math.min(100, Math.round((p.week / p.weekTarget) * 100)) : 0;
+  const chips = Object.entries(CAP_KINDS).filter(([k]) => p.counts[k]).map(([k, l]) => `<span class="cap-count cap-${k}"><b>${n(p.counts[k])}</b> ${l}</span>`).join('') || '<span class="muted">Nothing assigned</span>';
+  const flags = [p.flags.overdue && `${n(p.flags.overdue)} past due`, p.flags.quiet && `${n(p.flags.quiet)} gone quiet`, p.flags.stuck && `${n(p.flags.stuck)} in one status over ${d.rules.stuckDays} days`,
+    p.flags.waiting && `${n(p.flags.waiting)} customer waiting`].filter(Boolean);
+  const active = p.active.length ? `<ul class="cap-active">${p.active.map((a) => `<li>${jiraLink(a.key)} <span class="cap-sum">${esc(a.summary || '')}</span>
+      <span class="cap-meta">${capWhen(a.last, d.today)}${a.seconds ? ` · ${capHours(a.seconds)} logged` : a.logged ? '' : ' · updated'}</span></li>`).join('')}</ul>`
+    : '<p class="muted cap-none">No time logged or changes in the last two weeks.</p>';
+  const rows = p.items.map((i) => `<li class="${i.overdue || i.quiet ? 'cap-flag' : ''}">
+      <span class="cap-item">${jiraLink(i.key)} ${esc(i.summary)}${i.parentKey ? `<small>${esc(i.parentKey)} ${esc(i.parentSummary || '')}</small>` : ''}</span>
+      <span class="cap-facts">${wipStatusChip(i.status)} <span>${esc(CAP_KIND[i.kind])}</span><span>had it ${capAge(i.assignedDays)}</span><span>this status ${capAge(i.statusDays)}</span>
+        <span>last activity ${i.lastActivity ? capWhen(i.lastActivity, d.today).toLowerCase() : 'none'}</span>${i.due ? `<span${i.overdue ? ' class="bad"' : ''}>due ${shortDate(i.due)}</span>` : ''}
+        ${i.quiet ? '<span class="bad">Gone quiet</span>' : ''}${i.customerWaiting ? '<span class="bad">Customer waiting</span>' : ''}</span></li>`).join('');
+  return `<article class="card cap-person">
+      <header><h2>${esc(p.name)}</h2><span class="muted">${p.teams.map(esc).join(', ')}</span>
+        ${p.away ? `<span class="cap-off">Away${p.away.until && p.away.until !== p.away.from ? ` until ${shortDate(p.away.until)}` : ' today'}</span>` : p.nextAway ? `<span class="cap-soon">Away from ${shortDate(p.nextAway.from)}</span>` : ''}</header>
+      <div class="cap-counts">${chips}</div>
+      <div class="cap-week"><span>This week <b>${capHours(p.week)}</b> of ${capHours(p.weekTarget)}</span><span class="muted">Usually ${capHours(p.fourWeekAverage)} a week</span>
+        <span class="bar"><span style="width:${pct}%"></span></span></div>
+      ${flags.length ? `<p class="cap-flags">${flags.map(esc).join(' · ')}</p>` : ''}
+      <h3>Working on now</h3>${active}
+      ${p.items.length ? `<details class="cap-all"><summary>Everything assigned (${n(p.items.length)})${p.estimateLeft ? `, ${capHours(p.estimateLeft)} estimated left` : ''}</summary>
+        <ul class="cap-items">${rows}</ul></details>` : ''}
+    </article>`;
+}
+
+async function capTileClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const team = t('[data-cap-team]');
+  if (team) { capTeam = team.dataset.capTeam; return render(); }
+  return false;
+}
+function capTileChange(event) {
+  if (event.target.matches('[data-cap-sort]')) { capSort = event.target.value; render(); return true; }
+  return false;
+}
+let capTimer = null;
+function capTileInput(event) {
+  if (event.target.id !== 'cap-search') return false;
+  capQuery = event.target.value;
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => {
+    const q = capQuery.trim().toLowerCase();
+    for (const card of view.querySelectorAll('.cap-person')) card.hidden = Boolean(q) && !card.textContent.toLowerCase().includes(q);
+  }, 150);
+  return true;
+}
+
 // ---------- WIP ----------
 
 let wipRegion = 'uk';
@@ -9599,6 +9714,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/eotq' && await eotqClick(event) !== false) return;
   if (currentRoute() === '#/wip' && settingsOpen !== '#/wip' && await wipClick(event) !== false) return;
+  if (currentRoute() === '#/capacity' && await capTileClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
@@ -9694,6 +9810,7 @@ const WAITING_FOR = {
   '#/contracts': () => (conOpen ? 'Loading the contract' : 'Loading contracts'),
   '#/psc': () => (pscOpen ? 'Loading the PSC' : 'Loading PSCs'),
   '#/wip': () => (wipOpen ? 'Loading the order' : 'Loading the WIP'),
+  '#/capacity': () => 'Loading everyone\'s work',
 };
 
 // Settings live with the app they configure. The cog appears in the header of
@@ -9816,6 +9933,7 @@ view.addEventListener('input', (event) => {
   if (currentRoute() === '#/contracts' && contractsInput(event)) return;
   if (currentRoute() === '#/psc' && pscInput(event)) return;
   if (currentRoute() === '#/wip' && (settingsOpen === '#/wip' ? wipSettingsInput(event) : wipInput(event))) return;
+  if (currentRoute() === '#/capacity' && capTileInput(event)) return;
   if (event.target.matches('[data-person-group="lead"]')) { const box = view.querySelector('.access-leads'); if (box) box.hidden = !event.target.checked; return; }
   if (event.target.matches('[data-report-team]')) { reportTeam = event.target.value; render(); return; }
   if (event.target.matches('[data-elo-sort]')) { eloSort = event.target.value; render(); return; }
@@ -9911,6 +10029,7 @@ view.addEventListener('change', async (event) => {
   }
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
+  if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
     const file = event.target.files?.[0];
