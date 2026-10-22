@@ -557,7 +557,8 @@ async function route(request, env, url, user) {
     const DevTime = await import('./devtime.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (!user.accountId) return json({ days: [] });
-    if (method === 'GET' && pathname === '/api/devtime/drafts') return json(await DevTime.drafts(env, user.accountId));
+    // A developer viewing as someone also sees what was detected but is already covered.
+    if (method === 'GET' && pathname === '/api/devtime/drafts') return json(await DevTime.drafts(env, user.accountId, { detail: Boolean(user.viewingAs) }));
     if (method === 'POST' && pathname === '/api/devtime/log') return json(await DevTime.logDrafts(env, user, body));
     if (method === 'POST' && pathname === '/api/devtime/dismiss') return json(await DevTime.dismiss(env, user, body));
   }

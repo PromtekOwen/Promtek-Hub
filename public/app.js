@@ -4615,14 +4615,32 @@ function dayCardHtml(d) {
       <div class="result" role="status"></div></div>`;
 }
 
+// While a developer views as someone: what Bitbucket showed that's already covered.
+const COVER_KINDS = { commit: ['commit', 'commits'], 'pr-created': ['PR opened', 'PRs opened'], 'pr-updated': ['PR update', 'PR updates'], 'pr-comment': ['comment', 'comments'],
+  'pr-approved': ['approval', 'approvals'], 'pr-changes': ['changes request', 'changes requests'], 'pr-merged': ['merge', 'merges'], 'pr-declined': ['decline', 'declines'],
+  pipeline: ['pipeline', 'pipelines'], tag: ['tag', 'tags'] };
+function coveredHtml(list) {
+  if (!me.viewingAs || !list) return '';
+  const why = { tempo: 'already logged in Tempo', hub: 'logged from these drafts', dismissed: 'marked Not work time' };
+  const rows = list.map((c) => {
+    const acts = Object.entries(c.activity).map(([k, v]) => `${v} ${COVER_KINDS[k]?.[v === 1 ? 0 : 1] || k}`).join(', ');
+    return `<li><span class="title">${c.key ? `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(c.summary)}` : 'Work with no ticket'}</span>
+      <span class="sub">${esc(dayLabel(c.day))} from ${esc(c.start)}: Bitbucket shows about ${hoursLabel(quarterHours(c.detected))}, ${c.logged ? `${hoursLabel(quarterHours(c.logged))} ` : ''}${why[c.why]}.${acts ? ` From ${esc(acts)}.` : ''}</span></li>`;
+  }).join('');
+  return `<h2>Detected, already covered</h2>
+    <p class="muted" style="margin-top:0">Shown only while viewing as ${esc(me.viewingAs.name)}.</p>
+    ${rows ? `<ul class="list">${rows}</ul>` : '<div class="card"><p style="margin:0">No Bitbucket activity for them in the last 7 days.</p></div>'}`;
+}
+
 async function loadDayDrafts() {
   const host = document.getElementById('day-drafts');
   if (!host || !me.linked) return;
   try {
     dayDrafts = await api('/api/devtime/drafts');
-    host.innerHTML = dayDrafts.days.length
+    host.innerHTML = (dayDrafts.days.length
       ? `<h2>Waiting to be logged</h2>${dayDrafts.days.map(dayCardHtml).join('')}`
-      : `<h2>Waiting to be logged</h2><div class="card"><p style="margin:0">Nothing waiting. Your commits, pull requests, reviews and pipelines in Bitbucket appear here as draft time, ready to check and log in one go.</p></div>`;
+      : `<h2>Waiting to be logged</h2><div class="card"><p style="margin:0">Nothing waiting. Your commits, pull requests, reviews and pipelines in Bitbucket appear here as draft time, ready to check and log in one go.</p></div>`)
+      + coveredHtml(dayDrafts.covered);
   } catch (err) { host.innerHTML = `<div class="card"><p class="bad" style="margin:0">${esc(err.message)}</p></div>`; }
 }
 

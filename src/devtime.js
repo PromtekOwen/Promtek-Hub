@@ -427,12 +427,13 @@ async function lookUp(env, keys) {
   return issues;
 }
 
-export async function drafts(env, accountId, { today = londonDate() } = {}) {
+// detail: also what was detected but is already covered, for a developer viewing as this person.
+export async function drafts(env, accountId, { today = londonDate(), detail = false } = {}) {
   const from = new Date(Date.parse(`${today}T12:00:00Z`) - (DAYS_SHOWN - 1) * 86_400_000).toISOString().slice(0, 10);
   const { results: raw } = await env.DB.prepare(
-    'SELECT issue_key AS key, at, day FROM dev_activity WHERE account_id = ? AND day >= ? AND day <= ? ORDER BY at'
+    'SELECT issue_key AS key, at, day, kind FROM dev_activity WHERE account_id = ? AND day >= ? AND day <= ? ORDER BY at'
   ).bind(accountId, from, today).all();
-  if (!raw.length) return { days: [] };
+  if (!raw.length) return { days: [], ...(detail ? { covered: [] } : {}) };
   const { results: handled } = await env.DB.prepare(
     'SELECT day, issue_key, status, seconds FROM dev_day_state WHERE account_id = ? AND day >= ?'
   ).bind(accountId, from).all();
@@ -456,16 +457,36 @@ export async function drafts(env, accountId, { today = londonDate() } = {}) {
 
   const byDay = new Map();
   for (const p of points) { if (!byDay.has(p.day)) byDay.set(p.day, []); byDay.get(p.day).push(p); }
+  // What each ticket's time that day was worked out from.
+  const kindsOf = new Map();
+  for (const p of points) {
+    const k = `${p.day}|${p.key}`;
+    const m = kindsOf.get(k) || {};
+    m[p.kind] = (m[p.kind] || 0) + 1;
+    kindsOf.set(k, m);
+  }
+  const stateOf = new Map(handled.map((h) => [`${h.day}|${h.issue_key}`, h]));
+  const covered = [];
+  const cover = (day, d, why, loggedSeconds) => {
+    if (!detail) return;
+    const issue = issues.get(d.key);
+    covered.push({ day, key: d.key, summary: issue?.summary || '', detected: d.seconds, start: d.start, logged: loggedSeconds, why, activity: kindsOf.get(`${day}|${d.key}`) || {} });
+  };
   const days = [];
   let needChoices = false;
   for (const [day, dayPoints] of byDay) {
     const list = [];
     for (const d of draftDay(dayPoints)) {
-      if (done.has(`${day}|${d.key}`)) continue;
+      if (done.has(`${day}|${d.key}`)) {
+        const h = stateOf.get(`${day}|${d.key}`);
+        const tempo = d.key === NO_TICKET ? 0 : logged.get(`${day}|${issues.get(d.key)?.id}`) || 0;
+        cover(day, d, h?.status === 'dismissed' ? 'dismissed' : 'hub', tempo || h?.seconds || 0);
+        continue;
+      }
       if (d.key === NO_TICKET) {
         const already = noTicketLogged.get(day) || 0;
         const seconds = Math.round((d.seconds - already) / ROUND_S) * ROUND_S;
-        if (seconds < ROUND_S) continue;
+        if (seconds < ROUND_S) { cover(day, d, 'hub', already); continue; }
         list.push({ ...d, seconds, alreadyLogged: 0, issueId: null, summary: '', noTicket: true });
         needChoices = true;
         continue;
@@ -473,7 +494,7 @@ export async function drafts(env, accountId, { today = londonDate() } = {}) {
       const issue = issues.get(d.key);
       const already = logged.get(`${day}|${issue.id}`) || 0;
       const seconds = Math.round((d.seconds - already) / ROUND_S) * ROUND_S;
-      if (seconds < ROUND_S) continue;
+      if (seconds < ROUND_S) { cover(day, d, 'tempo', already); continue; }
       list.push({ ...d, seconds, alreadyLogged: already, issueId: issue.id, summary: issue.summary });
     }
     if (list.length) days.push({ day, drafts: list });
@@ -488,7 +509,8 @@ export async function drafts(env, accountId, { today = londonDate() } = {}) {
     } catch { /* their drafts' tickets are still there to choose from */ }
     choices = [...seen.values()];
   }
-  return { days: days.sort((a, b) => b.day.localeCompare(a.day)), choices };
+  return { days: days.sort((a, b) => b.day.localeCompare(a.day)), choices,
+    ...(detail ? { covered: covered.sort((a, b) => b.day.localeCompare(a.day) || a.start.localeCompare(b.start)) } : {}) };
 }
 
 export async function logDrafts(env, viewer, { day, items }) {
