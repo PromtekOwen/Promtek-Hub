@@ -6793,6 +6793,7 @@ document.addEventListener('change', async (event) => {
 
 let capTeam = 'all';
 let capSort = 'most';
+let capSortChosen = false;   // until someone picks, the box just says Sort by
 let capQuery = '';
 const CAP_KINDS = { job: 'Jobs', psc: 'PSCs', condor: 'Condor Dev', internal: 'Internal' };
 const CAP_KIND = { job: 'Job', psc: 'PSC', condor: 'Condor Dev', internal: 'Internal' };
@@ -6839,8 +6840,8 @@ async function capTileHtml() {
   const teamSeg = teamsHere.length > 1 ? `<span class="segment wip-seg">${[['all', 'All'], ...teamsHere.map((t) => [t, t])].map(([k, l]) =>
     `<button class="seg${capTeam === k ? ' on' : ''}" data-cap-team="${esc(k)}">${esc(l)}</button>`).join('')}</span>` : '';
   const tools = `<div class="row cap-tools">${teamSeg}
-      <label>Sort <select data-cap-sort>${[['most', 'Most on'], ['least', 'Least on'], ['hours', 'Hours this week'], ['name', 'Name']].map(([k, l]) =>
-        `<option value="${k}"${capSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <select data-cap-sort aria-label="Sort by">${capSortChosen ? '' : '<option value="" disabled selected hidden>Sort by</option>'}${[['most', 'Most on'], ['least', 'Least on'], ['hours', 'Hours this week'], ['name', 'Name']].map(([k, l]) =>
+        `<option value="${k}"${capSortChosen && capSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
       <input type="search" id="cap-search" value="${esc(capQuery)}" placeholder="Search people or items" aria-label="Search people or items"></div>`;
   const cards = shown.map((p) => capPersonHtml(p, d)).join('') || '<div class="card"><p style="margin:0">Nobody here.</p></div>';
   const unassigned = (capTeam === 'all' || capTeam === 'Service') && d.unassigned.length ? `<section class="card cap-unassigned"><h2>Support requests nobody has yet <span class="muted">${n(d.unassigned.length)}</span></h2>
@@ -6884,7 +6885,7 @@ async function capTileClick(event) {
   return false;
 }
 function capTileChange(event) {
-  if (event.target.matches('[data-cap-sort]')) { capSort = event.target.value; render(); return true; }
+  if (event.target.matches('[data-cap-sort]')) { capSort = event.target.value; capSortChosen = true; render(); return true; }
   return false;
 }
 let capTimer = null;
