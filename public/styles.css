@@ -1341,3 +1341,9 @@ details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom:
 .cap-facts { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .7rem; margin-top: .3rem; font-size: .8rem; color: var(--muted); }
 .cap-facts .bad { color: var(--danger); }
 .cap-unassigned { margin-top: 1rem; }
+
+/* Viewing as someone else */
+.viewas-bar { background: #6b5000; position: sticky; top: 0; z-index: 30; }
+.viewas-who { display: grid; text-align: left; }
+.viewas-who small { color: var(--muted); font-weight: 400; font-size: .82rem; }
+.viewas-list { max-height: 55vh; overflow-y: auto; }

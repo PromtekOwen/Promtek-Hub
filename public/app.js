@@ -8821,7 +8821,7 @@ const seenKey = (route) => (tourDef(route)?.practice ? `walk:${route}` : route);
 const stepsFor = (route) => (tourDef(route)?.steps || []).filter((s) => !s.when || s.when(me));
 
 function maybeTour(route) {
-  if (PRACTICE || !toursSeen || toursSeen.has(seenKey(route)) || tour || !tourDef(route) || settingsOpen) return;
+  if (PRACTICE || me?.viewingAs || !toursSeen || toursSeen.has(seenKey(route)) || tour || !tourDef(route) || settingsOpen) return;
   setTimeout(() => {
     if (tour || toursSeen.has(seenKey(route)) || currentRoute() !== route || settingsOpen) return;
     if (document.querySelector('.modal-backdrop') || accountDialog.open) return;
@@ -9157,6 +9157,7 @@ function renderAccount() {
         <ul class="menu">
           <li><button data-account="refresh">${svgIcon('<path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/>')}Refresh my XP</button></li>
           ${installItem}
+          ${me.user.can?.developer && !me.viewingAs ? `<li><button data-account="viewas">${svgIcon('<path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>')}View as someone else</button></li>` : ''}
           ${me.user.isAdmin || me.user.can?.developer ? `<li><a href="#/admin" data-account="close">${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}Admin tools</a></li>` : ''}
         </ul>
       </section>
@@ -9200,7 +9201,58 @@ accountDialog.addEventListener('click', async (event) => {
     accountDialog.close();
     await syncAndRefresh(true);
   }
+  if (action === 'viewas') return viewAsPicker();
+  if (action === 'viewas-back') return renderAccount();
+  if (action === 'viewas-pick') {
+    item.disabled = true;
+    try {
+      await api('/api/dev/view-as', { method: 'POST', body: JSON.stringify({ accountId: item.dataset.id }) });
+      location.hash = '#/';
+      location.reload();
+    } catch (err) { toast(err.message); item.disabled = false; }
+  }
 });
+
+// ---------- viewing as someone else (developers) ----------
+
+const VIEWAS_GROUPS = Object.fromEntries(GROUP_LABELS);
+async function viewAsPicker() {
+  const body = accountDialog.querySelector('.acct-body');
+  body.innerHTML = `<section class="acct-section"><p class="help" style="padding:.25rem .35rem .75rem">Loading people</p></section>`;
+  let people = [];
+  try { people = (await api('/api/dev/people')).people; } catch (err) { body.innerHTML = `<p class="help">${esc(err.message)}</p>`; return; }
+  const row = (p) => `<li data-name="${esc(p.name.toLowerCase())}"><button data-account="viewas-pick" data-id="${esc(p.id)}">
+      <span class="viewas-who"><b>${esc(p.name)}</b><small>${esc([...p.teams, ...p.groups.map((g) => VIEWAS_GROUPS[g] || g)].join(' · ') || 'No team or group')}</small></span></button></li>`;
+  body.innerHTML = `<section class="acct-section">
+      <h4>View as someone else</h4>
+      <p class="help" style="padding:0 .35rem .75rem">See the hub exactly as they would: their tiles, pages and what they can and can't open. Nothing can be changed while you do, and it's noted in the audit log.</p>
+      <input type="search" id="viewas-search" placeholder="Search people" aria-label="Search people" style="width:100%;margin-bottom:.75rem">
+      <ul class="menu viewas-list">${people.map(row).join('')}</ul>
+      <ul class="menu" style="margin-top:.75rem"><li><button data-account="viewas-back">Back</button></li></ul>
+    </section>`;
+  const input = body.querySelector('#viewas-search');
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    for (const li of body.querySelectorAll('.viewas-list li')) li.hidden = Boolean(q) && !li.dataset.name.includes(q);
+  });
+  input.focus();
+}
+
+function viewAsBar() {
+  const v = me.viewingAs;
+  const what = [...(me.user.teams || []), ...(me.user.groups || []).map((g) => VIEWAS_GROUPS[g] || g)].join(' · ');
+  const bar = document.createElement('div');
+  bar.className = 'practice-bar viewas-bar';
+  bar.setAttribute('role', 'note');
+  bar.innerHTML = `<span>Viewing as <strong>${esc(v.name)}</strong>${what ? ` (${esc(what)})` : ''}. You see what they see; nothing can be changed.</span>
+    <button class="btn secondary">Stop viewing as ${esc(v.name.split(' ')[0])}</button>`;
+  bar.querySelector('button').addEventListener('click', async (event) => {
+    event.target.disabled = true;
+    try { await api('/api/dev/view-as', { method: 'POST', body: JSON.stringify({ accountId: null }) }); location.reload(); }
+    catch (err) { toast(err.message); event.target.disabled = false; }
+  });
+  document.body.prepend(bar);
+}
 
 window.addEventListener('beforeinstallprompt', (event) => {
   event.preventDefault();
@@ -10148,9 +10200,12 @@ async function start() {
   }
   try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
+  if (me.viewingAs) viewAsBar();
   await render();
   logFab();
   if (PRACTICE) startTour(PRACTICE_ROUTE, { practice: true });
+  // Viewing as someone else only looks: their time isn't synced and nothing queued is sent.
+  if (me.viewingAs) return;
   syncAndRefresh();
   trackerInit();
   powFlushQueue();

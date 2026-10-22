@@ -153,3 +153,30 @@ export async function readsReport(env) {
     days: list,
   };
 }
+
+// While a developer views the hub as someone else, nothing is written: anything that would
+// change the database (marking something seen, say) quietly does nothing.
+const WRITES = /^\s*(insert|update|delete|replace|create|alter|drop)\b/i;
+export function readOnly(db) {
+  const fake = () => ({ results: [], success: true, meta: { changes: 0, rows_read: 0, rows_written: 0, last_row_id: 0 } });
+  const wrap = (stmt, sql) => ({
+    statement: stmt,
+    sql,
+    bind: (...args) => wrap(stmt.bind(...args), sql),
+    all: async () => (WRITES.test(sql) ? fake() : stmt.all()),
+    run: async () => (WRITES.test(sql) ? fake() : stmt.run()),
+    raw: async (...args) => (WRITES.test(sql) ? [] : stmt.raw(...args)),
+    first: async (column) => (WRITES.test(sql) ? null : stmt.first(column)),
+  });
+  return {
+    prepare: (sql) => wrap(db.prepare(sql), sql),
+    batch: async (statements) => {
+      const reads = statements.filter((s) => !WRITES.test(s.sql || ''));
+      const done = reads.length ? await db.batch(reads.map((s) => s.statement || s)) : [];
+      let i = 0;
+      return statements.map((s) => (WRITES.test(s.sql || '') ? fake() : done[i++]));
+    },
+    unmetered: db.unmetered ? readOnly(db.unmetered) : undefined,
+    readOnly: true,
+  };
+}

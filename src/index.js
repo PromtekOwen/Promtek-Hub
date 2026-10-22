@@ -23,7 +23,7 @@ import * as People from './people.js';
 import * as Home from './home.js';
 import * as Eotq from './eotq.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
-import { metered, addReads, readsReport, queryName } from './d1-meter.js';
+import { metered, addReads, readsReport, queryName, readOnly } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
@@ -106,8 +106,22 @@ export default {
     if (!user) return json({ error: 'Sign in with your Promtek Google account to continue.' }, 401);
 
     try {
-      const viewer = await resolveViewer(env, user);
-      return await route(request, env, url, viewer);
+      const real = await resolveViewer(env, user);
+      // Developers can look at the hub as someone else sees it. Nothing can be changed while they do.
+      if (url.pathname.startsWith('/api/dev/')) return await devRoute(request, env, url, real);
+      const as = real.can?.developer ? viewAsCookie(request) : null;
+      if (as) {
+        const viewer = await viewAs(env, real, as);
+        if (viewer) {
+          // Guides marked as seen and tile layouts are theirs; those are let go quietly.
+          if (!['GET', 'HEAD'].includes(request.method) && url.pathname.startsWith('/api/prefs/')) return json({ ok: true });
+          if (!['GET', 'HEAD'].includes(request.method)) {
+            return json({ error: `You're viewing the hub as ${viewer.viewingAs.name}, so nothing can be changed. Stop viewing as them to make changes.` }, 403);
+          }
+          return await route(request, { ...env, DB: readOnly(env.DB) }, url, viewer);
+        }
+      }
+      return await route(request, env, url, real);
     } catch (err) {
       console.error(err);
       return json({ error: err.message }, err.status || 500);
@@ -124,6 +138,51 @@ export default {
 async function resolveViewer(env, user) {
   const emp = await findEmployee(env, user.email);
   return { ...user, employee: emp, accountId: emp?.account_id || null, ...access(emp, { fallbackAdmin: user.isAdmin }) };
+}
+
+// ---------- viewing as someone else ----------
+
+const VIEW_AS_COOKIE = 'hub_view_as';
+function viewAsCookie(request) {
+  const m = (request.headers.get('cookie') || '').match(new RegExp(`(?:^|;\\s*)${VIEW_AS_COOKIE}=([^;]+)`));
+  const v = m ? decodeURIComponent(m[1]) : '';
+  return /^[\w:-]{3,80}$/.test(v) ? v : null;
+}
+async function viewAs(env, real, accountId) {
+  const emp = await env.DB.prepare('SELECT * FROM employees WHERE account_id = ? AND active = 1').bind(accountId).first();
+  if (!emp || emp.account_id === real.accountId) return null;
+  const admins = (env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const isAdmin = Boolean(emp.email && admins.includes(String(emp.email).toLowerCase()));
+  return {
+    email: emp.email || '', isAdmin, employee: emp, accountId: emp.account_id, ...access(emp, { fallbackAdmin: isAdmin }),
+    viewingAs: { name: emp.name, email: emp.email || null }, realEmail: real.email,
+  };
+}
+async function devRoute(request, env, url, real) {
+  if (!real.can?.developer) return json({ error: 'That is for developers.' }, 403);
+  if (request.method === 'GET' && url.pathname === '/api/dev/people') {
+    const { results } = await env.DB.prepare("SELECT account_id, name, email, groups, teams, role, team, lead_of FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending-%' ORDER BY name").all();
+    return json({ people: results.filter((e) => e.account_id !== real.accountId).map((e) => {
+      const a = access(e);
+      return { id: e.account_id, name: e.name, email: e.email, teams: a.teams, groups: a.groups, leads: a.leads };
+    }) });
+  }
+  if (request.method === 'POST' && url.pathname === '/api/dev/view-as') {
+    const body = await request.json().catch(() => ({}));
+    const id = body.accountId ? String(body.accountId) : null;
+    let name = null;
+    if (id) {
+      const emp = await env.DB.prepare('SELECT name FROM employees WHERE account_id = ? AND active = 1').bind(id).first();
+      if (!emp || !/^[\w:-]{3,80}$/.test(id)) return json({ error: 'That person isn\'t in the hub.' }, 400);
+      name = emp.name;
+      await Audit.record(env, real, { area: 'Developer', action: 'Viewed the hub as someone else', subjectType: 'employee', subjectId: id, label: name });
+    }
+    const cookie = id
+      ? `${VIEW_AS_COOKIE}=${encodeURIComponent(id)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800`
+      : `${VIEW_AS_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
+    return new Response(JSON.stringify({ ok: true, name }), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'set-cookie': cookie } });
+  }
+  return json({ error: 'Not found' }, 404);
 }
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
@@ -918,6 +977,7 @@ async function getMe(env, user) {
     jiraBaseUrl: env.JIRA_BASE_URL,
     teamsList: ALL_TEAMS,
     ledgerStart: await getState(env, 'ledger_start'),
+    viewingAs: user.viewingAs || null,
   };
   const emp = user.employee;
   if (!emp) return { ...base, linked: false };
