@@ -4592,8 +4592,14 @@ function dayLabel(day) {
 
 function dayCardHtml(d) {
   const total = d.drafts.reduce((a, x) => a + x.seconds, 0);
+  const choices = dayDrafts?.choices || [];
   const rows = d.drafts.map((x, i) => `<li data-draft="${i}">
-      <span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}</span>
+      ${x.noTicket ? `<span class="title">Work with no ticket in Bitbucket</span>
+      <label class="draft-pick">Which ticket was it? <select data-draft-ticket>
+        <option value="">Choose…</option>${choices.map((c) => `<option value="${esc(c.key)}|${esc(c.issueId)}"${x.chosenKey === c.key ? ' selected' : ''}>${esc(c.key)} ${esc(c.summary)}</option>`).join('')}
+        <option value="other"${x.chosenKey && !choices.some((c) => c.key === x.chosenKey) ? ' selected' : ''}>Another ticket…</option></select></label>
+      <input class="draft-other" data-draft-other placeholder="MES-1234" value="${esc(x.chosenKey && !choices.some((c) => c.key === x.chosenKey) ? x.chosenKey : '')}"${x.chosenKey && !choices.some((c) => c.key === x.chosenKey) ? '' : ' hidden'} autocomplete="off">`
+      : `<span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}</span>`}
       <span class="draft-fields">
         <label>From <input type="time" data-draft-start value="${esc(x.start)}"></label>
         <label>Hours <input type="number" min="0.25" max="12" step="0.25" inputmode="decimal" data-draft-hours value="${quarterHours(x.seconds)}"></label>
@@ -4616,7 +4622,7 @@ async function loadDayDrafts() {
     dayDrafts = await api('/api/devtime/drafts');
     host.innerHTML = dayDrafts.days.length
       ? `<h2>Waiting to be logged</h2>${dayDrafts.days.map(dayCardHtml).join('')}`
-      : `<h2>Waiting to be logged</h2><div class="card"><p style="margin:0">Nothing waiting. Work pushed to MES branches in Bitbucket appears here as draft time, ready to check and log in one go.</p></div>`;
+      : `<h2>Waiting to be logged</h2><div class="card"><p style="margin:0">Nothing waiting. Your commits, pull requests, reviews and pipelines in Bitbucket appear here as draft time, ready to check and log in one go.</p></div>`;
   } catch (err) { host.innerHTML = `<div class="card"><p class="bad" style="margin:0">${esc(err.message)}</p></div>`; }
 }
 
@@ -4625,10 +4631,24 @@ function readDayCard(card) {
   card.querySelectorAll('[data-draft]').forEach((row) => {
     const x = d.drafts[Number(row.dataset.draft)];
     x.start = row.querySelector('[data-draft-start]').value || x.start;
+    if (x.noTicket) {
+      const pick = row.querySelector('[data-draft-ticket]')?.value || '';
+      const other = row.querySelector('[data-draft-other]')?.value.trim().toUpperCase() || '';
+      if (pick === 'other') { x.chosenKey = other; x.chosenId = null; }
+      else { const [k, id] = pick.split('|'); x.chosenKey = k || ''; x.chosenId = id || null; }
+    }
     const h = Number(row.querySelector('[data-draft-hours]').value);
     if (h > 0) x.seconds = Math.round(h * 4) * 900;
   });
   return d;
+}
+
+function dayChange(event) {
+  const sel = event.target.closest('[data-draft-ticket]');
+  if (!sel) return false;
+  const other = sel.closest('[data-draft]').querySelector('[data-draft-other]');
+  if (other) { other.hidden = sel.value !== 'other'; if (!other.hidden) other.focus(); }
+  return true;
 }
 
 async function dayClick(event) {
@@ -4653,7 +4673,7 @@ async function dayClick(event) {
       if (failed.length) {
         await loadDayDrafts();
         const again = document.querySelector(`.day-card[data-day="${CSS.escape(d.day)}"] .result`);
-        if (again) again.textContent = `${r.logged ? `${r.logged} logged. ` : ''}Tempo didn't take ${failed.map((x) => x.key).join(', ')}: ${failed[0].error}`;
+        if (again) again.textContent = `${r.logged ? `${r.logged} logged. ` : ''}Not logged: ${failed.map((x) => x.key).join(', ')}. ${failed[0].error}`;
       } else {
         toast(`${dayLabel(d.day)} logged`);
         await loadDayDrafts();
@@ -4664,22 +4684,47 @@ async function dayClick(event) {
   return false;
 }
 
+const BB_KINDS = { commit: ['commit', 'commits'], 'pr-created': ['pull request opened', 'pull requests opened'], 'pr-updated': ['pull request update', 'pull request updates'],
+  'pr-comment': ['review comment', 'review comments'], 'pr-approved': ['approval', 'approvals'], 'pr-changes': ['request for changes', 'requests for changes'],
+  'pr-merged': ['merge', 'merges'], 'pr-declined': ['pull request declined', 'pull requests declined'], pipeline: ['pipeline run', 'pipelines run'], tag: ['tag', 'tags'] };
+const bbPieces = (count) => `${n(count)} ${count === 1 ? 'piece' : 'pieces'} of activity`;
+
 function bitbucketAdminHtml(b) {
   const when = (iso) => new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
-  const last = b.last
-    ? `${when(b.last.at)}. ${n(b.last.repos || 0)} ${b.last.repos === 1 ? 'repository' : 'repositories'} with new work, ${n(b.last.added || 0)} new pieces of activity.${b.last.waiting ? ` Part-way through: ${n(b.last.waiting)} ${b.last.waiting === 1 ? 'piece' : 'pieces'} left, carried on every few minutes.` : ''}`
+  const last = b.last?.at
+    ? `${when(b.last.at)}. ${n(b.last.repos || 0)} ${b.last.repos === 1 ? 'repository' : 'repositories'} with new work, ${b.last.added === 1 ? '1 new piece' : `${n(b.last.added || 0)} new pieces`} of activity.${b.last.waiting ? ` Part-way through: ${n(b.last.waiting)} ${b.last.waiting === 1 ? 'piece' : 'pieces'} left, carried on every few minutes.` : ''}`
     : 'Not yet';
+  const kinds = (b.kinds || []).map((k) => `${n(k.n)} ${BB_KINDS[k.kind]?.[k.n === 1 ? 0 : 1] || k.kind}`).join(', ');
+  const devOptions = (sel) => `<option value="">Link to…</option>${(b.devs || []).map((d) => `<option value="${esc(d.id)}"${d.id === sel ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}<option value="ignore">Not one of us: ignore</option>`;
+  const unmatched = (b.unmatched || []).length ? `<h3 style="margin:1.25rem 0 .35rem">Activity nobody is matched to</h3>
+      <p class="muted" style="margin-top:0">Bitbucket names or emails that aren't on the hub, often a personal email in someone's Git settings. Link one to a developer and the last week is read again for them.</p>
+      <ul class="list bb-unmatched">${b.unmatched.map((u) => `<li><span class="title">${esc(u.label)}</span>
+        <span class="sub">${bbPieces(u.n)}, last ${when(u.last)}</span>
+        <select data-bb-link="${esc(u.key)}" aria-label="Who is ${esc(u.label)}">${devOptions('')}</select></li>`).join('')}</ul>` : '';
+  const aliases = (b.aliases || []).length ? `<details style="margin-top:1rem"><summary>Linked identities (${n(b.aliases.length)})</summary>
+      <ul class="list bb-unmatched">${b.aliases.map((a) => `<li><span class="title">${esc(a.alias)}</span>
+        <span class="sub">${a.ignored ? 'Ignored' : esc(a.name || a.accountId)}</span>
+        <button class="linklike" data-bb-unlink="${esc(a.alias)}">Unlink</button></li>`).join('')}</ul></details>` : '';
   return `<h2>Bitbucket</h2>
     <div class="card"><dl class="state">
         <dt>Workspace</dt><dd>${b.workspace ? esc(b.workspace) : '<span class="bad">Not set. Add BITBUCKET_WORKSPACE to the vars in wrangler.jsonc.</span>'}</dd>
-        <dt>Token</dt><dd>${b.configured || b.workspace ? (b.configured ? 'Set' : '<span class="bad">Not set. Add BITBUCKET_API_TOKEN as a secret on the Worker.</span>') : 'Not set'}</dd>
+        <dt>Token</dt><dd>${b.configured || b.workspace ? (b.configured ? `Set, used with ${esc(b.email || 'JIRA_EMAIL')}` : '<span class="bad">Not set. Add BITBUCKET_API_TOKEN as a secret on the Worker.</span>') : 'Not set'}</dd>
         <dt>Last check</dt><dd>${last}</dd>
         ${b.last?.error ? `<dt>Problem</dt><dd class="bad">${esc(b.last.error)}</dd>` : ''}
-        <dt>Last 7 days</dt><dd>${n(b.week?.n || 0)} pieces of activity from ${n(b.week?.people || 0)} ${b.week?.people === 1 ? 'person' : 'people'}</dd>
+        <dt>Last 7 days</dt><dd>${bbPieces(b.week?.n || 0)} from ${n(b.week?.people || 0)} ${b.week?.people === 1 ? 'person' : 'people'}${kinds ? `: ${kinds}` : ''}</dd>
+        ${b.last?.pipelinesOff ? '<dt>Pipelines</dt><dd>Not read: the token has no read:pipeline:bitbucket scope. Add it and Test connection to include pipelines people run.</dd>' : ''}
       </dl>
-      <p class="muted">Repositories with new work are checked about every 15 minutes, a few at a time so each run stays inside Cloudflare's limits. Commits on MES branches, and pull request reviews, approvals and comments, become draft worklogs that developers check and log in one go from Condor Dev.</p>
-      <div class="row"><button class="btn secondary" data-bb="test">Test connection</button><button class="btn secondary" data-bb="poll">Check now</button></div>
-      <div class="result" id="bb-result" role="status"></div></div>`;
+      <p class="muted">Repositories with new work are checked about every 15 minutes, a few at a time so each run stays inside Cloudflare's limits. For everyone in Condor Dev it reads commits on every branch, pull requests opened, updated, reviewed, approved, commented on, merged or declined, pipelines they run and tags they make. Each piece goes to the Jira ticket in its commit message, branch or pull request; activity with no ticket joins the ticket worked on either side of it, or waits for the developer to choose one. Drafts are checked and logged in one go from Condor Dev.</p>
+      <div class="row"><button class="btn secondary" data-bb="test">Test connection</button><button class="btn secondary" data-bb="poll">Check now</button>
+        <button class="btn secondary" data-bb="reread">Read the last week again</button></div>
+      <div class="result" id="bb-result" role="status"></div>
+      ${unmatched}${aliases}</div>`;
+}
+
+function bitbucketTestHtml(r) {
+  const rows = r.checks.map((c) => `<li class="${c.ok ? 'good' : c.needed ? 'bad' : 'muted'}">${c.ok ? '✓' : '✗'} ${esc(c.label)} <code>${esc(c.scope)}</code>${c.ok ? '' : c.needed ? ' is missing' : ' (optional) is missing'}</li>`).join('');
+  return `<p style="margin:.5rem 0">${r.ok ? '<strong>Connected.</strong>' : '<strong class="bad">Connected, but a scope the hub needs is missing.</strong>'} Using ${esc(r.email)}${r.account ? `, the token belongs to ${esc(r.account)}` : ''}.${r.repositories != null ? ` ${n(r.repositories)} ${r.repositories === 1 ? 'repository' : 'repositories'}.` : ''}</p><ul class="bb-checks">${rows}</ul>
+    ${r.ok ? '' : '<p class="muted">Create a new API token with scopes for Bitbucket including the ones marked ✗, and replace BITBUCKET_API_TOKEN.</p>'}`;
 }
 
 // ---------- Condor Dev: estimating, triage and ratings ----------
@@ -8323,6 +8368,25 @@ async function conFlagOrgChange(event) {
   return true;
 }
 
+async function refreshBitbucketAdmin() {
+  const b = await api('/api/admin/bitbucket').catch(() => null);
+  if (!b) return render();
+  if (settingsOpen === '#/condor') settingsData.bitbucket = b;
+  return render();
+}
+
+async function bitbucketLinkChange(event) {
+  const sel = event.target.closest('[data-bb-link]');
+  if (!sel || !sel.value) return false;
+  sel.disabled = true;
+  try {
+    await api('/api/admin/bitbucket-link', { method: 'POST', body: JSON.stringify({ key: sel.dataset.bbLink, accountId: sel.value }) });
+    toast(sel.value === 'ignore' ? 'Ignored' : 'Linked. Reading the last week again for them');
+  } catch (err) { toast(err.message); }
+  await refreshBitbucketAdmin();
+  return true;
+}
+
 async function contractsSettingsChange(event) {
   const sel = event.target.closest('[data-con-org]');
   if (!sel) return false;
@@ -9963,15 +10027,21 @@ view.addEventListener('click', async (event) => {
     bb.disabled = true; out.innerHTML = '<span class="spinner" aria-hidden="true"></span> Asking Bitbucket';
     try {
       if (bb.dataset.bb === 'test') {
-        const r = await api('/api/admin/bitbucket-test', { method: 'POST' });
-        out.textContent = `Connected. ${r.repositories != null ? `${n(r.repositories)} repositories, ` : ''}most recently updated: ${r.recent.join(', ') || 'none'}.`;
+        out.innerHTML = bitbucketTestHtml(await api('/api/admin/bitbucket-test', { method: 'POST' }));
       } else {
-        const r = await api('/api/admin/bitbucket-poll', { method: 'POST' });
+        const r = await api(bb.dataset.bb === 'reread' ? '/api/admin/bitbucket-reread' : '/api/admin/bitbucket-poll', { method: 'POST' });
         if (r.skipped) out.textContent = r.skipped;
-        else { bb.disabled = false; return render(); }
+        else { bb.disabled = false; await refreshBitbucketAdmin(); return; }
       }
     } catch (err) { out.textContent = err.message; }
     bb.disabled = false;
+    return;
+  }
+  const unlink = event.target.closest('[data-bb-unlink]');
+  if (unlink) {
+    try { await api('/api/admin/bitbucket-link', { method: 'POST', body: JSON.stringify({ key: unlink.dataset.bbUnlink, accountId: null }) }); toast('Unlinked'); }
+    catch (err) { toast(err.message); }
+    await refreshBitbucketAdmin();
     return;
   }
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesClick(event) !== false) return;
@@ -10057,7 +10127,7 @@ const TILE_SETTINGS = {
   '#/it': { label: 'IT support settings', render: () => settingsItHtml() },
   '#/reports': { label: 'Reporting settings', render: () => settingsReportsHtml() },
   '#/quotes': { label: 'Quote settings', render: () => settingsQuotesHtml() },
-  '#/condor': { label: 'Condor Dev settings', render: () => bitbucketAdminHtml(settingsData.bitbucket) },
+  '#/condor': { label: 'Condor Dev settings', render: () => bitbucketAdminHtml(settingsData.bitbucket), who: 'Developers and admins.', can: 'developer' },
   '#/contracts': { label: 'Service contract settings', render: () => settingsContractsHtml() },
   '#/psc': { label: 'PSC settings', render: () => settingsPscHtml() },
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
@@ -10253,6 +10323,8 @@ view.addEventListener('change', async (event) => {
     return;
   }
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
+  if (event.target.closest('[data-bb-link]') && await bitbucketLinkChange(event)) return;
+  if (event.target.closest('[data-draft-ticket]') && dayChange(event)) return;
   if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;

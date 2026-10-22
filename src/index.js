@@ -188,7 +188,7 @@ async function devRoute(request, env, url, real) {
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
 const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/reads', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
-  '/api/admin/bitbucket-poll', '/api/admin/send-alerts', '/api/admin/test-8x8']);
+  '/api/admin/bitbucket-poll', '/api/admin/bitbucket-reread', '/api/admin/bitbucket-link', '/api/admin/send-alerts', '/api/admin/test-8x8']);
 
 async function route(request, env, url, user) {
   const { pathname } = url;
@@ -798,6 +798,16 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/admin/bitbucket') return json(await (await import('./devtime.js')).status(env));
     if (method === 'POST' && pathname === '/api/admin/bitbucket-test') return json(await (await import('./devtime.js')).testConnection(env));
     if (method === 'POST' && pathname === '/api/admin/bitbucket-poll') return json(await (await import('./devtime.js')).poll(env, { force: true }));
+    if (method === 'POST' && pathname === '/api/admin/bitbucket-reread') return json(await (await import('./devtime.js')).readAgain(env));
+    if (method === 'POST' && pathname === '/api/admin/bitbucket-link') {
+      const body = await request.json().catch(() => ({}));
+      const DevTime = await import('./devtime.js');
+      const r = await DevTime.link(env, body);
+      await Audit.record(env, user, { area: 'Condor Dev', action: body.accountId === 'ignore' ? 'Bitbucket identity ignored' : body.accountId ? 'Bitbucket identity linked' : 'Bitbucket identity unlinked',
+        label: String(body.key || ''), changes: [{ label: String(body.key || ''), before: '', after: String(body.accountId || '') }] });
+      if (r.reread) await DevTime.readAgain(env).catch(() => null);
+      return json(r);
+    }
     if (method === 'GET' && pathname === '/api/admin/quote-config') return json(await Quotes.config(env));
     if (method === 'POST' && pathname === '/api/admin/quote-config') {
       const r = await Quotes.saveConfig(env, body);

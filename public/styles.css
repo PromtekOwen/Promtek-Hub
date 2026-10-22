@@ -1366,3 +1366,12 @@ details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom:
 }
 .con-flag-org { margin-top: .5rem; }
 label.con-flag-org { display: block; max-width: 420px; }
+.draft-pick { display: block; margin-top: .35rem; max-width: 520px; }
+.draft-other { margin-top: .35rem; max-width: 220px; }
+.bb-checks { list-style: none; padding: 0; margin: .25rem 0; }
+.bb-checks li { padding: .15rem 0; }
+.bb-checks li.good { color: var(--ok); }
+.bb-unmatched li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem 1rem; align-items: center; }
+.bb-unmatched li select, .bb-unmatched li .linklike { grid-row: 1 / span 2; grid-column: 2; }
+@media (max-width: 520px) { .bb-unmatched li { grid-template-columns: minmax(0, 1fr); } .bb-unmatched li select, .bb-unmatched li .linklike { grid-row: auto; grid-column: 1; } }
+.draft-pick select { display: block; margin-top: .25rem; width: 100%; }

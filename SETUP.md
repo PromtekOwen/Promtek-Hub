@@ -524,7 +524,15 @@ Jira's own splitting automation should be off for orders created from hub quotes
 
 The Condor Dev tile is shown to the Condor team and to admins.
 
-**Your day, from Bitbucket.** Every 15 minutes the hub reads Bitbucket with an API token. It checks only repositories with new work and records commits on branches carrying an MES key, plus pull request reviews, approvals and comments. A developer is matched by their Atlassian account, or by the email in the commit.
+**Your day, from Bitbucket.** Every 15 minutes the hub reads Bitbucket with an API token. It checks only repositories with new work, and for everyone in Condor Dev records:
+- commits on every branch;
+- pull requests opened, updated, commented on, approved, sent back with changes requested, merged or declined;
+- pipelines they run (needs the read:pipeline:bitbucket scope; skipped without it);
+- tags they make.
+
+Each piece goes to the Jira ticket named in its commit message, branch, or pull request title or description; any project's key counts. Activity with no ticket joins the ticket worked on either side of it in the same block of work, or, if the whole block has none, shows as a draft for the developer to choose a ticket for.
+
+A developer is matched by their Atlassian account, then by the email or name in the commit. Bitbucket identities that match nobody on the hub are listed in the Condor Dev cog, where they can be linked to a developer or ignored; linking one reads the last week again.
 
 Each day's activity becomes draft worklogs:
 - activity close together is one block of work, starting half an hour before the first commit and ending a quarter of an hour after the last;
@@ -537,12 +545,12 @@ Each day's activity becomes draft worklogs:
 Developers check the times, change anything that's wrong, and log the day to Tempo in one tap. "Not work time" clears a draft. Anything Tempo refuses stays as a draft. Drafts go back a week. On weekdays they're emailed at 16:00 that their day is ready, and at 09:00 the next working day if it's still waiting.
 
 **Setting it up.**
-1. At id.atlassian.com, create an API token with scopes, with Bitbucket as the app and read:repository:bitbucket, read:pullrequest:bitbucket and read:workspace:bitbucket. Note its expiry date.
+1. At id.atlassian.com (Security, Create API token with scopes), create a token with Bitbucket as the app and these scopes: read:repository:bitbucket, read:pullrequest:bitbucket, read:workspace:bitbucket, read:pipeline:bitbucket and read:user:bitbucket. Note its expiry date. App passwords stopped working on 9 June 2026, and a Jira API token without Bitbucket scopes is refused.
 2. Add it to the Worker as the secret `BITBUCKET_API_TOKEN`.
 3. Add `"BITBUCKET_WORKSPACE": "<workspace slug>"` to the vars in `wrangler.jsonc`. The slug is the part after `bitbucket.org/` in a repository's address.
 4. The token is used with `JIRA_EMAIL`. If it belongs to a different account, add that account's email as `BITBUCKET_EMAIL`.
 
-The Condor Dev cog shows the last check and any problem, and has Test connection and Check now. When the token expires, the cog and Admin's "Last sync problem" say so; the next check after it's replaced starts where the last good one finished.
+The Condor Dev cog shows the last check and any problem, and has Test connection (which tries each scope in turn and says which is missing), Check now, and Read the last week again. When the token is refused, the cog and Admin's "Last sync problem" say so; the next check after it's replaced catches up on up to eight days.
 
 ### Estimating MES tickets
 

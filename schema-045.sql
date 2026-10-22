@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS dev_aliases (alias TEXT PRIMARY KEY, account_id TEXT NOT NULL);
