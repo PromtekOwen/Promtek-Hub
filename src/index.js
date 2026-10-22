@@ -22,8 +22,8 @@ import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
 import * as Eotq from './eotq.js';
-import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage } from './logging.js';
-import { metered, addReads, readsReport, queryName, readOnly } from './d1-meter.js';
+import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite } from './logging.js';
+import { metered, addReads, readsReport, queryName, readOnly, utcMonth as utcMonthOfUsage } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
 const ROLES = ['engineer', 'lead', 'admin'];
@@ -209,7 +209,7 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/log/browse') return json(await browse(env, url.searchParams.get('node') || 'root'));
     if (method === 'GET' && pathname === '/api/log/shortcuts') {
-      return json(user.accountId ? await shortcuts(env, user.accountId) : { recent: [], assigned: [] });
+      return json(user.accountId ? await shortcuts(env, user.accountId, user.accountId || user.email) : { recent: [], favourites: [], assigned: [] });
     }
     if (method === 'GET' && pathname === '/api/log/search') return json(await search(env, url.searchParams.get('q')));
     if (method === 'GET' && pathname === '/api/log/hint') return json(await stageHint(env, url.searchParams.get('issueKey')) || {});
@@ -220,6 +220,11 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/log/psc') return json(await createPsc(env, user, body));
     if (method === 'POST' && pathname === '/api/log/flag-stage') return json(await flagMissingStage(env, user, body));
+  }
+
+  if (method === 'POST' && pathname === '/api/prefs/favourites') {
+    const body = await request.json().catch(() => ({}));
+    return json(await setFavourite(env, user.accountId || user.email, body));
   }
 
   if (method === 'GET' && pathname === '/api/prefs/tiles') {
@@ -488,6 +493,12 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'Service contracts', action: 'Alert marked resolved', subjectType: 'contract', subjectId: r.flag.contract_key || r.flag.ref_key,
         label: r.flag.contract_key || r.flag.ref_key, changes: [{ label: 'Alert', before: r.flag.detail, after: 'Resolved' }] });
       return json({ ok: true });
+    }
+    if (method === 'POST' && pathname === '/api/contracts/flag-org') {
+      const r = await Con.setFlagOrg(env, user, body);
+      await Audit.record(env, user, { area: 'Service contracts', action: 'Organization set from an alert', subjectType: 'contract', subjectId: r.flag.ref_key,
+        label: r.flag.ref_key, changes: [{ label: 'Organization', before: '', after: r.org }] });
+      return json({ ok: true, saved: r.saved, message: r.message, org: r.org });
     }
     if (method === 'GET' && pathname === '/api/contracts/settings') return json(await Con.settings(env, user));
     if (method === 'POST' && pathname === '/api/contracts/recipients') {
@@ -771,9 +782,11 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
 
     if (method === 'GET' && pathname === '/api/admin/overview') return json(await adminOverview(env));
+    // Database use is for the Developer group only, admins included only if they're in it.
+    if (pathname.startsWith('/api/admin/reads') && !user.groups?.includes('developer')) return json({ error: 'Database use is for developers.' }, 403);
     if (method === 'GET' && pathname === '/api/admin/reads') return json(await readsReport(env));
     if (method === 'POST' && pathname === '/api/admin/reads-carry-on') {
-      await setState(env, 'd1_carry_on_month', new Date().toISOString().slice(0, 7));
+      await setState(env, 'd1_carry_on_month', utcMonthOfUsage());
       await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on this month', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
       return json({ ok: true });
     }

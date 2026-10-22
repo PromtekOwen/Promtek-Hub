@@ -601,7 +601,7 @@ body.tile-dragging, body.tile-dragging * { cursor: grabbing !important; }
 @media (max-width: 480px) { .condor-tabs .tab { font-size: .9rem; padding: .45rem .2rem; flex: 1 0 auto; } }
 
 /* Admin sections */
-.admin-section { margin-top: 1rem; border-radius: 14px; background: var(--card, #fff); box-shadow: var(--shadow); }
+.admin-section { margin-top: 1rem; border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
 .admin-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .85rem 1.1rem; border-radius: 14px; }
 .admin-section > summary::-webkit-details-marker { display: none; }
 .admin-section > summary h2 { margin: 0; font-size: 1.1rem; }
@@ -1347,3 +1347,22 @@ details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom:
 .viewas-who { display: grid; text-align: left; }
 .viewas-who small { color: var(--muted); font-weight: 400; font-size: .82rem; }
 .viewas-list { max-height: 55vh; overflow-y: auto; }
+
+.option-fav { display: flex; align-items: stretch; gap: .4rem; min-width: 0; }
+.option-fav > .option { flex: 1; min-width: 0; }
+.fav-star { flex-shrink: 0; width: 2.75rem; border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  color: var(--muted); font-size: 1.25rem; line-height: 1; cursor: pointer; }
+.fav-star:hover { border-color: var(--blue); color: var(--blue); }
+.fav-star.on { color: #d99a00; border-color: #e8c35a; }
+.log-chosen-head { display: flex; align-items: flex-start; gap: .6rem; justify-content: space-between; }
+.log-chosen-head .fav-star { height: 2.5rem; }
+.log-side { display: none; }
+@media (min-width: 1000px) {
+  .log-layout { display: grid; grid-template-columns: 290px minmax(0, 1fr); gap: 1.25rem; align-items: start; }
+  .log-side { display: block; position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+  .log-side h2 { margin-top: 0; }
+  .log-side .option-main .muted { font-size: .82rem; }
+  .log-favs-inline { display: none; }
+}
+.con-flag-org { margin-top: .5rem; }
+label.con-flag-org { display: block; max-width: 420px; }

@@ -1082,6 +1082,23 @@ export async function resolveFlag(env, viewer, id) {
   return { ok: true, flag: f };
 }
 
+// Set the Organization on a PSC from its "no Organization" alert. The Jira change
+// goes through the PSC tile's queue, so a refusal is kept and tried again.
+export async function setFlagOrg(env, viewer, { id, orgId }) {
+  mustSee(viewer);
+  const f = await env.DB.prepare('SELECT * FROM contract_flags WHERE id = ?').bind(Number(id)).first();
+  if (!f) throw new Error('That alert has gone.');
+  if (f.kind !== 'psc-org' || !f.ref_key) throw new Error('That alert isn\'t about a missing Organization.');
+  const Psc = await import('./psc.js');
+  const result = await Psc.setOrg(env, viewer, f.ref_key, orgId);
+  const org = (await Psc.organizations(env)).find((o) => String(o.id) === String(orgId));
+  await env.DB.prepare('UPDATE contract_issues SET org = ? WHERE issue_key = ?').bind(org.name, f.ref_key).run();
+  await env.DB.prepare('UPDATE contract_flags SET resolved_at = ?, resolved_by = ? WHERE id = ?')
+    .bind(new Date().toISOString(), `${viewer.employee?.name || viewer.email}, Organization set to ${org.name}`, f.id).run();
+  await touched(env);
+  return { ...result, flag: f, org: org.name };
+}
+
 // When someone picks a Service Contract item to log time to, the visits they may have meant instead.
 export async function check(env, viewer, issueId) {
   const c = await env.DB.prepare('SELECT * FROM contracts WHERE issue_id = ?').bind(String(issueId)).first();

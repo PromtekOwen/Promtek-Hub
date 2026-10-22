@@ -205,14 +205,19 @@ export async function browse(env, node = 'root') {
   throw new Error('Unknown step.');
 }
 
-// The two shortcuts that skip the tree: what you logged against lately, and
-// what Jira says is yours.
-export async function shortcuts(env, accountId) {
+// The shortcuts that skip the tree: what you logged against lately, what you
+// starred, and what Jira says is yours.
+export const MAX_FAVOURITES = 30;
+
+export async function shortcuts(env, accountId, owner = accountId) {
   const { results } = await env.DB.prepare(
     `SELECT j.issue_key, j.summary, MAX(l.work_date) AS last_used
        FROM xp_ledger l JOIN jobs j ON j.issue_id = l.issue_id
       WHERE l.account_id = ? GROUP BY l.issue_id ORDER BY last_used DESC LIMIT 8`
   ).bind(accountId).all();
+  const favRows = (await env.DB.prepare(
+    'SELECT issue_key, issue_id, title, sublabel FROM log_favourites WHERE account_id = ? ORDER BY added_at DESC LIMIT ?'
+  ).bind(owner, MAX_FAVOURITES).all()).results || [];
 
   let assigned = [];
   try {
@@ -222,10 +227,43 @@ export async function shortcuts(env, accountId) {
   }
 
   const recentKeys = results.map((r) => r.issue_key).filter(Boolean);
-  const recent = recentKeys.length
-    ? await issuesFor(env, `key in (${quoted(recentKeys)})`, { limit: 8 })
-    : [];
-  return { recent, assigned };
+  const favKeys = favRows.map((r) => r.issue_key);
+  const keys = [...new Set([...recentKeys, ...favKeys])];
+  let found = [];
+  if (keys.length) {
+    try {
+      found = await issuesFor(env, `key in (${quoted(keys)})`, { limit: keys.length });
+    } catch (err) {
+      console.warn('Shortcut lookup failed:', err.message);
+    }
+  }
+  const byKey = new Map(found.map((o) => [o.id, o]));
+  const recent = recentKeys.map((k) => byKey.get(k)).filter(Boolean);
+  const favourites = favRows.map((r) => byKey.get(r.issue_key) || {
+    id: r.issue_key, issueId: r.issue_id, label: r.issue_key, title: r.title || '', sublabel: r.sublabel || '',
+    note: null, rate: 1, jobElo: null, loggable: true, next: null,
+  });
+  return { recent, favourites, assigned };
+}
+
+// Star or unstar an item. A snapshot of its title is kept so the list still
+// reads sensibly if Jira can't be reached.
+export async function setFavourite(env, owner, { key, issueId, title, sublabel, on }) {
+  const issueKey = String(key || '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9]+-\d+$/.test(issueKey)) throw new Error('That is not a Jira key.');
+  if (!on) {
+    await env.DB.prepare('DELETE FROM log_favourites WHERE account_id = ? AND issue_key = ?').bind(owner, issueKey).run();
+    return { ok: true, on: false };
+  }
+  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM log_favourites WHERE account_id = ?').bind(owner).first();
+  const exists = await env.DB.prepare('SELECT 1 AS x FROM log_favourites WHERE account_id = ? AND issue_key = ?').bind(owner, issueKey).first();
+  if (!exists && (count?.n || 0) >= MAX_FAVOURITES) throw new Error(`You can keep up to ${MAX_FAVOURITES} favourites. Unstar one first.`);
+  await env.DB.prepare(
+    `INSERT INTO log_favourites (account_id, issue_key, issue_id, title, sublabel, added_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(account_id, issue_key) DO UPDATE SET issue_id = excluded.issue_id, title = excluded.title, sublabel = excluded.sublabel`
+  ).bind(owner, issueKey, issueId ? String(issueId) : null, String(title || '').slice(0, 300), String(sublabel || '').slice(0, 200),
+    new Date().toISOString()).run();
+  return { ok: true, on: true };
 }
 
 export async function search(env, query) {

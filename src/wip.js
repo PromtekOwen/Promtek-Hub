@@ -14,6 +14,7 @@
 // switched on in the tile's settings.
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
+import { canonStatus } from './contracts.js';
 
 export const F = {
   upfront: 'customfield_12003',
@@ -794,28 +795,35 @@ async function saTime(env, orderId, items) {
   return { seconds };
 }
 
+// Active service contracts only: In Contract or Requires Renewal. The status
+// comes from the Service Contracts tile where it has the contract, since the hub
+// moves contracts along there; Jira's own status otherwise.
+const ACTIVE_CONTRACT = ['in contract', 'requires renewal'];
+
 export async function recurring(env, viewer, { region } = {}) {
   mustSee(viewer);
   region = regionArg(region);
-  const { results } = await env.DB.prepare('SELECT * FROM wip_contracts WHERE region = ? AND gone = 0 ORDER BY issue_key').bind(region).all();
-  const { over, seed } = await overridesAndSeeds(env, results.map((c) => c.issue_key));
-  const today = londonDate();
+  const { results } = await env.DB.prepare(
+    `SELECT w.*, c.status AS tile_status, c.customer AS tile_customer, c.start_date AS tile_start, c.end_date AS tile_end
+       FROM wip_contracts w LEFT JOIN contracts c ON c.issue_key = w.issue_key
+      WHERE w.region = ? AND w.gone = 0 ORDER BY w.issue_key`
+  ).bind(region).all();
+  const active = results.filter((c) => ACTIVE_CONTRACT.includes(lower(canonStatus(c.tile_status || c.status))));
+  const { over, seed } = await overridesAndSeeds(env, active.map((c) => c.issue_key));
   const rows = [];
-  for (const c of results) {
+  for (const c of active) {
     const s = seed.get(c.issue_key), o = over.get(c.issue_key);
     if (o?.excluded) continue;
     const total = o?.upfront ?? s?.upfront ?? c.total ?? null;
     const pctInv = c.steps ? c.steps_invoiced / c.steps : 0;
     const pctPaid = c.steps ? c.steps_paid / c.steps : 0;
-    const st = lower(c.status);
-    const state = /expired/.test(st) ? (pctPaid < 1 ? 'Expired (Awaiting Payment)' : 'Expired')
-      : /in contract|renewal/.test(st) ? 'Active'
-        : (c.start_date && c.start_date > today) || /new|sent|chasing|confirmed/.test(st) ? 'Awaiting Start' : c.status;
-    if (state === 'Expired') continue;
+    const status = canonStatus(c.tile_status || c.status);
+    const state = lower(status) === 'requires renewal' ? 'Requires Renewal' : 'Active';
     const division = o?.division || s?.division || (/condor/i.test(c.summary || '') ? 'Condor' : 'Service');
     rows.push({
-      key: c.issue_key, org: c.org, title: c.summary, status: c.status, state, division, start: c.start_date || s?.start_date || null,
-      end: c.end_date || s?.end_date || null, ended: c.ended_at, total, steps: c.steps || 0, stepsInvoiced: c.steps_invoiced || 0, stepsPaid: c.steps_paid || 0,
+      key: c.issue_key, org: c.tile_customer || c.org, title: c.summary, status, state, division,
+      start: c.tile_start || c.start_date || s?.start_date || null, end: c.tile_end || c.end_date || s?.end_date || null, ended: c.ended_at,
+      total, steps: c.steps || 0, stepsInvoiced: c.steps_invoiced || 0, stepsPaid: c.steps_paid || 0,
       invoiced: pctInv, paid: pctPaid, invoicedValue: total === null ? null : total * pctInv, paidValue: total === null ? null : total * pctPaid,
       valueSource: o?.upfront != null ? 'override' : s?.upfront != null ? 'sheet' : c.total != null ? 'jira' : 'none',
     });

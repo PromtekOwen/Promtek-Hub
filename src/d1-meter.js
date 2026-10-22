@@ -17,8 +17,21 @@ export const PACE_ALERT = 2;
 const KEEP_DAYS = 40;
 
 export const utcDay = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 10);
-export const utcMonth = (ms = Date.now()) => new Date(ms).toISOString().slice(0, 7);
-export const daysInMonth = (ms = Date.now()) => { const d = new Date(ms); return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); };
+// Cloudflare's usage month runs from the 22nd to the 21st, so the hub's does too. A period is
+// named by the month it starts in: 2026-10 runs from 22 October to 21 November.
+export const RESET_DAY = 22;
+export const utcMonth = (ms = Date.now()) => {
+  const d = new Date(ms);
+  const back = d.getUTCDate() < RESET_DAY ? 1 : 0;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - back, 1)).toISOString().slice(0, 7);
+};
+export const periodStart = (ms = Date.now()) => `${utcMonth(ms)}-${RESET_DAY}`;
+export const periodEnd = (ms = Date.now()) => {
+  const [y, m] = utcMonth(ms).split('-').map(Number);
+  return new Date(Date.UTC(y, m, RESET_DAY - 1)).toISOString().slice(0, 10);
+};
+export const daysInMonth = (ms = Date.now()) => Math.round((Date.parse(`${periodEnd(ms)}T00:00:00Z`) - Date.parse(`${periodStart(ms)}T00:00:00Z`)) / 86_400_000) + 1;
+export const dayOfPeriod = (ms = Date.now()) => Math.floor((Date.parse(`${utcDay(ms)}T00:00:00Z`) - Date.parse(`${periodStart(ms)}T00:00:00Z`)) / 86_400_000) + 1;
 
 // A query's text, short enough to show, so the busiest ones can be listed.
 export const queryName = (sql) => String(sql).replace(/\s+/g, ' ').replace(/\((\?,\s*)+\?\)/g, '(?…)').trim().slice(0, 140);
@@ -86,14 +99,6 @@ export async function addReads(env, key, counts, { runs = 0, queries = {}, write
   // Only the busiest are kept, so the record stays small.
   record.queries = Object.fromEntries(Object.entries(record.queries).sort((a, b) => b[1] - a[1]).slice(0, KEEP_QUERIES));
   await setState(plain, stateKey, JSON.stringify(record));
-  if (read || written) {
-    const monthKey = `d1_month:${utcMonth()}`;
-    let month;
-    try { month = JSON.parse((await getState(plain, monthKey)) || '{}'); } catch { month = {}; }
-    month.reads = (month.reads || 0) + read;
-    month.writes = (month.writes || 0) + written;
-    await setState(plain, monthKey, JSON.stringify(month));
-  }
   return record;
 }
 
@@ -102,10 +107,19 @@ export async function readsToday(env, key) {
   try { return JSON.parse((await getState({ DB: db }, `${key}:${utcDay()}`)) || '{}'); } catch { return {}; }
 }
 
+// The period so far, added up from each day's record (pages and background jobs).
 export async function monthSoFar(env) {
   const db = env.DB.unmetered || env.DB;
-  try { const m = JSON.parse((await getState({ DB: db }, `d1_month:${utcMonth()}`)) || '{}'); return { reads: m.reads || 0, writes: m.writes || 0 }; }
-  catch { return { reads: 0, writes: 0 }; }
+  const start = periodStart();
+  try {
+    const { results } = await db.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'd1_reads_bg:%' OR key LIKE 'd1_reads_web:%'").all();
+    let reads = 0, writes = 0;
+    for (const r of results) {
+      if (r.key.slice(r.key.indexOf(':') + 1) < start) continue;
+      try { const v = JSON.parse(r.value); reads += v.total || 0; writes += v.writes || 0; } catch { /* skipped */ }
+    }
+    return { reads, writes };
+  } catch { return { reads: 0, writes: 0 }; }
 }
 
 // Whether background jobs should stand down: the month is nearly used up.
@@ -119,7 +133,7 @@ export async function tidyReads(env) {
   const cutoff = utcDay(Date.now() - KEEP_DAYS * 86_400_000);
   await db.prepare("DELETE FROM sync_state WHERE (key LIKE 'd1_reads_bg:%' OR key LIKE 'd1_reads_web:%') AND substr(key, instr(key, ':') + 1) < ?")
     .bind(cutoff).run();
-  await db.prepare("DELETE FROM sync_state WHERE key LIKE 'd1_month:%' AND substr(key, 10) < ?").bind(cutoff.slice(0, 7)).run();
+  await db.prepare("DELETE FROM sync_state WHERE key LIKE 'd1_month:%'").run();
 }
 
 // The month and each day for Admin: background jobs and pages, busiest first.
@@ -148,7 +162,7 @@ export async function readsReport(env) {
   const month = await monthSoFar(env);
   return {
     readLimit: MONTHLY_READ_LIMIT, writeLimit: MONTHLY_WRITE_LIMIT, share: BACKGROUND_SHARE,
-    month: { ...month, name: utcMonth(), daysIn: daysInMonth(), day: new Date().getUTCDate() },
+    month: { ...month, name: utcMonth(), start: periodStart(), end: periodEnd(), daysIn: daysInMonth(), day: dayOfPeriod() },
     paused: (await getState({ DB: db }, 'd1_paused_month')) === utcMonth(),
     days: list,
   };

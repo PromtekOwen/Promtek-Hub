@@ -65,6 +65,17 @@ export async function feed(env, viewer) {
 
 export async function dismiss(env, viewer, id) {
   if (String(id).startsWith('eotq:')) return Eotq.dismiss(env, viewer, id);
+  const news = /^(order-new|psc-added):([A-Z0-9,-]{3,600})$/.exec(String(id));
+  if (news) {
+    const now = new Date().toISOString();
+    const items = [...new Set(news[2].split(',').filter((k) => /^[A-Z][A-Z0-9]+-\d+$/.test(k)))].slice(0, 30);
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM home_dismissals WHERE at < ?').bind(new Date(Date.now() - 30 * DAY_MS).toISOString()),
+      ...items.map((k) => env.DB.prepare('INSERT INTO home_dismissals (account_id, item, at) VALUES (?, ?, ?) ON CONFLICT(account_id, item) DO NOTHING')
+        .bind(readerOf(viewer), `${news[1]}:${k}`, now)),
+    ]);
+    return { ok: true };
+  }
   await env.DB.prepare(
     `INSERT INTO home_message_reads (message_id, account_id, seen_at, dismissed_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(message_id, account_id) DO UPDATE SET dismissed_at = excluded.dismissed_at`
@@ -157,6 +168,9 @@ async function systemAlerts(env, viewer) {
     if (row?.n) out.push({ key: 'psc-new', tone: 'important', title: row.n === 1 ? '1 new PSC needs picking up' : `${row.n} new PSCs need picking up`, body: 'Nobody has them or has looked at them yet.', link: '#/psc' });
   }
 
+  out.push(...await newOrderAlerts(env, viewer).catch(() => []));
+  out.push(...await newPscAlerts(env, viewer).catch(() => []));
+
   if (viewer.isLead) {
     const [disputes, modifiers] = await Promise.all([pendingDisputes(env, viewer), Modifiers.pending(env, viewer)]);
     if (disputes.length) out.push({ key: 'disputes', tone: 'info', title: `${plural(disputes.length, 'dispute')} to decide`, body: listWords([...new Set(disputes.map((d) => d.raised_by || 'Someone'))].slice(0, 3)) + ' think a job was harder than quoted.', link: '#/jobs' });
@@ -168,6 +182,69 @@ async function systemAlerts(env, viewer) {
     if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Dates, acceptance or PSCs missing an Organization.', link: '#/contracts' });
   }
   return out;
+}
+
+const ORDER_DAYS = 7;
+const PSC_DAYS = 2;
+const DIVISION_TEAM = { ProjectsTeam: 'Projecting', ServiceTeam: 'Service' };
+const DIVISION_WORD = { ProjectsTeam: 'Projecting', ServiceTeam: 'Service' };
+
+async function dismissedOf(env, viewer, prefix, keys) {
+  if (!keys.length) return new Set();
+  const { results } = await env.DB.prepare(
+    `SELECT item FROM home_dismissals WHERE account_id = ? AND item IN (${keys.map(() => '?').join(', ')})`
+  ).bind(readerOf(viewer), ...keys.map((k) => `${prefix}:${k}`)).all();
+  return new Set(results.map((r) => r.item.slice(prefix.length + 1)));
+}
+
+// One alert each for up to three, then one alert covering the lot.
+function grouped(prefix, rows, one, many) {
+  if (rows.length <= 3) return rows.map((r) => ({ id: `${prefix}:${r.issue_key}`, key: `${prefix}:${r.issue_key}`, ...one(r) }));
+  const keys = rows.slice(0, 30).map((r) => r.issue_key);
+  return [{ id: `${prefix}:${keys.join(',')}`, key: prefix, ...many(rows) }];
+}
+
+// New orders to the leads of the team they're for. While an order's division
+// isn't known yet, both teams' leads see it.
+async function newOrderAlerts(env, viewer) {
+  const leads = (viewer.leads || []).filter((t) => t === 'Projecting' || t === 'Service');
+  if (!leads.length || !viewer.groups?.includes('lead')) return [];
+  const since = new Date(Date.now() - ORDER_DAYS * DAY_MS).toISOString().slice(0, 10);
+  const { results } = await env.DB.prepare(
+    `SELECT o.issue_key, o.summary, o.org, o.created, COALESCE(v.division, s.division, o.division_jira) AS division
+       FROM wip_orders o LEFT JOIN wip_overrides v ON v.issue_key = o.issue_key LEFT JOIN wip_seed s ON s.issue_key = o.issue_key
+      WHERE o.created >= ? AND o.gone = 0 ORDER BY o.created DESC LIMIT 60`
+  ).bind(since).all();
+  const mine = results.filter((o) => {
+    const team = DIVISION_TEAM[o.division];
+    return team ? leads.includes(team) : true;
+  });
+  const gone = await dismissedOf(env, viewer, 'order-new', mine.map((o) => o.issue_key));
+  const fresh = mine.filter((o) => !gone.has(o.issue_key));
+  return grouped('order-new', fresh,
+    (o) => ({ tone: 'info', title: `New order ${o.issue_key}${o.org ? ` from ${o.org}` : ''}`,
+      body: `${o.summary || 'No title yet'}. ${DIVISION_WORD[o.division] ? `${DIVISION_WORD[o.division]} order.` : 'Division not set yet.'}`, link: '#/jobs' }),
+    (rows) => ({ tone: 'info', title: `${plural(rows.length, 'new order')} this week`,
+      body: `${listWords(rows.slice(0, 3).map((o) => o.issue_key))}${rows.length > 3 ? ' and more' : ''}.`, link: '#/jobs' }));
+}
+
+// Every new PSC to everyone in the Service team, until they've seen it.
+async function newPscAlerts(env, viewer) {
+  if (!(viewer.teams || []).includes('Service')) return [];
+  const since = new Date(Date.now() - PSC_DAYS * DAY_MS).toISOString().slice(0, 10);
+  const { results } = await env.DB.prepare(
+    `SELECT issue_key, summary, org, project_key, issuetype, reporter_name, created_at FROM psc_items
+      WHERE done = 0 AND created_at >= ? AND issuetype NOT IN ('Snag', 'Sub-Snag') ORDER BY created_at DESC LIMIT 60`
+  ).bind(since).all();
+  const myName = viewer.employee?.name || viewer.name;
+  const others = results.filter((p) => !myName || p.reporter_name !== myName);
+  const gone = await dismissedOf(env, viewer, 'psc-added', others.map((p) => p.issue_key));
+  const fresh = others.filter((p) => !gone.has(p.issue_key));
+  return grouped('psc-added', fresh,
+    (p) => ({ tone: 'info', title: `New ${p.issuetype || 'PSC'} ${p.issue_key}${p.org ? ` for ${p.org}` : ''}`,
+      body: `${p.summary || 'No summary'}${p.reporter_name ? `, raised by ${p.reporter_name}` : ''}.`, link: `#/psc?item=${p.issue_key}` }),
+    (rows) => ({ tone: 'info', title: `${plural(rows.length, 'new PSC')} in the last two days`,
+      body: `${listWords(rows.slice(0, 3).map((p) => p.issue_key))}${rows.length > 3 ? ' and more' : ''}.`, link: '#/psc' }));
 }
 
 // Monday to today, and which weekdays before today have nothing logged. Saturday and

@@ -431,7 +431,8 @@ const pages = {
     async render() {
       if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData, elo, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'), api('/api/admin/reads').catch(() => null)]);
+      const [data, peopleData, elo, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
+        me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -3141,6 +3142,69 @@ let logMode = null;            // 'manual' once they've chosen to log time alrea
 let logSearch = '';
 let logResults = null;
 let logPscProject = null;
+let logShortcuts = null;       // recent, favourites and assigned, kept while on the page
+
+const isJiraKey = (k) => /^[A-Z][A-Z0-9]+-\d+$/.test(String(k || ''));
+const favKeys = () => new Set((logShortcuts?.favourites || []).map((o) => o.label));
+
+async function loadLogShortcuts() {
+  if (!logShortcuts) logShortcuts = await api('/api/log/shortcuts');
+  logShortcuts.favourites ||= [];
+  return logShortcuts;
+}
+
+function favStar(option) {
+  if (!option?.loggable || option.next || !isJiraKey(option.label)) return '';
+  const on = favKeys().has(option.label);
+  const data = { key: option.label, issueId: option.issueId, title: option.title || '', sublabel: option.sublabel || '' };
+  return `<button type="button" class="fav-star${on ? ' on' : ''}" data-fav='${esc(JSON.stringify(data))}' aria-pressed="${on}"
+    aria-label="${on ? 'Remove from favourites' : 'Add to favourites'}" title="${on ? 'Remove from favourites' : 'Add to favourites'}">${on ? '★' : '☆'}</button>`;
+}
+
+// A loggable row with a star beside it.
+function logOptionRow(option) {
+  const star = favStar(option);
+  return star ? `<div class="option-fav">${optionRow(option)}${star}</div>` : optionRow(option);
+}
+
+function favListHtml() {
+  const favs = logShortcuts?.favourites || [];
+  return favs.length ? favs.map(logOptionRow).join('')
+    : '<div class="card"><p class="muted">Star any item with ☆ to keep it here.</p></div>';
+}
+
+async function toggleFavourite(data) {
+  await loadLogShortcuts();
+  const before = logShortcuts.favourites;
+  const on = !favKeys().has(data.key);
+  logShortcuts.favourites = on
+    ? [{ id: data.key, issueId: data.issueId, label: data.key, title: data.title, sublabel: data.sublabel, rate: 1, jobElo: null, loggable: true, next: null }, ...before]
+    : before.filter((o) => o.label !== data.key);
+  paintFavourites();
+  try {
+    await api('/api/prefs/favourites', { method: 'POST', body: JSON.stringify({ ...data, on }) });
+  } catch (err) {
+    logShortcuts.favourites = before;
+    paintFavourites();
+    toast(err.message);
+    return;
+  }
+  toast(on ? `${data.key} added to favourites` : `${data.key} removed from favourites`);
+}
+
+// Update stars and favourite lists in place, so browsing isn't reloaded.
+function paintFavourites() {
+  const keys = favKeys();
+  view.querySelectorAll('[data-fav]').forEach((btn) => {
+    const on = keys.has(JSON.parse(btn.dataset.fav).key);
+    btn.classList.toggle('on', on);
+    btn.textContent = on ? '★' : '☆';
+    btn.setAttribute('aria-pressed', String(on));
+    btn.setAttribute('aria-label', on ? 'Remove from favourites' : 'Add to favourites');
+    btn.title = btn.getAttribute('aria-label');
+  });
+  view.querySelectorAll('.log-fav-list').forEach((el) => { el.innerHTML = favListHtml(); });
+}
 
 function optionRow(option) {
   const data = option.next ? `data-node="${esc(option.next)}"` : `data-pick='${esc(JSON.stringify(option))}'`;
@@ -3156,10 +3220,13 @@ function optionRow(option) {
 
 async function logPickerHtml() {
   if (logPscProject) return pscFormHtml(logPscProject);
+  await loadLogShortcuts().catch(() => { logShortcuts = { recent: [], favourites: [], assigned: [] }; });
+  const side = `<aside class="log-side"><h2>Favourites</h2><div class="options log-fav-list">${favListHtml()}</div></aside>`;
+  const layout = (main) => `<div class="log-layout">${side}<div class="log-main">${main}</div></div>`;
   if (logNode) {
     const step = await api(`/api/log/browse?node=${encodeURIComponent(logNode)}`);
     const crumbs = logTrail.map((c, i) => `<button class="linklike" data-crumb="${i}">${esc(c.label)}</button>`).join(' › ');
-    return `
+    return layout(`
       <div class="card">
         <div class="row" style="align-items:center">
           <button class="btn secondary" data-crumb="-1">Start again</button>
@@ -3169,24 +3236,24 @@ async function logPickerHtml() {
         ${step.subtitle ? `<p class="muted" style="margin:.2rem 0 0">${esc(step.subtitle)}</p>` : ''}
       </div>
       <div style="height:1rem"></div>
-      <div class="options">${step.options.map(optionRow).join('') || '<div class="card"><p class="muted">Nothing here. Step back and try another branch.</p></div>'}</div>
+      <div class="options">${step.options.map(logOptionRow).join('') || '<div class="card"><p class="muted">Nothing here. Step back and try another branch.</p></div>'}</div>
       ${step.canCreatePsc ? `<div class="card" style="margin-top:1rem">
         <p style="margin-top:0">Took a call or did work with no item for it?</p>
         <button class="btn" data-psc="${esc(step.canCreatePsc.projectKey)}">Raise a service item</button>
-      </div>` : ''}`;
+      </div>` : ''}`);
   }
 
-  const { recent, assigned } = await api('/api/log/shortcuts');
+  const { recent = [], assigned = [] } = logShortcuts;
   const group = (title, options, empty) => `<h2>${title}</h2>
-    <div class="options">${options.length ? options.map(optionRow).join('') : `<div class="card"><p class="muted">${empty}</p></div>`}</div>`;
+    <div class="options">${options.length ? options.map(logOptionRow).join('') : `<div class="card"><p class="muted">${empty}</p></div>`}</div>`;
 
-  return `
+  return layout(`
     <div class="card">
       <label>Search by Jira key or words from the summary
         <input id="log-search" type="search" placeholder="WYNNL-704, or graphics" value="${esc(logSearch)}" autocomplete="off">
       </label>
       ${logResults ? `<div class="options" style="margin-top:.85rem">${
-        logResults.options.length ? logResults.options.map(optionRow).join('')
+        logResults.options.length ? logResults.options.map(logOptionRow).join('')
           : `<p class="muted">${esc(logResults.error || 'Nothing matched.')}</p>`}</div>` : ''}
     </div>
     <h2>Browse</h2>
@@ -3195,7 +3262,8 @@ async function logPickerHtml() {
       <span class="chev">›</span>
     </button></div>
     ${group('Logged recently', recent, 'Nothing yet. Your last few jobs appear here once you have logged some time.')}
-    ${group('Assigned to you', assigned, 'Nothing assigned to you in Jira right now.')}`;
+    <div class="log-favs-inline"><h2>Favourites</h2><div class="options log-fav-list">${favListHtml()}</div></div>
+    ${group('Assigned to you', assigned, 'Nothing assigned to you in Jira right now.')}`);
 }
 
 function xpPreview(minutes) {
@@ -3213,7 +3281,7 @@ function logFormHtml() {
   return `
     <div class="card">
       <p class="muted" style="margin:0 0 .35rem">Logging against</p>
-      <h3 style="margin:0">${esc(logChosen.label)} ${esc(logChosen.title || '')}</h3>
+      <div class="log-chosen-head"><h3 style="margin:0">${esc(logChosen.label)} ${esc(logChosen.title || '')}</h3>${favStar({ loggable: true, ...logChosen, next: null })}</div>
       <p class="muted" style="margin:.25rem 0 0">${esc(logChosen.sublabel || '')}</p>
       <div id="log-hint" class="muted" style="margin-top:.5rem"></div>
       ${part ? `<div class="notice" style="margin:1rem 0 0;border-radius:10px">
@@ -5876,14 +5944,14 @@ function personAccessHtml(p) {
 
 // What the hub has read from the database today, against Cloudflare's free daily limit.
 function readsHtml(r) {
-  if (!r) return '';
+  if (!r || !me.user.groups?.includes('developer')) return '';
   const today = new Date().toISOString().slice(0, 10);
   const blank = { total: 0, writes: 0, top: [], topWrites: [], runs: 0 };
   const day = r.days.find((d) => d.day === today) || { background: blank, pages: blank, queries: [] };
   const m = r.month;
   const pct = (v, limit) => Math.min(100, (v / limit) * 100);
   const big = (v) => (v >= 1e9 ? `${(v / 1e9).toFixed(v >= 1e10 ? 1 : 2)} billion` : v >= 1e6 ? `${(v / 1e6).toFixed(v >= 1e7 ? 1 : 2)} million` : n(v));
-  const monthName = new Date(`${m.name}-01T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  const monthName = m.start ? `${fullDate(m.start)} to ${fullDate(m.end)}` : new Date(`${m.name}-01T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   const rows = (list) => list.length
     ? `<ul class="list" style="box-shadow:none;margin-top:.5rem">${list.map(([name, v]) => `<li><span class="title">${esc(name)}</span><span class="xp">${n(v)}</span></li>`).join('')}</ul>`
     : '<p class="muted">Nothing counted yet.</p>';
@@ -5891,7 +5959,7 @@ function readsHtml(r) {
   const writesToday = [...day.background.topWrites || [], ...day.pages.topWrites || []].sort((a, b) => b[1] - a[1]).slice(0, 10);
   return `<h2>Database use</h2>
     <div class="card">
-      <p style="margin-top:0">The Workers Paid plan includes ${big(r.readLimit)} rows read and ${big(r.writeLimit)} rows written a month.
+      <p style="margin-top:0">The Workers Paid plan includes ${big(r.readLimit)} rows read and ${big(r.writeLimit)} rows written a month, counted from the 22nd as Cloudflare does.
       Background jobs stop for the rest of the month at ${Math.round(r.share * 100)}% of either, so there is always plenty left for people using the hub.</p>
       ${r.paused ? `<div class="card notice error" style="margin:0 0 1rem"><p style="margin:0"><strong>Background jobs are paused until the month ends.</strong>
         Tempo time still syncs. Jira lists, PSC items, contracts and ratings catch up next month.</p>
@@ -5926,7 +5994,7 @@ function readsHtml(r) {
 
 async function developerAdminHtml() {
   const [data, bitbucket, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null })),
-    api('/api/admin/reads').catch(() => null)]);
+    me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null]);
   const s = data.state;
   const when = (v) => (v ? new Date(v).toLocaleString('en-GB') : 'Not yet');
   return `${s.last_error ? `<div class="card notice error" style="margin-bottom:1rem"><p><strong>Last sync problem</strong></p><p>${esc(s.last_error)}</p></div>` : '<div class="card notice" style="margin-bottom:1rem"><p style="margin:0">No sync problems.</p></div>'}
@@ -7179,7 +7247,7 @@ async function wipRecurringHtml() {
     <div class="table-wrap wip-table" style="margin-top:1rem"><table>
       <thead><tr><th>Contract</th><th>Start</th><th>Ends</th><th class="num">Value</th><th>Status</th><th>Division</th>
         <th class="num">Invoiced</th><th class="num">Value invoiced</th><th class="num">Paid</th><th class="num">Value paid</th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="10" class="muted">No service contracts.</td></tr>'}</tbody></table></div>
+      <tbody>${rows || '<tr><td colspan="10" class="muted">No active service contracts.</td></tr>'}</tbody></table></div>
     <p class="help">Service contracts from Jira. Invoiced and Paid are the share of each contract's invoicing steps that are invoiced or paid. Expired contracts stay until they are fully paid.</p>`;
 }
 
@@ -7890,10 +7958,21 @@ function conFlagsHtml(flags) {
       <ul class="con-flag-list">${shown.map((f) => `<li>
           <div><strong>${esc(FLAG_TITLES[f.kind] || 'Alert')}</strong>
             <span class="muted">${f.contract_key ? `${esc(f.customer || '')} ${jiraLink(f.contract_key)}` : f.ref_key ? jiraLink(f.ref_key) : ''}</span>
-            <p>${esc(f.detail)}</p></div>
+            <p>${esc(f.detail)}</p>
+            ${f.kind === 'psc-org' && f.ref_key ? conFlagOrgHtml(f) : ''}</div>
           <button class="btn secondary" data-con-resolve="${f.id}">Mark resolved</button></li>`).join('')}</ul>
       ${flags.length > 4 ? `<button class="linklike" data-con-flags="1">${conAllFlags ? 'Show fewer' : `Show all ${flags.length}`}</button>` : ''}
     </section>`;
+}
+
+// Pick the PSC's Organization right on its alert.
+let conOrgs = null;
+function conFlagOrgHtml(f) {
+  if (!conOrgs) return `<button class="btn secondary con-flag-org" data-con-load-orgs="1">Set the Organization</button>`;
+  if (conOrgs.error) return `<p class="muted">${esc(conOrgs.error)}</p>`;
+  return `<label class="con-flag-org">Organization for ${esc(f.ref_key)}
+      <select data-con-flag-org="${f.id}"><option value="">Choose the Organization…</option>
+        ${conOrgs.orgs.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></label>`;
 }
 
 function conTabsHtml(data) {
@@ -8065,6 +8144,7 @@ async function contractsClick(event) {
   const f = t('[data-con-filter]');
   if (f) { conFilter = f.dataset.conFilter; return render(); }
   if (t('[data-con-flags]')) { conAllFlags = !conAllFlags; return render(); }
+  if (t('[data-con-load-orgs]')) { conOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
   if (t('[data-con-back]')) { conOpen = null; return render(); }
   const charge = t('[data-con-charge]');
   if (charge) {
@@ -8215,6 +8295,18 @@ document.addEventListener('keydown', (event) => {
   const i = items.indexOf(item) + (event.key === 'ArrowDown' ? 1 : -1);
   if (i < 0) document.getElementById('con-person-search').focus(); else items[Math.min(i, items.length - 1)].focus();
 });
+
+async function conFlagOrgChange(event) {
+  const sel = event.target.closest('[data-con-flag-org]');
+  if (!sel || !sel.value) return false;
+  sel.disabled = true;
+  try {
+    const r = await api('/api/contracts/flag-org', { method: 'POST', body: JSON.stringify({ id: Number(sel.dataset.conFlagOrg), orgId: sel.value }) });
+    toast(r.saved === false ? `${r.org} kept. ${r.message}` : `Organization set to ${r.org}`);
+    render();
+  } catch (err) { sel.disabled = false; toast(err.message); }
+  return true;
+}
 
 async function contractsSettingsChange(event) {
   const sel = event.target.closest('[data-con-org]');
@@ -8490,6 +8582,9 @@ function pscHeadLine(data) {
 }
 
 async function pscHtml() {
+  // A link can open one item, as #/psc?item=PSC-12 from the alert.
+  const asked = /^item=([A-Z][A-Z0-9]+-\d+)$/.exec(location.hash.split('?')[1] || '');
+  if (asked) { pscOpen = asked[1]; history.replaceState(null, '', `${location.pathname}${location.search}#/psc`); }
   return `${await pscPageHtml()}${pscResolveModal()}`;
 }
 
@@ -9532,6 +9627,8 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/admin' && await homeAdminClick(event)) return;
   const onPow = currentRoute() === '#/pow';
   if (currentRoute() === '#/log' && await contractWarnClick(event)) return;
+  const favBtn = event.target.closest('[data-fav]');
+  if (favBtn && currentRoute() === '#/log') { await toggleFavourite(JSON.parse(favBtn.dataset.fav)); return; }
 
   const nodeBtn = event.target.closest('[data-node]');
   if (nodeBtn) {
@@ -10114,6 +10211,7 @@ view.addEventListener('change', async (event) => {
     return;
   }
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
+  if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
@@ -10195,7 +10293,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
-  if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; }
+  if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; }
   if (accountDialog.open) accountDialog.close();
   render();
   window.scrollTo({ top: 0 });
