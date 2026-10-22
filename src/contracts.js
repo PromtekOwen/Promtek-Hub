@@ -655,15 +655,9 @@ export function checkDates(c) {
     }
     problems.push(`It runs for ${d} days, which isn't a whole number of years.${hint}`);
   }
-  if (r && toMs(e) > toMs(s)) {
-    const expected = minusMonth(e);
-    if (Math.abs(daysBetween(expected, r)) > 7) {
-      const alt = swap(r);
-      const hint = alt && Math.abs(daysBetween(expected, alt)) <= 7 ? ` It may have its day and month swapped: ${fmt(alt)}?` : '';
-      problems.push(`The renewal date (${fmt(r)}) isn't a month before the end date (${fmt(e)}).${hint}`);
-    }
-  } else if (!r && [STATUS.confirmed, STATUS.inContract].includes(c.status)) {
-    problems.push(`The renewal date is empty, so a month before the end (${fmt(minusMonth(e))}) is being used.`);
+  // The renewal date can be any time before the end; left empty, a month before the end is used.
+  if (r && toMs(e) > toMs(s) && (toMs(r) > toMs(e) || toMs(r) < toMs(s))) {
+    problems.push(`The renewal date (${fmt(r)}) is outside the contract, ${fmt(s)} to ${fmt(e)}.`);
   }
   return problems;
 }

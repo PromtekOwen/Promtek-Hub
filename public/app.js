@@ -215,9 +215,12 @@ const pages = {
       if (!me.linked) return notLinkedCard();
       const monday = addDays(mondayOf(todayIso()), weekOffset * 7);
       const data = await api(`/api/time?week=${monday}`);
-      const days = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
-      const byDay = Object.fromEntries(days.map((d) => [d, []]));
+      // The days they work, plus any other day with time logged on it.
+      const week = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
+      const byDay = Object.fromEntries(week.map((d) => [d, []]));
       data.entries.forEach((e) => byDay[e.work_date]?.push(e));
+      const workDays = data.workDays || '12345';
+      const days = week.filter((d, i) => workDays.includes(String(i + 1)) || byDay[d].length);
       const secs = days.map((d) => byDay[d].reduce((a, e) => a + e.seconds, 0));
       const total = secs.reduce((a, b) => a + b, 0);
       const xp = data.entries.reduce((a, e) => a + e.xp, 0);
@@ -240,11 +243,11 @@ const pages = {
             <button class="icon-btn" data-week="-1" aria-label="Previous week">${arrow('<path d="M15 5l-7 7 7 7"/>')}</button>
             <div style="text-align:center">
               <strong>${weekOffset === 0 ? 'This week' : weekOffset === -1 ? 'Last week' : `Week of ${shortDate(monday)}`}</strong><br>
-              <span class="muted">${duration(total)} logged, ${n(xp)} XP</span>
+              <span class="muted">${duration(total)} logged of ${duration(data.weekSeconds || 37.5 * 3600)}, ${n(xp)} XP</span>
             </div>
             <button class="icon-btn" data-week="1" aria-label="Next week" ${weekOffset >= 0 ? 'disabled' : ''}>${arrow('<path d="M9 5l7 7-7 7"/>')}</button>
           </div>
-          <div class="chart">${chart}</div>
+          <div class="chart" style="grid-template-columns:repeat(${days.length}, minmax(0, 1fr))">${chart}</div>
         </div>
         <div class="row" style="margin-top:1rem">
           <a class="btn" href="#/log">Log time</a>
@@ -916,12 +919,12 @@ function personEditHtml() {
 
       <p class="muted" style="margin:1.5rem 0 0">Working hours</p>
       <div class="row" style="margin-top:.75rem">
-        <label>Contracted hours a day <input data-person="contractedHours" type="number" min="0.25" max="24" step="0.25" value="${p.contractedHours ?? ''}" placeholder="7.5"></label>
+        <label>Contracted hours a week <input data-person="weeklyHours" type="number" min="0.25" max="100" step="0.25" value="${p.weeklyHours ?? ''}" placeholder="37.5"></label>
       </div>
       <p class="muted" style="margin:.75rem 0 .35rem">Days they work</p>
       <div class="chips">${[['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']].map(([d, l]) =>
         `<button class="chip${String(p.workDays || '12345').includes(d) ? ' on' : ''}" data-person-day="${d}" aria-pressed="${String(p.workDays || '12345').includes(d)}">${l}</button>`).join('')}</div>
-      <p class="muted">Leave the hours empty for the usual 7.5 a day (${personWeekLabel(p)} as saved). Capacity uses these for each person's week; Condor planning keeps its own hours for their Condor Dev work.</p>
+      <p class="muted">Leave the hours empty for the usual 37.5 a week (${personWeekLabel(p)} as saved). They can fall however suits across the days ticked. The days set which days show on their home screen week and in My time; Capacity uses the weekly hours, and Condor planning keeps its own hours for their Condor Dev work.</p>
 
       <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
       <div class="row" style="margin-top:.75rem">
@@ -970,8 +973,8 @@ async function readAvatar(file) {
 
 function personWeekLabel(p) {
   const days = String(p.workDays || '12345').length;
-  const hours = Number(p.contractedHours) || 7.5;
-  return `${(Math.round(hours * days * 100) / 100).toLocaleString('en-GB')} hours a week`;
+  const hours = Number(p.weeklyHours) || 37.5;
+  return `${(Math.round(hours * 100) / 100).toLocaleString('en-GB')} hours a week over ${days} ${days === 1 ? 'day' : 'days'}`;
 }
 
 function collectPerson() {
@@ -6117,6 +6120,20 @@ function trackerPanelHtml() {
   return `<div class="card tracker-panel${cur ? ' running' : ''}" id="tracker-panel">${body}${list}${notify}</div>`;
 }
 
+// Phones only show notifications through the service worker, so that's tried first.
+async function showHubNotification(title, options) {
+  const opts = { icon: '/icon-192.png', badge: '/icon-192.png', ...options };
+  const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration().catch(() => null) : null;
+  if (reg?.showNotification) return reg.showNotification(title, opts);
+  const n = new Notification(title, opts);
+  n.onclick = () => { window.focus(); n.close(); };
+}
+
+async function notifyTest() {
+  try { await showHubNotification('Promtek Hub', { body: 'Notifications are working on this device.', tag: 'hub-test' }); }
+  catch { toast('This device didn\'t show a test notification.'); }
+}
+
 function trackerAssistHtml() {
   const people = (trackerPeople || []).filter((p) => p.id !== me.employee?.accountId);
   return `<div class="tracker-assist-form">
@@ -6174,10 +6191,8 @@ function trackerShowModal(m) {
   document.body.appendChild(host);
   host.querySelector('button')?.focus();
   if (m.kind === 'call' && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-    try {
-      const n = new Notification(m.call.live ? "You're on a call" : 'You had a call', { body: `${m.call.otherName || m.call.other || 'A call'}. Log the time in Promtek Hub?`, tag: `call-${m.call.callId}` });
-      n.onclick = () => { window.focus(); n.close(); };
-    } catch { /* some browsers only allow notifications from an installed app */ }
+    showHubNotification(m.call.live ? "You're on a call" : 'You had a call', { body: `${m.call.otherName || m.call.other || 'A call'}. Log the time in Promtek Hub?`, tag: `call-${m.call.callId}` })
+      .catch(() => { /* some browsers only allow notifications from an installed app */ });
   }
 }
 
@@ -8041,7 +8056,7 @@ async function contractDetailHtml() {
         <div class="con-name"><h2>${esc(c.customer)}</h2><p class="muted">${jiraLink(c.key)}${c.tier ? ` · ${esc(c.tier)}` : ''}${c.bankHoliday ? ' · covers bank holidays' : ''}</p></div>
         <div class="con-tags">${c.bankHoliday ? bankHolidayIcon() : ''}${conStatus(c.status)}</div>
       </div>
-      <p class="con-dates">${fullDate(c.start)} to ${fullDate(c.end)} <span class="muted">· renewal ${fullDate(c.renewal)}${c.renewalSet ? '' : ' (worked out: not set in Jira)'}</span></p>
+      <p class="con-dates">${fullDate(c.start)} to ${fullDate(c.end)} <span class="muted">· renewal ${fullDate(c.renewal)}${c.renewalSet ? '' : ' (a month before the end, as none is set in Jira)'}</span></p>
       ${conPeriodBar(c, today)}
       ${d.problems.length ? `<div class="notice con-problem"><p><strong>The dates look wrong.</strong> ${esc(d.problems.join(' '))}</p></div>` : ''}
       ${c.live ? `<div class="con-figs">${conCount('Service visits', c.visits)}${conCount('Calibration', c.calibration)}${conCount('Obsolescence', c.obsolescence)}</div>${conTokensHtml(c.tokens)}` : ''}
@@ -9248,6 +9263,24 @@ addEventListener('scroll', () => placeTour(), { passive: true });
 const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
 const isInstalled = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 
+// Notifications for calls and the timer. Browsers only show the permission
+// prompt after a tap, so it's a button here.
+const BELL = '<path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 004 0"/>';
+function notifyItemHtml() {
+  if (!('Notification' in window)) {
+    return isIos && !isInstalled
+      ? `<li><p class="help"><strong>Notifications on iPhone:</strong> install the app to your Home Screen first, then turn them on here.</p></li>`
+      : `<li><p class="help">This browser can't show notifications.</p></li>`;
+  }
+  if (Notification.permission === 'granted') {
+    return `<li><button data-account="notify-test">${svgIcon(BELL)}Notifications<span class="value">On</span></button></li>`;
+  }
+  if (Notification.permission === 'denied') {
+    return `<li><p class="help"><strong>Notifications are blocked.</strong> Allow them for this site in your browser's settings${isInstalled ? ' or your device settings' : ''}, then reopen the hub.</p></li>`;
+  }
+  return `<li><button data-account="notify">${svgIcon(BELL)}Allow notifications<span class="value">Off</span></button></li>`;
+}
+
 function renderAccount() {
   const e = me.employee;
   const installItem = isInstalled
@@ -9272,12 +9305,12 @@ function renderAccount() {
           <li><a href="#/xp" data-account="close">${svgIcon('<path d="M12 3l2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.4 6.8 19.1l1-5.8L3.5 9.2l5.9-.8z"/>')}Level<span class="value">${n(e.progress.level)}</span></a></li>
           <li><a href="#/xp" data-account="close">${svgIcon('<circle cx="12" cy="9" r="5"/><path d="M8.5 13.5L7 21l5-2.5 5 2.5-1.5-7.5"/>')}Rank<span class="value">${esc(e.rank?.name || '—')}</span></a></li>
           ${e.medal ? `<li><a href="#/eotq?about" data-account="close">${medalHtml(e.medal.tier)}Employee of the Quarter<span class="value">${MEDAL_NAMES[e.medal.tier]}</span></a></li>` : ''}
-          ${e.profileKey ? `<li><a href="${esc(me.jiraBaseUrl)}/browse/${esc(e.profileKey)}" target="_blank" rel="noopener">${svgIcon('<path d="M14 4h6v6M20 4l-8 8"/><path d="M18 14v5a1 1 0 01-1 1H5a1 1 0 01-1-1V7a1 1 0 011-1h5"/>')}Jira profile<span class="value">${esc(e.profileKey)}</span></a></li>` : ''}
         </ul>
       </section>` : ''}
       <section class="acct-section">
         <h4>Settings</h4>
         <ul class="menu">
+          ${notifyItemHtml()}
           <li><button data-account="refresh">${svgIcon('<path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/>')}Refresh my XP</button></li>
           ${installItem}
           ${me.user.can?.developer && !me.viewingAs ? `<li><button data-account="viewas">${svgIcon('<path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>')}View as someone else</button></li>` : ''}
@@ -9324,6 +9357,15 @@ accountDialog.addEventListener('click', async (event) => {
     accountDialog.close();
     await syncAndRefresh(true);
   }
+  if (action === 'notify') {
+    let result = 'default';
+    try { result = await Notification.requestPermission(); } catch { /* older browsers */ }
+    toast(result === 'granted' ? 'Notifications are on' : result === 'denied' ? 'Notifications are blocked for this site' : 'Notifications are still off');
+    if (result === 'granted') notifyTest();
+    renderAccount();
+    return;
+  }
+  if (action === 'notify-test') { notifyTest(); return; }
   if (action === 'viewas') return viewAsPicker();
   if (action === 'viewas-back') return renderAccount();
   if (action === 'viewas-pick') {

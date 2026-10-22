@@ -36,12 +36,12 @@ function startDateOf(value) {
   if (v > new Date().toISOString().slice(0, 10)) throw new Error('The start date can\'t be in the future.');
   return v;
 }
-// Hours a day, if not the usual 7.5, and the days they work (1 Monday to 7 Sunday), if not Monday to Friday.
+// Hours a week, if not the usual 37.5, and the days they work (1 Monday to 7 Sunday), if not Monday to Friday.
 function hoursOf(value) {
   if (value === '' || value === null || value === undefined) return null;
   const h = Number(value);
-  if (!Number.isFinite(h) || h <= 0 || h > 24) throw new Error('Contracted hours should be between 0 and 24 a day.');
-  return h === 7.5 ? null : Math.round(h * 100) / 100;
+  if (!Number.isFinite(h) || h <= 0 || h > 100) throw new Error('Contracted hours should be between 0 and 100 a week.');
+  return h === 37.5 ? null : Math.round(h * 100) / 100;
 }
 function daysOf(value) {
   if (value === null || value === undefined) return null;
@@ -51,7 +51,7 @@ function daysOf(value) {
 }
 async function saveHours(env, accountId, hours) {
   if (!hours) return;
-  await env.DB.prepare('UPDATE employees SET contracted_hours = ?, work_days = ? WHERE account_id = ?').bind(hours.hours, hours.days, accountId).run();
+  await env.DB.prepare('UPDATE employees SET weekly_hours = ?, work_days = ? WHERE account_id = ?').bind(hours.hours, hours.days, accountId).run();
 }
 // Today's anniversaries are worked out once a day, so a changed start date shows straight away.
 const forgetAnniversaries = (env) => env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:anniversaries'").run().catch(() => null);
@@ -78,7 +78,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         email: e.email,
         pronouns: e.pronouns,
         startDate: e.start_date || '',
-        contractedHours: e.contracted_hours ?? null,
+        weeklyHours: e.weekly_hours ?? null,
         workDays: e.work_days || null,
         jobTitle: e.job_title,
         department: e.department,
@@ -112,8 +112,8 @@ export async function savePerson(env, person) {
   const name = clean(person.name, 120);
   if (!name) throw new Error('A name is needed.');
   // Checked before anything is saved, so a mistake here saves nothing.
-  const hours = person.contractedHours !== undefined || person.workDays !== undefined
-    ? { hours: hoursOf(person.contractedHours), days: daysOf(person.workDays === undefined ? '12345' : person.workDays) } : null;
+  const hours = person.weeklyHours !== undefined || person.workDays !== undefined
+    ? { hours: hoursOf(person.weeklyHours), days: daysOf(person.workDays === undefined ? '12345' : person.workDays) } : null;
 
   const icons = JSON.stringify((person.icons || []).filter((id) => ICONS.some(([key]) => key === id)).slice(0, 6));
   const now = new Date().toISOString();

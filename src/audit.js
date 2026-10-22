@@ -6,7 +6,7 @@ const LABELS = {
     name: 'Name', email: 'Email', pronouns: 'Pronouns', start_date: 'Start date', job_title: 'Job title', department: 'Department', manager_id: 'Reports to',
     org_order: 'Chart order', role: 'Hub role', team: 'Team', extension: 'Extension', baseline: 'XP rate', elo: 'ELO', icons: 'Chart icons',
     avatar: 'Photo', notes: 'Notes', active: 'Active', account_id: 'Jira account ID', groups: 'Groups', teams: 'Teams', lead_of: 'Leads',
-    contracted_hours: 'Contracted hours a day', work_days: 'Days they work',
+    weekly_hours: 'Contracted hours a week', work_days: 'Days they work',
   },
   vehicles: {
     registration: 'Registration', make: 'Make', model: 'Model', kind: 'Type', mot_due: 'MOT due', insurance_due: 'Insurance due',
@@ -23,7 +23,7 @@ const shown = (field, v) => {
   if (field === 'groups' || field === 'teams' || field === 'lead_of') {
     try { const list = JSON.parse(v); return list.length ? list.map((x) => ({ admin: 'Admin', management: 'Management', lead: 'Team lead', sales: 'Sales', developer: 'Developer' }[x] || x)).join(', ') : 'None'; } catch { return String(v); }
   }
-  if (field === 'days') return String(v).split('').map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).filter(Boolean).join(', ');
+  if (field === 'days' || field === 'work_days') return String(v).split('').map((d) => ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][d]).filter(Boolean).join(', ');
   if (field === 'away') {
     try { return JSON.parse(v).map((a) => `${a.from}${a.until && a.until !== a.from ? ` to ${a.until}` : ''}${a.note ? ` (${a.note})` : ''}`).join('; ') || 'None'; } catch { return String(v); }
   }

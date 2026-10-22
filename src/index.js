@@ -22,6 +22,7 @@ import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
 import * as Eotq from './eotq.js';
+import { workDaysOf, weekHoursOf } from './hours.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite } from './logging.js';
 import { metered, addReads, readsReport, queryName, readOnly, utcMonth as utcMonthOfUsage } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
@@ -1048,7 +1049,8 @@ async function getTime(env, user, url) {
       WHERE l.account_id = ? AND l.work_date BETWEEN ? AND ?
       ORDER BY l.work_date, l.created_at`
   ).bind(emp.account_id, monday, sunday < today ? sunday : today).all();
-  return { linked: true, week: monday, entries: results, jiraBaseUrl: env.JIRA_BASE_URL };
+  return { linked: true, week: monday, entries: results, jiraBaseUrl: env.JIRA_BASE_URL,
+    workDays: workDaysOf(emp.work_days), weekSeconds: weekHoursOf(emp) * 3600 };
 }
 
 // ---------- Admin ----------

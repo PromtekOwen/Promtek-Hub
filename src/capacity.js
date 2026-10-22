@@ -10,16 +10,15 @@ import { customerProjects } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
 import { budget, search, OutOfCalls, chunk, marks, IN } from './wip.js';
 import { TEAMS } from './permissions.js';
+import { workDaysOf, weekHoursOf, DEFAULT_DAYS } from './hours.js';
 
 const RUN_CALLS = 30;
 const SYNC_EVERY_MS = 15 * 60 * 1000;
 const LOG_IDS = 100;
 const QUIET_DAYS = 14;
 const STUCK_DAYS = 30;
-export const DEFAULT_DAY_HOURS = 7.5;
-export const DEFAULT_DAYS = '12345';
 // Days are 1 for Monday to 7 for Sunday, as in Condor planning.
-export const workDaysOf = (v) => [...new Set(String(v || DEFAULT_DAYS).replace(/[^1-7]/g, ''))].sort().join('') || DEFAULT_DAYS;
+export { workDaysOf, DEFAULT_DAYS };
 const FIELDS = ['summary', 'status', 'issuetype', 'project', 'assignee', 'parent', 'created', 'updated', 'duedate', 'priority', 'timeestimate'];
 const JQL = 'assignee is not EMPTY AND statusCategory != Done ORDER BY updated DESC';
 // The ten IMS projects, and IT support's board, count towards someone's load like Condor Dev tickets do.
@@ -150,7 +149,7 @@ export async function overview(env, viewer, { team = null } = {}) {
   const today = londonDate();
   const monday = mondayOf(today);
   const { results: emps } = await env.DB.prepare(
-    `SELECT e.account_id, e.name, e.teams, e.team, e.contracted_hours, e.work_days, c.hours_per_week, c.days, c.away FROM employees e
+    `SELECT e.account_id, e.name, e.teams, e.team, e.weekly_hours, e.work_days, c.hours_per_week, c.days, c.away FROM employees e
        LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND e.account_id NOT LIKE 'pending-%' ORDER BY e.name`
   ).all();
   const teamOf = (e) => { const t = parse(e.teams, []); return t.length ? t : e.team ? [e.team] : []; };
@@ -200,8 +199,8 @@ export async function overview(env, viewer, { team = null } = {}) {
     const mine = byPerson.get(p.account_id);
     // What they're contracted to work across the week; Condor planning's hours are only their Condor Dev share.
     const days = workDaysOf(p.work_days);
-    const dayHours = p.contracted_hours ?? DEFAULT_DAY_HOURS;
-    const hours = dayHours * days.length;
+    const hours = weekHoursOf(p);
+    const dayHours = Math.round((hours / days.length) * 100) / 100;
     const weekday = String(((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7) + 1);
     const away = parse(p.away, []);
     const awayNow = awayOn(away, today);

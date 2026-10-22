@@ -44,3 +44,14 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(req).then((hit) => hit || (req.mode === 'navigate' ? caches.match('/') : Response.error())))
   );
 });
+
+// Tapping a notification brings the hub to the front, opening it if it's closed.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const link = event.notification.data?.link || '/';
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
+    const open = wins.find((w) => new URL(w.url).origin === location.origin);
+    if (open) return open.focus();
+    return self.clients.openWindow(link);
+  }));
+});

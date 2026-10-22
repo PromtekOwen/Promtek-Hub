@@ -7,6 +7,7 @@ import { teamsOf, TEAMS } from './permissions.js';
 import { pendingDisputes } from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Eotq from './eotq.js';
+import { workDaysOf, weekHoursOf, weekdayOf, daysToShow } from './hours.js';
 
 const DAY_MS = 86_400_000;
 const KINDS = ['alert', 'announcement'];
@@ -247,8 +248,9 @@ async function newPscAlerts(env, viewer) {
       body: `${listWords(rows.slice(0, 3).map((p) => p.issue_key))}${rows.length > 3 ? ' and more' : ''}.`, link: '#/psc' }));
 }
 
-// Monday to today, and which weekdays before today have nothing logged. Saturday and
-// Sunday show only when time was logged on them. Time logged ahead doesn't count yet.
+// Monday to today on the days this person works, plus any other day they logged
+// time on. Days before today with nothing logged are pointed out. Time logged
+// ahead doesn't count yet.
 async function weekSoFar(env, viewer) {
   const today = londonDate();
   const monday = mondayOf(today);
@@ -258,13 +260,13 @@ async function weekSoFar(env, viewer) {
     'SELECT work_date, SUM(seconds) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ? GROUP BY work_date'
   ).bind(viewer.accountId, monday, today).all();
   const by = new Map(results.map((r) => [r.work_date, r.seconds]));
-  const weekdays = all.slice(0, 5);
-  const days = [...weekdays, ...all.slice(5).filter((d) => by.get(d))];
+  const workDays = workDaysOf(viewer.employee?.work_days);
+  const days = daysToShow(all, workDays, by);
   return {
     seconds: results.reduce((t, r) => t + r.seconds, 0),
-    target: 37.5 * 3600,
+    target: weekHoursOf(viewer.employee) * 3600,
     days: days.map((d) => ({ date: d, seconds: by.get(d) || 0, past: d < today, today: d === today })),
-    missing: weekdays.filter((d) => d < today && !by.get(d)),
+    missing: days.filter((d) => d < today && !by.get(d) && workDays.includes(weekdayOf(d))),
   };
 }
 
