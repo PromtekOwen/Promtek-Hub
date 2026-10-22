@@ -6795,8 +6795,8 @@ let capTeam = 'all';
 let capSort = 'most';
 let capSortChosen = false;   // until someone picks, the box just says Sort by
 let capQuery = '';
-const CAP_KINDS = { job: 'Jobs', psc: 'PSCs', condor: 'Condor Dev', internal: 'Internal' };
-const CAP_KIND = { job: 'Job', psc: 'PSC', condor: 'Condor Dev', internal: 'Internal' };
+const CAP_KINDS = { job: 'Jobs', psc: 'PSCs', condor: 'Condor Dev', ims: 'IMS', it: 'IT', internal: 'Internal' };
+const CAP_KIND = { job: 'Job', psc: 'PSC', condor: 'Condor Dev', ims: 'IMS', it: 'IT', internal: 'Internal' };
 const capAge = (days) => (days === null || days === undefined ? '—' : days === 0 ? 'today' : days === 1 ? '1 day' : days < 14 ? `${days} days`
   : days < 60 ? `${Math.round(days / 7)} weeks` : `${Math.round(days / 30.4)} months`);
 const capWhen = (day, today) => {
@@ -6811,7 +6811,7 @@ async function capTileHtml() {
   const inTeam = (p) => capTeam === 'all' || p.teams.includes(capTeam);
   const q = capQuery.trim().toLowerCase();
   let people = d.people.filter(inTeam);
-  const load = (p) => p.counts.job + p.counts.psc + p.counts.condor;
+  const load = (p) => p.counts.job + p.counts.psc + p.counts.condor + (p.counts.ims || 0) + (p.counts.it || 0);
   const sorts = {
     most: (a, b) => load(b) - load(a) || b.week - a.week,
     least: (a, b) => load(a) - load(b) || a.week - b.week,
@@ -6825,15 +6825,16 @@ async function capTileHtml() {
   const target = sum((p) => (p.away ? 0 : p.weekTarget));
   const awayToday = people.filter((p) => p.away);
   const stats = `<dl class="stats">
-      ${stat('Open jobs', n(sum((p) => p.counts.job + p.counts.condor)), `${n(people.length)} people`)}
+      ${stat('Open jobs', n(sum((p) => p.counts.job + p.counts.condor)), `${n(people.length)} people${sum((p) => (p.counts.ims || 0) + (p.counts.it || 0)) ? `, plus ${n(sum((p) => p.counts.ims || 0))} IMS and ${n(sum((p) => p.counts.it || 0))} IT tasks` : ''}`)}
       ${stat('Open PSCs', n(sum((p) => p.counts.psc)), sum((p) => p.flags.waiting) ? `${n(sum((p) => p.flags.waiting))} with the customer waiting on us` : 'None waiting on us')}
       ${stat('Logged this week', capHours(sum((p) => p.week)), target ? `${Math.round((sum((p) => p.week) / target) * 100)}% of ${capHours(target)} for the week` : '')}
       ${stat('Needs a look', n(sum((p) => p.flags.quiet + p.flags.overdue)), `${n(sum((p) => p.flags.quiet))} gone quiet, ${n(sum((p) => p.flags.overdue))} past due`)}
     </dl>`;
   // Who could take something new: the lightest load of anyone here today.
   const room = people.filter((p) => !p.away && (p.items.length || p.fourWeekAverage)).sort(sorts.least).slice(0, 3);
-  const roomHtml = room.length ? `<section class="card cap-room"><h2>Most room for something new</h2>
-      <ul class="cap-room-list">${room.map((p) => `<li><b>${esc(p.name)}</b><span>${n(load(p))} open (${n(p.counts.job + p.counts.condor)} jobs, ${n(p.counts.psc)} PSCs)</span>
+  // Only within a team: across everyone it would compare people who do different work.
+  const roomHtml = capTeam !== 'all' && room.length ? `<section class="card cap-room"><h2>Most room for something new</h2>
+      <ul class="cap-room-list">${room.map((p) => `<li><b>${esc(p.name)}</b><span>${n(load(p))} open (${[[p.counts.job + p.counts.condor, 'jobs'], [p.counts.psc, 'PSCs'], [p.counts.ims, 'IMS'], [p.counts.it, 'IT']].filter(([c], i) => i < 2 || c).map(([c, l]) => `${n(c || 0)} ${l}`).join(', ')})</span>
         <span>${capHours(p.week)} logged this week${p.nextAway ? `, away from ${shortDate(p.nextAway.from)}` : ''}</span></li>`).join('')}</ul>
       ${awayToday.length ? `<p class="muted">Away today: ${awayToday.map((p) => esc(p.name)).join(', ')}.</p>` : ''}</section>` : '';
   const teamsHere = d.teams.filter((t) => d.people.some((p) => p.teams.includes(t)));

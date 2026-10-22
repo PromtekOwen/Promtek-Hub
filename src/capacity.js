@@ -19,7 +19,10 @@ const STUCK_DAYS = 30;
 const DEFAULT_HOURS = 37.5;
 const FIELDS = ['summary', 'status', 'issuetype', 'project', 'assignee', 'parent', 'created', 'updated', 'duedate', 'priority', 'timeestimate'];
 const JQL = 'assignee is not EMPTY AND statusCategory != Done ORDER BY updated DESC';
-const INTERNAL = ['PMB', 'PROMTEKIT', 'ASSET', 'GOALS', 'LEGAL', 'HEALTH', 'COMPLIANCE', 'FINANCE', 'INNOV', 'IS', 'MARKETING', 'SUGGEST', 'QA'];
+// The ten IMS projects, and IT support's board, count towards someone's load like Condor Dev tickets do.
+const IMS = ['GOALS', 'LEGAL', 'HEALTH', 'COMPLIANCE', 'FINANCE', 'INNOV', 'IS', 'MARKETING', 'SUGGEST', 'QA'];
+const IT = ['PROMTEKIT'];
+const INTERNAL = ['PMB', 'ASSET'];
 
 const dayMs = 86_400_000;
 // Jira gives times as text, and the bulk history read as a count of milliseconds; either is read here.
@@ -180,6 +183,8 @@ export async function overview(env, viewer, { team = null } = {}) {
   const kindOf = (i) => {
     if (i.project_key === 'PSC' || pscIds.has(i.issue_id)) return 'psc';
     if (i.project_key === 'MES') return 'condor';
+    if (IMS.includes(i.project_key)) return 'ims';
+    if (IT.includes(i.project_key)) return 'it';
     if (INTERNAL.includes(i.project_key)) return 'internal';
     return customers.size && !customers.has(i.project_key) ? 'internal' : 'job';
   };
@@ -217,7 +222,8 @@ export async function overview(env, viewer, { team = null } = {}) {
       const assignedDays = daysSince(i.assigned_at || i.created, today);
       const statusDays = daysSince(i.status_at || i.created, today);
       const quietDays = daysSince(lastActivity, today);
-      const kind = kindOf(i);
+      // Everything the Marketing team is given is their work, whichever project it sits in.
+      const kind = p.teamList.includes('Marketing') ? 'job' : kindOf(i);
       return {
         id: i.issue_id, key: i.issue_key, summary: i.summary, type: i.issuetype, kind, status: i.status, statusCat: i.status_cat, priority: i.priority,
         parentKey: i.parent_key, parentSummary: i.parent_summary, assignedAt: dateOnly(i.assigned_at || i.created), assignedDays, statusDays,
@@ -231,7 +237,7 @@ export async function overview(env, viewer, { team = null } = {}) {
     return {
       id: p.account_id, name: p.name, teams: p.teamList, hoursPerWeek: hours,
       away: awayNow, nextAway,
-      counts: { job: count('job'), psc: count('psc'), condor: count('condor'), internal: count('internal'), total: list.length },
+      counts: { job: count('job'), psc: count('psc'), condor: count('condor'), ims: count('ims'), it: count('it'), internal: count('internal'), total: list.length },
       flags: { quiet: list.filter((x) => x.quiet).length, overdue: list.filter((x) => x.overdue).length, stuck: list.filter((x) => x.stuck).length,
         waiting: list.filter((x) => x.customerWaiting).length },
       estimateLeft: list.reduce((t, x) => t + (x.estimateLeft || 0), 0),
