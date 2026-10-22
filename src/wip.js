@@ -125,7 +125,7 @@ async function fieldIds(env, b) {
 
 const ORDER_FIELDS = (ids) => ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', 'labels',
   F.upfront, F.quote, F.entity, ids.customerItem, ids.documentation].filter(Boolean);
-const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'created', 'updated', F.share, F.due, F.invoiceDate, F.division];
+const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'created', 'updated', 'statuscategorychangedate', F.share, F.due, F.invoiceDate, F.division];
 const CONTRACT_FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', F.start, F.end, F.upfront, F.entity];
 const ALL_FIELDS = (ids) => [...new Set([...ORDER_FIELDS(ids), ...ITEM_FIELDS, ...CONTRACT_FIELDS])];
 
@@ -181,13 +181,14 @@ function itemStatement(env, i, orderId, level) {
   const f = i.fields || {};
   const div = options(f[F.division]).map((o) => `${o.id}:${o.value}`).join('|') || null;
   return env.DB.prepare(
-    `INSERT INTO wip_items (issue_id, issue_key, order_id, parent_id, level, issuetype, subtask, status, status_cat, summary, share, inv_due, inv_date, division, created)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO wip_items (issue_id, issue_key, order_id, parent_id, level, issuetype, subtask, status, status_cat, summary, share, inv_due, inv_date, division, created, paid_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, order_id = excluded.order_id, parent_id = excluded.parent_id, level = excluded.level,
        issuetype = excluded.issuetype, subtask = excluded.subtask, status = excluded.status, status_cat = excluded.status_cat, summary = excluded.summary,
-       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created`
+       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created, paid_at = excluded.paid_at`
   ).bind(String(i.id), i.key, String(orderId), f.parent?.id ? String(f.parent.id) : null, level, f.issuetype?.name || '', f.issuetype?.subtask ? 1 : 0,
-    f.status?.name || '', statusCat(i), f.summary || '', num(f[F.share]), dateOf(f[F.due]), dateOf(f[F.invoiceDate]), div, f.created || null);
+    f.status?.name || '', statusCat(i), f.summary || '', num(f[F.share]), dateOf(f[F.due]), dateOf(f[F.invoiceDate]), div, f.created || null,
+    statusCat(i) === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null);
 }
 
 async function runAll(env, stmts) {
@@ -853,6 +854,205 @@ export async function history(env, viewer, { region } = {}) {
   return { region, rows };
 }
 
+// ---------- the finance overview ----------
+
+const DONE = ['done', 'archive'];
+const isDone = (r) => DONE.includes(lower(r.status));
+const AGE_BUCKETS = [[31, 'Under a month'], [92, '1 to 3 months'], [183, '3 to 6 months'], [366, '6 to 12 months'], [Infinity, 'Over a year']];
+const daysBetween = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
+const median = (xs) => { if (!xs.length) return null; const s = [...xs].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const endOfMonth = (m) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10); };
+
+// What actually happened in each month, rather than running totals: value that came onto
+// the books and went off them, what was invoiced and paid in that month, and the open book
+// at the month end, worked out from one month's list against the month before.
+function flows(month, rows, prevRows) {
+  const prev = prevRows ? new Map(prevRows.map((r) => [r.key, r])) : null;
+  const v = (r) => (r.value === null || r.value === undefined ? 0 : r.value);
+  const open = rows.filter((r) => !isDone(r));
+  const out = {
+    month,
+    openBook: open.reduce((t, r) => t + v(r), 0),
+    openDone: open.reduce((t, r) => t + v(r) * (r.progress || 0), 0),
+    added: rows.filter((r) => r.isNew).reduce((t, r) => t + v(r), 0),
+    addedCount: rows.filter((r) => r.isNew).length,
+    awaiting: rows.reduce((t, r) => t + v(r) * Math.max(0, (r.invoiced || 0) - (r.paid || 0)), 0),
+    finished: null, finishedCount: null, invoicedIn: null, paidIn: null, workIn: null,
+  };
+  out.openToDo = out.openBook - out.openDone;
+  if (!prev) return out;
+  const finished = rows.filter((r) => isDone(r) && !(prev.get(r.key) && isDone(prev.get(r.key))));
+  out.finished = finished.reduce((t, r) => t + v(r), 0);
+  out.finishedCount = finished.length;
+  let inv = 0, paid = 0, work = 0;
+  for (const r of rows) {
+    const p = prev.get(r.key);
+    const before = p || (r.isNew ? { invoiced: 0, paid: 0, progress: 0 } : null);
+    if (!before) continue;
+    inv += v(r) * ((r.invoiced || 0) - (before.invoiced || 0));
+    paid += v(r) * ((r.paid || 0) - (before.paid || 0));
+    work += v(r) * ((r.progress || 0) - (before.progress || 0));
+  }
+  out.invoicedIn = inv; out.paidIn = paid; out.workIn = work;
+  return out;
+}
+
+async function datedFlows(env, region, from) {
+  const { results: orders } = await env.DB.prepare('SELECT issue_id, issue_key, upfront, token_only FROM wip_orders WHERE region = ? AND customer_item = 0').bind(region).all();
+  const out = new Map();
+  if (!orders.length) return out;
+  const { over, seed } = await overridesAndSeeds(env, orders.map((o) => o.issue_key));
+  const value = new Map(orders.map((o) => [o.issue_id, o.token_only ? 0 : (over.get(o.issue_key)?.upfront ?? seed.get(o.issue_key)?.upfront ?? o.upfront ?? 0)]));
+  const start = `${from}-01`;
+  for (const part of chunk(orders.map((o) => o.issue_id), IN)) {
+    const { results } = await env.DB.prepare(
+      `SELECT order_id, share, summary, issuetype, status, status_cat, inv_date, paid_at FROM wip_items
+        WHERE level = 1 AND order_id IN (${marks(part.length)}) AND (inv_date >= ? OR paid_at >= ?)`
+    ).bind(...part, start, start).all();
+    for (const i of results) {
+      if (!isInvoice(i) || isTokenInvoice(i)) continue;
+      const amount = (value.get(i.order_id) || 0) * (Number(i.share) || 0);
+      const st = invoiceState(i);
+      if (st.invoiced && i.inv_date >= start) { const g = out.get(monthOf(i.inv_date)) || { invoiced: 0, paid: 0 }; g.invoiced += amount; out.set(monthOf(i.inv_date), g); }
+      if (st.paid && i.paid_at >= start) { const g = out.get(monthOf(i.paid_at)) || { invoiced: 0, paid: 0 }; g.paid += amount; out.set(monthOf(i.paid_at), g); }
+    }
+  }
+  return out;
+}
+
+export async function insights(env, viewer, { region } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const now = thisMonth();
+  const today = londonDate();
+  const { results: snaps } = await env.DB.prepare(
+    `SELECT month, issue_key, org, title, status, division, upfront, token, accepted, done_at, progress, non_admin, invoiced, paid
+       FROM wip_snapshots WHERE region = ? ORDER BY month`
+  ).bind(region).all();
+  const byMonth = new Map();
+  for (const s of snaps) {
+    if (s.month >= now) continue;
+    if (!byMonth.has(s.month)) byMonth.set(s.month, []);
+    byMonth.get(s.month).push({ key: s.issue_key, org: s.org, status: s.status, division: s.division, value: s.token ? null : s.upfront,
+      accepted: s.accepted, doneAt: s.done_at, isNew: monthOf(s.accepted) === s.month, progress: s.progress, nonAdmin: s.non_admin, invoiced: s.invoiced, paid: s.paid });
+  }
+  const live = await liveRows(env, region, now);
+  byMonth.set(now, live);
+  const { results: hist } = await env.DB.prepare('SELECT month, data FROM wip_history WHERE region = ? ORDER BY month').bind(region).all();
+  const histMap = new Map(hist.map((h) => { try { return [h.month, JSON.parse(h.data)]; } catch { return [h.month, {}]; } }));
+  const months = [...new Set([...byMonth.keys(), ...histMap.keys()])].sort();
+  // From the month the hub started keeping months, invoicing and payment come from each
+  // invoice's own dates: its invoice date, and the day it was marked paid.
+  const firstHub = await env.DB.prepare("SELECT MIN(month) AS m FROM wip_snapshots WHERE region = ? AND source = 'hub'").bind(region).first();
+  const datedFrom = firstHub?.m || now;
+  const dated = await datedFlows(env, region, datedFrom);
+  const series = months.map((m) => {
+    const rows = byMonth.get(m);
+    const prevRows = byMonth.get(shiftMonth(m, -1)) || null;
+    const h = histMap.get(m) || (m === now ? historyFrom(metrics(live, now), histMap.get(shiftMonth(now, -1)) || null) : {});
+    const f = rows ? flows(m, rows, prevRows) : { month: m };
+    if (m >= datedFrom) { f.invoicedIn = dated.get(m)?.invoiced || 0; f.paidIn = dated.get(m)?.paid || 0; f.dated = true; }
+    return {
+      ...f, live: m === now,
+      projectsProgress: h.projectsProgress ?? null, serviceProgress: h.serviceProgress ?? null,
+      projectsWork: h.projectsWork ?? null, serviceWork: h.serviceWork ?? null,
+      projectsValue: h.projectsValue ?? null, serviceValue: h.serviceValue ?? null,
+      endInvoiced: h.endInvoiced ?? null, endPaid: h.endPaid ?? null,
+      endAwaiting: f.awaiting ?? h.endAwaiting ?? null,
+    };
+  });
+
+  // Where the open value sits now.
+  const open = live.filter((r) => !isDone(r));
+  const v = (r) => r.value || 0;
+  const group = (list, keyOf) => {
+    const m = new Map();
+    for (const r of list) {
+      const k = keyOf(r) || 'Not set';
+      const g = m.get(k) || { name: k, orders: 0, value: 0, done: 0, invoiced: 0, paid: 0 };
+      g.orders++; g.value += v(r); g.done += v(r) * (r.progress || 0); g.invoiced += v(r) * (r.invoiced || 0); g.paid += v(r) * (r.paid || 0);
+      m.set(k, g);
+    }
+    return [...m.values()].map((g) => ({ ...g, toDo: g.value - g.done }));
+  };
+  const statuses = group(open, (r) => r.status).sort((a, b) => b.value - a.value);
+  const allCustomers = group(open, (r) => r.org).sort((a, b) => b.value - a.value);
+  const top = allCustomers.slice(0, 10);
+  const rest = allCustomers.slice(10);
+  if (rest.length) {
+    top.push(rest.reduce((t, g) => ({ name: `${rest.length} other customers`, orders: t.orders + g.orders, value: t.value + g.value, done: t.done + g.done,
+      invoiced: t.invoiced + g.invoiced, paid: t.paid + g.paid, toDo: t.toDo + g.toDo, other: true }), { orders: 0, value: 0, done: 0, invoiced: 0, paid: 0, toDo: 0 }));
+  }
+  const ageing = AGE_BUCKETS.map(([, label]) => ({ name: label, orders: 0, value: 0, toDo: 0 }));
+  for (const r of open) {
+    if (!r.accepted) continue;
+    const days = daysBetween(r.accepted, today);
+    const b = ageing[AGE_BUCKETS.findIndex(([max]) => days < max)];
+    b.orders++; b.value += v(r); b.toDo += v(r) * (1 - (r.progress || 0));
+  }
+  for (const b of ageing) b.done = b.value - b.toDo;
+
+  // How long orders took from acceptance to being done, from every month on record.
+  const finished = new Map();
+  for (const [m, rows] of byMonth) {
+    for (const r of rows) {
+      if (!isDone(r) || !r.accepted || finished.has(r.key)) continue;
+      const end = r.doneAt || (m === now ? today : endOfMonth(m));
+      const days = daysBetween(r.accepted, end);
+      if (days >= 0) finished.set(r.key, { key: r.key, division: r.division, days, value: r.value, end });
+    }
+  }
+  const { results: doneOrders } = await env.DB.prepare(
+    "SELECT o.issue_key, o.created, o.done_at FROM wip_orders o WHERE o.region = ? AND o.status_cat = 'done' AND o.done_at IS NOT NULL AND o.customer_item = 0 AND o.gone = 0"
+  ).bind(region).all();
+  if (doneOrders.length) {
+    const { seed } = await overridesAndSeeds(env, doneOrders.map((o) => o.issue_key));
+    for (const o of doneOrders) {
+      const accepted = seed.get(o.issue_key)?.accepted || o.created;
+      const known = finished.get(o.issue_key);
+      if (!accepted) continue;
+      const days = daysBetween(accepted, o.done_at);
+      if (days >= 0) finished.set(o.issue_key, { key: o.issue_key, division: known?.division || seed.get(o.issue_key)?.division || null, days, value: known?.value ?? null, end: o.done_at });
+    }
+  }
+  const since = `${shiftMonth(now, -24)}-01`;
+  const recent = [...finished.values()].filter((f) => f.end >= since);
+  const completion = AGE_BUCKETS.map(([, label]) => ({ name: label, projects: 0, service: 0 }));
+  for (const f of recent) {
+    const b = completion[AGE_BUCKETS.findIndex(([max]) => f.days < max)];
+    if (f.division === 'ServiceTeam') b.service++; else b.projects++;
+  }
+  const typical = {
+    all: median(recent.map((f) => f.days)), projects: median(recent.filter((f) => f.division !== 'ServiceTeam').map((f) => f.days)),
+    service: median(recent.filter((f) => f.division === 'ServiceTeam').map((f) => f.days)), count: recent.length,
+  };
+
+  // Invoices still to raise, by the month they're planned for.
+  const ids = live.filter((r) => r.id).map((r) => r.id);
+  const valueOf = new Map(live.map((r) => [r.id, r.value]));
+  const plan = new Map();
+  let late = 0, lateCount = 0, undated = 0, undatedCount = 0;
+  for (const i of (await itemsFor(env, ids)).filter((x) => x.level === 1 && isInvoice(x) && !isTokenInvoice(x))) {
+    if (invoiceState(i).invoiced) continue;
+    const val = (valueOf.get(i.order_id) || 0) * (Number(i.share) || 0);
+    if (!val) continue;
+    const when = i.inv_due;
+    if (!when) { undated += val; undatedCount++; continue; }
+    if (when < today) { late += val; lateCount++; continue; }
+    const m = monthOf(when);
+    const g = plan.get(m) || { month: m, value: 0, count: 0 };
+    g.value += val; g.count++; plan.set(m, g);
+  }
+  const ahead = Array.from({ length: 6 }, (_, i) => plan.get(shiftMonth(now, i)) || { month: shiftMonth(now, i), value: 0, count: 0 });
+  const later = [...plan.values()].filter((g) => g.month > shiftMonth(now, 5)).reduce((t, g) => ({ value: t.value + g.value, count: t.count + g.count }), { value: 0, count: 0 });
+
+  return {
+    region, regions: REGIONS, month: now, months: series,
+    statuses, customers: top, ageing, completion, typical,
+    forecast: { late: { value: late, count: lateCount }, months: ahead, later, undated: { value: undated, count: undatedCount } },
+  };
+}
+
 // ---------- settings and changes ----------
 
 export async function settings(env, viewer) {
@@ -939,6 +1139,10 @@ const cleanKey = (v) => { const k = String(v || '').trim().toUpperCase(); return
 const cleanDivision = (v) => (/service/i.test(v || '') ? 'ServiceTeam' : /project/i.test(v || '') ? 'ProjectsTeam' : null);
 const cleanPct = (v) => { const n = cleanNum(v); return n === null ? null : Math.max(-5, Math.min(5, n)); };
 
+// Which workbook a row came from, by the latest month it has a tab for, so an older
+// year's workbook read in later never replaces what a newer one gave.
+const bookOf = (source) => String(source || '').split(':')[1] || '';
+
 export async function importSheet(env, viewer, body) {
   mustEdit(viewer);
   const region = body.region in REGIONS ? body.region : null;
@@ -946,71 +1150,85 @@ export async function importSheet(env, viewer, body) {
   const now = thisMonth();
   const at = new Date().toISOString();
   const months = (Array.isArray(body.months) ? body.months : []).filter((m) => isMonth(m?.month) && m.month <= now).sort((a, b) => a.month.localeCompare(b.month));
+  if (!months.length) throw refuse('No month tabs were found.', 400);
+  const book = months[months.length - 1].month;
   const stmts = [];
-  const result = { region, months: [], seeded: 0, contracts: 0, history: 0, skipped: [] };
+  const result = { region, book, months: [], seeded: 0, contracts: 0, history: 0, skipped: [] };
   const seeds = new Map();
   for (const m of months) {
     const rows = (Array.isArray(m.rows) ? m.rows : []).slice(0, 2000).map((r) => ({ ...r, key: cleanKey(r.key) })).filter((r) => r.key);
-    for (const r of rows) seeds.set(r.key, r);
+    for (const r of rows) seeds.set(r.key, { ...r, month: m.month });
     if (m.month === now) continue;
-    const hub = await env.DB.prepare("SELECT 1 AS n FROM wip_snapshots WHERE month = ? AND region = ? AND source = 'hub' LIMIT 1").bind(m.month, region).first();
-    if (hub) { result.skipped.push(m.month); continue; }
+    const kept = await env.DB.prepare('SELECT source FROM wip_snapshots WHERE month = ? AND region = ? LIMIT 1').bind(m.month, region).first();
+    if (kept && (kept.source === 'hub' || bookOf(kept.source) > book)) { result.skipped.push(m.month); continue; }
     stmts.push(env.DB.prepare('DELETE FROM wip_snapshots WHERE month = ? AND region = ?').bind(m.month, region));
     for (const r of rows) {
       const token = /token/i.test(String(r.upfrontText || '')) ? 1 : 0;
       stmts.push(env.DB.prepare(
         `INSERT INTO wip_snapshots (month, issue_key, region, org, title, status, division, upfront, token, quote_no, accepted, done_at, progress, non_admin, invoiced, paid, source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import')
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(month, issue_key) DO UPDATE SET region = excluded.region, org = excluded.org, title = excluded.title, status = excluded.status,
            division = excluded.division, upfront = excluded.upfront, token = excluded.token, quote_no = excluded.quote_no, accepted = excluded.accepted,
            done_at = excluded.done_at, progress = excluded.progress, non_admin = excluded.non_admin, invoiced = excluded.invoiced, paid = excluded.paid, source = excluded.source`
       ).bind(m.month, r.key, region, clean(r.org), clean(r.title), clean(r.status, 60), cleanDivision(r.division), token ? null : cleanNum(r.upfront), token,
-        clean(r.quoteNo, 60), cleanDate(r.accepted), cleanDate(r.doneAt), cleanPct(r.progress) ?? 0, cleanPct(r.nonAdmin), cleanPct(r.invoiced), cleanPct(r.paid)));
+        clean(r.quoteNo, 60), cleanDate(r.accepted), cleanDate(r.doneAt), cleanPct(r.progress) ?? 0, cleanPct(r.nonAdmin), cleanPct(r.invoiced), cleanPct(r.paid), `import:${book}`));
     }
     result.months.push({ month: m.month, orders: rows.length });
   }
+  // Each order's value, division and dates come from the latest month it appears in, across every workbook read in.
   for (const r of seeds.values()) {
     stmts.push(env.DB.prepare(
-      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, upfront_text, quote_no, accepted, title, org, updated_at) VALUES (?, 'order', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, upfront_text, quote_no, accepted, title, org, updated_at, seed_month) VALUES (?, 'order', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_key) DO UPDATE SET kind = excluded.kind, region = excluded.region, division = excluded.division, upfront = excluded.upfront,
-         upfront_text = excluded.upfront_text, quote_no = excluded.quote_no, accepted = excluded.accepted, title = excluded.title, org = excluded.org, updated_at = excluded.updated_at`
+         upfront_text = excluded.upfront_text, quote_no = excluded.quote_no, accepted = excluded.accepted, title = excluded.title, org = excluded.org,
+         updated_at = excluded.updated_at, seed_month = excluded.seed_month
+       WHERE excluded.seed_month >= COALESCE(wip_seed.seed_month, '')`
     ).bind(r.key, region, cleanDivision(r.division), /token/i.test(String(r.upfrontText || '')) ? null : cleanNum(r.upfront), clean(r.upfrontText, 40),
-      clean(r.quoteNo, 60), cleanDate(r.accepted), clean(r.title), clean(r.org), at));
+      clean(r.quoteNo, 60), cleanDate(r.accepted), clean(r.title), clean(r.org), at, r.month));
     result.seeded++;
   }
   for (const c of (Array.isArray(body.recurring) ? body.recurring : []).slice(0, 500)) {
     const key = cleanKey(c.key);
     if (!key) continue;
     stmts.push(env.DB.prepare(
-      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, start_date, end_date, title, org, updated_at) VALUES (?, 'contract', ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, start_date, end_date, title, org, updated_at, seed_month) VALUES (?, 'contract', ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_key) DO UPDATE SET kind = excluded.kind, region = excluded.region, division = excluded.division, upfront = excluded.upfront,
-         start_date = excluded.start_date, end_date = excluded.end_date, title = excluded.title, org = excluded.org, updated_at = excluded.updated_at`
-    ).bind(key, region, /project|condor/i.test(c.division || '') ? 'Condor' : 'Service', cleanNum(c.total), cleanDate(c.start), cleanDate(c.end), clean(c.title), clean(c.org), at));
+         start_date = excluded.start_date, end_date = excluded.end_date, title = excluded.title, org = excluded.org, updated_at = excluded.updated_at, seed_month = excluded.seed_month
+       WHERE excluded.seed_month >= COALESCE(wip_seed.seed_month, '')`
+    ).bind(key, region, /project|condor/i.test(c.division || '') ? 'Condor' : 'Service', cleanNum(c.total), cleanDate(c.start), cleanDate(c.end), clean(c.title), clean(c.org), at, book));
     result.contracts++;
   }
   const allowed = ['newProjects', 'newService', 'completeProjects', 'completeService', 'projectsProgress', 'serviceProgress', 'projectsWork', 'serviceWork',
     'projectsValue', 'serviceValue', 'projectsWorkValue', 'serviceWorkValue', 'unrealisedProjects', 'unrealisedService', 'startInvoiced', 'startPaid',
     'endInvoiced', 'endPaid', 'startAwaiting', 'endAwaiting'];
-  for (const h of (Array.isArray(body.history) ? body.history : []).slice(0, 120)) {
+  const listed = new Map();
+  for (const h of (Array.isArray(body.history) ? body.history : []).slice(0, 240)) {
     if (!isMonth(h?.month) || h.month >= now) continue;
     const data = {};
     for (const k of allowed) { const v = cleanNum(h.data?.[k]); if (v !== null) data[k] = v; }
-    if (!Object.keys(data).length) continue;
-    stmts.push(env.DB.prepare(
-      `INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, 'import')
-       ON CONFLICT(month, region) DO UPDATE SET data = excluded.data, source = excluded.source WHERE wip_history.source IS NOT 'hub'`
-    ).bind(h.month, region, JSON.stringify(data)));
-    result.history++;
+    if (Object.keys(data).length) listed.set(h.month, { ...(listed.get(h.month) || {}), ...data });
   }
   await runAll(env, stmts);
-  // Months read in from the sheet's own tabs fill any gaps the history list had.
-  for (const m of result.months) {
-    const has = await env.DB.prepare('SELECT source FROM wip_history WHERE month = ? AND region = ?').bind(m.month, region).first();
-    if (has) continue;
-    const rows = await snapshotRows(env, region, m.month);
-    const prev = await historyRow(env, region, shiftMonth(m.month, -1));
-    await env.DB.prepare("INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, 'sheet')")
-      .bind(m.month, region, JSON.stringify(historyFrom(metrics(rows, m.month), prev))).run();
+  // Each month's figures: what the workbook's own list (Overall Data or WIP Statistics) gives,
+  // with anything it leaves out worked out from that month's tab.
+  const tabMonths = new Set(result.months.map((m) => m.month));
+  const all = [...new Set([...listed.keys(), ...tabMonths])].sort();
+  for (const month of all) {
+    const has = await env.DB.prepare('SELECT data, source FROM wip_history WHERE month = ? AND region = ?').bind(month, region).first();
+    if (has && (has.source === 'hub' || bookOf(has.source) > book)) continue;
+    let fromTab = {};
+    if (tabMonths.has(month)) {
+      const rows = await snapshotRows(env, region, month);
+      const prev = await historyRow(env, region, shiftMonth(month, -1));
+      fromTab = historyFrom(metrics(rows, month), prev);
+    }
+    const data = { ...fromTab };
+    for (const [k, v] of Object.entries(listed.get(month) || {})) if (v !== null && v !== undefined) data[k] = v;
+    if (!Object.keys(data).length) continue;
+    await env.DB.prepare(
+      `INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, ?)
+       ON CONFLICT(month, region) DO UPDATE SET data = excluded.data, source = excluded.source`
+    ).bind(month, region, JSON.stringify(data), `${listed.has(month) ? 'import' : 'sheet'}:${book}`).run();
     result.history++;
   }
   return result;
