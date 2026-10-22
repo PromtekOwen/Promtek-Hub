@@ -57,20 +57,8 @@ function textDate(s) {
   return excelDate(serial);
 }
 
-export async function readSheet(file) {
+async function open(file) {
   const zip = await unzip(new Uint8Array(await file.arrayBuffer()));
-  // The first sheet in the workbook, wherever it's kept.
-  let sheetPath = 'xl/worksheets/sheet1.xml';
-  try {
-    const wb = xml(await zip.read('xl/workbook.xml'));
-    const rid = all(wb, 'sheet')[0]?.getAttribute('r:id') || all(wb, 'sheet')[0]?.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
-    const rels = xml(await zip.read('xl/_rels/workbook.xml.rels'));
-    const target = all(rels, 'Relationship').find((r) => r.getAttribute('Id') === rid)?.getAttribute('Target');
-    if (target) sheetPath = target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}`;
-  } catch { /* the usual place */ }
-  const sheetText = await zip.read(sheetPath) || await zip.read(zip.names.find((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)));
-  if (!sheetText) throw new Error('That spreadsheet has no sheets in it.');
-
   const strings = [];
   const ss = await zip.read('xl/sharedStrings.xml');
   if (ss) for (const si of all(xml(ss), 'si')) strings.push(all(si, 't').map((t) => t.textContent).join(''));
@@ -92,21 +80,59 @@ export async function readSheet(file) {
     for (const xf of kids(all(doc, 'cellXfs')[0], 'xf')) xfFill.push(fills[Number(xf.getAttribute('fillId') || 0)] ?? null);
   }
 
-  const rows = [];
-  for (const row of all(xml(sheetText), 'row')) {
-    const cells = [];
-    for (const c of kids(row, 'c')) {
-      const type = c.getAttribute('t');
-      const v = kids(c, 'v')[0]?.textContent;
-      let value = v ?? '';
-      if (type === 's') value = strings[Number(v)] ?? '';
-      else if (type === 'inlineStr') value = all(c, 't').map((t) => t.textContent).join('');
-      const numeric = !type || type === 'n';
-      const cell = { value, fill: xfFill[Number(c.getAttribute('s') || 0)] ?? null };
-      cell.date = numeric && v && Number(v) > 20000 && Number(v) < 80000 ? excelDate(v) : textDate(value);
-      cells[colOf(c.getAttribute('r'))] = cell;
+  // Every sheet, in the workbook's order, with where it's kept.
+  const sheets = [];
+  try {
+    const wb = xml(await zip.read('xl/workbook.xml'));
+    const rels = xml(await zip.read('xl/_rels/workbook.xml.rels'));
+    for (const sh of all(wb, 'sheet')) {
+      const rid = sh.getAttribute('r:id') || sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
+      const target = all(rels, 'Relationship').find((r) => r.getAttribute('Id') === rid)?.getAttribute('Target');
+      if (target) sheets.push({ name: sh.getAttribute('name') || '', path: target.startsWith('/') ? target.slice(1) : `xl/${target.replace(/^\.\//, '')}` });
     }
-    rows.push(cells);
-  }
+  } catch { /* the usual places */ }
+  if (!sheets.length) sheets.push(...zip.names.filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n)).sort().map((path, i) => ({ name: `Sheet${i + 1}`, path })));
+
+  const rowsOf = async (path, { pad = false } = {}) => {
+    const sheetText = await zip.read(path);
+    if (!sheetText) return [];
+    const rows = [];
+    for (const row of all(xml(sheetText), 'row')) {
+      const cells = [];
+      for (const c of kids(row, 'c')) {
+        const type = c.getAttribute('t');
+        const v = kids(c, 'v')[0]?.textContent;
+        let value = v ?? '';
+        if (type === 's') value = strings[Number(v)] ?? '';
+        else if (type === 'inlineStr') value = all(c, 't').map((t) => t.textContent).join('');
+        const numeric = !type || type === 'n';
+        const cell = { value, fill: xfFill[Number(c.getAttribute('s') || 0)] ?? null };
+        cell.date = numeric && v && Number(v) > 20000 && Number(v) < 80000 ? excelDate(v) : textDate(value);
+        cells[colOf(c.getAttribute('r'))] = cell;
+      }
+      // Rows are numbered in the file; for a whole book, skipped ones are kept as empty rows.
+      const at = Number(row.getAttribute('r')) - 1;
+      while (pad && Number.isFinite(at) && rows.length < at) rows.push([]);
+      rows.push(cells);
+    }
+    return rows;
+  };
+  return { sheets, rowsOf, zip };
+}
+
+export async function readSheet(file) {
+  const book = await open(file);
+  const first = book.sheets[0]?.path || 'xl/worksheets/sheet1.xml';
+  const rows = await book.rowsOf(first);
+  if (!rows.length && !book.sheets.length) throw new Error('That spreadsheet has no sheets in it.');
   return { rows };
+}
+
+// Every sheet in the workbook, by name.
+export async function readBook(file) {
+  const book = await open(file);
+  const out = [];
+  for (const s of book.sheets) out.push({ name: s.name, rows: await book.rowsOf(s.path, { pad: true }) });
+  if (!out.length) throw new Error('That spreadsheet has no sheets in it.');
+  return { sheets: out };
 }

@@ -1192,3 +1192,58 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .medal-link { display: inline-flex; vertical-align: middle; margin-left: .35rem; }
 .medal-link .medal svg { width: 28px; height: 28px; }
 @media (max-width: 480px) { .feed-days[style*="--days:6"] li, .feed-days[style*="--days:7"] li { font-size: .75rem; padding: .3rem .1rem; } }
+
+/* WIP */
+.wip-tabs { margin-bottom: .75rem; max-width: 100%; overflow-x: auto; }
+.wip-seg { display: flex; flex-wrap: wrap; max-width: 100%; }
+.wip-seg .seg { flex: 1 1 auto; }
+.wip-tools { margin-bottom: .5rem; align-items: center; }
+.wip-tools .btn { margin-left: auto; }
+.wip-month { display: flex; align-items: center; gap: .5rem; }
+.wip-sync { padding: .25rem 0 .5rem; }
+.wip-sync .bad { display: block; font-weight: 600; }
+.wip-stats dd { font-size: 1.3rem; }
+.wip-h { margin: 1.5rem 0 .6rem; font-size: 1.15rem; }
+.wip-split th[scope="row"] { color: var(--ink); font-weight: 600; }
+.wip-split td small, .wip-table td small, .wip-group td small, .wip-row td small { display: block; color: var(--muted); font-size: .8rem; font-weight: 400; }
+.wip-under { margin-top: 1.25rem; }
+.wip-counts { list-style: none; margin: 0; padding: 0; columns: 2 12rem; column-gap: 1.5rem; }
+.wip-counts li { display: flex; justify-content: space-between; gap: 1rem; padding: .3rem 0; border-bottom: 1px solid var(--line); break-inside: avoid; }
+.wip-filters { margin: .25rem 0 .75rem; align-items: center; }
+.wip-filters input[type="search"] { flex: 1 1 14rem; }
+.wip-table td.wip-title, .wip-group td.wip-title { white-space: normal; min-width: 15rem; max-width: 24rem; }
+.wip-t { display: block; }
+.wip-table td small.good, .wip-row td small.good { color: var(--ok); font-weight: 600; }
+.wip-table td small.bad, .wip-row td small.bad { color: var(--danger); font-weight: 600; }
+.wip-table th, .wip-table td { padding: .6rem .6rem; }
+.wip-row { cursor: pointer; }
+.wip-row:hover td, .wip-row:focus-visible td { background: var(--tint); }
+.wip-table tfoot th { color: var(--ink); border-bottom: 0; }
+.wip-new { display: inline-block; font-size: .72rem; font-weight: 700; color: #fff; background: var(--blue); border-radius: 6px; padding: 0 .35rem; vertical-align: middle; }
+.wip-group { margin-top: 1rem; }
+.wip-group h2 { font-size: 1.05rem; margin: 0 0 .6rem; }
+.wip-group .table-wrap { box-shadow: none; border: 1px solid var(--line); }
+details.wip-group summary, details.wip-edit summary { cursor: pointer; list-style: none; }
+details.wip-group summary h2, details.wip-edit summary h2 { display: inline; margin: 0; }
+details.wip-group summary::before, details.wip-edit summary::before { content: '▸ '; color: var(--muted); }
+details.wip-group[open] summary::before, details.wip-edit[open] summary::before { content: '▾ '; }
+details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom: .75rem; }
+.wip-head h2 { margin: 0 0 .35rem; }
+.wip-head p { margin: 0; }
+.wip-parts .wip-open { grid-column: 1 / -1; font-size: .85rem; }
+.wip-edit { margin-top: 1.25rem; }
+.wip-chart h2 { font-size: 1.05rem; margin: 0 0 .5rem; }
+.wip-legend { display: flex; gap: 1rem; margin: 0 0 .5rem; font-size: .88rem; color: var(--muted); }
+.wip-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: .35rem; vertical-align: middle; }
+.wip-bars { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; height: 170px; align-items: end; }
+.wip-bar-col { display: flex; flex-direction: column; align-items: stretch; height: 100%; min-width: 0; }
+.wip-bar-set { flex: 1; display: flex; align-items: flex-end; justify-content: center; gap: 2px; border-bottom: 1px solid var(--line); }
+.wip-bar { flex: 1; max-width: 14px; min-height: 2px; border-radius: 4px 4px 0 0; }
+.wip-bar:hover, .wip-bar:focus-visible { opacity: .8; outline: none; }
+.wip-bar-label { font-size: .68rem; color: var(--muted); text-align: center; white-space: nowrap; overflow: hidden; margin-top: .25rem; }
+.wip-people { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: .35rem 1rem; max-height: 18rem; overflow-y: auto; margin-top: .75rem; }
+@media (max-width: 520px) {
+  .wip-tabs .tab { padding: .45rem .25rem; font-size: .9rem; }
+  .wip-tools .btn { margin-left: 0; width: 100%; }
+  .wip-bar-label { font-size: .6rem; }
+}

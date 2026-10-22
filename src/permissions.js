@@ -34,6 +34,7 @@ export const PERMISSIONS = {
   condorPlan: { about: 'Triage MES and plan Condor releases', groups: ['management', 'lead'] },
   shop: { about: 'Preview the XP shop', groups: ['management', 'lead'] },
   eotq: { about: 'See every Employee of the Quarter nomination and who made it', groups: ['management'] },
+  wip: { about: 'The WIP: every order and service contract, its progress, invoicing and payment', groups: ['management'] },
   developer: { about: 'Sync and Bitbucket status, connection tests and error details', groups: ['developer'] },
   admin: { about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [] },
 };

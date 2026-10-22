@@ -85,6 +85,14 @@ export const MODULES = [
     detail: () => 'Contracts, visits and tokens',
   },
   {
+    id: 'wip',
+    name: 'WIP',
+    route: '#/wip',
+    needs: 'wip',
+    icon: icon('<path d="M4 19.5h16"/><path d="M6.5 16V11M10.5 16V7M14.5 16v-6M18.5 16V5"/>'),
+    detail: () => 'Orders, invoicing and contract income',
+  },
+  {
     id: 'calls',
     name: '8x8 calls',
     route: '#/calls',

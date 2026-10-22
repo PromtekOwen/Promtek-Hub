@@ -364,6 +364,36 @@ async function route(request, env, url, user) {
     }
   }
 
+  if (pathname.startsWith('/api/wip')) {
+    const Wip = await import('./wip.js');
+    const q = (k) => url.searchParams.get(k);
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/wip') return json(await Wip.overview(env, user, { region: q('region'), month: q('month') }));
+    if (method === 'GET' && pathname === '/api/wip/order') return json(await Wip.order(env, user, q('key')));
+    if (method === 'GET' && pathname === '/api/wip/recurring') return json(await Wip.recurring(env, user, { region: q('region') }));
+    if (method === 'GET' && pathname === '/api/wip/history') return json(await Wip.history(env, user, { region: q('region') }));
+    if (method === 'GET' && pathname === '/api/wip/settings') return json(await Wip.settings(env, user));
+    if (method === 'POST' && pathname === '/api/wip/settings') {
+      const r = await Wip.saveSettings(env, user, body);
+      if (r.changes.length) await Audit.record(env, user, { area: 'WIP', action: 'Settings changed', changes: r.changes });
+      return json({ ok: true });
+    }
+    if (method === 'POST' && pathname === '/api/wip/override') {
+      const r = await Wip.saveOverride(env, user, body);
+      const show = (o) => (o ? [o.division && `Division ${o.division}`, o.upfront != null && `Value ${o.upfront}`, o.excluded && 'Left out'].filter(Boolean).join(', ') : '');
+      await Audit.record(env, user, { area: 'WIP', action: 'Order details changed', subjectType: 'order', subjectId: r.key, label: r.key,
+        changes: [{ label: 'Set in the hub', before: show(r.before), after: show(r.after) || 'From Jira' }] });
+      return json({ ok: true });
+    }
+    if (method === 'POST' && pathname === '/api/wip/refresh') return json(await Wip.refresh(env, user));
+    if (method === 'POST' && pathname === '/api/wip/import') {
+      const r = await Wip.importSheet(env, user, body);
+      await Audit.record(env, user, { area: 'WIP', action: 'Sheet read in', label: r.region.toUpperCase(),
+        changes: [{ label: 'Read in', before: '', after: `${r.months.length} months, ${r.seeded} orders, ${r.contracts} contracts, ${r.history} history months` }] });
+      return json(r);
+    }
+  }
+
   if (pathname.startsWith('/api/contracts')) {
     const Con = await import('./contracts.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

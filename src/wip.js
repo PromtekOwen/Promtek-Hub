@@ -1,0 +1,1017 @@
+// Work in progress: every order (an Epic with a Promtek Invoicing Entity) and every
+// service contract, read straight from Jira, with progress, invoicing and payment
+// worked out from the items under them. Nothing is written back to the order to
+// do this, so the Progress, Non Admin Progress, % Invoiced, % Paid and Subtask
+// Count fields, and the Jira rules and Zaps that kept them, are no longer needed.
+//
+// Changes are picked up every run from a short search of what was updated in the
+// last few minutes; a full read every half hour catches anything removed. On the
+// first run of each month the month just ended is kept as it stood, which gives
+// the "last month" figures and the history.
+//
+// The hub can also take over the Jira rule that moved orders between Work in
+// progress, Awaiting Payment, Documentation Check and Done. It only starts once
+// switched on in the tile's settings.
+import { jira, searchPage, customerProjects } from './jira.js';
+import { raiseAlert, getState, setState, londonDate } from './sync.js';
+
+export const F = {
+  upfront: 'customfield_12003',
+  quote: 'customfield_14259',
+  entity: 'customfield_14321',
+  share: 'customfield_14317',
+  due: 'customfield_14158',
+  invoiceDate: 'customfield_14103',
+  division: 'customfield_14562',
+  start: 'customfield_14268',
+  end: 'customfield_14269',
+};
+const ENTITIES = { 'promtek ltd': 'uk', 'promtek africa': 'sa' };
+export const REGIONS = { uk: { name: 'UK', currency: 'GBP', symbol: '£' }, sa: { name: 'South Africa', currency: 'ZAR', symbol: 'R' } };
+const CATEGORY_TYPES = ['category - hardware', 'category - software', 'category - condor', 'category - site visit'];
+const ADMIN_TYPES = ['invoice', 'documentation check phase'];
+const CONTRACT_TYPE = 'Service Contract';
+const DIVISIONS = ['ServiceTeam', 'ProjectsTeam'];
+
+export const STATUS = {
+  wip: 'Work in progress', fresh: 'New', ap: 'Awaiting Payment', doc: 'Documentation Check', done: 'Done',
+  holdCustomer: 'On Hold [Customer]', holdPromtek: 'On Hold [Promtek]',
+};
+const ACTIVE = [STATUS.wip, STATUS.fresh].map((s) => s.toLowerCase());
+
+const QUICK_CALLS = 4;                 // every run, of the 50 outside calls a scheduled run may make
+const FULL_CALLS = 30;                 // on its own turn
+const FULL_EVERY_MS = 30 * 60 * 1000;
+const FIELD_IDS_EVERY_MS = 24 * 3600 * 1000;
+const BATCH = 25;                      // orders whose items are read together
+const KEEP_DONE_DAYS = 95;             // finished orders still read, so the last two months stay right
+const MOVE_TRIES_BEFORE_ALERT = 3;
+const MOVE_RETRY_MS = 5 * 60 * 1000;
+const MOVE_RETRY_CAP_MS = 6 * 3600 * 1000;
+const IN = 90;                         // values in one IN list, under D1's 100
+
+const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
+const marks = (n) => Array(n).fill('?').join(',');
+const lower = (v) => String(v ?? '').trim().toLowerCase();
+const num = (v) => (v === null || v === undefined || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+const text = (v) => {
+  if (v === null || v === undefined) return '';
+  if (Array.isArray(v)) return v.map(text).filter(Boolean).join(', ');
+  if (typeof v === 'object') return String(v.value ?? v.name ?? v.displayName ?? '');
+  return String(v);
+};
+const options = (v) => (Array.isArray(v) ? v : v ? [v] : []).map((o) => (typeof o === 'object' ? { id: String(o.id ?? ''), value: String(o.value ?? o.name ?? '') } : { id: '', value: String(o) }));
+const dateOf = (v) => {
+  if (!v) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? null : londonDate(ms);
+};
+const floorPct = (done, total) => (total ? Math.floor((done / total) * 100) / 100 : null);
+const round4 = (v) => (v === null || v === undefined ? null : Math.round(v * 10000) / 10000);
+
+// ---------- months ----------
+export const monthOf = (date) => String(date || '').slice(0, 7);
+export const thisMonth = () => monthOf(londonDate());
+export function shiftMonth(month, by) {
+  const [y, m] = month.split('-').map(Number);
+  const t = y * 12 + (m - 1) + by;
+  return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}`;
+}
+const isMonth = (m) => /^\d{4}-(0[1-9]|1[0-2])$/.test(String(m || ''));
+
+// ---------- calls to Jira, counted ----------
+class OutOfCalls extends Error {}
+function budget(env, max) {
+  let used = 0;
+  return {
+    env,
+    async call(path, init) {
+      if (used >= max) throw new OutOfCalls('Call budget used');
+      used++;
+      return jira(env, path, init);
+    },
+    get used() { return used; },
+    left: () => max - used,
+  };
+}
+async function search(b, jql, fields, { pages = 50 } = {}) {
+  const out = [];
+  let token = null;
+  let n = 0;
+  do {
+    const params = { fields: fields.join(','), maxResults: '100' };
+    if (token) params.nextPageToken = token;
+    const data = await searchPage(b.env, (path) => b.call(path), jql, params);
+    out.push(...(data.issues || []));
+    token = data.nextPageToken || null;
+    n++;
+  } while (token && n < pages);
+  return { issues: out, more: Boolean(token) };
+}
+
+// The Customer Item and Documentation fields are found by name, once a day.
+async function fieldIds(env, b) {
+  let saved = null;
+  try { saved = JSON.parse((await getState(env, 'wip_field_ids')) || 'null'); } catch { /* found again */ }
+  if (saved && Date.now() - saved.at < FIELD_IDS_EVERY_MS) return saved;
+  const fields = await b.call('/rest/api/3/field');
+  const named = (name) => (fields || []).filter((f) => lower(f.name) === name);
+  const pick = (list) => (list.find((f) => /multicheckboxes$/.test(f.schema?.custom || '')) || list[0])?.id || null;
+  const ids = { at: Date.now(), customerItem: pick(named('customer item')), documentation: pick(named('documentation')) };
+  await setState(env, 'wip_field_ids', JSON.stringify(ids));
+  return ids;
+}
+
+const ORDER_FIELDS = (ids) => ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', 'labels',
+  F.upfront, F.quote, F.entity, ids.customerItem, ids.documentation].filter(Boolean);
+const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'created', 'updated', F.share, F.due, F.invoiceDate, F.division];
+const CONTRACT_FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', F.start, F.end, F.upfront, F.entity];
+const ALL_FIELDS = (ids) => [...new Set([...ORDER_FIELDS(ids), ...ITEM_FIELDS, ...CONTRACT_FIELDS])];
+
+const isEpic = (i) => lower(i.fields?.issuetype?.name) === 'epic' || String(i.fields?.issuetype?.id) === '6';
+const isContract = (i) => lower(i.fields?.issuetype?.name) === lower(CONTRACT_TYPE);
+const statusCat = (i) => i.fields?.status?.statusCategory?.key || null;
+
+async function regionMap(env) {
+  try { return new Map((await customerProjects(env)).map((p) => [p.key.toUpperCase(), p])); } catch { return new Map(); }
+}
+function regionOf(entityText, project) {
+  return ENTITIES[lower(entityText)] || project?.region || null;
+}
+
+function orderStatement(env, i, ids, projects, now) {
+  const f = i.fields || {};
+  const project = projects.get(String(f.project?.key || i.key.split('-')[0]).toUpperCase());
+  const entity = text(f[F.entity]);
+  const doc = ids.documentation ? options(f[ids.documentation]).map((o) => o.value) : [];
+  const custom = ids.customerItem ? options(f[ids.customerItem]).map((o) => lower(o.value)) : [];
+  const cat = statusCat(i);
+  return env.DB.prepare(
+    `INSERT INTO wip_orders (issue_id, issue_key, project_key, region, entity, summary, org, status, status_cat, created, done_at, updated, upfront, quote_no, labels,
+       customer_item, has_doc, doc_yes, seen_at, gone)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+     ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, region = excluded.region, entity = excluded.entity,
+       summary = excluded.summary, org = excluded.org, status = excluded.status, status_cat = excluded.status_cat, created = excluded.created,
+       done_at = excluded.done_at, updated = excluded.updated, upfront = excluded.upfront, quote_no = excluded.quote_no, labels = excluded.labels,
+       customer_item = excluded.customer_item, has_doc = excluded.has_doc, doc_yes = excluded.doc_yes, seen_at = excluded.seen_at, gone = 0`
+  ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], regionOf(entity, project), entity || null, f.summary || '', f.project?.name || project?.name || '',
+    f.status?.name || '', cat, dateOf(f.created), cat === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null, f.updated || null,
+    num(f[F.upfront]), text(f[F.quote]) || null, JSON.stringify(f.labels || []),
+    custom.includes('customer item') ? 1 : 0, doc.length ? 1 : 0, doc.length === 1 && lower(doc[0]) === 'yes' ? 1 : 0, now);
+}
+
+function contractStatement(env, i, projects, now) {
+  const f = i.fields || {};
+  const project = projects.get(String(f.project?.key || i.key.split('-')[0]).toUpperCase());
+  const cat = statusCat(i);
+  const expired = /expired/i.test(f.status?.name || '');
+  return env.DB.prepare(
+    `INSERT INTO wip_contracts (issue_id, issue_key, project_key, region, summary, org, status, status_cat, start_date, end_date, ended_at, total, seen_at, gone)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+     ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, region = excluded.region, summary = excluded.summary,
+       org = excluded.org, status = excluded.status, status_cat = excluded.status_cat, start_date = excluded.start_date, end_date = excluded.end_date,
+       ended_at = excluded.ended_at, total = excluded.total, seen_at = excluded.seen_at, gone = 0`
+  ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], regionOf(text(f[F.entity]), project), f.summary || '', f.project?.name || project?.name || '',
+    f.status?.name || '', cat, dateOf(f[F.start]), dateOf(f[F.end]), expired || cat === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null,
+    num(f[F.upfront]), now);
+}
+
+function itemStatement(env, i, orderId, level) {
+  const f = i.fields || {};
+  const div = options(f[F.division]).map((o) => `${o.id}:${o.value}`).join('|') || null;
+  return env.DB.prepare(
+    `INSERT INTO wip_items (issue_id, issue_key, order_id, parent_id, level, issuetype, subtask, status, status_cat, summary, share, inv_due, inv_date, division, created)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, order_id = excluded.order_id, parent_id = excluded.parent_id, level = excluded.level,
+       issuetype = excluded.issuetype, subtask = excluded.subtask, status = excluded.status, status_cat = excluded.status_cat, summary = excluded.summary,
+       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created`
+  ).bind(String(i.id), i.key, String(orderId), f.parent?.id ? String(f.parent.id) : null, level, f.issuetype?.name || '', f.issuetype?.subtask ? 1 : 0,
+    f.status?.name || '', statusCat(i), f.summary || '', num(f[F.share]), dateOf(f[F.due]), dateOf(f[F.invoiceDate]), div, f.created || null);
+}
+
+async function runAll(env, stmts) {
+  for (const part of chunk(stmts, 50)) if (part.length) await env.DB.batch(part);
+}
+
+// ---------- working out an order ----------
+
+export function invoiceState(item) {
+  const s = lower(item.status);
+  const paid = (/\bpaid\b/.test(s) && !/\b(un|not )paid\b/.test(s)) || item.status_cat === 'done';
+  const overdue = !paid && /overdue/.test(s);
+  const invoiced = paid || overdue || (/invoiced/.test(s) && !/not invoiced/.test(s));
+  return { paid, invoiced, overdue, label: paid ? 'Paid' : overdue ? 'Overdue' : invoiced ? 'Invoiced' : 'Not Invoiced' };
+}
+export const isTokenInvoice = (item) => /token/i.test(item.summary || '');
+const isInvoice = (item) => /\binvoice\b/i.test(item.issuetype || '');
+
+function divisionFromJira(order, items) {
+  const found = new Set();
+  const add = (s) => {
+    const t = lower(s);
+    if (/12680|service/.test(t)) found.add('ServiceTeam');
+    else if (/12681|project/.test(t)) found.add('ProjectsTeam');
+  };
+  for (const i of items) if (i.level === 1 && i.division) for (const part of i.division.split('|')) add(part);
+  let labels = [];
+  try { labels = JSON.parse(order.labels || '[]'); } catch { /* none */ }
+  for (const l of labels) add(l);
+  return found.size === 1 ? [...found][0] : found.has('ProjectsTeam') ? 'ProjectsTeam' : null;
+}
+
+export function computeOrder(order, items) {
+  const level1 = items.filter((i) => i.level === 1);
+  const level2 = items.filter((i) => i.level === 2);
+  const done = (i) => i.status_cat === 'done';
+  const legacy = !level1.some((i) => CATEGORY_TYPES.includes(lower(i.issuetype)));
+  const subs = level2.filter((i) => i.subtask);
+  const workItems = legacy ? level1.filter((i) => !ADMIN_TYPES.includes(lower(i.issuetype))) : subs;
+  const invoices = level1.filter(isInvoice);
+  const tokens = invoices.filter(isTokenInvoice);
+  const money = invoices.filter((i) => !isTokenInvoice(i));
+  const sum = (list, test) => list.filter(test).reduce((t, i) => t + (Number(i.share) || 0), 0);
+  const tokenOnly = tokens.length > 0 && money.length === 0;
+  const tokenPaid = tokens.length > 0 && tokens.every((i) => invoiceState(i).paid);
+  const paid = round4(sum(money, (i) => invoiceState(i).paid));
+  const r = {
+    legacy: legacy ? 1 : 0,
+    progress: floorPct(level1.filter(done).length, level1.length) ?? 0,
+    non_admin: floorPct(workItems.filter(done).length, workItems.length),
+    children: level1.length,
+    open_work: legacy ? null : subs.filter((i) => !done(i)).length,
+    invoiced: round4(sum(money, (i) => invoiceState(i).invoiced)),
+    paid,
+    token_qty: tokens.length ? round4(sum(tokens, () => true)) : null,
+    token_only: tokenOnly ? 1 : 0,
+    token_paid: tokenPaid ? 1 : 0,
+    division_jira: divisionFromJira(order, items),
+  };
+  // What the old Jira rule looked at: open sub-tasks, whether it's fully paid (or its tokens are), and the Documentation box.
+  const paidEnough = tokenOnly ? tokenPaid : (paid || 0) >= 0.9999;
+  const doc = order.doc_yes ? 'yes' : order.has_doc ? 'other' : 'empty';
+  r.paidEnough = paidEnough;
+  r.move_sig = `${r.progress}|${r.open_work ?? '-'}|${paidEnough ? 1 : 0}|${doc}`;
+  r.target = legacy ? null : moveFor(order.status, r.open_work, paidEnough, doc);
+  return r;
+}
+
+// The five steps of the Jira rule "Auto Transitions from Tasks", unchanged.
+export function moveFor(status, open, paidEnough, doc) {
+  if (open !== 0) return null;
+  const s = lower(status);
+  if (s === lower(STATUS.wip) && !paidEnough && doc === 'empty') return STATUS.ap;
+  if (s === lower(STATUS.wip) && paidEnough && doc === 'empty') return STATUS.doc;
+  if (s === lower(STATUS.ap) && paidEnough && doc === 'empty') return STATUS.doc;
+  if (s === lower(STATUS.ap) && paidEnough && doc === 'yes') return STATUS.done;
+  if (s === lower(STATUS.doc) && paidEnough && doc === 'yes') return STATUS.done;
+  return null;
+}
+
+async function itemsFor(env, orderIds) {
+  const out = [];
+  for (const part of chunk(orderIds, IN)) {
+    const { results } = await env.DB.prepare(`SELECT * FROM wip_items WHERE order_id IN (${marks(part.length)})`).bind(...part).all();
+    out.push(...results);
+  }
+  return out;
+}
+
+// Works out the orders and contracts given, and queues any status change the old rule would have made.
+async function recompute(env, ids) {
+  const list = [...new Set(ids.map(String))];
+  if (!list.length) return 0;
+  const orders = [];
+  const contracts = [];
+  for (const part of chunk(list, IN)) {
+    orders.push(...(await env.DB.prepare(`SELECT * FROM wip_orders WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results);
+    contracts.push(...(await env.DB.prepare(`SELECT issue_id FROM wip_contracts WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results);
+  }
+  const items = await itemsFor(env, list);
+  const byOrder = new Map();
+  for (const i of items) { if (!byOrder.has(i.order_id)) byOrder.set(i.order_id, []); byOrder.get(i.order_id).push(i); }
+  const movesOn = (await getState(env, 'wip_moves_on')) === '1';
+  const now = new Date().toISOString();
+  const stmts = [];
+  for (const o of orders) {
+    const r = computeOrder(o, byOrder.get(o.issue_id) || []);
+    stmts.push(env.DB.prepare(
+      `UPDATE wip_orders SET legacy = ?, progress = ?, non_admin = ?, children = ?, open_work = ?, invoiced = ?, paid = ?, token_qty = ?, token_only = ?,
+         token_paid = ?, division_jira = ?, move_sig = ?, computed_at = ? WHERE issue_id = ?`
+    ).bind(r.legacy, r.progress, r.non_admin, r.children, r.open_work, r.invoiced, r.paid, r.token_qty, r.token_only, r.token_paid, r.division_jira,
+      r.move_sig, now, o.issue_id));
+    // Like the rule, which ran when progress changed: an order is only moved when what it depends on
+    // has changed since it was last looked at, so moving one back by hand is left alone.
+    const changed = o.move_sig !== null && o.move_sig !== r.move_sig;
+    if (movesOn && changed && r.target && !o.customer_item && o.entity) {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO wip_moves (issue_key, issue_id, target, from_status, reason, status, tries, next_at, last_error, queued_at, done_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, NULL, ?, NULL)
+         ON CONFLICT(issue_key) DO UPDATE SET issue_id = excluded.issue_id, target = excluded.target, from_status = excluded.from_status, reason = excluded.reason,
+           status = 'pending', tries = 0, next_at = 0, last_error = NULL, queued_at = excluded.queued_at, done_at = NULL`
+      ).bind(o.issue_key, o.issue_id, r.target, o.status, moveReason(r), now));
+    }
+  }
+  for (const c of contracts) {
+    const inv = (byOrder.get(c.issue_id) || []).filter((i) => i.level === 1 && isInvoice(i));
+    stmts.push(env.DB.prepare('UPDATE wip_contracts SET steps = ?, steps_invoiced = ?, steps_paid = ? WHERE issue_id = ?')
+      .bind(inv.length, inv.filter((i) => invoiceState(i).invoiced).length, inv.filter((i) => invoiceState(i).paid).length, c.issue_id));
+  }
+  await runAll(env, stmts);
+  return orders.length + contracts.length;
+}
+function moveReason(r) {
+  return r.paidEnough ? 'All sub-tasks are done and it is fully paid' : 'All sub-tasks are done and it is not yet fully paid';
+}
+
+// ---------- reading Jira ----------
+
+const ORDER_JQL = `issuetype = Epic AND cf[${F.entity.split('_')[1]}] is not EMPTY AND (statusCategory != Done OR updated >= -${KEEP_DONE_DAYS}d) ORDER BY key`;
+const CONTRACT_JQL = `issuetype = "${CONTRACT_TYPE}" AND status not in ("Archived", "Contract Lost") ORDER BY key`;
+
+// Places each changed issue: an order or contract itself, an item under one, or an item under one of those.
+async function place(env, issues, ids, projects, now) {
+  const orderish = issues.filter((i) => isEpic(i) || isContract(i));
+  const stmts = [];
+  for (const i of orderish) stmts.push(isContract(i) ? contractStatement(env, i, projects, now) : orderStatement(env, i, ids, projects, now));
+  await runAll(env, stmts);
+  const touched = new Set(orderish.map((i) => String(i.id)));
+  const rest = issues.filter((i) => !isEpic(i) && !isContract(i) && i.fields?.parent?.id);
+  if (!rest.length) return touched;
+  const parents = [...new Set(rest.map((i) => String(i.fields.parent.id)))];
+  const known = new Map();
+  const items = new Map();
+  for (const part of chunk(parents, IN)) {
+    const q = marks(part.length);
+    for (const r of (await env.DB.prepare(`SELECT issue_id FROM wip_orders WHERE issue_id IN (${q}) UNION SELECT issue_id FROM wip_contracts WHERE issue_id IN (${q})`).bind(...part, ...part).all()).results) known.set(r.issue_id, true);
+    for (const r of (await env.DB.prepare(`SELECT issue_id, order_id FROM wip_items WHERE level = 1 AND issue_id IN (${q})`).bind(...part).all()).results) items.set(r.issue_id, r.order_id);
+  }
+  // An item that has moved to a parent the hub doesn't follow is let go.
+  const own = rest.map((i) => String(i.id));
+  const before = new Map();
+  for (const part of chunk(own, IN)) {
+    for (const r of (await env.DB.prepare(`SELECT issue_id, order_id FROM wip_items WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results) before.set(r.issue_id, r.order_id);
+  }
+  const out = [];
+  // Items straight under an order first, so anything new under them in the same search is placed too.
+  const first = rest.filter((i) => known.has(String(i.fields.parent.id)));
+  for (const i of first) { out.push(itemStatement(env, i, String(i.fields.parent.id), 1)); items.set(String(i.id), String(i.fields.parent.id)); }
+  for (const i of rest) {
+    const p = String(i.fields.parent.id);
+    if (known.has(p)) touched.add(p);
+    else if (items.has(p)) { out.push(itemStatement(env, i, items.get(p), 2)); touched.add(items.get(p)); }
+    else if (before.has(String(i.id))) { out.push(env.DB.prepare('DELETE FROM wip_items WHERE issue_id = ? OR parent_id = ?').bind(String(i.id), String(i.id))); }
+    if (before.has(String(i.id))) touched.add(before.get(String(i.id)));
+  }
+  await runAll(env, out);
+  return touched;
+}
+
+// Every run: what changed in the last few minutes.
+export async function quick(env) {
+  if (!(await getState(env, 'wip_full_done'))) return { idle: true };
+  const b = budget(env, QUICK_CALLS);
+  const out = {};
+  try {
+    out.month = await closeMonth(env);
+    const mark = Number((await getState(env, 'wip_quick_at')) || 0);
+    const started = Date.now();
+    const minutes = Math.ceil((started - mark) / 60000) + 2;
+    if (minutes > 24 * 60) {
+      await setState(env, 'wip_full_at', '0');
+      await setState(env, 'wip_quick_at', String(started));
+      return { idle: true };
+    }
+    const ids = await fieldIds(env, b);
+    const { issues, more } = await search(b, `updated >= -${minutes}m ORDER BY updated ASC`, ALL_FIELDS(ids), { pages: 2 });
+    const projects = await regionMap(env);
+    const touched = await place(env, issues, ids, projects, new Date().toISOString());
+    out.changed = await recompute(env, [...touched]);
+    // A busy few minutes leaves the rest to the next run.
+    const last = issues.length ? Date.parse(issues[issues.length - 1].fields?.updated || '') : NaN;
+    await setState(env, 'wip_quick_at', String(more && !Number.isNaN(last) ? last - 60_000 : started - 30_000));
+    if (b.left() >= 2) out.moved = await processMoves(env, b, 1);
+    await setState(env, 'wip_error', '');
+  } catch (err) {
+    if (!(err instanceof OutOfCalls)) { await setState(env, 'wip_error', `${new Date().toISOString()} ${err.message}`); throw err; }
+  }
+  out.calls = b.used;
+  return out;
+}
+
+// Its own turn: the month change, the whole list every half hour, and any waiting moves.
+export async function full(env, { force = false } = {}) {
+  const b = budget(env, FULL_CALLS);
+  const out = {};
+  try {
+    out.month = await closeMonth(env);
+    let state = null;
+    try { state = JSON.parse((await getState(env, 'wip_full') || 'null')); } catch { /* start again */ }
+    const due = force || Date.now() - Number((await getState(env, 'wip_full_at')) || 0) >= FULL_EVERY_MS;
+    if (!state && !due) {
+      const waiting = await env.DB.prepare("SELECT 1 AS n FROM wip_moves WHERE status = 'pending' AND next_at <= ? LIMIT 1").bind(Date.now()).first();
+      if (!waiting || (await getState(env, 'wip_moves_on')) !== '1') return out.month ? out : { idle: true };
+      out.moved = await processMoves(env, b, 5);
+      return out;
+    }
+    const ids = await fieldIds(env, b);
+    const projects = await regionMap(env);
+    if (!state) {
+      const at = new Date().toISOString();
+      const orders = await search(b, ORDER_JQL, ORDER_FIELDS(ids));
+      const contracts = await search(b, CONTRACT_JQL, CONTRACT_FIELDS);
+      await runAll(env, [...orders.issues.map((i) => orderStatement(env, i, ids, projects, at)), ...contracts.issues.map((i) => contractStatement(env, i, projects, at))]);
+      // Anything that should have come back and didn't has been deleted, or isn't an order now.
+      const since = londonDate(Date.now() - KEEP_DONE_DAYS * 86_400_000);
+      await env.DB.prepare("UPDATE wip_orders SET gone = 1 WHERE seen_at < ? AND (status_cat IS NOT 'done' OR done_at >= ?)").bind(at, since).run();
+      await env.DB.prepare('UPDATE wip_contracts SET gone = 1 WHERE seen_at < ?').bind(at).run();
+      const keep = londonDate(Date.now() - KEEP_DONE_DAYS * 86_400_000);
+      const { results } = await env.DB.prepare(
+        `SELECT issue_id FROM wip_orders WHERE gone = 0 AND (status_cat IS NOT 'done' OR done_at >= ?)
+         UNION ALL SELECT issue_id FROM wip_contracts WHERE gone = 0`
+      ).bind(keep).all();
+      state = { ids: results.map((r) => r.issue_id), at: 0 };
+      await setState(env, 'wip_full', JSON.stringify(state));
+    }
+    out.read = 0;
+    while (state.at < state.ids.length) {
+      const batch = state.ids.slice(state.at, state.at + BATCH);
+      await readItems(env, b, batch);
+      out.read += await recompute(env, batch);
+      state.at += batch.length;
+      await setState(env, 'wip_full', JSON.stringify(state));
+    }
+    await setState(env, 'wip_full', '');
+    await setState(env, 'wip_full_at', String(Date.now()));
+    if (!(await getState(env, 'wip_full_done'))) {
+      await setState(env, 'wip_full_done', new Date().toISOString());
+      await setState(env, 'wip_quick_at', String(Date.now()));
+    }
+    if (b.left() >= 2 && (await getState(env, 'wip_moves_on')) === '1') out.moved = await processMoves(env, b, Math.floor(b.left() / 2));
+    await setState(env, 'wip_error', '');
+  } catch (err) {
+    if (!(err instanceof OutOfCalls)) { await setState(env, 'wip_error', `${new Date().toISOString()} ${err.message}`); throw err; }
+    out.partial = true;
+  }
+  out.calls = b.used;
+  return out;
+}
+
+// Reads everything under these orders and contracts, and replaces what was kept.
+async function readItems(env, b, orderIds) {
+  const level1 = [];
+  for (const part of chunk(orderIds, 50)) level1.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
+  // Sub-tasks sit under the category items (and, on older orders, under ordinary tasks).
+  const cats = level1.filter((i) => !ADMIN_TYPES.includes(lower(i.fields?.issuetype?.name)) && !isContract({ fields: { issuetype: i.fields?.issuetype } })
+    && !/visit|token/i.test(i.fields?.issuetype?.name || ''));
+  const level2 = [];
+  for (const part of chunk(cats.map((i) => String(i.id)), 50)) level2.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
+  const orderOf = new Map(level1.map((i) => [String(i.id), String(i.fields.parent.id)]));
+  const stmts = [];
+  for (const part of chunk(orderIds, IN)) stmts.push(env.DB.prepare(`DELETE FROM wip_items WHERE order_id IN (${marks(part.length)})`).bind(...part));
+  for (const i of level1) stmts.push(itemStatement(env, i, String(i.fields.parent.id), 1));
+  for (const i of level2) stmts.push(itemStatement(env, i, orderOf.get(String(i.fields.parent.id)), 2));
+  await runAll(env, stmts);
+}
+
+// ---------- moving orders on in Jira ----------
+
+async function processMoves(env, b, max) {
+  if ((await getState(env, 'wip_moves_on')) !== '1') return 0;
+  const { results } = await env.DB.prepare("SELECT * FROM wip_moves WHERE status = 'pending' AND next_at <= ? ORDER BY queued_at LIMIT ?").bind(Date.now(), max).all();
+  let moved = 0;
+  for (const m of results) {
+    if (b.left() < 2) break;
+    const order = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(m.issue_key).first();
+    // Someone moved it first, or it no longer qualifies: nothing to do.
+    if (!order || lower(order.status) !== lower(m.from_status) || lower(order.status) === lower(m.target)) {
+      await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ?").bind(new Date().toISOString(), m.issue_key).run();
+      continue;
+    }
+    try {
+      const { transitions = [] } = await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`);
+      const t = transitions.find((x) => lower(x.to?.name || x.name) === lower(m.target));
+      if (!t) throw new Error(`Jira has no way to move ${m.issue_key} from ${order.status} to ${m.target}.`);
+      await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });
+      const cat = t.to?.statusCategory?.key || (lower(m.target) === 'done' ? 'done' : 'indeterminate');
+      const now = new Date().toISOString();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE wip_moves SET status = 'done', done_at = ?, last_error = NULL WHERE issue_key = ?").bind(now, m.issue_key),
+        env.DB.prepare('UPDATE wip_orders SET status = ?, status_cat = ?, done_at = ? WHERE issue_key = ?').bind(m.target, cat, cat === 'done' ? londonDate() : null, m.issue_key),
+      ]);
+      moved++;
+    } catch (err) {
+      if (err instanceof OutOfCalls) throw err;
+      const tries = (m.tries || 0) + 1;
+      const wait = Math.min(MOVE_RETRY_CAP_MS, MOVE_RETRY_MS * 3 ** (tries - 1));
+      await env.DB.prepare('UPDATE wip_moves SET tries = ?, next_at = ?, last_error = ? WHERE issue_key = ?').bind(tries, Date.now() + wait, String(err.message).slice(0, 300), m.issue_key).run();
+      if (tries === MOVE_TRIES_BEFORE_ALERT) {
+        await raiseAlert(env, {
+          kind: 'wip-move',
+          dedupe: `wip-move:${m.issue_key}:${m.target}:${m.queued_at}`,
+          subject: `${m.issue_key} couldn't be moved to ${m.target}`,
+          body: `The hub has tried ${tries} times to move ${m.issue_key} from ${m.from_status} to ${m.target} in Jira (${m.reason.toLowerCase()}).\n\nJira said: ${err.message}\n\n`
+            + 'It keeps trying, less often. Moving it by hand in Jira also clears this. The WIP tile shows it as waiting to move.',
+        });
+      }
+    }
+  }
+  return moved;
+}
+
+// ---------- months ----------
+
+function inMonth(order, month) {
+  const start = `${month}-01`, next = `${shiftMonth(month, 1)}-01`;
+  if ((order.created || '') >= next) return false;
+  if (order.status_cat === 'done' && order.done_at && order.done_at < start) return false;
+  return true;
+}
+
+// On the first run of a month, the month just ended is kept as it stood.
+async function closeMonth(env) {
+  const now = thisMonth();
+  const last = await getState(env, 'wip_month');
+  if (!last) { await setState(env, 'wip_month', now); return null; }
+  if (last >= now || !(await getState(env, 'wip_full_done'))) return null;
+  for (const region of Object.keys(REGIONS)) {
+    const rows = await liveRows(env, region, last);
+    const already = await env.DB.prepare("SELECT 1 AS n FROM wip_snapshots WHERE month = ? AND region = ? AND source = 'hub' LIMIT 1").bind(last, region).first();
+    if (already) continue;
+    const stmts = [env.DB.prepare('DELETE FROM wip_snapshots WHERE month = ? AND region = ?').bind(last, region)];
+    for (const r of rows) {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO wip_snapshots (month, issue_key, region, org, title, status, division, upfront, token, quote_no, accepted, done_at, progress, non_admin, invoiced, paid, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'hub')`
+      ).bind(last, r.key, region, r.org, r.title, r.status, r.division, r.value, r.tokens !== null ? 1 : 0, r.quoteNo, r.accepted, r.doneAt, r.progress, r.nonAdmin, r.invoiced, r.paid));
+    }
+    const totals = metrics(rows, last);
+    const prev = await historyRow(env, region, shiftMonth(last, -1));
+    stmts.push(env.DB.prepare(
+      `INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, 'hub')
+       ON CONFLICT(month, region) DO UPDATE SET data = excluded.data, source = excluded.source`
+    ).bind(last, region, JSON.stringify(historyFrom(totals, prev))));
+    await runAll(env, stmts);
+  }
+  await setState(env, 'wip_month', now);
+  return last;
+}
+
+async function historyRow(env, region, month) {
+  const row = await env.DB.prepare('SELECT data FROM wip_history WHERE month = ? AND region = ?').bind(month, region).first();
+  try { return row ? JSON.parse(row.data) : null; } catch { return null; }
+}
+
+// ---------- rows as the tile shows them ----------
+
+async function overridesAndSeeds(env, keys) {
+  const over = new Map(), seed = new Map();
+  for (const part of chunk(keys, IN)) {
+    for (const r of (await env.DB.prepare(`SELECT * FROM wip_overrides WHERE issue_key IN (${marks(part.length)})`).bind(...part).all()).results) over.set(r.issue_key, r);
+    for (const r of (await env.DB.prepare(`SELECT * FROM wip_seed WHERE issue_key IN (${marks(part.length)})`).bind(...part).all()).results) seed.set(r.issue_key, r);
+  }
+  return { over, seed };
+}
+
+function rowFor(o, over, seed, last, month) {
+  const tokenText = /token/i.test(seed?.upfront_text || '');
+  const isToken = Boolean(o.token_only) || (tokenText && o.invoiced === 0 && !o.paid);
+  const value = isToken ? null : (over?.upfront ?? seed?.upfront ?? o.upfront ?? null);
+  const division = over?.division || seed?.division || o.division_jira || (value === null ? 'ServiceTeam' : value < 10000 ? 'ServiceTeam' : 'ProjectsTeam');
+  const accepted = seed?.accepted || o.created;
+  const isNew = monthOf(accepted) === month;
+  const lastProgress = last ? last.progress : isNew ? 0 : null;
+  const lastNonAdmin = last ? last.non_admin : isNew ? 0 : null;
+  const v = value || 0;
+  return {
+    id: o.issue_id, key: o.issue_key, project: o.project_key, org: o.org, title: o.summary, status: o.status, statusCat: o.status_cat,
+    division, value, tokens: isToken ? (o.token_qty || num(String(seed?.upfront_text || '').match(/[\d.]+/)?.[0]) || null) : null,
+    quoteNo: o.quote_no || seed?.quote_no || null, accepted, doneAt: o.done_at, isNew,
+    progress: o.progress ?? 0, lastProgress, nonAdmin: o.non_admin, lastNonAdmin,
+    wipValue: value === null ? null : v * (o.progress || 0), lastValue: value === null || lastProgress === null ? null : v * lastProgress,
+    invoiced: isToken ? null : o.invoiced ?? 0, paid: isToken ? null : o.paid ?? 0,
+    invoicedValue: value === null ? null : v * (o.invoiced || 0), paidValue: value === null ? null : v * (o.paid || 0),
+    remaining: value === null ? null : v - v * (o.paid || 0),
+    open: o.open_work, legacy: Boolean(o.legacy), docYes: Boolean(o.doc_yes), hasDoc: Boolean(o.has_doc),
+    tokenPaid: Boolean(o.token_paid), overridden: Boolean(over && (over.division || over.upfront !== null)),
+    valueSource: isToken ? 'tokens' : over?.upfront != null ? 'override' : seed?.upfront != null ? 'sheet' : o.upfront != null ? 'jira' : 'none',
+    divisionSource: over?.division ? 'override' : seed?.division ? 'sheet' : o.division_jira ? 'jira' : 'guess',
+  };
+}
+
+async function lastMonthRows(env, region, month) {
+  const { results } = await env.DB.prepare('SELECT issue_key, progress, non_admin FROM wip_snapshots WHERE month = ? AND region = ?').bind(shiftMonth(month, -1), region).all();
+  return new Map(results.map((r) => [r.issue_key, r]));
+}
+
+async function liveRows(env, region, month) {
+  const keep = `${shiftMonth(month, -1)}-01`;
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM wip_orders WHERE region = ? AND gone = 0 AND customer_item = 0 AND entity IS NOT NULL
+       AND (status_cat IS NOT 'done' OR done_at >= ?)`
+  ).bind(region, keep).all();
+  const orders = results.filter((o) => inMonth(o, month));
+  const { over, seed } = await overridesAndSeeds(env, orders.map((o) => o.issue_key));
+  const last = await lastMonthRows(env, region, month);
+  return orders.filter((o) => !over.get(o.issue_key)?.excluded)
+    .map((o) => rowFor(o, over.get(o.issue_key), seed.get(o.issue_key), last.get(o.issue_key), month));
+}
+
+async function snapshotRows(env, region, month) {
+  const { results } = await env.DB.prepare('SELECT * FROM wip_snapshots WHERE month = ? AND region = ? ORDER BY issue_key').bind(month, region).all();
+  const last = await lastMonthRows(env, region, month);
+  return results.map((s) => {
+    const l = last.get(s.issue_key);
+    const isNew = monthOf(s.accepted) === month;
+    const lastProgress = l ? l.progress : isNew ? 0 : null;
+    const v = s.upfront || 0;
+    const value = s.token ? null : s.upfront;
+    return {
+      id: null, key: s.issue_key, project: s.issue_key.split('-')[0], org: s.org, title: s.title, status: s.status, statusCat: lower(s.status) === 'done' ? 'done' : null,
+      division: s.division, value, tokens: s.token ? 1 : null, quoteNo: s.quote_no, accepted: s.accepted, doneAt: s.done_at, isNew,
+      progress: s.progress ?? 0, lastProgress, nonAdmin: s.non_admin, lastNonAdmin: l ? l.non_admin : isNew ? 0 : null,
+      wipValue: value === null ? null : v * (s.progress || 0), lastValue: value === null || lastProgress === null ? null : v * lastProgress,
+      invoiced: s.token ? null : s.invoiced, paid: s.token ? null : s.paid,
+      invoicedValue: value === null ? null : v * (s.invoiced || 0), paidValue: value === null ? null : v * (s.paid || 0),
+      remaining: value === null ? null : v - v * (s.paid || 0), open: null, legacy: null, snapshot: true, source: s.source,
+    };
+  });
+}
+
+// ---------- totals ----------
+
+export function metrics(rows, month) {
+  const part = (list) => {
+    const money = list.filter((r) => r.value !== null);
+    const sum = (fn) => money.reduce((t, r) => t + (fn(r) || 0), 0);
+    const avg = (xs) => (xs.length ? xs.reduce((t, x) => t + x, 0) / xs.length : null);
+    const known = list.filter((r) => r.lastProgress !== null && r.lastProgress !== undefined);
+    const knownWork = list.filter((r) => r.nonAdmin !== null && r.nonAdmin !== undefined && r.lastNonAdmin !== null && r.lastNonAdmin !== undefined);
+    const active = money.filter((r) => ACTIVE.includes(lower(r.status)));
+    const orderBook = sum((r) => r.value);
+    const wipValue = sum((r) => r.wipValue);
+    const lastValue = sum((r) => (r.lastValue === null ? r.wipValue : r.lastValue));
+    const invoiced = sum((r) => r.invoicedValue);
+    const paid = sum((r) => r.paidValue);
+    const activeValue = active.reduce((t, r) => t + (r.wipValue || 0), 0);
+    return {
+      orders: list.length, orderBook, wipValue, lastValue, thisMonthValue: wipValue - lastValue,
+      avgProgress: avg(list.map((r) => r.progress || 0)), avgChange: avg(known.map((r) => (r.progress || 0) - r.lastProgress)),
+      avgWorkChange: avg(knownWork.map((r) => r.nonAdmin - r.lastNonAdmin)),
+      workValue: sum((r) => (r.nonAdmin !== null && r.nonAdmin !== undefined && r.lastNonAdmin !== null && r.lastNonAdmin !== undefined ? r.value * (r.nonAdmin - r.lastNonAdmin) : 0)),
+      invoiced, paid, awaiting: invoiced - paid, remaining: orderBook - paid,
+      newCount: list.filter((r) => r.isNew).length, newValue: sum((r) => (r.isNew ? r.value : 0)),
+      completed: list.filter((r) => lower(r.status) === 'done' && (!month || !r.doneAt || monthOf(r.doneAt) === month)).length,
+      activeValue, unrealised: active.reduce((t, r) => t + (r.value || 0), 0) - activeValue,
+      tokenOrders: list.filter((r) => r.tokens !== null).length,
+    };
+  };
+  const counts = {};
+  for (const r of rows) counts[r.status || 'No status'] = (counts[r.status || 'No status'] || 0) + 1;
+  return {
+    all: part(rows),
+    service: part(rows.filter((r) => r.division === 'ServiceTeam')),
+    projects: part(rows.filter((r) => r.division !== 'ServiceTeam')),
+    counts,
+  };
+}
+
+export function historyFrom(t, prev) {
+  return {
+    newProjects: t.projects.newCount, newService: t.service.newCount,
+    completeProjects: t.projects.completed, completeService: t.service.completed,
+    projectsProgress: t.projects.avgChange, serviceProgress: t.service.avgChange,
+    projectsWork: t.projects.avgWorkChange, serviceWork: t.service.avgWorkChange,
+    projectsValue: t.projects.thisMonthValue, serviceValue: t.service.thisMonthValue,
+    projectsWorkValue: t.projects.workValue, serviceWorkValue: t.service.workValue,
+    unrealisedProjects: t.projects.unrealised, unrealisedService: t.service.unrealised,
+    startInvoiced: prev?.endInvoiced ?? null, startPaid: prev?.endPaid ?? null, startAwaiting: prev?.endAwaiting ?? null,
+    endInvoiced: t.all.invoiced, endPaid: t.all.paid, endAwaiting: t.all.awaiting,
+    orderBook: t.all.orderBook, wipValue: t.all.wipValue, orders: t.all.orders,
+  };
+}
+
+// ---------- what people see ----------
+
+export function canSee(viewer) {
+  return Boolean(viewer?.isAdmin || viewer?.can?.wip || viewer?.groups?.includes('management'));
+}
+const refuse = (message, status = 403) => { const err = new Error(message); err.status = status; return err; };
+function mustSee(viewer) { if (!canSee(viewer)) throw refuse('The WIP is for management.'); }
+const regionArg = (r) => (r in REGIONS ? r : 'uk');
+
+async function header(env) {
+  const keys = ['wip_full_done', 'wip_full_at', 'wip_quick_at', 'wip_error', 'wip_moves_on', 'wip_moves_since'];
+  const [fullDone, fullAt, quickAt, error, movesOn, movesSince] = await Promise.all(keys.map((k) => getState(env, k)));
+  const at = Math.max(Number(fullAt || 0), Number(quickAt || 0));
+  return { ready: Boolean(fullDone), syncedAt: at ? new Date(at).toISOString() : null, error: error || null, movesOn: movesOn === '1', movesSince: movesSince || null };
+}
+
+async function monthsAvailable(env, region) {
+  const { results } = await env.DB.prepare('SELECT DISTINCT month FROM wip_snapshots WHERE region = ? ORDER BY month DESC').bind(region).all();
+  const now = thisMonth();
+  return [now, ...results.map((r) => r.month).filter((m) => m < now)];
+}
+
+export async function overview(env, viewer, { region, month } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const now = thisMonth();
+  month = isMonth(month) && month <= now ? month : now;
+  const head = await header(env);
+  const live = month === now;
+  const rows = live ? await liveRows(env, region, month) : await snapshotRows(env, region, month);
+  const invoices = [];
+  if (live && rows.length) {
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    for (const i of (await itemsFor(env, [...byId.keys()])).filter((x) => x.level === 1 && isInvoice(x))) {
+      const r = byId.get(i.order_id);
+      const s = invoiceState(i);
+      invoices.push({
+        order: r.key, orderTitle: r.title, org: r.org, key: i.issue_key, terms: String(i.summary || '').replace(/^(\s*[\d.]+%\s*)+/, '').trim() || i.summary,
+        share: i.share, value: r.value === null || isTokenInvoice(i) ? null : r.value * (Number(i.share) || 0), token: isTokenInvoice(i),
+        status: i.status, state: s.label, date: i.inv_date || i.inv_due || null, invoiceDate: i.inv_date, due: i.inv_due, created: i.created,
+      });
+    }
+    invoices.sort((a, b) => a.order.localeCompare(b.order) || String(a.created || '').localeCompare(String(b.created || '')));
+  }
+  const { results: moves } = await env.DB.prepare(
+    `SELECT m.* FROM wip_moves m JOIN wip_orders o ON o.issue_key = m.issue_key WHERE o.region = ? AND (m.status = 'pending' OR (m.status = 'done' AND m.done_at >= ?))
+     ORDER BY m.queued_at DESC LIMIT 100`
+  ).bind(region, new Date(Date.now() - 7 * 86_400_000).toISOString()).all();
+  return {
+    ...head, region, regions: REGIONS, month, live, months: await monthsAvailable(env, region),
+    rows: rows.sort((a, b) => a.key.localeCompare(b.key, 'en', { numeric: true })),
+    totals: metrics(rows, month), invoices, moves,
+    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')), isAdmin: Boolean(viewer.isAdmin),
+  };
+}
+
+export async function order(env, viewer, key) {
+  mustSee(viewer);
+  const o = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(String(key || '').toUpperCase()).first();
+  if (!o) throw refuse('That order isn\'t in the WIP.', 404);
+  const items = await itemsFor(env, [o.issue_id]);
+  const { over, seed } = await overridesAndSeeds(env, [o.issue_key]);
+  const last = await lastMonthRows(env, o.region, thisMonth());
+  const row = rowFor(o, over.get(o.issue_key), seed.get(o.issue_key), last.get(o.issue_key), thisMonth());
+  const level1 = items.filter((i) => i.level === 1).sort((a, b) => String(a.created).localeCompare(String(b.created)));
+  const subs = items.filter((i) => i.level === 2);
+  const parts = level1.filter((i) => !isInvoice(i)).map((i) => {
+    const mine = subs.filter((s) => s.parent_id === i.issue_id);
+    return { key: i.issue_key, type: i.issuetype, summary: i.summary, status: i.status, done: i.status_cat === 'done',
+      subs: mine.length, subsDone: mine.filter((s) => s.status_cat === 'done').length,
+      open: mine.filter((s) => s.status_cat !== 'done').map((s) => ({ key: s.issue_key, summary: s.summary, status: s.status })) };
+  });
+  const invoices = level1.filter(isInvoice).map((i) => ({
+    key: i.issue_key, summary: i.summary, terms: String(i.summary || '').replace(/^(\s*[\d.]+%\s*)+/, '').trim() || i.summary, share: i.share,
+    value: row.value === null || isTokenInvoice(i) ? null : row.value * (Number(i.share) || 0), token: isTokenInvoice(i),
+    status: i.status, state: invoiceState(i).label, invoiceDate: i.inv_date, due: i.inv_due,
+  }));
+  const move = await env.DB.prepare('SELECT * FROM wip_moves WHERE issue_key = ?').bind(o.issue_key).first();
+  const saStaff = await saTime(env, o.issue_id, items);
+  return {
+    row, region: o.region, entity: o.entity, parts, invoices, move, saTime: saStaff,
+    override: over.get(o.issue_key) || null, seed: seed.get(o.issue_key) || null, jiraValue: o.upfront, jiraDivision: o.division_jira,
+    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')),
+  };
+}
+
+// Time logged on the order and everything under it by the people marked as Promtek SA staff.
+async function saTime(env, orderId, items) {
+  let staff = [];
+  try { staff = JSON.parse((await getState(env, 'wip_sa_staff')) || '[]'); } catch { /* none */ }
+  if (!staff.length) return null;
+  const ids = [orderId, ...items.map((i) => i.issue_id)];
+  let seconds = 0;
+  for (const p of chunk(staff, 40)) {
+    for (const q of chunk(ids, 50)) {
+      const r = await env.DB.prepare(`SELECT SUM(seconds) AS s FROM xp_ledger WHERE account_id IN (${marks(p.length)}) AND issue_id IN (${marks(q.length)})`).bind(...p, ...q).first();
+      seconds += Number(r?.s || 0);
+    }
+  }
+  return { seconds };
+}
+
+export async function recurring(env, viewer, { region } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const { results } = await env.DB.prepare('SELECT * FROM wip_contracts WHERE region = ? AND gone = 0 ORDER BY issue_key').bind(region).all();
+  const { over, seed } = await overridesAndSeeds(env, results.map((c) => c.issue_key));
+  const today = londonDate();
+  const rows = [];
+  for (const c of results) {
+    const s = seed.get(c.issue_key), o = over.get(c.issue_key);
+    if (o?.excluded) continue;
+    const total = o?.upfront ?? s?.upfront ?? c.total ?? null;
+    const pctInv = c.steps ? c.steps_invoiced / c.steps : 0;
+    const pctPaid = c.steps ? c.steps_paid / c.steps : 0;
+    const st = lower(c.status);
+    const state = /expired/.test(st) ? (pctPaid < 1 ? 'Expired (Awaiting Payment)' : 'Expired')
+      : /in contract|renewal/.test(st) ? 'Active'
+        : (c.start_date && c.start_date > today) || /new|sent|chasing|confirmed/.test(st) ? 'Awaiting Start' : c.status;
+    if (state === 'Expired') continue;
+    const division = o?.division || s?.division || (/condor/i.test(c.summary || '') ? 'Condor' : 'Service');
+    rows.push({
+      key: c.issue_key, org: c.org, title: c.summary, status: c.status, state, division, start: c.start_date || s?.start_date || null,
+      end: c.end_date || s?.end_date || null, ended: c.ended_at, total, steps: c.steps || 0, stepsInvoiced: c.steps_invoiced || 0, stepsPaid: c.steps_paid || 0,
+      invoiced: pctInv, paid: pctPaid, invoicedValue: total === null ? null : total * pctInv, paidValue: total === null ? null : total * pctPaid,
+      valueSource: o?.upfront != null ? 'override' : s?.upfront != null ? 'sheet' : c.total != null ? 'jira' : 'none',
+    });
+  }
+  const sum = (list, k) => list.reduce((t, r) => t + (r[k] || 0), 0);
+  const of = (d) => rows.filter((r) => r.division === d);
+  return {
+    region, rows,
+    totals: {
+      count: rows.length, value: sum(rows, 'total'), invoiced: sum(rows, 'invoicedValue'), paid: sum(rows, 'paidValue'),
+      service: { count: of('Service').length, value: sum(of('Service'), 'total') },
+      condor: { count: of('Condor').length, value: sum(of('Condor'), 'total') },
+    },
+  };
+}
+
+export async function history(env, viewer, { region } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const { results } = await env.DB.prepare('SELECT month, data, source FROM wip_history WHERE region = ? ORDER BY month').bind(region).all();
+  const rows = results.map((r) => { let d = {}; try { d = JSON.parse(r.data); } catch { /* empty */ } return { month: r.month, source: r.source, ...d }; });
+  // This month so far, from the live figures.
+  const now = thisMonth();
+  if (!rows.some((r) => r.month === now)) {
+    const live = await liveRows(env, region, now);
+    const prev = rows.filter((r) => r.month < now).pop() || null;
+    rows.push({ month: now, source: 'live', ...historyFrom(metrics(live, now), prev?.month === shiftMonth(now, -1) ? prev : null) });
+  }
+  for (let i = 1; i < rows.length; i++) {
+    const p = rows[i - 1], r = rows[i];
+    if (p.month !== shiftMonth(r.month, -1)) continue;
+    if (r.startInvoiced == null) r.startInvoiced = p.endInvoiced ?? null;
+    if (r.startPaid == null) r.startPaid = p.endPaid ?? null;
+    if (r.startAwaiting == null) r.startAwaiting = p.endAwaiting ?? null;
+  }
+  return { region, rows };
+}
+
+// ---------- settings and changes ----------
+
+export async function settings(env, viewer) {
+  mustSee(viewer);
+  const head = await header(env);
+  let staff = [];
+  try { staff = JSON.parse((await getState(env, 'wip_sa_staff')) || '[]'); } catch { /* none */ }
+  const { results: people } = await env.DB.prepare('SELECT account_id, name FROM employees WHERE active = 1 ORDER BY name').all();
+  const counts = await env.DB.prepare(
+    `SELECT (SELECT COUNT(*) FROM wip_orders WHERE gone = 0) AS orders, (SELECT COUNT(*) FROM wip_contracts WHERE gone = 0) AS contracts,
+            (SELECT COUNT(*) FROM wip_seed) AS seeds, (SELECT COUNT(*) FROM wip_snapshots) AS snapshots`
+  ).first();
+  const { results: failing } = await env.DB.prepare("SELECT * FROM wip_moves WHERE status = 'pending' AND tries > 0 ORDER BY queued_at DESC LIMIT 20").all();
+  const fields = await getState(env, 'wip_field_ids');
+  let ids = null;
+  try { ids = JSON.parse(fields || 'null'); } catch { /* not yet */ }
+  return { ...head, saStaff: staff, people, counts, failing, fields: ids ? { customerItem: ids.customerItem, documentation: ids.documentation } : null,
+    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')) };
+}
+
+function mustEdit(viewer) {
+  if (!(viewer.isAdmin || viewer.groups?.includes('management'))) throw refuse('Only management and admins can change the WIP.');
+}
+
+export async function saveSettings(env, viewer, body) {
+  mustEdit(viewer);
+  const changes = [];
+  if (body.moves !== undefined) {
+    const on = Boolean(body.moves);
+    const was = (await getState(env, 'wip_moves_on')) === '1';
+    if (on !== was) {
+      if (on && !(await getState(env, 'wip_full_done'))) throw refuse('The WIP needs to finish its first read of Jira before it can move orders.', 400);
+      await setState(env, 'wip_moves_on', on ? '1' : '0');
+      if (on) {
+        // Starts from where every order is now, so nothing is moved just for being switched on.
+        await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE status = 'pending'").bind(new Date().toISOString()).run();
+        await setState(env, 'wip_moves_since', new Date().toISOString());
+      }
+      changes.push({ label: 'Moves orders in Jira', before: was ? 'On' : 'Off', after: on ? 'On' : 'Off' });
+    }
+  }
+  if (Array.isArray(body.saStaff)) {
+    const staff = [...new Set(body.saStaff.map(String).filter((x) => /^[\w:-]{3,80}$/.test(x)))].slice(0, 200);
+    await setState(env, 'wip_sa_staff', JSON.stringify(staff));
+    changes.push({ label: 'Promtek SA staff', before: '', after: `${staff.length} people` });
+  }
+  return { ok: true, changes };
+}
+
+export async function saveOverride(env, viewer, body) {
+  mustEdit(viewer);
+  const key = String(body.key || '').trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{0,19}-\d{1,9}$/.test(key)) throw refuse('That isn\'t a Jira key.', 400);
+  const division = body.division ? String(body.division) : null;
+  if (division && ![...DIVISIONS, 'Service', 'Condor'].includes(division)) throw refuse('Pick Service or Projects.', 400);
+  const upfront = body.upfront === '' || body.upfront === null || body.upfront === undefined ? null : Number(body.upfront);
+  if (upfront !== null && (!Number.isFinite(upfront) || upfront < 0 || upfront > 1e10)) throw refuse('That value isn\'t a number.', 400);
+  const excluded = body.excluded ? 1 : 0;
+  const before = await env.DB.prepare('SELECT * FROM wip_overrides WHERE issue_key = ?').bind(key).first();
+  if (!division && upfront === null && !excluded) {
+    await env.DB.prepare('DELETE FROM wip_overrides WHERE issue_key = ?').bind(key).run();
+  } else {
+    await env.DB.prepare(
+      `INSERT INTO wip_overrides (issue_key, division, upfront, excluded, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(issue_key) DO UPDATE SET division = excluded.division, upfront = excluded.upfront, excluded = excluded.excluded, note = excluded.note,
+         updated_by = excluded.updated_by, updated_at = excluded.updated_at`
+    ).bind(key, division, upfront, excluded, body.note ? String(body.note).slice(0, 300) : null, viewer.email || null, new Date().toISOString()).run();
+  }
+  return { ok: true, key, before, after: { division, upfront, excluded } };
+}
+
+export async function refresh(env, viewer) {
+  mustEdit(viewer);
+  await setState(env, 'wip_full_at', '0');
+  return { ok: true };
+}
+
+// ---------- the old sheet, read in once ----------
+
+const clean = (v, n = 300) => (v === null || v === undefined ? null : String(v).trim().slice(0, n) || null);
+const cleanNum = (v) => { const n = num(v); return n === null || !Number.isFinite(n) || Math.abs(n) > 1e11 ? null : n; };
+const cleanDate = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? String(v) : null);
+const cleanKey = (v) => { const k = String(v || '').trim().toUpperCase(); return /^[A-Z][A-Z0-9_]{0,19}-\d{1,9}$/.test(k) ? k : null; };
+const cleanDivision = (v) => (/service/i.test(v || '') ? 'ServiceTeam' : /project/i.test(v || '') ? 'ProjectsTeam' : null);
+const cleanPct = (v) => { const n = cleanNum(v); return n === null ? null : Math.max(-5, Math.min(5, n)); };
+
+export async function importSheet(env, viewer, body) {
+  mustEdit(viewer);
+  const region = body.region in REGIONS ? body.region : null;
+  if (!region) throw refuse('Say whether this is the UK or South Africa WIP.', 400);
+  const now = thisMonth();
+  const at = new Date().toISOString();
+  const months = (Array.isArray(body.months) ? body.months : []).filter((m) => isMonth(m?.month) && m.month <= now).sort((a, b) => a.month.localeCompare(b.month));
+  const stmts = [];
+  const result = { region, months: [], seeded: 0, contracts: 0, history: 0, skipped: [] };
+  const seeds = new Map();
+  for (const m of months) {
+    const rows = (Array.isArray(m.rows) ? m.rows : []).slice(0, 2000).map((r) => ({ ...r, key: cleanKey(r.key) })).filter((r) => r.key);
+    for (const r of rows) seeds.set(r.key, r);
+    if (m.month === now) continue;
+    const hub = await env.DB.prepare("SELECT 1 AS n FROM wip_snapshots WHERE month = ? AND region = ? AND source = 'hub' LIMIT 1").bind(m.month, region).first();
+    if (hub) { result.skipped.push(m.month); continue; }
+    stmts.push(env.DB.prepare('DELETE FROM wip_snapshots WHERE month = ? AND region = ?').bind(m.month, region));
+    for (const r of rows) {
+      const token = /token/i.test(String(r.upfrontText || '')) ? 1 : 0;
+      stmts.push(env.DB.prepare(
+        `INSERT INTO wip_snapshots (month, issue_key, region, org, title, status, division, upfront, token, quote_no, accepted, done_at, progress, non_admin, invoiced, paid, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'import')
+         ON CONFLICT(month, issue_key) DO UPDATE SET region = excluded.region, org = excluded.org, title = excluded.title, status = excluded.status,
+           division = excluded.division, upfront = excluded.upfront, token = excluded.token, quote_no = excluded.quote_no, accepted = excluded.accepted,
+           done_at = excluded.done_at, progress = excluded.progress, non_admin = excluded.non_admin, invoiced = excluded.invoiced, paid = excluded.paid, source = excluded.source`
+      ).bind(m.month, r.key, region, clean(r.org), clean(r.title), clean(r.status, 60), cleanDivision(r.division), token ? null : cleanNum(r.upfront), token,
+        clean(r.quoteNo, 60), cleanDate(r.accepted), cleanDate(r.doneAt), cleanPct(r.progress) ?? 0, cleanPct(r.nonAdmin), cleanPct(r.invoiced), cleanPct(r.paid)));
+    }
+    result.months.push({ month: m.month, orders: rows.length });
+  }
+  for (const r of seeds.values()) {
+    stmts.push(env.DB.prepare(
+      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, upfront_text, quote_no, accepted, title, org, updated_at) VALUES (?, 'order', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(issue_key) DO UPDATE SET kind = excluded.kind, region = excluded.region, division = excluded.division, upfront = excluded.upfront,
+         upfront_text = excluded.upfront_text, quote_no = excluded.quote_no, accepted = excluded.accepted, title = excluded.title, org = excluded.org, updated_at = excluded.updated_at`
+    ).bind(r.key, region, cleanDivision(r.division), /token/i.test(String(r.upfrontText || '')) ? null : cleanNum(r.upfront), clean(r.upfrontText, 40),
+      clean(r.quoteNo, 60), cleanDate(r.accepted), clean(r.title), clean(r.org), at));
+    result.seeded++;
+  }
+  for (const c of (Array.isArray(body.recurring) ? body.recurring : []).slice(0, 500)) {
+    const key = cleanKey(c.key);
+    if (!key) continue;
+    stmts.push(env.DB.prepare(
+      `INSERT INTO wip_seed (issue_key, kind, region, division, upfront, start_date, end_date, title, org, updated_at) VALUES (?, 'contract', ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(issue_key) DO UPDATE SET kind = excluded.kind, region = excluded.region, division = excluded.division, upfront = excluded.upfront,
+         start_date = excluded.start_date, end_date = excluded.end_date, title = excluded.title, org = excluded.org, updated_at = excluded.updated_at`
+    ).bind(key, region, /project|condor/i.test(c.division || '') ? 'Condor' : 'Service', cleanNum(c.total), cleanDate(c.start), cleanDate(c.end), clean(c.title), clean(c.org), at));
+    result.contracts++;
+  }
+  const allowed = ['newProjects', 'newService', 'completeProjects', 'completeService', 'projectsProgress', 'serviceProgress', 'projectsWork', 'serviceWork',
+    'projectsValue', 'serviceValue', 'projectsWorkValue', 'serviceWorkValue', 'unrealisedProjects', 'unrealisedService', 'startInvoiced', 'startPaid',
+    'endInvoiced', 'endPaid', 'startAwaiting', 'endAwaiting'];
+  for (const h of (Array.isArray(body.history) ? body.history : []).slice(0, 120)) {
+    if (!isMonth(h?.month) || h.month >= now) continue;
+    const data = {};
+    for (const k of allowed) { const v = cleanNum(h.data?.[k]); if (v !== null) data[k] = v; }
+    if (!Object.keys(data).length) continue;
+    stmts.push(env.DB.prepare(
+      `INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, 'import')
+       ON CONFLICT(month, region) DO UPDATE SET data = excluded.data, source = excluded.source WHERE wip_history.source IS NOT 'hub'`
+    ).bind(h.month, region, JSON.stringify(data)));
+    result.history++;
+  }
+  await runAll(env, stmts);
+  // Months read in from the sheet's own tabs fill any gaps the history list had.
+  for (const m of result.months) {
+    const has = await env.DB.prepare('SELECT source FROM wip_history WHERE month = ? AND region = ?').bind(m.month, region).first();
+    if (has) continue;
+    const rows = await snapshotRows(env, region, m.month);
+    const prev = await historyRow(env, region, shiftMonth(m.month, -1));
+    await env.DB.prepare("INSERT INTO wip_history (month, region, data, source) VALUES (?, ?, ?, 'sheet')")
+      .bind(m.month, region, JSON.stringify(historyFrom(metrics(rows, m.month), prev))).run();
+    result.history++;
+  }
+  return result;
+}

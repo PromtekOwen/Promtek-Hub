@@ -436,7 +436,7 @@ export async function snapshotWeek(env, weekStart) {
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
 const RECONCILE_EVERY_MS = 10 * 60 * 1000;
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'staff', 'lists', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'staff', 'lists', 'wip', 'alerts'];
 
 export async function runScheduled(rawEnv) {
   if (!(await getState(rawEnv, 'ledger_start'))) return;
@@ -516,6 +516,8 @@ export async function runScheduled(rawEnv) {
   // New time puts its author in Promtek Staff Involved within minutes, a few at a time
   // so the job that follows still has its calls. Its own turn below clears any backlog.
   await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });
+  // Orders and invoices changed in the last few minutes, so the WIP stays current.
+  await attempt('WIP', async () => (await import('./wip.js')).quick(env));
   // One of the last 14 days is re-read every 10 minutes, so each day is checked every couple of hours.
   if (Date.now() - Number((await getState(env, 'reconcile_at')) || 0) >= RECONCILE_EVERY_MS) {
     await setState(env, 'reconcile_at', Date.now());
@@ -598,6 +600,10 @@ export async function runScheduled(rawEnv) {
       const r = await attempt('Service contracts', async () => (await import('./contracts.js')).run(env));
       return r?.idle ? { idle: true } : r;
     },
+    wip: async () => {
+      const r = await attempt('WIP full read', async () => (await import('./wip.js')).full(env));
+      return r?.idle ? { idle: true } : r;
+    },
     alerts: async () => {
       // Without a mail relay there is nothing to send, so the waiting alerts aren't counted every run.
       if (!env.ALERT_WEBHOOK_URL) return { idle: true };
@@ -625,5 +631,5 @@ const SLOT_NAMES = {
   orders: 'Job backfill', categories: 'Finished categories', elo: 'ELO ratings', bitbucket: 'Bitbucket', mes: 'Condor Dev tickets',
   'mes-sync': 'Condor Dev to Jira', 'stage-split': 'Stage estimates', 'stage-types': 'Stage types', tracker: 'Timer stretches',
   'hourly-scan': 'Hourly: profiles and reminders', 'hourly-jobs': 'Hourly: estimates and disputes', 'hourly-quotes': 'Hourly: quotes and chart',
-  contracts: 'Service contracts', psc: 'PSC items', staff: 'Staff involved', lists: 'Customer lists', alerts: 'Alert email',
+  contracts: 'Service contracts', psc: 'PSC items', staff: 'Staff involved', lists: 'Customer lists', wip: 'WIP full read', alerts: 'Alert email',
 };
