@@ -2,7 +2,14 @@
 // mis-tick in Admin can never open something up; changes are made in code.
 // A person can be in any number of groups and teams, and can lead some teams.
 
-export const TEAMS = ['Projecting', 'Service', 'Condor', 'Sales', 'Marketing'];
+// Condor Dev is the developers within Condor; they alone are planned for and rated in Condor Dev.
+export const TEAMS = ['Projecting', 'Service', 'Condor', 'Condor Dev', 'Sales', 'Marketing'];
+// Who Condor Dev plans for: the Condor Dev team, or the whole Condor team until anyone is put in Condor Dev.
+export const CONDOR_DEVS = (alias = '') => {
+  const e = alias ? `${alias}.` : '';
+  return `(${e}teams LIKE '%"Condor Dev"%' OR (NOT EXISTS (SELECT 1 FROM employees d WHERE d.active = 1 AND d.teams LIKE '%"Condor Dev"%')
+    AND (${e}teams LIKE '%"Condor"%' OR (${e}teams IS NULL AND ${e}team = 'Condor'))))`;
+};
 
 export const GROUPS = {
   admin: {

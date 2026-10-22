@@ -4,6 +4,7 @@
 import { jira, searchJql } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
 import { versions, syncPlan, canTriage, saveTickets, FIELDS } from './mes.js';
+import { CONDOR_DEVS } from './permissions.js';
 import { ensureRelease, knownSprints, sprintFor, placeTickets } from './mes-sprints.js';
 
 const PRIORITY_ORDER = { Must: 0, Should: 1, Could: 2 };
@@ -135,7 +136,7 @@ export function suggest(input, { declined = new Set() } = {}) {
 async function people(env) {
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.name, c.hours_per_week, c.days, c.away, c.included FROM employees e
-       LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND (e.teams LIKE '%"Condor"%' OR (e.teams IS NULL AND e.team = 'Condor')) ORDER BY e.name`
+       LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND ${CONDOR_DEVS('e')} ORDER BY e.name`
   ).all();
   return results.map(personFrom);
 }

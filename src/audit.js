@@ -6,6 +6,7 @@ const LABELS = {
     name: 'Name', email: 'Email', pronouns: 'Pronouns', start_date: 'Start date', job_title: 'Job title', department: 'Department', manager_id: 'Reports to',
     org_order: 'Chart order', role: 'Hub role', team: 'Team', extension: 'Extension', baseline: 'XP rate', elo: 'ELO', icons: 'Chart icons',
     avatar: 'Photo', notes: 'Notes', active: 'Active', account_id: 'Jira account ID', groups: 'Groups', teams: 'Teams', lead_of: 'Leads',
+    contracted_hours: 'Contracted hours a day', work_days: 'Days they work',
   },
   vehicles: {
     registration: 'Registration', make: 'Make', model: 'Model', kind: 'Type', mot_due: 'MOT due', insurance_due: 'Insurance due',

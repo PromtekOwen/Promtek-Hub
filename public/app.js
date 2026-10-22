@@ -913,6 +913,15 @@ function personEditHtml() {
       </div>
       ${personAccessHtml(p)}
 
+      <p class="muted" style="margin:1.5rem 0 0">Working hours</p>
+      <div class="row" style="margin-top:.75rem">
+        <label>Contracted hours a day <input data-person="contractedHours" type="number" min="0.25" max="24" step="0.25" value="${p.contractedHours ?? ''}" placeholder="7.5"></label>
+      </div>
+      <p class="muted" style="margin:.75rem 0 .35rem">Days they work</p>
+      <div class="chips">${[['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']].map(([d, l]) =>
+        `<button class="chip${String(p.workDays || '12345').includes(d) ? ' on' : ''}" data-person-day="${d}" aria-pressed="${String(p.workDays || '12345').includes(d)}">${l}</button>`).join('')}</div>
+      <p class="muted">Leave the hours empty for the usual 7.5 a day (${personWeekLabel(p)} as saved). Capacity uses these for each person's week; Condor planning keeps its own hours for their Condor Dev work.</p>
+
       <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
       <div class="row" style="margin-top:.75rem">
         <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 60}"></label>
@@ -958,10 +967,19 @@ async function readAvatar(file) {
   return canvas.toDataURL('image/png');
 }
 
+function personWeekLabel(p) {
+  const days = String(p.workDays || '12345').length;
+  const hours = Number(p.contractedHours) || 7.5;
+  return `${(Math.round(hours * days * 100) / 100).toLocaleString('en-GB')} hours a week`;
+}
+
 function collectPerson() {
   document.querySelectorAll('[data-person]').forEach((input) => {
     personEdit[input.dataset.person] = input.value.trim();
   });
+  if (document.querySelector('[data-person-day]')) {
+    personEdit.workDays = [...document.querySelectorAll('[data-person-day].on')].map((c) => c.dataset.personDay).join('');
+  }
   if (document.querySelector('[data-person-group]')) {
     personEdit.groups = [...document.querySelectorAll('[data-person-group]:checked')].map((c) => c.dataset.personGroup);
     personEdit.teams = [...document.querySelectorAll('[data-person-team].on')].map((c) => c.dataset.personTeam);
@@ -6810,19 +6828,24 @@ async function capTileHtml() {
   const d = await api(`/api/capacity${capTeam !== 'all' ? `?team=${encodeURIComponent(capTeam)}` : ''}`);
   const inTeam = (p) => capTeam === 'all' || p.teams.includes(capTeam);
   const q = capQuery.trim().toLowerCase();
-  let people = d.people.filter(inTeam);
+  // Condor planning's hours are someone's Condor Dev share of the week, so they only stand in for the
+  // whole week on the Condor Dev tab (or Condor, before anyone is in Condor Dev). Elsewhere it's their contract.
+  const devTeamSet = d.people.some((p) => p.teams.includes('Condor Dev'));
+  const planningHere = (p) => p.condorWeekTarget != null
+    && (capTeam === 'Condor Dev' || (capTeam === 'Condor' && (!devTeamSet || p.teams.includes('Condor Dev'))));
+  let people = d.people.filter(inTeam).map((p) => ({ ...p, planning: planningHere(p), target: planningHere(p) ? p.condorWeekTarget : p.weekTarget }));
   const load = (p) => p.counts.job + p.counts.psc + p.counts.condor + (p.counts.ims || 0) + (p.counts.it || 0);
   const sorts = {
     most: (a, b) => load(b) - load(a) || b.week - a.week,
     least: (a, b) => load(a) - load(b) || a.week - b.week,
-    hours: (a, b) => b.week / b.weekTarget - a.week / a.weekTarget,
+    hours: (a, b) => b.week / (b.target || 1) - a.week / (a.target || 1),
     name: (a, b) => a.name.localeCompare(b.name),
   };
   people = [...people].sort(sorts[capSort] || sorts.most);
   const shown = people.filter((p) => !q || p.name.toLowerCase().includes(q) || p.items.some((i) => `${i.key} ${i.summary}`.toLowerCase().includes(q)));
   const sum = (fn) => people.reduce((t, p) => t + fn(p), 0);
   const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
-  const target = sum((p) => (p.away ? 0 : p.weekTarget));
+  const target = sum((p) => (p.away ? 0 : p.target));
   const awayToday = people.filter((p) => p.away);
   const stats = `<dl class="stats">
       ${stat('Open jobs', n(sum((p) => p.counts.job + p.counts.condor)), `${n(people.length)} people${sum((p) => (p.counts.ims || 0) + (p.counts.it || 0)) ? `, plus ${n(sum((p) => p.counts.ims || 0))} IMS and ${n(sum((p) => p.counts.it || 0))} IT tasks` : ''}`)}
@@ -6831,7 +6854,7 @@ async function capTileHtml() {
       ${stat('Needs a look', n(sum((p) => p.flags.quiet + p.flags.overdue)), `${n(sum((p) => p.flags.quiet))} gone quiet, ${n(sum((p) => p.flags.overdue))} past due`)}
     </dl>`;
   // Who could take something new: the lightest load of anyone here today.
-  const room = people.filter((p) => !p.away && (p.items.length || p.fourWeekAverage)).sort(sorts.least).slice(0, 3);
+  const room = people.filter((p) => !p.away && p.worksToday !== false && (p.items.length || p.fourWeekAverage)).sort(sorts.least).slice(0, 3);
   // Only within a team: across everyone it would compare people who do different work.
   const roomHtml = capTeam !== 'all' && room.length ? `<section class="card cap-room"><h2>Most room for something new</h2>
       <ul class="cap-room-list">${room.map((p) => `<li><b>${esc(p.name)}</b><span>${n(load(p))} open (${[[p.counts.job + p.counts.condor, 'jobs'], [p.counts.psc, 'PSCs'], [p.counts.ims, 'IMS'], [p.counts.it, 'IT']].filter(([c], i) => i < 2 || c).map(([c, l]) => `${n(c || 0)} ${l}`).join(', ')})</span>
@@ -6854,7 +6877,9 @@ async function capTileHtml() {
 }
 
 function capPersonHtml(p, d) {
-  const pct = p.weekTarget ? Math.min(100, Math.round((p.week / p.weekTarget) * 100)) : 0;
+  const pct = p.target ? Math.min(100, Math.round((p.week / p.target) * 100)) : 0;
+  const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const workDays = p.workDays && p.workDays !== '12345' ? String(p.workDays).split('').map((x) => dayNames[Number(x) - 1]).join(', ') : '';
   const chips = Object.entries(CAP_KINDS).filter(([k]) => p.counts[k]).map(([k, l]) => `<span class="cap-count cap-${k}"><b>${n(p.counts[k])}</b> ${l}</span>`).join('') || '<span class="muted">Nothing assigned</span>';
   const flags = [p.flags.overdue && `${n(p.flags.overdue)} past due`, p.flags.quiet && `${n(p.flags.quiet)} gone quiet`, p.flags.stuck && `${n(p.flags.stuck)} in one status over ${d.rules.stuckDays} days`,
     p.flags.waiting && `${n(p.flags.waiting)} customer waiting`].filter(Boolean);
@@ -6868,9 +6893,10 @@ function capPersonHtml(p, d) {
         ${i.quiet ? '<span class="bad">Gone quiet</span>' : ''}${i.customerWaiting ? '<span class="bad">Customer waiting</span>' : ''}</span></li>`).join('');
   return `<article class="card cap-person">
       <header><h2>${esc(p.name)}</h2><span class="muted">${p.teams.map(esc).join(', ')}</span>
+        ${!p.away && p.worksToday === false ? '<span class="cap-soon">Not working today</span>' : ''}
         ${p.away ? `<span class="cap-off">Away${p.away.until && p.away.until !== p.away.from ? ` until ${shortDate(p.away.until)}` : ' today'}</span>` : p.nextAway ? `<span class="cap-soon">Away from ${shortDate(p.nextAway.from)}</span>` : ''}</header>
       <div class="cap-counts">${chips}</div>
-      <div class="cap-week"><span>This week <b>${capHours(p.week)}</b> of ${capHours(p.weekTarget)}</span><span class="muted">Usually ${capHours(p.fourWeekAverage)} a week</span>
+      <div class="cap-week"><span>This week <b>${capHours(p.week)}</b> of ${capHours(p.target)}${p.planning ? ' on Condor Dev' : ''}${workDays ? ` <small class="muted">(works ${workDays})</small>` : ''}</span><span class="muted">Usually ${capHours(p.fourWeekAverage)} a week</span>
         <span class="bar"><span style="width:${pct}%"></span></span></div>
       ${flags.length ? `<p class="cap-flags">${flags.map(esc).join(' · ')}</p>` : ''}
       <h3>Working on now</h3>${active}
@@ -9610,6 +9636,12 @@ view.addEventListener('click', async (event) => {
   }
   const personActionBtn = event.target.closest('[data-person-action]');
   if (personActionBtn) return personAction(personActionBtn.dataset.personAction);
+  const personDay = event.target.closest('[data-person-day]');
+  if (personDay) {
+    personDay.classList.toggle('on');
+    personDay.setAttribute('aria-pressed', String(personDay.classList.contains('on')));
+    return;
+  }
   const personIcon = event.target.closest('[data-person-icon]');
   if (personIcon) {
     collectPerson();

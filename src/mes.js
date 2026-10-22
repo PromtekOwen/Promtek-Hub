@@ -7,7 +7,7 @@ import { getState, setState, londonDate, raiseAlert, recalcIssues } from './sync
 import { outcomeScore, expectedScore, matchWeight, K_FACTOR, PROVISIONAL_K, PROVISIONAL_MATCHES } from './elo.js';
 import { approvedFor, factorOn } from './modifiers.js';
 import { DEFAULT_ELO } from './progression.js';
-import { managesPerson } from './permissions.js';
+import { managesPerson, CONDOR_DEVS } from './permissions.js';
 
 const PROJECT = 'MES';
 export const MODULE_FIELD = 'customfield_15583';
@@ -176,7 +176,7 @@ export async function nextQuestion(env, { issueId, answers = [] }) {
   return { ticket, poolSize: pool.length, next: ref || null, estimate: r.estimate || null, asked: answers.length, maxQuestions: MAX_QUESTIONS };
 }
 
-const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || viewer.teams?.includes('Condor'));
+const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || viewer.teams?.includes('Condor') || viewer.teams?.includes('Condor Dev'));
 const canTriage = (viewer) => Boolean(viewer.can?.condorPlan);
 
 export async function saveEstimate(env, viewer, input) {
@@ -254,7 +254,7 @@ export async function versions(env) {
 export async function condorTeam(env) {
   const { results } = await env.DB.prepare(
     `SELECT account_id AS id, name FROM employees WHERE active = 1 AND account_id IS NOT NULL
-       AND (teams LIKE '%"Condor"%' OR (teams IS NULL AND team = 'Condor')) ORDER BY name`
+       AND ${CONDOR_DEVS()} ORDER BY name`
   ).all();
   return results;
 }
@@ -516,7 +516,7 @@ export async function team(env, viewer) {
   if (!canTriage(viewer)) return [];
   const { results } = await env.DB.prepare(
     `SELECT e.account_id, e.name, e.condor_elo, (SELECT COUNT(*) FROM mes_rating_events r WHERE r.account_id = e.account_id AND r.kind = 'match') AS jobs
-       FROM employees e WHERE e.active = 1 AND (e.teams LIKE '%"Condor"%' OR (e.teams IS NULL AND e.team = 'Condor')) ORDER BY e.name`
+       FROM employees e WHERE e.active = 1 AND ${CONDOR_DEVS('e')} ORDER BY e.name`
   ).all();
   return results.map((r) => ({ ...r, condor_elo: r.condor_elo ?? DEFAULT_ELO }));
 }

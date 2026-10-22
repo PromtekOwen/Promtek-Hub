@@ -16,7 +16,10 @@ const SYNC_EVERY_MS = 15 * 60 * 1000;
 const LOG_IDS = 100;
 const QUIET_DAYS = 14;
 const STUCK_DAYS = 30;
-const DEFAULT_HOURS = 37.5;
+export const DEFAULT_DAY_HOURS = 7.5;
+export const DEFAULT_DAYS = '12345';
+// Days are 1 for Monday to 7 for Sunday, as in Condor planning.
+export const workDaysOf = (v) => [...new Set(String(v || DEFAULT_DAYS).replace(/[^1-7]/g, ''))].sort().join('') || DEFAULT_DAYS;
 const FIELDS = ['summary', 'status', 'issuetype', 'project', 'assignee', 'parent', 'created', 'updated', 'duedate', 'priority', 'timeestimate'];
 const JQL = 'assignee is not EMPTY AND statusCategory != Done ORDER BY updated DESC';
 // The ten IMS projects, and IT support's board, count towards someone's load like Condor Dev tickets do.
@@ -147,7 +150,7 @@ export async function overview(env, viewer, { team = null } = {}) {
   const today = londonDate();
   const monday = mondayOf(today);
   const { results: emps } = await env.DB.prepare(
-    `SELECT e.account_id, e.name, e.teams, e.team, c.hours_per_week, c.days, c.away FROM employees e
+    `SELECT e.account_id, e.name, e.teams, e.team, e.contracted_hours, e.work_days, c.hours_per_week, c.days, c.away FROM employees e
        LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND e.account_id NOT LIKE 'pending-%' ORDER BY e.name`
   ).all();
   const teamOf = (e) => { const t = parse(e.teams, []); return t.length ? t : e.team ? [e.team] : []; };
@@ -195,7 +198,11 @@ export async function overview(env, viewer, { team = null } = {}) {
 
   const out = people.map((p) => {
     const mine = byPerson.get(p.account_id);
-    const hours = p.hours_per_week ?? DEFAULT_HOURS;
+    // What they're contracted to work across the week; Condor planning's hours are only their Condor Dev share.
+    const days = workDaysOf(p.work_days);
+    const dayHours = p.contracted_hours ?? DEFAULT_DAY_HOURS;
+    const hours = dayHours * days.length;
+    const weekday = String(((new Date(`${today}T12:00:00Z`).getUTCDay() + 6) % 7) + 1);
     const away = parse(p.away, []);
     const awayNow = awayOn(away, today);
     const nextAway = away.filter((a) => a.from > today).sort((a, b) => a.from.localeCompare(b.from))[0] || null;
@@ -235,13 +242,14 @@ export async function overview(env, viewer, { team = null } = {}) {
     }).sort((a, b) => (b.lastActivity || '').localeCompare(a.lastActivity || '') || a.assignedDays - b.assignedDays);
     const count = (k) => list.filter((x) => x.kind === k).length;
     return {
-      id: p.account_id, name: p.name, teams: p.teamList, hoursPerWeek: hours,
+      id: p.account_id, name: p.name, teams: p.teamList, hoursPerWeek: hours, dayHours, workDays: days, worksToday: days.includes(weekday),
+      condorHoursPerWeek: p.hours_per_week ?? null,
       away: awayNow, nextAway,
       counts: { job: count('job'), psc: count('psc'), condor: count('condor'), ims: count('ims'), it: count('it'), internal: count('internal'), total: list.length },
       flags: { quiet: list.filter((x) => x.quiet).length, overdue: list.filter((x) => x.overdue).length, stuck: list.filter((x) => x.stuck).length,
         waiting: list.filter((x) => x.customerWaiting).length },
       estimateLeft: list.reduce((t, x) => t + (x.estimateLeft || 0), 0),
-      week, weekTarget: hours * 3600, fourWeekAverage: Math.round(fourWeeks), active, items: list,
+      week, weekTarget: hours * 3600, condorWeekTarget: p.hours_per_week == null ? null : p.hours_per_week * 3600, fourWeekAverage: Math.round(fourWeeks), active, items: list,
     };
   });
   // Unassigned support requests, the first thing a lead hands out.

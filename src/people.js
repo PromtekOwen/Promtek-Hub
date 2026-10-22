@@ -36,6 +36,23 @@ function startDateOf(value) {
   if (v > new Date().toISOString().slice(0, 10)) throw new Error('The start date can\'t be in the future.');
   return v;
 }
+// Hours a day, if not the usual 7.5, and the days they work (1 Monday to 7 Sunday), if not Monday to Friday.
+function hoursOf(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const h = Number(value);
+  if (!Number.isFinite(h) || h <= 0 || h > 24) throw new Error('Contracted hours should be between 0 and 24 a day.');
+  return h === 7.5 ? null : Math.round(h * 100) / 100;
+}
+function daysOf(value) {
+  if (value === null || value === undefined) return null;
+  const d = [...new Set(String(value).replace(/[^1-7]/g, ''))].sort().join('');
+  if (!d) throw new Error('Pick at least one day they work.');
+  return d === '12345' ? null : d;
+}
+async function saveHours(env, accountId, hours) {
+  if (!hours) return;
+  await env.DB.prepare('UPDATE employees SET contracted_hours = ?, work_days = ? WHERE account_id = ?').bind(hours.hours, hours.days, accountId).run();
+}
 // Today's anniversaries are worked out once a day, so a changed start date shows straight away.
 const forgetAnniversaries = (env) => env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:anniversaries'").run().catch(() => null);
 
@@ -61,6 +78,8 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         email: e.email,
         pronouns: e.pronouns,
         startDate: e.start_date || '',
+        contractedHours: e.contracted_hours ?? null,
+        workDays: e.work_days || null,
         jobTitle: e.job_title,
         department: e.department,
         managerId: e.manager_id,
@@ -92,6 +111,9 @@ export async function listPeople(env, { includeInactive = true } = {}) {
 export async function savePerson(env, person) {
   const name = clean(person.name, 120);
   if (!name) throw new Error('A name is needed.');
+  // Checked before anything is saved, so a mistake here saves nothing.
+  const hours = person.contractedHours !== undefined || person.workDays !== undefined
+    ? { hours: hoursOf(person.contractedHours), days: daysOf(person.workDays === undefined ? '12345' : person.workDays) } : null;
 
   const icons = JSON.stringify((person.icons || []).filter((id) => ICONS.some(([key]) => key === id)).slice(0, 6));
   const now = new Date().toISOString();
@@ -113,6 +135,7 @@ export async function savePerson(env, person) {
       acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
       Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
       cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), now).run();
+    await saveHours(env, accountId, hours);
     await forgetAnniversaries(env);
     return { accountId, created: true };
   }
@@ -126,6 +149,7 @@ export async function savePerson(env, person) {
     acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), person.active === false ? 0 : 1, now, accountId).run();
+  await saveHours(env, accountId, hours);
   await forgetAnniversaries(env);
 
   const edited = person.eloLoaded === undefined || String(person.elo ?? '') !== String(person.eloLoaded ?? '');
