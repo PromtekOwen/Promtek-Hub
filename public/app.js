@@ -53,6 +53,68 @@ function toast(message) {
   toast.timer = setTimeout(() => toastEl.classList.remove('show'), 2800);
 }
 
+// ---------- saving files ----------
+
+// Every file the hub hands over goes through here, so people always hear that
+// it's saving and when it's saved. That matters most in the installed app,
+// which shows no download bar. iPhones and iPads can't download from an
+// installed app, so the share sheet offers Save to Files instead.
+const iosDevice = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const runningInstalled = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+async function saveFile(blob, name) {
+  if (iosDevice() && runningInstalled() && navigator.canShare) {
+    const file = new File([blob], name, { type: blob.type || 'application/octet-stream' });
+    if (navigator.canShare({ files: [file] })) return shareFile(file);
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 10_000);
+  toast(`Downloaded ${name}`);
+}
+
+async function shareFile(file) {
+  try {
+    await navigator.share({ files: [file], title: file.name });
+    toast(`${file.name} saved`);
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    // The share sheet needs a fresh tap if preparing the file took a while.
+    const bar = document.createElement('div');
+    bar.className = 'file-ready';
+    bar.innerHTML = `<span>${esc(file.name)} is ready</span><button class="btn">Save</button><button class="linklike">Not now</button>`;
+    document.body.appendChild(bar);
+    bar.querySelector('.btn').onclick = async () => { bar.remove(); try { await navigator.share({ files: [file], title: file.name }); toast(`${file.name} saved`); } catch { /* cancelled */ } };
+    bar.querySelector('.linklike').onclick = () => bar.remove();
+  }
+}
+
+// A file from the hub's server: fetched first, so "Downloaded" only shows once it has arrived.
+async function downloadFrom(url, fallbackName = 'Promtek download') {
+  toast('Downloading…');
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) {
+    let message = `The download didn't work (${res.status}).`;
+    try { message = (await res.json()).error || message; } catch { /* not JSON */ }
+    throw new Error(message);
+  }
+  const cd = res.headers.get('content-disposition') || '';
+  const name = decodeURIComponent((cd.match(/filename\*=UTF-8''([^;]+)/i) || [])[1] || '') || (cd.match(/filename="?([^";]+)"?/i) || [])[1] || fallbackName;
+  await saveFile(await res.blob(), name);
+}
+
+// Links to the hub's own downloads go through downloadFrom. Opening a PDF in a new tab is left alone.
+document.addEventListener('click', (event) => {
+  const a = event.target.closest('a[href]');
+  if (!a || a.target === '_blank' || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey) return;
+  const href = a.getAttribute('href');
+  if (!/^\/api\//.test(href) || !(a.hasAttribute('download') || /export|\.csv|certificate/.test(href))) return;
+  if (PRACTICE) return;
+  event.preventDefault();
+  downloadFrom(a.href, a.getAttribute('download') || undefined).catch((err) => toast(err.message));
+});
+
 // Practice mode: the page runs on example data from practice.js and nothing is
 // sent anywhere. It's on while the address has ?practice=<page>.
 const PRACTICE = (() => { try { return new URLSearchParams(location.search).get('practice') || null; } catch { return null; } })();
@@ -916,6 +978,7 @@ function personEditHtml() {
       <div class="row" style="margin-top:.75rem">
         <label>Order on the chart <input data-person="order" type="number" value="${p.order ?? 50}"></label>
       </div>
+      ${personChartHtml(p, people, departments)}
       ${personAccessHtml(p)}
 
       <p class="muted" style="margin:1.5rem 0 0">Working hours</p>
@@ -956,6 +1019,35 @@ function personEditHtml() {
     </div>`;
 }
 
+// The company chart: their row, any sub-group in the team, what a director covers, and other roles.
+const CHART_LEVELS = [['', 'Worked out from who reports to them'], ['director', 'Director'], ['gm', 'General manager'], ['manager', 'Manager or lead'], ['team', 'Team']];
+const CHART_GROUPS = [['', 'None'], ['senior', 'Senior'], ['standard', 'Standard'], ['apprentice', 'Apprentice']];
+function personChartHtml(p, people, departments) {
+  const c = p.chart || { level: null, group: null, covers: [], ceremonial: false, sa: false, roles: [] };
+  const opts = (list, sel) => list.map(([k, l]) => `<option value="${esc(k)}"${(sel || '') === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  const deptOpts = (sel) => `<option value="">Same as their department</option>${departments.map((d) => `<option${d.name === sel ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}`;
+  const managerOpts = (sel) => `<option value="">Nobody</option>${people.filter((m) => m.accountId !== p.accountId && m.active).map((m) =>
+    `<option value="${esc(m.accountId)}"${m.accountId === sel ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}`;
+  const roleRow = (r, i) => `<div class="card chart-role" data-chart-role="${i}" data-role-id="${esc(r.id || '')}" data-role-order="${esc(r.order ?? 50)}">
+      <div class="row"><label>Title <input data-role="title" value="${esc(r.title || '')}" placeholder="Engineer, Projects team" autocomplete="off"></label>
+        <label>Department <select data-role="department">${deptOpts(r.department)}</select></label></div>
+      <div class="row" style="margin-top:.5rem"><label>Level <select data-role="level">${opts(CHART_LEVELS.slice(1), r.level || 'team')}</select></label>
+        <label>Reports to, in this role <select data-role="managerId">${managerOpts(r.managerId)}</select></label></div>
+      <button class="linklike" data-person-action="role-remove" data-index="${i}" style="margin-top:.5rem">Remove this role</button></div>`;
+  return `<p class="muted" style="margin:1.5rem 0 0">On the company chart</p>
+    <div class="row" style="margin-top:.75rem">
+      <label>Level <select data-chart="level">${opts(CHART_LEVELS, c.level)}</select></label>
+      <label>Group within the team <select data-chart="group">${opts(CHART_GROUPS, c.group)}</select></label>
+    </div>
+    <p class="muted" style="margin:.75rem 0 .35rem">A director's card stretches across the departments they cover</p>
+    <div class="chips">${departments.map((d) => `<button class="chip${(c.covers || []).includes(d.name) ? ' on' : ''}" data-chart-cover="${esc(d.name)}" aria-pressed="${(c.covers || []).includes(d.name)}">${esc(d.name)}</button>`).join('')}</div>
+    <label class="inline-check" style="margin-top:.75rem"><input type="checkbox" data-chart="ceremonial"${c.ceremonial ? ' checked' : ''}> Ceremonial director: their own column, with nobody reporting to them</label>
+    <label class="inline-check" style="margin-top:.5rem"><input type="checkbox" data-chart="sa"${c.sa ? ' checked' : ''}> Promtek Africa</label>
+    <p class="muted" style="margin:1rem 0 .35rem">Other roles: each shows as a dashed card in that team</p>
+    ${(c.roles || []).map(roleRow).join('')}
+    ${(c.roles || []).length < 4 ? '<button class="btn secondary" data-person-action="role-add">Add another role</button>' : ''}`;
+}
+
 const initialsOf = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0].toUpperCase()).join('');
 
 // Pictures are squared off and shrunk in the browser, so what reaches the
@@ -982,6 +1074,19 @@ function collectPerson() {
   document.querySelectorAll('[data-person]').forEach((input) => {
     personEdit[input.dataset.person] = input.value.trim();
   });
+  if (document.querySelector('[data-chart="level"]')) {
+    const val = (k) => document.querySelector(`[data-chart="${k}"]`);
+    personEdit.chart = {
+      level: val('level').value || null, group: val('group').value || null,
+      covers: [...document.querySelectorAll('[data-chart-cover].on')].map((b) => b.dataset.chartCover),
+      ceremonial: val('ceremonial').checked, sa: val('sa').checked,
+      roles: [...document.querySelectorAll('[data-chart-role]')].map((row) => ({
+        id: row.dataset.roleId || undefined, order: Number(row.dataset.roleOrder) || 50,
+        title: row.querySelector('[data-role="title"]').value.trim(), department: row.querySelector('[data-role="department"]').value || null,
+        level: row.querySelector('[data-role="level"]').value || 'team', managerId: row.querySelector('[data-role="managerId"]').value || null,
+      })),
+    };
+  }
   if (document.querySelector('[data-person-day]')) {
     personEdit.workDays = [...document.querySelectorAll('[data-person-day].on')].map((c) => c.dataset.personDay).join('');
   }
@@ -992,7 +1097,14 @@ function collectPerson() {
   }
 }
 
-async function personAction(action) {
+async function personAction(action, btn) {
+  if (action === 'role-add' || action === 'role-remove') {
+    collectPerson();
+    personEdit.chart ||= { level: null, group: null, covers: [], ceremonial: false, sa: false, roles: [] };
+    if (action === 'role-add') personEdit.chart.roles.push({ title: '', department: null, level: 'team', managerId: null });
+    else personEdit.chart.roles.splice(Number(btn?.dataset.index), 1);
+    return render();
+  }
   const out = (text, bad) => {
     const el = document.getElementById('person-result');
     if (el) { el.textContent = text; el.className = `result ${bad ? 'bad' : 'good'}`; }
@@ -1066,7 +1178,11 @@ async function loadOrgLogo() {
   }
 }
 
-const ORG = { boxW: 208, boxH: 62, gapX: 18, gapY: 44, stackY: 10, indent: 26, pad: 28, avatar: 38 };
+const ORG = { boxW: 208, boxH: 62, gapX: 12, colGap: 30, rowGap: 52, groupGap: 16, pad: 28, labelW: 118, headH: 26, avatar: 38, panelPad: 7, tagH: 16, alsoH: 14, bannerH: 52 };
+const ORG_DIRECTOR = '#5b7385';
+const ORG_CEREMONIAL = '#8a99a6';
+const ORG_LEVEL_NAMES = { director: 'Directors', gm: 'General managers', manager: 'Managers and leads', team: 'Team' };
+const ORG_GROUP_RANK = { senior: 0, standard: 1, apprentice: 2 };
 
 // Little white glyphs that sit on a nameplate.
 const ORG_ICONS = {
@@ -1078,152 +1194,284 @@ const ORG_ICONS = {
   safety: 'M6 0.6 10.8 2.6v3.2c0 3-2 5.2-4.8 6-2.8-0.8-4.8-3-4.8-6V2.6Zm-0.5 7.6 3.2-3.2-1-1-2.2 2.2-1-1-1 1Z',
 };
 
-// Laid out like the chart it replaces: the top two levels spread across the
-// page, and from there each team stacks vertically under its lead, which keeps
-// the whole thing a sensible width.
-function layout(nodes) {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const children = new Map();
-  for (const node of nodes) {
-    const key = node.managerId && byId.has(node.managerId) ? node.managerId : '__root';
-    if (!children.has(key)) children.set(key, []);
-    children.get(key).push(node);
-  }
-  for (const list of children.values()) list.sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
-
-  const kidsOf = (node) => children.get(node.id) || [];
-
-  // How much room a person and everyone under them needs.
-  const measure = (node, depth) => {
-    const kids = kidsOf(node);
-    if (!kids.length) return { width: ORG.boxW, height: ORG.boxH };
-
-    if (depth < 1) {
-      const blocks = kids.map((kid) => measure(kid, depth + 1));
-      const width = blocks.reduce((sum, b) => sum + b.width, 0) + ORG.gapX * (blocks.length - 1);
-      const height = ORG.boxH + ORG.gapY + Math.max(...blocks.map((b) => b.height));
-      return { width: Math.max(ORG.boxW, width), height, blocks };
-    }
-
-    const blocks = kids.map((kid) => measure(kid, depth + 1));
-    const width = ORG.indent + Math.max(...blocks.map((b) => b.width));
-    const height = ORG.boxH + ORG.gapY
-      + blocks.reduce((sum, b) => sum + b.height, 0) + ORG.stackY * (blocks.length - 1);
-    return { width: Math.max(ORG.boxW, width), height, blocks };
-  };
-
-  const placed = [];
-  const place = (node, depth, left, top, block) => {
-    const kids = kidsOf(node);
-    const x = depth < 1 && kids.length ? left + (block.width - ORG.boxW) / 2 : left;
-    placed.push({ ...node, x, y: top, depth, stacked: depth >= 1 && kids.length > 0 });
-    if (!kids.length) return;
-
-    if (depth < 1) {
-      let cursor = left;
-      kids.forEach((kid, i) => {
-        place(kid, depth + 1, cursor, top + ORG.boxH + ORG.gapY, block.blocks[i]);
-        cursor += block.blocks[i].width + ORG.gapX;
-      });
-      return;
-    }
-
-    let cursor = top + ORG.boxH + ORG.gapY;
-    kids.forEach((kid, i) => {
-      place(kid, depth + 1, left + ORG.indent, cursor, block.blocks[i]);
-      cursor += block.blocks[i].height + ORG.stackY;
-    });
-  };
-
-  const roots = children.get('__root') || [];
-  let cursor = ORG.pad;
-  let tallest = 0;
-  for (const root of roots) {
-    const block = measure(root, 0);
-    place(root, 0, cursor, ORG.pad + 16, block);
-    cursor += block.width + ORG.gapX * 2;
-    tallest = Math.max(tallest, block.height);
-  }
-
-  return {
-    placed,
-    width: cursor + ORG.pad,
-    height: ORG.pad * 2 + 16 + tallest,
-    children,
-  };
+// Where someone sits when nobody has said: no manager makes a director, and
+// reporting to a director or having people report to them a manager.
+function orgLevelOf(node, hasReports, byId) {
+  if (node.level) return node.level;
+  if (node.ceremonial || node.covers?.length || !node.managerId) return 'director';
+  const boss = byId.get(node.managerId);
+  if (boss && (boss.level === 'director' || boss.covers?.length || (!boss.level && !boss.managerId))) return 'manager';
+  return hasReports.has(node.id) ? 'manager' : 'team';
 }
 
-function orgSvg(data, label = null) {
-  const { placed, width, height, children } = layout(data.nodes);
-  const byId = new Map(placed.map((p) => [p.id, p]));
+// Departments run across and levels down. Each person has one full card where
+// their main job is; any other role is a dashed card in that team. A director's
+// card stretches across the departments they cover. A reporting line is drawn
+// within a column, from a director's card, or from the row just above; any
+// other is a "Reports to" label on the team, so no line crosses the chart.
+function orgLayout(data) {
+  const nodes = data.nodes;
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const hasReports = new Set(nodes.map((n) => n.managerId).filter(Boolean));
+  for (const n of nodes) for (const r of n.roles || []) if (r.managerId) hasReports.add(r.managerId);
+  const deptNames = data.departments.map((d) => d.name);
+  const colourOf = (dept) => data.departments.find((d) => d.name === dept)?.colour || '#5b7385';
 
-  const stroke = 'fill="none" stroke="#c6d2db" stroke-width="1.5"';
-  const lines = placed.flatMap((node) => {
-    const kids = (children.get(node.id) || []).map((k) => byId.get(k.id)).filter(Boolean);
-    if (!kids.length) return [];
-
-    if (node.depth < 1) {
-      const from = node.y + ORG.boxH;
-      const mid = from + ORG.gapY / 2;
-      const cx = node.x + ORG.boxW / 2;
-      return [
-        `<path d="M${cx} ${from} V${mid}" ${stroke}/>`,
-        ...kids.map((kid) => `<path d="M${cx} ${mid} H${kid.x + ORG.boxW / 2} V${kid.y}" ${stroke}/>`),
-      ];
+  // Every card: full ones and the dashed ones for other roles.
+  const cards = [];
+  for (const n of nodes) {
+    const level = orgLevelOf(n, hasReports, byId);
+    const banner = level === 'director' && !n.ceremonial && (n.covers || []).length > 0;
+    cards.push({ key: n.id, person: n, name: n.name, title: n.title, dept: n.ceremonial ? '__cer' : (n.department || ''), level, banner,
+      managerId: n.managerId, ghost: false, group: n.group, order: n.order ?? 50,
+      also: (n.roles || []).map((r) => r.title).join('; ') });
+    for (const r of n.roles || []) {
+      cards.push({ key: `role:${n.id}:${r.id}`, person: n, name: n.name, title: r.title, dept: r.department || n.department || '', level: r.level || 'team',
+        banner: false, managerId: r.managerId, ghost: true, group: null, order: r.order ?? 50, also: '' });
     }
+  }
+  const mainOf = new Map(cards.filter((c) => !c.ghost).map((c) => [c.person.id, c]));
 
-    // A spine down the left of the team, with a short arm into each person.
-    const spineX = node.x + 14;
-    const last = kids[kids.length - 1];
-    return [
-      `<path d="M${spineX} ${node.y + ORG.boxH} V${last.y + ORG.boxH / 2}" ${stroke}/>`,
-      ...kids.map((kid) => `<path d="M${spineX} ${kid.y + ORG.boxH / 2} H${kid.x}" ${stroke}/>`),
-    ];
-  });
+  // Columns: each director's departments together, then the rest, then anyone without one, then ceremonial directors.
+  const order = [];
+  const directors = cards.filter((c) => c.banner).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+  for (const d of directors) for (const dept of deptNames) if (d.person.covers.includes(dept) && !order.includes(dept)) order.push(dept);
+  for (const dept of deptNames) if (!order.includes(dept) && cards.some((c) => !c.banner && c.dept === dept)) order.push(dept);
+  if (cards.some((c) => !c.banner && c.dept === '')) order.push('');
+  if (cards.some((c) => c.dept === '__cer')) order.push('__cer');
 
-  const boxes = placed.map((node) => {
-    const icons = (node.icons || []).filter((id) => ORG_ICONS[id]).slice(0, 3);
-    const textX = node.x + (node.avatar ? ORG.avatar + 18 : 12);
-    const room = ORG.boxW - (textX - node.x) - (icons.length ? icons.length * 20 + 8 : 10);
-    const titleLines = wrapText(node.title || '', Math.max(12, Math.round(room / 5.1))).slice(0, 2);
+  // Rows: the directors' cards, then director-level cards in their columns, then the other levels.
+  const rowKeys = ['banner', 'director', 'gm', 'manager', 'team'];
+  const rowOf = (c) => (c.banner || c.dept === '__cer' ? 'banner' : c.level);
+  const rows = rowKeys.filter((r) => cards.some((c) => rowOf(c) === r));
+  const rowIndex = (c) => rows.indexOf(rowOf(c));
 
-    // A white disc behind each badge keeps it readable at chart size.
-    const badges = icons.map((id, i) => `<g transform="translate(${node.x + ORG.boxW - 26 - i * 20} ${node.y + 8})">
-        <circle cx="8" cy="8" r="8.5" fill="#ffffff" opacity="0.95"/>
-        <g transform="translate(2.1 2.1)"><path d="${ORG_ICONS[id]}" fill="${node.colour}"/></g>
-      </g>`).join('');
+  // Each cell's cards, in groups by who they report to.
+  const cellCards = (dept, row) => cards.filter((c) => !c.banner && c.dept === dept && rowOf(c) === row);
+  const width = new Map(order.map((dept) => {
+    const most = Math.max(0, ...rows.map((r) => cellCards(dept, r).length));
+    return [dept, most > 12 ? 3 : most > 5 ? 2 : 1];
+  }));
+  const colW = (dept) => width.get(dept) * ORG.boxW + (width.get(dept) - 1) * ORG.gapX;
+  const colX = new Map();
+  let x = ORG.pad + ORG.labelW;
+  for (const dept of order) { colX.set(dept, x); x += colW(dept) + ORG.colGap; }
+  const totalW = x - ORG.colGap + ORG.pad;
 
-    const avatar = node.avatar ? `
-      <clipPath id="clip-${esc(node.id)}"><circle cx="${node.x + 10 + ORG.avatar / 2}" cy="${node.y + ORG.boxH / 2}" r="${ORG.avatar / 2}"/></clipPath>
-      <circle cx="${node.x + 10 + ORG.avatar / 2}" cy="${node.y + ORG.boxH / 2}" r="${ORG.avatar / 2 + 1.5}" fill="#ffffff" opacity="0.95"/>
-      <image href="${node.avatar}" x="${node.x + 10}" y="${node.y + (ORG.boxH - ORG.avatar) / 2}" width="${ORG.avatar}" height="${ORG.avatar}" clip-path="url(#clip-${esc(node.id)})" preserveAspectRatio="xMidYMid slice"/>` : '';
+  // A card's "Also" note gets up to two lines of its own.
+  for (const c of cards) c.alsoLines = c.also ? wrapText(`Also: ${c.also}`, 30).slice(0, 2) : [];
+  const heightOf = (c) => (c.banner ? ORG.bannerH : ORG.boxH + (c.alsoLines.length ? 4 + c.alsoLines.length * 12 : 0));
+  // How a group's line is drawn, worked out before anything is placed.
+  const linkOf = (c, dept) => {
+    const m = c.managerId && mainOf.get(c.managerId);
+    if (!m) return { kind: 'none' };
+    if (m.banner) return m.person.covers.includes(dept) ? { kind: 'banner', m } : { kind: 'tag', m };
+    if (m.dept === dept && rowIndex(m) < rowIndex(c)) return { kind: 'rail', m };
+    if (rowIndex(m) === rowIndex(c) - 1) return { kind: 'bus', m };
+    return { kind: 'tag', m };
+  };
+  const linkRank = { banner: 0, bus: 0, none: 1, rail: 2, tag: 3 };
 
-    return `<g>
-      <rect x="${node.x}" y="${node.y}" width="${ORG.boxW}" height="${ORG.boxH}" rx="9" fill="${node.colour}"/>
-      ${avatar}
-      ${badges}
-      <text x="${textX}" y="${node.y + (titleLines.length > 1 ? 22 : 26)}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="12.5" font-weight="700" fill="#ffffff">${esc(node.name)}</text>
-      ${titleLines.map((line, i) => `<text x="${textX}" y="${node.y + 37 + i * 12}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10" fill="#ffffff" opacity="0.9">${esc(line)}</text>`).join('')}
+  const cells = new Map();
+  for (const dept of order) {
+    for (const row of rows) {
+      const list = cellCards(dept, row);
+      if (!list.length) continue;
+      const groups = new Map();
+      for (const c of list) {
+        const k = c.managerId || '';
+        if (!groups.has(k)) groups.set(k, { managerId: c.managerId, link: linkOf(c, dept), cards: [] });
+        groups.get(k).cards.push(c);
+      }
+      const sorted = [...groups.values()].sort((a, b) => linkRank[a.link.kind] - linkRank[b.link.kind]
+        || (a.link.m?.order ?? 0) - (b.link.m?.order ?? 0) || String(a.link.m?.name || '').localeCompare(String(b.link.m?.name || '')));
+      for (const g of sorted) {
+        g.cards.sort((a, b) => (ORG_GROUP_RANK[a.group] ?? 1) - (ORG_GROUP_RANK[b.group] ?? 1) || a.order - b.order || a.name.localeCompare(b.name));
+        g.ghostOnly = g.cards.every((c) => c.ghost);
+      }
+      cells.set(`${dept}|${row}`, sorted);
+    }
+  }
+
+  // Lay each cell out: groups one under another, w cards across, a new line for each sub-level.
+  const measureCell = (dept, row) => {
+    const groups = cells.get(`${dept}|${row}`) || [];
+    const w = width.get(dept);
+    let y = 0;
+    for (const g of groups) {
+      const top = y;
+      y += ORG.panelPad + (g.link.kind === 'tag' ? ORG.tagH : 0);
+      let col = 0, lineH = 0, lastRank = null;
+      for (const c of g.cards) {
+        const rank = ORG_GROUP_RANK[c.group] ?? 1;
+        if (col >= w || (lastRank !== null && rank !== lastRank && col > 0)) { y += lineH + (lastRank !== rank ? 12 : 8); col = 0; lineH = 0; }
+        c.relX = col * (ORG.boxW + ORG.gapX); c.relY = y;
+        lineH = Math.max(lineH, heightOf(c)); col++; lastRank = rank;
+      }
+      y += lineH + ORG.panelPad;
+      g.relTop = top; g.relH = y - top;
+      y += ORG.groupGap;
+    }
+    return groups.length ? y - ORG.groupGap : 0;
+  };
+
+  const top0 = ORG.pad + 34 + ORG.headH + 14;
+  const rowTop = new Map();
+  const rowH = new Map();
+  let y = top0;
+  for (const row of rows) {
+    let h = row === 'banner' ? ORG.bannerH : 0;
+    for (const dept of order) h = Math.max(h, measureCell(dept, row));
+    rowTop.set(row, y); rowH.set(row, h);
+    // Director-level cards in their columns sit just under the directors' own cards.
+    y += h + (row === 'banner' && rows.includes('director') ? 22 : ORG.rowGap);
+  }
+  const totalH = y - ORG.rowGap + ORG.pad;
+
+  // Absolute positions.
+  for (const c of cards) {
+    if (c.banner) {
+      const covered = order.filter((d) => c.person.covers.includes(d));
+      c.x = colX.get(covered[0]); c.w = colX.get(covered[covered.length - 1]) + colW(covered[covered.length - 1]) - c.x;
+      c.y = rowTop.get('banner'); c.h = ORG.bannerH;
+    }
+  }
+  // Directors whose departments overlap someone else's stack under each other in the banner row.
+  const banners = cards.filter((c) => c.banner).sort((a, b) => a.order - b.order);
+  for (const [i, b] of banners.entries()) {
+    const clash = banners.slice(0, i).filter((o) => o.x < b.x + b.w && b.x < o.x + o.w);
+    if (clash.length) b.y += clash.length * (ORG.bannerH + 8);
+  }
+  const groupsOut = [];
+  for (const [key, groups] of cells) {
+    const [dept, row] = key.split('|');
+    for (const g of groups) {
+      g.x = colX.get(dept) - ORG.panelPad; g.w = colW(dept) + ORG.panelPad * 2;
+      g.y = rowTop.get(row) + g.relTop; g.h = g.relH; g.dept = dept; g.row = row;
+      for (const c of g.cards) { c.x = colX.get(dept) + c.relX; c.y = rowTop.get(row) + c.relY; c.w = ORG.boxW; c.h = heightOf(c); c.groupOf = g; }
+      groupsOut.push(g);
+    }
+  }
+  return { cards, groups: groupsOut, order, rows, rowTop, rowH, colX, colW, width: totalW, height: totalH, colourOf };
+}
+
+function orgCardSvg(c, colour) {
+  const node = c.person;
+  const ghost = c.ghost;
+  const fill = ghost ? '#ffffff' : colour;
+  const ink = ghost ? '#0f2b3d' : '#ffffff';
+  const sub = ghost ? '#5b7385' : '#ffffff';
+  const icons = ghost ? [] : (node.icons || []).filter((id) => ORG_ICONS[id]).slice(0, 3);
+  const midY = c.y + Math.min(c.h, ORG.boxH) / 2;
+  const textX = c.x + ORG.avatar + 18;
+  const room = (c.banner ? Math.min(c.w, 420) : c.w) - (textX - c.x) - (icons.length ? icons.length * 20 + 8 : 10) - (node.sa ? 24 : 0);
+  const titleLines = wrapText(c.title || '', Math.max(12, Math.round(room / 5.4))).slice(0, c.banner ? 1 : 2);
+  // Long names get a little smaller rather than running into the badges.
+  const nameRoom = c.w - (textX - c.x) - (icons.length ? icons.length * 20 + 8 : 8) - (node.sa ? 28 : 0);
+  const nameSize = Math.max(10, Math.min(12.5, nameRoom / (String(node.name).length * 0.56)));
+  const badges = icons.map((id, i) => `<g transform="translate(${c.x + c.w - 26 - i * 20} ${c.y + 8})">
+      <circle cx="8" cy="8" r="8.5" fill="#ffffff" opacity="0.95"/>
+      <g transform="translate(2.1 2.1)"><path d="${ORG_ICONS[id]}" fill="${colour}"/></g></g>`).join('');
+  const cx = c.x + 10 + ORG.avatar / 2;
+  const clip = `clip-${esc(c.key).replace(/[^a-zA-Z0-9-]/g, '_')}`;
+  const initials = esc(initialsOf(node.name));
+  const avatar = node.avatar ? `
+      <clipPath id="${clip}"><circle cx="${cx}" cy="${midY}" r="${ORG.avatar / 2}"/></clipPath>
+      <circle cx="${cx}" cy="${midY}" r="${ORG.avatar / 2 + 1.5}" fill="${ghost ? '#eef3f7' : '#ffffff'}" opacity="0.95"/>
+      <image href="${node.avatar}" x="${c.x + 10}" y="${midY - ORG.avatar / 2}" width="${ORG.avatar}" height="${ORG.avatar}" clip-path="url(#${clip})" preserveAspectRatio="xMidYMid slice"${ghost ? ' opacity="0.75"' : ''}/>`
+    : `<circle cx="${cx}" cy="${midY}" r="${ORG.avatar / 2}" fill="${ghost ? '#eef3f7' : '#ffffff'}" opacity="0.95"/>
+      <text x="${cx}" y="${midY + 4}" text-anchor="middle" font-family="Titillium Web, Segoe UI, sans-serif" font-size="12" font-weight="700" fill="${ghost ? '#5b7385' : colour}">${initials}</text>`;
+  const sa = node.sa ? `<g transform="translate(${c.x + c.w - (icons.length ? icons.length * 20 + 30 : 30)} ${c.y + 9})"><rect width="22" height="13" rx="3" fill="${ghost ? '#0f2b3d' : '#ffffff'}"/>
+      <text x="11" y="10" text-anchor="middle" font-family="Titillium Web, Segoe UI, sans-serif" font-size="8.5" font-weight="700" fill="${ghost ? '#ffffff' : '#0f2b3d'}">SA</text></g>` : '';
+  const nameY = c.y + (titleLines.length > 1 ? 22 : 26);
+  const also = c.alsoLines?.length ? `<rect x="${c.x + 8}" y="${c.y + ORG.boxH - 6}" width="${c.w - 16}" height="${6 + c.alsoLines.length * 12}" rx="4" fill="#ffffff" opacity="0.18"/>
+      ${c.alsoLines.map((line, i) => `<text x="${c.x + 14}" y="${c.y + ORG.boxH + 5 + i * 12}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="9.5" font-style="italic" fill="#ffffff">${esc(line)}</text>`).join('')}` : '';
+  const covers = c.banner ? `<text x="${c.x + c.w - 14}" y="${c.y + c.h / 2 + 4}" text-anchor="end" font-family="Titillium Web, Segoe UI, sans-serif" font-size="11" fill="#ffffff" opacity="0.85">${esc(listAnd(c.person.covers))}</text>` : '';
+  return `<g class="org-card" data-k="${esc(c.key)}" data-p="${esc(node.id)}" data-m="${esc(c.managerId || '')}">
+      <rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="9" fill="${fill}"${ghost ? ` stroke="${colour}" stroke-width="2" stroke-dasharray="6 4"` : ''}/>
+      ${avatar}${badges}${sa}
+      <text x="${textX}" y="${nameY}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="${nameSize.toFixed(1)}" font-weight="700" fill="${ink}">${esc(node.name)}</text>
+      ${titleLines.map((line, i) => `<text x="${textX}" y="${c.y + 37 + i * 12}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10" fill="${sub}" opacity="0.92">${esc(line)}</text>`).join('')}
+      ${also}${covers}
     </g>`;
-  });
+}
 
-  const legendY = height + 10;
-  const legend = data.departments.map((d, i) => `<g>
-      <rect x="${ORG.pad + i * 118}" y="${legendY}" width="11" height="11" rx="3" fill="${d.colour}"/>
-      <text x="${ORG.pad + i * 118 + 18}" y="${legendY + 10}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="11" fill="#5b7385">${esc(d.name)}</text>
-    </g>`).join('');
+const listAnd = (xs) => (xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`);
 
-  const total = height + 48;
-  const logo = orgLogoData
-    ? `<image href="${orgLogoData}" x="${ORG.pad}" y="6" width="34" height="34"/>`
-    : '';
-  return `<svg id="org-svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${width} ${total}" width="${width}" height="${total}">
-      <rect width="${width}" height="${total}" fill="#ffffff"/>
+function orgSvg(data, label = null) {
+  const L = orgLayout(data);
+  const stroke = (dashed) => `fill="none" stroke="#b9c8d3" stroke-width="1.6"${dashed ? ' stroke-dasharray="5 4"' : ''}`;
+  const font = 'font-family="Titillium Web, Segoe UI, sans-serif"';
+
+  // Column headings, and the level down the side.
+  const heads = L.order.map((dept) => dept === '__cer' ? '' : `<g><rect x="${L.colX.get(dept)}" y="${ORG.pad + 34}" width="${L.colW(dept)}" height="${ORG.headH}" rx="6" fill="${dept ? L.colourOf(dept) : '#8a99a6'}"/>
+      <text x="${L.colX.get(dept) + L.colW(dept) / 2}" y="${ORG.pad + 34 + 17}" text-anchor="middle" ${font} font-size="11" font-weight="700" letter-spacing="0.6" fill="#ffffff">${esc((dept || 'Other').toUpperCase())}</text></g>`).join('');
+  const seen = new Set();
+  const levels = L.rows.map((row) => {
+    const name = ORG_LEVEL_NAMES[row === 'banner' ? 'director' : row];
+    if (seen.has(name)) return '';
+    seen.add(name);
+    return `<text x="${ORG.pad}" y="${L.rowTop.get(row) + 22}" ${font} font-size="11.5" font-weight="700" fill="#5b7385">${esc(name)}</text>`;
+  }).join('');
+
+  // Lines: each team has one, to its manager.
+  const railCount = new Map();
+  const lines = [];
+  const panels = [];
+  for (const g of L.groups) {
+    const showPanel = g.cards.length > 1 || g.link.kind === 'tag';
+    if (showPanel) panels.push(`<rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="11" fill="#f2f6f9"/>`);
+    if (g.link.kind === 'tag') {
+      panels.push(`<text x="${g.x + 10}" y="${g.y + ORG.panelPad + 10}" ${font} font-size="10" font-weight="700" fill="#5b7385">↗ Reports to ${esc(g.link.m.name)}${g.link.m.dept && g.link.m.dept !== '__cer' ? ` (${esc(g.link.m.dept)})` : ''}</text>`);
+      continue;
+    }
+    const m = g.link.m;
+    if (!m) continue;
+    const attrs = `class="org-line" data-p="${esc(g.cards.map((c) => c.person.id).join(' '))}" data-m="${esc(m.person.id)}" ${stroke(g.ghostOnly)}`;
+    const target = showPanel ? { x: g.x, y: g.y, w: g.w, h: g.h } : { x: g.cards[0].x, y: g.cards[0].y, w: g.cards[0].w, h: g.cards[0].h };
+    if (g.link.kind === 'banner') {
+      const cx = target.x + target.w / 2;
+      lines.push(`<path d="M${cx} ${m.y + m.h} V${target.y}" ${attrs}/>`);
+      continue;
+    }
+    // Out of the left of the manager's card, down the gap beside their column.
+    const key = `${m.dept}`;
+    const used = railCount.get(key) || new Map();
+    if (!used.has(m.key)) used.set(m.key, used.size);
+    railCount.set(key, used);
+    const rail = L.colX.get(m.dept) - 9 - used.get(m.key) * 5;
+    const fromY = m.y + Math.min(m.h, ORG.boxH) / 2;
+    if (g.link.kind === 'rail') {
+      const toY = target.y + Math.min(target.h, ORG.boxH) / 2;
+      lines.push(`<path d="M${m.x} ${fromY} H${rail} V${toY} H${target.x}" ${attrs}/>`);
+    } else {
+      const busY = L.rowTop.get(g.row) - ORG.rowGap / 2;
+      const cx = target.x + target.w / 2;
+      lines.push(`<path d="M${m.x} ${fromY} H${rail} V${busY} H${cx} V${target.y}" ${attrs}/>`);
+    }
+  }
+
+  const cardsSvg = L.cards.map((c) => orgCardSvg(c, c.ghost ? L.colourOf(c.dept) : c.dept === '__cer' ? ORG_CEREMONIAL : (c.level === 'director' ? ORG_DIRECTOR : L.colourOf(c.dept)))).join('');
+
+  const legendY = L.height + 4;
+  const used = data.departments.filter((d) => L.order.includes(d.name));
+  const legend = [...used.map((d, i) => `<g><rect x="${ORG.pad + i * 112}" y="${legendY}" width="11" height="11" rx="3" fill="${d.colour}"/>
+      <text x="${ORG.pad + i * 112 + 18}" y="${legendY + 10}" ${font} font-size="11" fill="#5b7385">${esc(d.name)}</text></g>`),
+    `<g transform="translate(${ORG.pad + used.length * 112 + 20} ${legendY})"><path d="M0 6 H26" ${stroke(false)}/><text x="32" y="10" ${font} font-size="11" fill="#5b7385">Reports to</text>
+      <path d="M110 6 H136" ${stroke(true)}/><text x="142" y="10" ${font} font-size="11" fill="#5b7385">Second role</text>
+      ${data.nodes.some((n) => n.sa) ? `<rect x="236" y="-1" width="22" height="13" rx="3" fill="#0f2b3d"/><text x="247" y="9" text-anchor="middle" ${font} font-size="8.5" font-weight="700" fill="#fff">SA</text><text x="264" y="10" ${font} font-size="11" fill="#5b7385">Promtek Africa</text>` : ''}</g>`].join('');
+
+  const total = L.height + 30;
+  const logo = orgLogoData ? `<image href="${orgLogoData}" x="${ORG.pad}" y="6" width="34" height="34"/>` : '';
+  return `<svg id="org-svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 ${L.width} ${total}" width="${L.width}" height="${total}">
+      <rect width="${L.width}" height="${total}" fill="#ffffff"/>
       ${logo}
-      <text x="${ORG.pad + (logo ? 44 : 0)}" y="20" font-family="Titillium Web, Segoe UI, sans-serif" font-size="14" font-weight="700" fill="#0f2b3d">Promtek</text>
-      <text x="${ORG.pad + (logo ? 44 : 0)}" y="34" font-family="Titillium Web, Segoe UI, sans-serif" font-size="10.5" fill="#5b7385">${esc(label || (data.document ? `${data.document.reference}, issued ${new Date(data.document.issuedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : `Company chart, ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`))}</text>
+      <text x="${ORG.pad + (logo ? 44 : 0)}" y="20" ${font} font-size="14" font-weight="700" fill="#0f2b3d">Promtek</text>
+      <text x="${ORG.pad + (logo ? 44 : 0)}" y="34" ${font} font-size="10.5" fill="#5b7385">${esc(label || (data.document ? `${data.document.reference}, issued ${new Date(data.document.issuedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}` : `Company chart, ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}`))}</text>
+      ${heads}${levels}
+      ${panels.join('')}
       ${lines.join('')}
-      ${boxes.join('')}
+      ${cardsSvg}
       ${legend}
     </svg>`;
 }
@@ -1240,22 +1488,83 @@ function wrapText(text, perLine) {
   return lines;
 }
 
+let orgArrange = false;
+
 function orgHtml(data) {
   const missing = data.nodes.filter((n) => !n.title || !n.department).length;
+  const canArrange = me.user.isAdmin;
   return `
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
-        <span>${data.document ? `<strong>${esc(data.document.reference)}</strong>, issued ${shortDate(data.document.issuedAt.slice(0, 10))}. ` : ''}<span class="muted">${n(data.nodes.length)} people on the chart${missing ? `, ${n(missing)} without a title or team` : ''}</span></span>
-        <button class="btn" data-org="download">Download as an image</button>
+        <span>${data.document ? `<strong>${esc(data.document.reference)}</strong>, issued ${shortDate(data.document.issuedAt.slice(0, 10))}. ` : ''}<span class="muted">${n(data.nodes.length)} people on the chart${missing ? `, ${n(missing)} without a title or team` : ''}. Tap someone to see who they report to and who reports to them.</span></span>
+        <span class="row">${canArrange ? `<button class="btn secondary" data-org="arrange">${orgArrange ? 'Done arranging' : 'Arrange the order'}</button>` : ''}
+          <button class="btn" data-org="download">Download as an image</button></span>
       </div>
     </div>
+    ${orgArrange ? orgArrangeHtml(data) : ''}
     <div class="org-scroll">${orgSvg(data)}</div>`;
+}
+
+// Each team in order, with buttons to move people up and down it.
+function orgArrangeHtml(data) {
+  const L = orgLayout(data);
+  const teams = L.groups.map((g, i) => ({ g, i })).filter(({ g }) => g.cards.length > 1);
+  if (!teams.length) return '';
+  const label = (g) => `${g.dept === '__cer' ? 'Ceremonial' : g.dept || 'No department'}, ${ORG_LEVEL_NAMES[g.row === 'banner' ? 'director' : g.row].toLowerCase()}${g.link.m ? `, reporting to ${g.link.m.name}` : ''}`;
+  return `<div class="card org-arrange">
+      <p style="margin-top:0">Most senior first. The order reads left to right, then down. Cards in a sub-group (Senior, Standard, Apprentice) stay in their group.</p>
+      <div class="org-arrange-grid">${teams.map(({ g, i }) => `<div><h3>${esc(label(g))}</h3><ol>${g.cards.map((c, j) => `<li>
+        <span>${esc(c.name)}${c.ghost ? ' <span class="muted">(other role)</span>' : ''}<small class="muted">${esc(c.title || '')}</small></span>
+        <button class="icon-btn" data-org-move="${i}:${j}:-1" aria-label="Move ${esc(c.name)} up"${j === 0 ? ' disabled' : ''}>▲</button>
+        <button class="icon-btn" data-org-move="${i}:${j}:1" aria-label="Move ${esc(c.name)} down"${j === g.cards.length - 1 ? ' disabled' : ''}>▼</button></li>`).join('')}</ol></div>`).join('')}</div>
+    </div>`;
+}
+
+async function orgMove(spec) {
+  const [gi, ci, dir] = spec.split(':').map(Number);
+  const g = orgLayout(orgData).groups[gi];
+  const cards = [...g.cards];
+  const j = ci + dir;
+  if (!cards[j]) return;
+  [cards[ci], cards[j]] = [cards[j], cards[ci]];
+  const items = cards.map((c, k) => ({ id: c.key, order: (k + 1) * 10 }));
+  // Shown straight away, then saved.
+  for (const it of items) {
+    const m = /^role:(.+):([^:]+)$/.exec(it.id);
+    if (m) { const r = orgData.nodes.find((x) => x.id === m[1])?.roles.find((x) => x.id === m[2]); if (r) r.order = it.order; }
+    else { const p = orgData.nodes.find((x) => x.id === it.id); if (p) p.order = it.order; }
+  }
+  const scroll = document.querySelector('.org-scroll')?.scrollLeft || 0;
+  const y = window.scrollY;
+  view.innerHTML = orgHtml(orgData);
+  const sc = document.querySelector('.org-scroll'); if (sc) sc.scrollLeft = scroll;
+  window.scrollTo(0, y);
+  try { await api('/api/admin/org-order', { method: 'POST', body: JSON.stringify({ items }) }); }
+  catch (err) { toast(err.message); }
+}
+
+// Tapping a card shows who they report to and who reports to them; everyone else fades.
+function orgFocus(card) {
+  const svg = document.getElementById('org-svg');
+  if (!svg) return;
+  const pid = card?.dataset.p;
+  if (!pid || svg.dataset.focus === pid) { delete svg.dataset.focus; svg.classList.remove('focus'); svg.querySelectorAll('.on').forEach((el) => el.classList.remove('on')); return; }
+  svg.dataset.focus = pid;
+  svg.classList.add('focus');
+  const mine = [...svg.querySelectorAll(`.org-card[data-p="${CSS.escape(pid)}"]`)];
+  const managers = new Set(mine.map((c) => c.dataset.m).filter(Boolean));
+  svg.querySelectorAll('.org-card').forEach((c) => c.classList.toggle('on', c.dataset.p === pid || managers.has(c.dataset.p) || c.dataset.m === pid));
+  svg.querySelectorAll('.org-line').forEach((l) => {
+    const kids = l.dataset.p.split(' ');
+    l.classList.toggle('on', (kids.includes(pid) && managers.has(l.dataset.m)) || l.dataset.m === pid);
+  });
 }
 
 // The chart is drawn as SVG, so it can be turned straight into a PNG.
 async function orgDownload() {
   const svg = document.getElementById('org-svg');
   if (!svg) return;
+  if (svg.classList.contains('focus')) orgFocus(null);
   const source = new XMLSerializer().serializeToString(svg);
   const url = `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(source)))}`;
 
@@ -1275,13 +1584,8 @@ async function orgDownload() {
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-  canvas.toBlob((blob) => {
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `Promtek company chart ${todayIso()}.png`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(link.href), 4000);
-  }, 'image/png');
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  await saveFile(blob, `Promtek company chart ${todayIso()}.png`);
 }
 
 // ---------- settings panels ----------
@@ -5334,12 +5638,7 @@ async function rnHtml() {
     ${rn.view === 'tickets' ? rnTicketsHtml(data) : rn.view === 'preview' ? rnPreviewHtml(data) : rnWriteHtml(data)}`;
 }
 
-function rnSave(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-}
+function rnSave(blob, name) { return saveFile(blob, name); }
 
 async function rnExport(kind, btn) {
   const label = btn.textContent;
@@ -6719,12 +7018,7 @@ function eotqUploaded(roundId) {
   host.querySelector('[data-eotq-cert-close]').focus();
 }
 
-function eotqSave(blob, name) {
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-}
+function eotqSave(blob, name) { return saveFile(blob, name); }
 
 document.addEventListener('click', async (event) => {
   const host = event.target.closest('.eotq-modal');
@@ -7615,11 +7909,7 @@ async function wipExport(button) {
       hk.map(([l]) => B(l)),
       ...hist.rows.map((r) => hk.map(([, k, f], i) => (i === 0 ? wipMonthName(r.month) : (f || ((v) => v))(r[k] ?? null))))] });
     const blob = writeBook(sheets);
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `Promtek ${region === 'sa' ? 'SA' : 'UK'} WIP ${d.month}.xlsx`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    await saveFile(blob, `Promtek ${region === 'sa' ? 'SA' : 'UK'} WIP ${d.month}.xlsx`);
   } catch (err) { toast(err.message); }
   button.disabled = false;
 }
@@ -9857,7 +10147,9 @@ view.addEventListener('click', async (event) => {
     return render();
   }
   const personActionBtn = event.target.closest('[data-person-action]');
-  if (personActionBtn) return personAction(personActionBtn.dataset.personAction);
+  if (personActionBtn) return personAction(personActionBtn.dataset.personAction, personActionBtn);
+  const coverChip = event.target.closest('[data-chart-cover]');
+  if (coverChip) { const on = !coverChip.classList.contains('on'); coverChip.classList.toggle('on', on); coverChip.setAttribute('aria-pressed', String(on)); return; }
   const personDay = event.target.closest('[data-person-day]');
   if (personDay) {
     personDay.classList.toggle('on');
@@ -9876,9 +10168,13 @@ view.addEventListener('click', async (event) => {
 
   const orgBtn = event.target.closest('[data-org]');
   if (orgBtn) {
+    if (orgBtn.dataset.org === 'arrange') { orgArrange = !orgArrange; view.innerHTML = orgHtml(orgData); return; }
     try { await orgDownload(); } catch (err) { toast(err.message); }
     return;
   }
+  const orgMoveBtn = event.target.closest('[data-org-move]');
+  if (orgMoveBtn) return orgMove(orgMoveBtn.dataset.orgMove);
+  if (currentRoute() === '#/org' && !settingsOpen && event.target.closest('#org-svg')) { orgFocus(event.target.closest('.org-card')); return; }
 
   if (await draftDeleteClick(event)) return;
   const obsBtn = event.target.closest('[data-obs]');

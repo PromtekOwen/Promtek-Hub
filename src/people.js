@@ -1,5 +1,6 @@
 // Employees live here now, rather than as issues in the DNM project. Everything
 // the other apps need about a person is on this record.
+import { cleanChart } from './org.js';
 import { progressFor } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
 import { cleanAccess, groupsOf, teamsOf, leadOf } from './permissions.js';
@@ -60,9 +61,16 @@ async function saveHours(env, accountId, hours) {
     if (r.changed) await (await import('./sync.js')).ledgerChanged(env);
   } catch (err) { console.warn('Overtime not worked out:', err.message); }
 }
+async function saveChart(env, accountId, chart) {
+  if (!chart) return;
+  await env.DB.prepare(
+    'UPDATE employees SET chart_level = ?, chart_group = ?, chart_covers = ?, chart_ceremonial = ?, chart_sa = ?, chart_roles = ? WHERE account_id = ?'
+  ).bind(chart.chart_level, chart.chart_group, chart.chart_covers, chart.chart_ceremonial, chart.chart_sa, chart.chart_roles, accountId).run();
+}
 // Today's anniversaries are worked out once a day, so a changed start date shows straight away.
 const forgetAnniversaries = (env) => env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:anniversaries'").run().catch(() => null);
 
+const listOf = (v) => { try { const x = v ? JSON.parse(v) : []; return Array.isArray(x) ? x : []; } catch { return []; } };
 const clean = (value, max = 160) => (value === undefined || value === null ? null : String(value).trim().slice(0, max) || null);
 
 export async function listPeople(env, { includeInactive = true } = {}) {
@@ -86,6 +94,10 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         pronouns: e.pronouns,
         startDate: e.start_date || '',
         weeklyHours: e.weekly_hours ?? null,
+        chart: {
+          level: e.chart_level || null, group: e.chart_group || null, covers: listOf(e.chart_covers),
+          ceremonial: Boolean(e.chart_ceremonial), sa: Boolean(e.chart_sa), roles: listOf(e.chart_roles),
+        },
         workDays: e.work_days || null,
         jobTitle: e.job_title,
         department: e.department,
@@ -121,6 +133,10 @@ export async function savePerson(env, person) {
   // Checked before anything is saved, so a mistake here saves nothing.
   const hours = person.weeklyHours !== undefined || person.workDays !== undefined
     ? { hours: hoursOf(person.weeklyHours), days: daysOf(person.workDays === undefined ? '12345' : person.workDays) } : null;
+  const chart = person.chart ? cleanChart({
+    chartLevel: person.chart.level, chartGroup: person.chart.group, chartCovers: person.chart.covers, chartCeremonial: person.chart.ceremonial,
+    chartSa: person.chart.sa, chartRoles: person.chart.roles,
+  }, clean(person.accountId, 128)) : null;
 
   const icons = JSON.stringify((person.icons || []).filter((id) => ICONS.some(([key]) => key === id)).slice(0, 6));
   const now = new Date().toISOString();
@@ -143,6 +159,7 @@ export async function savePerson(env, person) {
       Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
       cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), now).run();
     await saveHours(env, accountId, hours);
+    await saveChart(env, accountId, chart);
     await forgetAnniversaries(env);
     return { accountId, created: true };
   }
@@ -157,6 +174,7 @@ export async function savePerson(env, person) {
     Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), person.active === false ? 0 : 1, now, accountId).run();
   await saveHours(env, accountId, hours);
+  await saveChart(env, accountId, chart);
   await forgetAnniversaries(env);
 
   const edited = person.eloLoaded === undefined || String(person.elo ?? '') !== String(person.eloLoaded ?? '');

@@ -941,6 +941,12 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'Settings', action: `Employees now kept in ${body.source === 'hub' ? 'the hub' : 'Jira'}` });
       return json(r);
     }
+    if (method === 'POST' && pathname === '/api/admin/org-order') {
+      const r = await Org.saveOrder(env, body.items);
+      await Audit.record(env, user, { area: 'Employees', action: 'Chart order changed', subjectType: 'chart', subjectId: 'order', label: 'Company chart',
+        changes: [{ label: 'People moved', before: '', after: String((body.items || []).length) }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/admin/org-person') {
       return json(await auditedPerson(env, user, body.accountId, () => 'Chart details changed', () => Org.savePerson(env, body)));
     }

@@ -147,9 +147,23 @@ Nothing about employees is read from Jira once they're switched to the hub. The 
 
 The **Company chart** tile draws the org chart from the employee list, so it follows along as people join, change role or leave. Job titles, teams, reporting lines, pictures and badges are all set on each person under **Admin, Employees**.
 
+**Layout.** Departments run across as columns: Operations, Marketing, Sales, Service, Projects, Condor, IT and Rhapsodi. Levels run down as rows: Directors, General managers, Managers and leads, and Team. Each person has one full card, at their department and level. Under **On the company chart** on their employee record:
+- **Level** sets their row. Left as "Worked out", someone with no manager is a director, someone reporting to a director or with people reporting to them is a manager, and everyone else is in the team.
+- **Group within the team** (Senior, Standard, Apprentice) groups a team, most senior first, with a gap between groups.
+- **Covers** makes a director's card stretch across those departments. Columns are arranged so each director's departments sit together, in the order the directors are on the chart.
+- **Ceremonial director** puts them in a column of their own at the right, lighter, with no lines.
+- **Promtek Africa** adds an SA badge.
+- **Other roles** (up to four) each show as a dashed card in that role's department and level, reporting to the person chosen for that role. Their full card says "Also: …".
+
+**Lines.** Each team has one line, to the manager it reports to: within its column, straight down from a director's card, or from the row just above along the gap between rows. A team whose manager is anywhere else is labelled "Reports to …" instead, so no line crosses the chart. A dashed line or card is a second role. Tapping someone shows who they report to and who reports to them, and fades everyone else. Tap again to clear.
+
+**Order.** Within a team, people are in their "Order on the chart" number, left to right then down. Admins can use **Arrange the order** on the chart to move people up and down each team.
+
 **Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
 
-Someone new appears on the chart once they have a title and a manager. Until then they sit on their own at the top, which makes them easy to spot.
+**Downloads.** Everything the hub saves (the chart image, the WIP workbook, CSVs, certificates, release notes) says "Downloading" and then "Downloaded" with the file's name, which matters in the installed app, where there's no download bar. Files from the server are fetched first, so "Downloaded" only shows once the file has arrived. In the installed app on an iPhone or iPad, the share sheet opens instead, for Save to Files.
+
+Someone new with no manager and no level appears on the Directors row, which makes them easy to spot until they're set up.
 
 ### Roles
 

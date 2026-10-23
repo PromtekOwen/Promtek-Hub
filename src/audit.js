@@ -1,3 +1,4 @@
+import { chartRolesText, chartCoversText, chartLevelText } from './org.js';
 // A record of changes people make by hand, so anything edited can be traced to
 // who changed it, when, and what it was before. Background syncing isn't logged.
 
@@ -7,6 +8,8 @@ const LABELS = {
     org_order: 'Chart order', role: 'Hub role', team: 'Team', extension: 'Extension', baseline: 'XP rate', elo: 'ELO', icons: 'Chart icons',
     avatar: 'Photo', notes: 'Notes', active: 'Active', account_id: 'Jira account ID', groups: 'Groups', teams: 'Teams', lead_of: 'Leads',
     weekly_hours: 'Contracted hours a week', work_days: 'Days they work',
+    chart_level: 'Chart level', chart_group: 'Chart group', chart_covers: 'Director covers', chart_ceremonial: 'Ceremonial director',
+    chart_sa: 'Promtek Africa', chart_roles: 'Other roles',
   },
   vehicles: {
     registration: 'Registration', make: 'Make', model: 'Model', kind: 'Type', mot_due: 'MOT due', insurance_due: 'Insurance due',
@@ -19,7 +22,10 @@ const IGNORE = new Set(['updated_at', 'created_at', 'jira_xp', 'opening_xp', 'el
 const shown = (field, v) => {
   if (v === null || v === undefined || v === '') return '';
   if (field === 'avatar') return 'a photo';
-  if (field === 'active' || field === 'included') return Number(v) ? 'Yes' : 'No';
+  if (field === 'active' || field === 'included' || field === 'chart_ceremonial' || field === 'chart_sa') return Number(v) ? 'Yes' : 'No';
+  if (field === 'chart_roles') return chartRolesText(v);
+  if (field === 'chart_covers') return chartCoversText(v);
+  if (field === 'chart_level') return chartLevelText(v) || String(v);
   if (field === 'groups' || field === 'teams' || field === 'lead_of') {
     try { const list = JSON.parse(v); return list.length ? list.map((x) => ({ admin: 'Admin', management: 'Management', lead: 'Team lead', sales: 'Sales', developer: 'Developer' }[x] || x)).join(', ') : 'None'; } catch { return String(v); }
   }

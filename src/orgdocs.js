@@ -5,6 +5,7 @@
 import { Pdf, widthOf } from './pdf.js';
 import { LOGO } from './logo.js';
 import { raiseAlert } from './sync.js';
+import { chartRolesText, chartCoversText, chartLevelText } from './org.js';
 import { same } from './audit.js';
 
 export const PREFIX = 'IMS2.02';
@@ -14,8 +15,10 @@ const FILE_BASE = 'IMS2.02 Company Organisation Chart';
 const ANCHOR_START = 'promtek-hub-org-start';
 const ANCHOR_END = 'promtek-hub-org-end';
 
-const MAJOR = { name: 'Name', job_title: 'Job title', department: 'Department', manager_id: 'Reports to' };
-const MINOR = { pronouns: 'Pronouns', extension: 'Extension', avatar: 'Photo', org_order: 'Chart order', icons: 'Chart icons', email: 'Email' };
+const MAJOR = { name: 'Name', job_title: 'Job title', department: 'Department', manager_id: 'Reports to', chart_level: 'Chart level', chart_roles: 'Other roles', chart_covers: 'Director covers' };
+const MINOR = { pronouns: 'Pronouns', extension: 'Extension', avatar: 'Photo', org_order: 'Chart order', icons: 'Chart icons', email: 'Email',
+  chart_group: 'Chart group', chart_ceremonial: 'Ceremonial director', chart_sa: 'Promtek Africa' };
+const CHART_TEXT = { chart_roles: chartRolesText, chart_covers: chartCoversText, chart_level: chartLevelText };
 
 const reference = (n) => `${PREFIX}-${n}`;
 const longDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/London' });
@@ -56,7 +59,7 @@ export async function track(env, viewer, before, after) {
   else if (wasOn && isOn) {
     for (const [field, label] of Object.entries(MAJOR)) {
       if (same(before[field], after[field])) continue;
-      const show = field === 'manager_id' ? async (v) => (await nameOf(env, v)) || 'Nobody' : async (v) => v || '';
+      const show = field === 'manager_id' ? async (v) => (await nameOf(env, v)) || 'Nobody' : CHART_TEXT[field] ? async (v) => CHART_TEXT[field](v) : async (v) => v || '';
       rows.push(['major', field, label, await show(before[field]), await show(after[field])]);
     }
     for (const [field, label] of Object.entries(MINOR)) {
@@ -97,6 +100,9 @@ function summarise(changes) {
       joined: () => c.label.toLowerCase(), left: () => 'left',
       name: () => `now called ${c.after}`, job_title: () => `job title now ${c.after || 'blank'}`,
       department: () => `moved to ${c.after || 'no department'}`, manager_id: () => `now reports to ${c.after}`,
+      chart_level: () => `now on the chart as ${(c.after || 'worked out').toLowerCase()}`,
+      chart_roles: () => (c.after ? `other roles now ${c.after}` : 'no other roles'),
+      chart_covers: () => (c.after ? `now covers ${c.after}` : 'no longer covers a department'),
     }[c.field];
     byPerson.get(c.person_name).push(phrase ? phrase() : `${c.label.toLowerCase()} changed`);
   }
