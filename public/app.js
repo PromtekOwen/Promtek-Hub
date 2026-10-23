@@ -126,7 +126,7 @@ function xpList(entries, emptyText) {
     return `<li>
       <span class="title">${issue}${esc(e.summary || e.description || 'Time logged')}</span>
       <span class="xp">+${n(e.xp)}<small>${duration(e.seconds)}</small></span>
-      <span class="sub">${shortDate(e.work_date)}${e.rate != null ? `. ${how}${override}${rate}` : e.description && e.summary ? `. ${esc(e.description)}` : ''}</span>
+      <span class="sub">${shortDate(e.work_date)}${e.rate != null ? `. ${how}${override}${rate}` : e.description && e.summary ? `. ${esc(e.description)}` : ''}${e.overtime_seconds ? `. ${duration(e.overtime_seconds)} over contracted hours at 1.5× XP` : ''}</span>
     </li>`;
   }).join('')}</ul>`;
 }
@@ -244,6 +244,7 @@ const pages = {
             <div style="text-align:center">
               <strong>${weekOffset === 0 ? 'This week' : weekOffset === -1 ? 'Last week' : `Week of ${shortDate(monday)}`}</strong><br>
               <span class="muted">${duration(total)} logged of ${duration(data.weekSeconds || 37.5 * 3600)}, ${n(xp)} XP</span>
+              ${total > (data.weekSeconds || 37.5 * 3600) ? `<br><span class="muted">${duration(total - (data.weekSeconds || 37.5 * 3600))} over, earning 1.5× XP</span>` : ''}
             </div>
             <button class="icon-btn" data-week="1" aria-label="Next week" ${weekOffset >= 0 ? 'disabled' : ''}>${arrow('<path d="M9 5l7 7-7 7"/>')}</button>
           </div>
@@ -574,7 +575,7 @@ function weekSlideHtml(w) {
       <div class="feed-bar" aria-hidden="true"><span style="width:${pct.toFixed(1)}%"></span></div>
       <ol class="feed-days" style="--days:${w.days.length}">${w.days.map((d) => `<li class="${d.seconds ? 'done' : d.past ? 'missing' : ''}${d.today ? ' today' : ''}" title="${esc(longDate(d.date))}: ${d.seconds ? duration(d.seconds) : 'nothing logged'}">
         <span>${dateOf(d.date).toLocaleDateString('en-GB', { weekday: 'short' })}</span><b>${d.seconds ? duration(d.seconds) : d.past ? 'None' : '—'}</b></li>`).join('')}</ol>
-      <p class="feed-week-note">${names.length ? `Nothing logged on ${esc(words)} yet. <a href="#/log">Log time</a>` : 'Every day so far this week has time logged.'}</p>
+      <p class="feed-week-note">${names.length ? `Nothing logged on ${esc(words)} yet. <a href="#/log">Log time</a>` : 'Every day so far this week has time logged.'}${w.seconds > w.target ? ` ${duration(w.seconds - w.target)} over your contracted hours, earning 1.5× XP.` : ''}</p>
     </div>`;
 }
 

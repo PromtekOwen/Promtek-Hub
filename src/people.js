@@ -52,6 +52,13 @@ function daysOf(value) {
 async function saveHours(env, accountId, hours) {
   if (!hours) return;
   await env.DB.prepare('UPDATE employees SET weekly_hours = ?, work_days = ? WHERE account_id = ?').bind(hours.hours, hours.days, accountId).run();
+  // This week's overtime follows the new hours straight away; earlier weeks keep theirs.
+  try {
+    const { applyOvertime, mondayOfDay } = await import('./overtime.js');
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
+    const r = await applyOvertime(env, [{ accountId, monday: mondayOfDay(today) }]);
+    if (r.changed) await (await import('./sync.js')).ledgerChanged(env);
+  } catch (err) { console.warn('Overtime not worked out:', err.message); }
 }
 // Today's anniversaries are worked out once a day, so a changed start date shows straight away.
 const forgetAnniversaries = (env) => env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:anniversaries'").run().catch(() => null);

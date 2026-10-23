@@ -8,6 +8,7 @@ import { pendingDisputes } from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Eotq from './eotq.js';
 import { workDaysOf, weekHoursOf, weekdayOf, daysToShow } from './hours.js';
+import { overForLead, overtimeHours } from './overtime.js';
 
 const DAY_MS = 86_400_000;
 const KINDS = ['alert', 'announcement'];
@@ -66,6 +67,12 @@ export async function feed(env, viewer) {
 
 export async function dismiss(env, viewer, id) {
   if (String(id).startsWith('eotq:')) return Eotq.dismiss(env, viewer, id);
+  const over = /^overtime:(\d{4}-\d{2}-\d{2}):([\w:.-]{1,128})$/.exec(String(id));
+  if (over) {
+    await env.DB.prepare('INSERT INTO home_dismissals (account_id, item, at) VALUES (?, ?, ?) ON CONFLICT(account_id, item) DO NOTHING')
+      .bind(readerOf(viewer), String(id), new Date().toISOString()).run();
+    return { ok: true };
+  }
   const news = /^(order-new|psc-added):([A-Z0-9,-]{3,600})$/.exec(String(id));
   if (news) {
     const now = new Date().toISOString();
@@ -169,6 +176,7 @@ async function systemAlerts(env, viewer) {
     if (row?.n) out.push({ key: 'psc-new', tone: 'important', title: row.n === 1 ? '1 new PSC needs picking up' : `${row.n} new PSCs need picking up`, body: 'Nobody has them or has looked at them yet.', link: '#/psc' });
   }
 
+  out.push(...await overtimeAlerts(env, viewer, today).catch(() => []));
   out.push(...await newOrderAlerts(env, viewer).catch(() => []));
   out.push(...await newPscAlerts(env, viewer).catch(() => []));
 
@@ -183,6 +191,22 @@ async function systemAlerts(env, viewer) {
     if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Dates, acceptance or PSCs missing an Organization.', link: '#/contracts' });
   }
   return out;
+}
+
+// Someone in a team this person leads has gone over their contracted hours this week.
+async function overtimeAlerts(env, viewer, today) {
+  if (!viewer.groups?.includes('lead')) return [];
+  const over = await overForLead(env, viewer, today);
+  if (!over.length) return [];
+  const ids = over.map((o) => `overtime:${o.monday}:${o.accountId}`);
+  const { results } = await env.DB.prepare(`SELECT item FROM home_dismissals WHERE account_id = ? AND item IN (${ids.map(() => '?').join(', ')})`)
+    .bind(readerOf(viewer), ...ids).all();
+  const gone = new Set(results.map((r) => r.item));
+  return over.filter((o) => !gone.has(`overtime:${o.monday}:${o.accountId}`)).map((o) => ({
+    id: `overtime:${o.monday}:${o.accountId}`, key: `overtime:${o.accountId}`, tone: 'info',
+    title: `${o.name} is over their contracted hours`,
+    body: `${overtimeHours(o.seconds)} logged this week, against ${overtimeHours(o.limit)}. Time over that earns 1.5x XP.`, link: '#/reports',
+  }));
 }
 
 const ORDER_DAYS = 7;

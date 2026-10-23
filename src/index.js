@@ -1016,7 +1016,7 @@ async function getMe(env, user) {
       'SELECT COALESCE(SUM(xp), 0) AS xp, COALESCE(SUM(seconds), 0) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?'
     ).bind(emp.account_id, monday, today).first(),
     env.DB.prepare(
-      `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.job_elo, l.engineer_elo, l.override, l.rate, l.xp,
+      `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.job_elo, l.engineer_elo, l.override, l.rate, l.xp, l.overtime_seconds,
               j.issue_key, j.summary
          FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
         WHERE l.account_id = ? AND l.work_date <= ?
@@ -1055,7 +1055,7 @@ async function getTime(env, user, url) {
   const sunday = londonDate(Date.parse(`${monday}T12:00:00Z`) + 6 * 86_400_000);
   const today = londonDate();
   const { results } = await env.DB.prepare(
-    `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.xp, j.issue_key, j.summary
+    `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.xp, l.overtime_seconds, j.issue_key, j.summary
        FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
       WHERE l.account_id = ? AND l.work_date BETWEEN ? AND ?
       ORDER BY l.work_date, l.created_at`

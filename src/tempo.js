@@ -9,6 +9,7 @@ function normalise(wl) {
     issueId: wl.issue?.id != null ? String(wl.issue.id) : null,
     seconds: Number(wl.timeSpentSeconds) || 0,
     startDate: wl.startDate,
+    startTime: wl.startTime || null,
     loggedAt: wl.createdAt || null,
     description: wl.description || '',
   };

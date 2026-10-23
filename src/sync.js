@@ -4,6 +4,7 @@ import { metered, addReads, readsToday, monthSoFar, overBudget, tidyReads, utcDa
 import { searchJql, getIssue, findFieldId } from './jira.js';
 import { noteStatements } from './staff.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
+import { xpWith, applyOvertime, mondayOfDay } from './overtime.js';
 
 const CHUNK = 50;                 // D1 allows up to 100 bound parameters per query
 const JOB_CACHE_MS = 60 * 60 * 1000;
@@ -133,7 +134,7 @@ export async function processWorklogs(env, worklogs) {
   const existing = new Map();
   for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
     const { results } = await env.DB.prepare(
-      `SELECT worklog_id, engineer_elo, seconds, xp, work_date, issue_id FROM xp_ledger WHERE worklog_id IN (${placeholders(part.length)})`
+      `SELECT worklog_id, account_id, engineer_elo, seconds, xp, work_date, issue_id, overtime_seconds, start_time FROM xp_ledger WHERE worklog_id IN (${placeholders(part.length)})`
     ).bind(...part).all();
     for (const row of results) existing.set(row.worklog_id, row);
   }
@@ -142,6 +143,7 @@ export async function processWorklogs(env, worklogs) {
   const stmts = [];
   const unmatched = new Set();
   const involved = [];
+  const weeks = [];
   let changed = 0;
 
   for (const wl of wls) {
@@ -170,25 +172,37 @@ export async function processWorklogs(env, worklogs) {
     const override = job.xp_override ?? 1;
     const jobElo = overrides.get(String(wl.issueId)) ?? (job.parent_id ? overrides.get(job.parent_id) : undefined) ?? job.job_elo;
     const rate = xpRate({ jobElo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
-    const xp = Math.round(rate * (wl.seconds / 60));
+    // Overtime keeps its share until the week is worked out again below.
+    const sameWeek = prev && prev.account_id === wl.accountId && mondayOfDay(prev.work_date) === mondayOfDay(wl.startDate);
+    const overtime = sameWeek ? Math.min(prev.overtime_seconds || 0, wl.seconds) : 0;
+    const xp = xpWith(rate, wl.seconds, overtime);
+    const startTime = wl.startTime || prev?.start_time || null;
 
-    if (prev && prev.xp === xp && prev.seconds === wl.seconds && prev.work_date === wl.startDate && prev.issue_id === wl.issueId) {
+    if (prev && prev.xp === xp && prev.seconds === wl.seconds && prev.work_date === wl.startDate && prev.issue_id === wl.issueId
+      && (prev.start_time || null) === startTime) {
       continue;
     }
     changed++;
+    weeks.push({ accountId: wl.accountId, monday: mondayOfDay(wl.startDate) });
+    if (prev && !sameWeek) weeks.push({ accountId: prev.account_id || wl.accountId, monday: mondayOfDay(prev.work_date) });
     stmts.push(env.DB.prepare(
-      `INSERT INTO xp_ledger (worklog_id, account_id, issue_id, work_date, seconds, description, job_elo, engineer_elo, override, rate, xp, logged_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO xp_ledger (worklog_id, account_id, issue_id, work_date, seconds, description, job_elo, engineer_elo, override, rate, xp, overtime_seconds, start_time, logged_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(worklog_id) DO UPDATE SET account_id = excluded.account_id, issue_id = excluded.issue_id,
          work_date = excluded.work_date, seconds = excluded.seconds, description = excluded.description,
          job_elo = excluded.job_elo, override = excluded.override, rate = excluded.rate, xp = excluded.xp,
+         overtime_seconds = excluded.overtime_seconds, start_time = excluded.start_time,
          logged_at = excluded.logged_at, updated_at = excluded.updated_at`
     ).bind(wl.id, wl.accountId, wl.issueId, wl.startDate, wl.seconds, wl.description.slice(0, 500),
-      jobElo ?? null, engineerElo, override, rate, xp, wl.loggedAt || now, now, now));
+      jobElo ?? null, engineerElo, override, rate, xp, overtime, startTime, wl.loggedAt || now, now, now));
     stmts.push(env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(wl.id));
   }
 
   await runBatches(env, stmts);
+  // Kept apart from the ledger's own writes, so a problem here never holds up XP.
+  if (weeks.length) {
+    try { await applyOvertime(env, weeks); } catch (err) { console.warn('Overtime not worked out:', err.message); }
+  }
   if (changed) await ledgerChanged(env);
   // Kept apart from the ledger's own writes, so a problem here never holds up XP.
   if (involved.length) {
@@ -215,11 +229,11 @@ export async function recalcIssues(env, issueIds) {
   for (const part of chunk(ids, CHUNK)) {
     await env.DB.prepare(`UPDATE jobs SET fetched_at = 0 WHERE issue_id IN (${placeholders(part.length)})`).bind(...part).run();
     const { results } = await env.DB.prepare(
-      `SELECT worklog_id, account_id, issue_id, work_date, seconds, description, logged_at FROM xp_ledger
+      `SELECT worklog_id, account_id, issue_id, work_date, seconds, description, logged_at, start_time FROM xp_ledger
         WHERE issue_id IN (${placeholders(part.length)})`
     ).bind(...part).all();
     const wls = results.map((r) => ({ id: r.worklog_id, accountId: r.account_id, issueId: r.issue_id, startDate: r.work_date,
-      seconds: r.seconds, description: r.description || '', loggedAt: r.logged_at }));
+      seconds: r.seconds, description: r.description || '', loggedAt: r.logged_at, startTime: r.start_time }));
     if (wls.length) changed += (await processWorklogs(env, wls)).changed;
   }
   return { changed };
@@ -287,8 +301,17 @@ export async function catchUpToday(env) {
     env.DB.prepare('DELETE FROM xp_ledger WHERE work_date > ?').bind(today),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE work_date > ?').bind(today),
   ]);
-  if (out[0].meta?.changes) await ledgerChanged(env);
-  return { fetched: worklogs.length, changed: result.changed, removed: out[0].meta?.changes || 0 };
+  // Each morning everyone's week so far is worked out again, so a change to
+  // contracted hours, or time logged ahead and then removed, is caught.
+  let overtime = 0;
+  try {
+    const { results: people } = await env.DB.prepare('SELECT account_id FROM employees WHERE active = 1').all();
+    const monday = mondayOfDay(today);
+    const lastMonday = mondayOfDay(londonDate(Date.parse(`${monday}T12:00:00Z`) - 86_400_000));
+    overtime = (await applyOvertime(env, people.flatMap((p) => [{ accountId: p.account_id, monday }, { accountId: p.account_id, monday: lastMonday }]))).changed;
+  } catch (err) { console.warn('Overtime not worked out:', err.message); }
+  if (out[0].meta?.changes || overtime) await ledgerChanged(env);
+  return { fetched: worklogs.length, changed: result.changed, removed: out[0].meta?.changes || 0, overtime };
 }
 
 // Re-check one of the last 14 days per run, removing XP for deleted worklogs.
@@ -305,13 +328,18 @@ export async function reconcileNextDay(env) {
   await processWorklogs(env, worklogs);
 
   const live = new Set(worklogs.map((w) => w.id));
-  const { results } = await env.DB.prepare('SELECT worklog_id FROM xp_ledger WHERE work_date = ?').bind(day).all();
-  const gone = results.map((r) => r.worklog_id).filter((id) => !live.has(id));
+  const { results } = await env.DB.prepare('SELECT worklog_id, account_id FROM xp_ledger WHERE work_date = ?').bind(day).all();
+  const goneRows = results.filter((r) => !live.has(r.worklog_id));
+  const gone = goneRows.map((r) => r.worklog_id);
   await runBatches(env, gone.flatMap((id) => [
     env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(id),
   ]));
-  if (gone.length) await ledgerChanged(env);
+  // A deleted worklog can take someone back under their hours, so the week is worked out again.
+  if (gone.length) {
+    await applyOvertime(env, goneRows.map((r) => ({ accountId: r.account_id, monday: mondayOfDay(day) }))).catch((err) => console.warn('Overtime not worked out:', err.message));
+    await ledgerChanged(env);
+  }
   return { day, fetched: worklogs.length, deleted: gone.length };
 }
 
