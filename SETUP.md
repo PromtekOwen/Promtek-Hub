@@ -149,15 +149,17 @@ The **Company chart** tile draws the org chart from the employee list, so it fol
 
 **Layout.** Departments run across as columns: Operations, Marketing, Sales, Service, Projects, Condor, IT and Rhapsodi. Levels run down as rows: Directors, General managers, Managers and leads, and Team. Each person has one full card, at their department and level. Under **On the company chart** on their employee record:
 - **Level** sets their row. Left as "Worked out", someone with no manager is a director, someone reporting to a director or with people reporting to them is a manager, and everyone else is in the team.
-- **Group within the team** (Senior, Standard, Apprentice) groups a team, most senior first, with a gap between groups.
-- **Covers** makes a director's card stretch across those departments. Columns are arranged so each director's departments sit together, in the order the directors are on the chart.
-- **Ceremonial director** puts them in a column of their own at the right, lighter, with no lines.
+- **Seniority within the team** (Senior, Standard, Apprentice) groups a team, most senior first, with a gap between groups.
+- **Covers** (shown once Level is Director) makes a director's card stretch across those departments. Columns are arranged so each director's departments sit together, in the order the directors are on the chart.
+- **Ceremonial director** (also only for directors) puts them in a column of their own at the right, lighter, with no lines.
 - **Promtek Africa** adds an SA badge.
-- **Other roles** (up to four) each show as a dashed card in that role's department and level, reporting to the person chosen for that role. Their full card says "Also: …".
+- **Other roles** (up to four) each show as a dashed card in that role's department, level and seniority, reporting to the person chosen for that role. Their full card says "Also: …".
+
+Directors, general managers and managers who share a column sit side by side, and each has their own height in the gap below their row, so their lines never run together.
 
 **Lines.** Each team has one line, to the manager it reports to: within its column, straight down from a director's card, or from the row just above along the gap between rows. A team whose manager is anywhere else is labelled "Reports to …" instead, so no line crosses the chart. A dashed line or card is a second role. Tapping someone shows who they report to and who reports to them, and fades everyone else. Tap again to clear.
 
-**Order.** Within a team, people are in their "Order on the chart" number, left to right then down. Admins can use **Arrange the order** on the chart to move people up and down each team.
+**Order.** Within a team, people read left to right then down. Admins and developers set the order with **Arrange the order** on the chart itself; saving someone's employee record leaves it as arranged.
 
 **Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
 

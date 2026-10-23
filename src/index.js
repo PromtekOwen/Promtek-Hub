@@ -188,7 +188,7 @@ async function devRoute(request, env, url, real) {
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
 const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/reads', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
-  '/api/admin/bitbucket-poll', '/api/admin/bitbucket-reread', '/api/admin/bitbucket-link', '/api/admin/send-alerts', '/api/admin/test-8x8']);
+  '/api/admin/bitbucket-poll', '/api/admin/bitbucket-reread', '/api/admin/org-order', '/api/admin/bitbucket-link', '/api/admin/send-alerts', '/api/admin/test-8x8']);
 
 async function route(request, env, url, user) {
   const { pathname } = url;

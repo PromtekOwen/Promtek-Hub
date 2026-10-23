@@ -33,6 +33,7 @@ export function cleanChart(input, accountId) {
       id: String(r.id || `r${Date.now().toString(36)}${i}`).slice(0, 24), title,
       department: DEPT_KEYS().includes(r.department) ? r.department : null,
       level: LEVEL_KEYS.includes(r.level) ? r.level : 'team',
+      group: GROUP_KEYS.includes(r.group) ? r.group : null,
       managerId: r.managerId ? String(r.managerId).slice(0, 128) : null,
       order: Number.isFinite(Number(r.order)) ? Number(r.order) : 50,
     };

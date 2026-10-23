@@ -1391,3 +1391,12 @@ label.con-flag-org { display: block; max-width: 420px; }
 .file-ready { position: fixed; left: 50%; bottom: calc(1.25rem + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 60;
   display: flex; align-items: center; gap: .75rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow); padding: .6rem .8rem; max-width: calc(100% - 2rem); }
+
+.person-section { border-top: 1px solid var(--line); }
+.person-section:first-of-type { border-top: 0; }
+.person-section > summary { list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: .8rem .1rem; font-weight: 700; color: var(--ink); }
+.person-section > summary::-webkit-details-marker { display: none; }
+.person-section > summary::after { content: ''; width: .55rem; height: .55rem; border-right: 2px solid var(--blue-deep); border-bottom: 2px solid var(--blue-deep); transform: rotate(45deg); transition: transform .15s; margin-right: .3rem; }
+.person-section[open] > summary::after { transform: rotate(-135deg); }
+.person-section > summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
+.person-section-body { padding: 0 0 1rem; }

@@ -166,10 +166,10 @@ export async function savePerson(env, person) {
 
   await env.DB.prepare(
     `UPDATE employees SET name = ?, email = ?, pronouns = ?, job_title = ?, department = ?, manager_id = ?,
-       org_order = ?, role = ?, team = ?, groups = ?, teams = ?, lead_of = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
+       org_order = COALESCE(?, org_order), role = ?, team = ?, groups = ?, teams = ?, lead_of = ?, extension = ?, baseline = ?, icons = ?, avatar = ?,
        notes = ?, start_date = ?, active = ?, updated_at = ? WHERE account_id = ?`
   ).bind(name, clean(person.email), clean(person.pronouns, 40), clean(person.jobTitle, 120),
-    clean(person.department, 40), clean(person.managerId, 128), Number(person.order) || 50,
+    clean(person.department, 40), clean(person.managerId, 128), (person.order === undefined || person.order === null || person.order === '' ? null : Number(person.order) || 50),
     acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), person.active === false ? 0 : 1, now, accountId).run();

@@ -936,16 +936,26 @@ async function tileControl(action, id) {
 let peopleCache = null;
 let personEdit = null;        // the person being edited, or a blank one
 
+// The employee form in sections that open and close; which are open is remembered on this device.
+const PERSON_OPEN_KEY = 'promtek-hub-person-open';
+function personOpenSections() {
+  try { const v = localStorage.getItem(PERSON_OPEN_KEY); return new Set(v ? JSON.parse(v) : ['who']); } catch { return new Set(['who']); }
+}
+
 function personEditHtml() {
   const p = personEdit;
   const { people = [], icons = [], departments = [] } = peopleCache || {};
   const field = (key, label, value, extra = '') =>
     `<label style="margin-top:.75rem">${esc(label)} <input data-person="${key}" value="${esc(value ?? '')}" ${extra} autocomplete="off"></label>`;
+  const open = personOpenSections();
+  const sec = (slug, title, body) => `<details class="person-section" data-section="${slug}"${open.has(slug) || !p.accountId ? ' open' : ''}>
+      <summary>${esc(title)}</summary><div class="person-section-body">${body}</div></details>`;
 
   return `
     <div class="card">
       <h2 style="margin-top:0">${p.accountId ? esc(p.name || 'Edit employee') : 'Add someone'}</h2>
 
+      ${sec('who', 'Who they are', `
       <div class="avatar-edit">
         <label class="avatar-circle" for="avatar-input" title="Choose a picture">
           ${p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : `<span>${esc(initialsOf(p.name))}</span>`}
@@ -957,15 +967,14 @@ function personEditHtml() {
           <p class="muted" style="margin:.25rem 0 0">Shown on the company chart.</p>
         </div>
       </div>
-
-      <p class="muted" style="margin:1rem 0 0">Who they are</p>
       ${field('name', 'Name', p.name)}
       ${field('email', 'Work email', p.email, 'type="email" placeholder="name@promtek.com"')}
       ${field('pronouns', 'Pronouns, optional', p.pronouns, 'placeholder="He/Him"')}
       ${field('jobTitle', 'Job title', p.jobTitle)}
       ${field('startDate', 'Start date, for work anniversaries', p.startDate, `type="date" max="${todayIso()}"`)}
+      ${field('notes', 'Notes, optional', p.notes)}`)}
 
-      <p class="muted" style="margin:1.5rem 0 0">Where they sit</p>
+      ${sec('where', 'Where they sit', `
       <label style="margin-top:.75rem">Department <select data-person="department">
         <option value="">Not set</option>
         ${departments.map((d) => `<option value="${esc(d.name)}"${d.name === p.department ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}
@@ -975,40 +984,35 @@ function personEditHtml() {
         ${people.filter((m) => m.accountId !== p.accountId && m.active).map((m) =>
           `<option value="${esc(m.accountId)}"${m.accountId === p.managerId ? ' selected' : ''}>${esc(m.name)}</option>`).join('')}
       </select></label>
-      <div class="row" style="margin-top:.75rem">
-        <label>Order on the chart <input data-person="order" type="number" value="${p.order ?? 50}"></label>
-      </div>
       ${personChartHtml(p, people, departments)}
-      ${personAccessHtml(p)}
+      <p class="muted" style="margin:1.25rem 0 0">Badges</p>
+      <div class="chips" style="margin-top:.5rem">${icons.map((icon) =>
+        `<button class="chip${(p.icons || []).includes(icon.id) ? ' on' : ''}" data-person-icon="${esc(icon.id)}">${esc(icon.label)}</button>`).join('')}</div>`)}
 
-      <p class="muted" style="margin:1.5rem 0 0">Working hours</p>
+      ${sec('access', 'Access and teams', personAccessHtml(p))}
+
+      ${sec('hours', 'Working hours', `
       <div class="row" style="margin-top:.75rem">
         <label>Contracted hours a week <input data-person="weeklyHours" type="number" min="0.25" max="100" step="0.25" value="${p.weeklyHours ?? ''}" placeholder="37.5"></label>
       </div>
       <p class="muted" style="margin:.75rem 0 .35rem">Days they work</p>
       <div class="chips">${[['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri'], ['6', 'Sat'], ['7', 'Sun']].map(([d, l]) =>
         `<button class="chip${String(p.workDays || '12345').includes(d) ? ' on' : ''}" data-person-day="${d}" aria-pressed="${String(p.workDays || '12345').includes(d)}">${l}</button>`).join('')}</div>
-      <p class="muted">Leave the hours empty for the usual 37.5 a week (${personWeekLabel(p)} as saved). They can fall however suits across the days ticked. The days set which days show on their home screen week and in My time; Capacity uses the weekly hours, and Condor planning keeps its own hours for their Condor Dev work.</p>
+      <p class="muted">Leave the hours empty for the usual 37.5 a week (${personWeekLabel(p)} as saved). They can fall however suits across the days ticked. The days set which days show on their home screen week and in My time; Capacity uses the weekly hours, and Condor planning keeps its own hours for their Condor Dev work. Time over the weekly hours earns 1.5x XP.</p>`)}
 
-      <p class="muted" style="margin:1.5rem 0 0">XP and ELO</p>
+      ${sec('xp', 'XP and ELO', `
       <div class="row" style="margin-top:.75rem">
         <label>XP rate <input data-person="xpRate" type="number" min="0" max="500" value="${p.xpRate ?? 60}"></label>
         <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1099"></label>
       </div>
       <p class="muted">XP rate is the base XP per hour. Engineers are on 60, and their rate rises and falls with the
-      difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>
+      difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>`)}
 
-      <p class="muted" style="margin:1.5rem 0 0">Accounts</p>
+      ${sec('accounts', 'Accounts', `
       ${field('accountId', 'Jira account ID', p.accountId, p.accountId && !p.pending ? 'readonly' : 'placeholder="712020:..."')}
       ${p.accountId && !p.pending ? `<p class="muted">Changing this moves their history too.
         <button class="linklike" data-person-action="change-id">Change it</button></p>` : ''}
-      ${field('extension', '8x8 extension', p.extension, 'placeholder="120088"')}
-
-      <p class="muted" style="margin:1.5rem 0 0">Badges on the chart</p>
-      <div class="chips" style="margin-top:.5rem">${icons.map((icon) =>
-        `<button class="chip${(p.icons || []).includes(icon.id) ? ' on' : ''}" data-person-icon="${esc(icon.id)}">${esc(icon.label)}</button>`).join('')}</div>
-
-      ${field('notes', 'Notes, optional', p.notes)}
+      ${field('extension', '8x8 extension', p.extension, 'placeholder="120088"')}`)}
 
       <div class="row" style="margin-top:1.5rem">
         <button class="btn" data-person-action="save">${p.accountId ? 'Save' : 'Add them'}</button>
@@ -1032,17 +1036,19 @@ function personChartHtml(p, people, departments) {
       <div class="row"><label>Title <input data-role="title" value="${esc(r.title || '')}" placeholder="Engineer, Projects team" autocomplete="off"></label>
         <label>Department <select data-role="department">${deptOpts(r.department)}</select></label></div>
       <div class="row" style="margin-top:.5rem"><label>Level <select data-role="level">${opts(CHART_LEVELS.slice(1), r.level || 'team')}</select></label>
-        <label>Reports to, in this role <select data-role="managerId">${managerOpts(r.managerId)}</select></label></div>
+        <label>Seniority within the team <select data-role="group">${opts(CHART_GROUPS, r.group)}</select></label></div>
+      <div class="row" style="margin-top:.5rem"><label>Reports to, in this role <select data-role="managerId">${managerOpts(r.managerId)}</select></label></div>
       <button class="linklike" data-person-action="role-remove" data-index="${i}" style="margin-top:.5rem">Remove this role</button></div>`;
-  return `<p class="muted" style="margin:1.5rem 0 0">On the company chart</p>
-    <div class="row" style="margin-top:.75rem">
+  return `<div class="row" style="margin-top:.75rem">
       <label>Level <select data-chart="level">${opts(CHART_LEVELS, c.level)}</select></label>
-      <label>Group within the team <select data-chart="group">${opts(CHART_GROUPS, c.group)}</select></label>
+      <label>Seniority within the team <select data-chart="group">${opts(CHART_GROUPS, c.group)}</select></label>
     </div>
-    <p class="muted" style="margin:.75rem 0 .35rem">A director's card stretches across the departments they cover</p>
-    <div class="chips">${departments.map((d) => `<button class="chip${(c.covers || []).includes(d.name) ? ' on' : ''}" data-chart-cover="${esc(d.name)}" aria-pressed="${(c.covers || []).includes(d.name)}">${esc(d.name)}</button>`).join('')}</div>
-    <label class="inline-check" style="margin-top:.75rem"><input type="checkbox" data-chart="ceremonial"${c.ceremonial ? ' checked' : ''}> Ceremonial director: their own column, with nobody reporting to them</label>
-    <label class="inline-check" style="margin-top:.5rem"><input type="checkbox" data-chart="sa"${c.sa ? ' checked' : ''}> Promtek Africa</label>
+    <div class="chart-director"${c.level === 'director' ? '' : ' hidden'}>
+      <p class="muted" style="margin:.75rem 0 .35rem">Their card stretches across the departments they cover</p>
+      <div class="chips">${departments.map((d) => `<button class="chip${(c.covers || []).includes(d.name) ? ' on' : ''}" data-chart-cover="${esc(d.name)}" aria-pressed="${(c.covers || []).includes(d.name)}">${esc(d.name)}</button>`).join('')}</div>
+      <label class="inline-check" style="margin-top:.75rem"><input type="checkbox" data-chart="ceremonial"${c.ceremonial ? ' checked' : ''}> Ceremonial director: their own column, with nobody reporting to them</label>
+    </div>
+    <label class="inline-check" style="margin-top:.75rem"><input type="checkbox" data-chart="sa"${c.sa ? ' checked' : ''}> Promtek Africa</label>
     <p class="muted" style="margin:1rem 0 .35rem">Other roles: each shows as a dashed card in that team</p>
     ${(c.roles || []).map(roleRow).join('')}
     ${(c.roles || []).length < 4 ? '<button class="btn secondary" data-person-action="role-add">Add another role</button>' : ''}`;
@@ -1084,6 +1090,7 @@ function collectPerson() {
         id: row.dataset.roleId || undefined, order: Number(row.dataset.roleOrder) || 50,
         title: row.querySelector('[data-role="title"]').value.trim(), department: row.querySelector('[data-role="department"]').value || null,
         level: row.querySelector('[data-role="level"]').value || 'team', managerId: row.querySelector('[data-role="managerId"]').value || null,
+        group: row.querySelector('[data-role="group"]').value || null,
       })),
     };
   }
@@ -1147,7 +1154,9 @@ async function personAction(action, btn) {
 
   collectPerson();
   try {
-    await api('/api/admin/person', { method: 'POST', body: JSON.stringify(personEdit) });
+    // The order on the chart is set by arranging the chart itself, so it isn't sent from here.
+    const { order, ...person } = personEdit;
+    await api('/api/admin/person', { method: 'POST', body: JSON.stringify({ ...person, ...(person.accountId ? {} : { order }) }) });
     personEdit = null;
     toast('Saved');
     return render();
@@ -1227,7 +1236,7 @@ function orgLayout(data) {
       also: (n.roles || []).map((r) => r.title).join('; ') });
     for (const r of n.roles || []) {
       cards.push({ key: `role:${n.id}:${r.id}`, person: n, name: n.name, title: r.title, dept: r.department || n.department || '', level: r.level || 'team',
-        banner: false, managerId: r.managerId, ghost: true, group: null, order: r.order ?? 50, also: '' });
+        banner: false, managerId: r.managerId, ghost: true, group: r.group || null, order: r.order ?? 50, also: '' });
     }
   }
   const mainOf = new Map(cards.filter((c) => !c.ghost).map((c) => [c.person.id, c]));
@@ -1248,9 +1257,12 @@ function orgLayout(data) {
 
   // Each cell's cards, in groups by who they report to.
   const cellCards = (dept, row) => cards.filter((c) => !c.banner && c.dept === dept && rowOf(c) === row);
+  // A team gets two or three cards across when it's big. Directors, general managers and
+  // managers sharing a column sit side by side, so their lines don't run past each other.
   const width = new Map(order.map((dept) => {
-    const most = Math.max(0, ...rows.map((r) => cellCards(dept, r).length));
-    return [dept, most > 12 ? 3 : most > 5 ? 2 : 1];
+    const team = Math.max(0, ...rows.filter((r) => r === 'team').map((r) => cellCards(dept, r).length));
+    const leaders = Math.max(0, ...rows.filter((r) => r !== 'team' && r !== 'banner').map((r) => cellCards(dept, r).length));
+    return [dept, Math.max(team > 12 ? 3 : team > 5 ? 2 : 1, Math.min(3, leaders))];
   }));
   const colW = (dept) => width.get(dept) * ORG.boxW + (width.get(dept) - 1) * ORG.gapX;
   const colX = new Map();
@@ -1266,8 +1278,8 @@ function orgLayout(data) {
     const m = c.managerId && mainOf.get(c.managerId);
     if (!m) return { kind: 'none' };
     if (m.banner) return m.person.covers.includes(dept) ? { kind: 'banner', m } : { kind: 'tag', m };
-    if (m.dept === dept && rowIndex(m) < rowIndex(c)) return { kind: 'rail', m };
     if (rowIndex(m) === rowIndex(c) - 1) return { kind: 'bus', m };
+    if (m.dept === dept && rowIndex(m) < rowIndex(c)) return { kind: 'rail', m };
     return { kind: 'tag', m };
   };
   const linkRank = { banner: 0, bus: 0, none: 1, rail: 2, tag: 3 };
@@ -1297,15 +1309,23 @@ function orgLayout(data) {
   const measureCell = (dept, row) => {
     const groups = cells.get(`${dept}|${row}`) || [];
     const w = width.get(dept);
+    const step = ORG.boxW + ORG.gapX;
     let y = 0;
     for (const g of groups) {
       const top = y;
       y += ORG.panelPad + (g.link.kind === 'tag' ? ORG.tagH : 0);
+      // A small team sits directly under its manager when they share the column.
+      const m = g.link.m;
+      g.start = 0; g.span = w;
+      if (m && !m.banner && m.dept === dept && m.relX != null && g.cards.length < w) {
+        g.span = g.cards.length;
+        g.start = Math.max(0, Math.min(Math.round(m.relX / step), w - g.span));
+      }
       let col = 0, lineH = 0, lastRank = null;
       for (const c of g.cards) {
         const rank = ORG_GROUP_RANK[c.group] ?? 1;
-        if (col >= w || (lastRank !== null && rank !== lastRank && col > 0)) { y += lineH + (lastRank !== rank ? 12 : 8); col = 0; lineH = 0; }
-        c.relX = col * (ORG.boxW + ORG.gapX); c.relY = y;
+        if (col >= g.span || (lastRank !== null && rank !== lastRank && col > 0)) { y += lineH + (lastRank !== rank ? 12 : 8); col = 0; lineH = 0; }
+        c.relX = (g.start + col) * step; c.relY = y;
         lineH = Math.max(lineH, heightOf(c)); col++; lastRank = rank;
       }
       y += lineH + ORG.panelPad;
@@ -1346,13 +1366,14 @@ function orgLayout(data) {
   for (const [key, groups] of cells) {
     const [dept, row] = key.split('|');
     for (const g of groups) {
-      g.x = colX.get(dept) - ORG.panelPad; g.w = colW(dept) + ORG.panelPad * 2;
+      g.x = colX.get(dept) + g.start * (ORG.boxW + ORG.gapX) - ORG.panelPad;
+      g.w = g.span * ORG.boxW + (g.span - 1) * ORG.gapX + ORG.panelPad * 2;
       g.y = rowTop.get(row) + g.relTop; g.h = g.relH; g.dept = dept; g.row = row;
       for (const c of g.cards) { c.x = colX.get(dept) + c.relX; c.y = rowTop.get(row) + c.relY; c.w = ORG.boxW; c.h = heightOf(c); c.groupOf = g; }
       groupsOut.push(g);
     }
   }
-  return { cards, groups: groupsOut, order, rows, rowTop, rowH, colX, colW, width: totalW, height: totalH, colourOf };
+  return { cards, groups: groupsOut, order, rows, rowTop, rowH, colX, colW, width: totalW, height: totalH, colourOf, rowIndex };
 }
 
 function orgCardSvg(c, colour) {
@@ -1418,6 +1439,16 @@ function orgSvg(data, label = null) {
   const railCount = new Map();
   const lines = [];
   const panels = [];
+  // Each manager with lines gets their own height in the gap below their row, left to right.
+  const heightIn = new Map();
+  const byRow = new Map();
+  for (const g of L.groups) {
+    if (!['bus', 'rail'].includes(g.link.kind)) continue;
+    const m = g.link.m, row = L.rows[L.rowIndex(m)];
+    if (!byRow.has(row)) byRow.set(row, new Map());
+    byRow.get(row).set(m.key, m.x);
+  }
+  for (const list of byRow.values()) [...list.entries()].sort((a, b) => a[1] - b[1]).forEach(([key], i) => heightIn.set(key, i));
   for (const g of L.groups) {
     const showPanel = g.cards.length > 1 || g.link.kind === 'tag';
     if (showPanel) panels.push(`<rect x="${g.x}" y="${g.y}" width="${g.w}" height="${g.h}" rx="11" fill="#f2f6f9"/>`);
@@ -1434,20 +1465,29 @@ function orgSvg(data, label = null) {
       lines.push(`<path d="M${cx} ${m.y + m.h} V${target.y}" ${attrs}/>`);
       continue;
     }
-    // Out of the left of the manager's card, down the gap beside their column.
-    const key = `${m.dept}`;
-    const used = railCount.get(key) || new Map();
-    if (!used.has(m.key)) used.set(m.key, used.size);
-    railCount.set(key, used);
-    const rail = L.colX.get(m.dept) - 9 - used.get(m.key) * 5;
-    const fromY = m.y + Math.min(m.h, ORG.boxH) / 2;
-    if (g.link.kind === 'rail') {
-      const toY = target.y + Math.min(target.h, ORG.boxH) / 2;
-      lines.push(`<path d="M${m.x} ${fromY} H${rail} V${toY} H${target.x}" ${attrs}/>`);
-    } else {
-      const busY = L.rowTop.get(g.row) - ORG.rowGap / 2;
+    // Down from the bottom of the manager's card into the gap below their row. A team in the
+    // next row is reached straight from there; one further down in the same column runs
+    // down the gap beside the column. Managers sharing a row each get their own height in
+    // the gap, so lines from people side by side never merge.
+    const mRow = L.rows[L.rowIndex(m)];
+    const k = heightIn.get(m.key) || 0;
+    const below = L.rowTop.get(mRow) + L.rowH.get(mRow);
+    const y1 = below + 12 + (k % 5) * 7;
+    const mx = m.x + m.w / 2;
+    if (g.link.kind === 'bus') {
       const cx = target.x + target.w / 2;
-      lines.push(`<path d="M${m.x} ${fromY} H${rail} V${busY} H${cx} V${target.y}" ${attrs}/>`);
+      lines.push(`<path d="M${mx} ${m.y + m.h} V${y1} H${cx} V${target.y}" ${attrs}/>`);
+    } else if (target.x < mx && mx < target.x + target.w
+      && !L.cards.some((c) => c !== m && !g.cards.includes(c) && c.x < mx && mx < c.x + c.w && c.y < target.y && c.y + c.h > m.y + m.h)) {
+      // Nothing in the way: straight down.
+      lines.push(`<path d="M${mx} ${m.y + m.h} V${target.y}" ${attrs}/>`);
+    } else {
+      const used = railCount.get(`col:${m.dept}`) || new Map();
+      if (!used.has(m.key)) used.set(m.key, used.size);
+      railCount.set(`col:${m.dept}`, used);
+      const rail = L.colX.get(g.dept) - 10 - used.get(m.key) * 5;
+      const toY = target.y + Math.min(target.h, ORG.boxH) / 2;
+      lines.push(`<path d="M${mx} ${m.y + m.h} V${y1} H${rail} V${toY} H${target.x}" ${attrs}/>`);
     }
   }
 
@@ -1492,7 +1532,7 @@ let orgArrange = false;
 
 function orgHtml(data) {
   const missing = data.nodes.filter((n) => !n.title || !n.department).length;
-  const canArrange = me.user.isAdmin;
+  const canArrange = !me.viewingAs && (me.user.isAdmin || Boolean(me.user.can?.developer));
   return `
     <div class="card">
       <div class="row" style="justify-content:space-between;align-items:center">
@@ -6297,7 +6337,7 @@ const GROUP_LABELS = [['admin', 'Admin'], ['management', 'Management'], ['lead',
 
 function personAccessHtml(p) {
   const groups = p.groups || [], teams = p.teams || [], leads = p.leadOf || [];
-  return `<p class="muted" style="margin:1.5rem 0 .5rem">Access</p>
+  return `<p class="muted" style="margin:.75rem 0 .5rem">What they can do</p>
     <div class="access-groups">${GROUP_LABELS.map(([k, l]) => `<label class="inline-check"><input type="checkbox" data-person-group="${k}"${groups.includes(k) ? ' checked' : ''}> ${l}</label>`).join('')}</div>
     <p class="muted" style="margin:1rem 0 .5rem">Teams</p>
     <div class="chips">${(me.teamsList || []).map((t) => `<button type="button" class="chip${teams.includes(t) ? ' on' : ''}" data-person-team="${esc(t)}">${esc(t)}</button>`).join('')}</div>
@@ -6397,6 +6437,12 @@ function adminSections(html) {
 }
 view.addEventListener('toggle', (event) => {
   const d = event.target;
+  if (d.matches?.('details.person-section')) {
+    const open = personOpenSections();
+    if (d.open) open.add(d.dataset.section); else open.delete(d.dataset.section);
+    try { localStorage.setItem(PERSON_OPEN_KEY, JSON.stringify([...open])); } catch { /* not remembered */ }
+    return;
+  }
   if (!d.matches?.('details.admin-section')) return;
   const open = adminOpenSections();
   if (d.open) open.add(d.dataset.section); else open.delete(d.dataset.section);
@@ -10635,6 +10681,10 @@ view.addEventListener('change', async (event) => {
       obsScrollTo(`plcCards[${event.target.dataset.obsAddcard}].cards[${panel.cards.length - 1}]`);
       obsSaveDraft();
     }
+    return;
+  }
+  if (event.target.matches?.('[data-chart="level"]')) {
+    event.target.closest('.person-section-body, .card')?.querySelector('.chart-director')?.toggleAttribute('hidden', event.target.value !== 'director');
     return;
   }
   if (settingsOpen === '#/contracts' && await contractsSettingsChange(event)) return;
