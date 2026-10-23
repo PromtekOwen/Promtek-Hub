@@ -1243,7 +1243,10 @@ function orgLayout(data) {
 
   // Columns: each director's departments together, then the rest, then anyone without one, then ceremonial directors.
   const order = [];
-  const directors = cards.filter((c) => c.banner).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+  // Directors go left to right by where their departments come in the usual column order,
+  // so adding a director for one department doesn't move it from its place.
+  const firstDept = (c) => Math.min(...c.person.covers.map((d) => deptNames.indexOf(d)).filter((i) => i >= 0), 99);
+  const directors = cards.filter((c) => c.banner).sort((a, b) => firstDept(a) - firstDept(b) || a.order - b.order || a.name.localeCompare(b.name));
   for (const d of directors) for (const dept of deptNames) if (d.person.covers.includes(dept) && !order.includes(dept)) order.push(dept);
   for (const dept of deptNames) if (!order.includes(dept) && cards.some((c) => !c.banner && c.dept === dept)) order.push(dept);
   if (cards.some((c) => !c.banner && c.dept === '')) order.push('');
@@ -1407,7 +1410,7 @@ function orgCardSvg(c, colour) {
   const nameY = c.y + (titleLines.length > 1 ? 22 : 26);
   const also = c.alsoLines?.length ? `<rect x="${c.x + 8}" y="${c.y + ORG.boxH - 6}" width="${c.w - 16}" height="${6 + c.alsoLines.length * 12}" rx="4" fill="#ffffff" opacity="0.18"/>
       ${c.alsoLines.map((line, i) => `<text x="${c.x + 14}" y="${c.y + ORG.boxH + 5 + i * 12}" font-family="Titillium Web, Segoe UI, sans-serif" font-size="9.5" font-style="italic" fill="#ffffff">${esc(line)}</text>`).join('')}` : '';
-  const covers = c.banner ? `<text x="${c.x + c.w - 14}" y="${c.y + c.h / 2 + 4}" text-anchor="end" font-family="Titillium Web, Segoe UI, sans-serif" font-size="11" fill="#ffffff" opacity="0.85">${esc(listAnd(c.person.covers))}</text>` : '';
+  const covers = c.banner ? `<text x="${c.x + c.w - 14 - (icons.length ? icons.length * 20 + 6 : 0) - (node.sa ? 28 : 0)}" y="${c.y + c.h / 2 + 4}" text-anchor="end" font-family="Titillium Web, Segoe UI, sans-serif" font-size="11" fill="#ffffff" opacity="0.85">${esc(listAnd(c.person.covers))}</text>` : '';
   return `<g class="org-card" data-k="${esc(c.key)}" data-p="${esc(node.id)}" data-m="${esc(c.managerId || '')}">
       <rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="9" fill="${fill}"${ghost ? ` stroke="${colour}" stroke-width="2" stroke-dasharray="6 4"` : ''}/>
       ${avatar}${badges}${sa}
