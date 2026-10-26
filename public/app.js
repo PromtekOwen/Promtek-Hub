@@ -5119,7 +5119,42 @@ function bitbucketTestHtml(r) {
 
 // ---------- Condor Dev: estimating, triage and ratings ----------
 
+// ---------- Searches that check Jira when nothing is found ----------
+// Lists here are read from Jira in the background, so something brand new may not
+// be in them yet. A search that finds nothing asks Jira once, then the list is
+// shown again with the same search.
+const jiraAsked = new Map();      // what was searched, and when Jira was asked
+let jiraAskTimer = null;
+const JIRA_ASK_AGAIN_MS = 2 * 60 * 1000;
+function searchStatus(id, text) {
+  const el = document.getElementById(id);
+  if (el) { el.textContent = text; el.hidden = !text; }
+}
+function searchJiraWhenEmpty({ kind, input, visible, endpoint, status, reload = () => render() }) {
+  clearTimeout(jiraAskTimer);
+  const q = input.value.trim();
+  if (q.length < 2 || visible > 0) return searchStatus(status, '');
+  const key = `${kind}|${q.toLowerCase()}`;
+  if (Date.now() - (jiraAsked.get(key) || 0) < JIRA_ASK_AGAIN_MS) return searchStatus(status, `Nothing in Jira matches \u201c${q}\u201d either.`);
+  searchStatus(status, '');
+  const id = input.id;
+  jiraAskTimer = setTimeout(async () => {
+    jiraAsked.set(key, Date.now());
+    searchStatus(status, 'Nothing here matches. Checking Jira for anything new\u2026');
+    try { await api(endpoint, { method: 'POST', body: JSON.stringify({ q }) }); } catch { /* shown as not found */ }
+    await reload();
+    const box = document.getElementById(id);
+    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+  }, 700);
+}
+// After the page is drawn again, a search still in its box is applied to the new list.
+function reapplySearch() {
+  const box = view.querySelector('input[data-jira-search]');
+  if (box?.value.trim()) box.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 let condorTab = 'day';
+let mesQuery = '';
 let mesFilter = 'unestimated';
 let mesEst = null;          // the estimate in progress
 let mesTriage = { versionId: null, mode: null, skipped: [], notes: {}, assignee: {}, changeWho: [] };
@@ -5140,18 +5175,20 @@ function mesReadingHtml(data) {
 }
 
 async function mesListHtml() {
-  const data = await api(`/api/mes/outstanding?filter=${mesFilter}`);
+  const q = mesQuery.trim();
+  const data = await api(`/api/mes/outstanding?filter=${mesFilter}${q.length > 1 ? `&q=${encodeURIComponent(q)}` : ''}`);
   const rows = data.tickets.map((t) => `<li data-mes-row>
       <span class="title">${mesLink(t.issue_key)} ${esc(t.summary)}</span>
       <span class="sub">${mesMeta(t)}. ${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}` : 'No estimate yet'}${t.priority ? `. ${esc(t.priority === 'Not this time' ? 'Not this time' : `${t.priority} for ${t.version_name}`)}` : ''}.</span>
       ${data.canEstimate ? `<button class="chip-btn" data-mes-estimate="${esc(t.issue_id)}" style="margin-top:.4rem">${t.hours != null ? 'Re-estimate' : 'Estimate'}</button>` : ''}</li>`).join('');
   return `<div class="row jobs-tools"><span class="segment">${[['unestimated', 'Needs an estimate'], ['all', 'All open']].map(([k, l]) =>
       `<button class="seg${mesFilter === k ? ' on' : ''}" data-mes-filter="${k}">${l}</button>`).join('')}</span>
-      <input type="search" id="mes-search" placeholder="Search MES" aria-label="Search MES"></div>
+      <input type="search" id="mes-search" data-jira-search value="${esc(mesQuery)}" placeholder="Search MES" aria-label="Search MES"></div>
+    <p class="muted search-recheck" id="mes-recheck" role="status" hidden></p>
     <p class="help">Estimates come from comparing each ticket with finished ones of the same kind: a few smaller, same or bigger questions.</p>
     ${mesReadingHtml(data)}
     ${rows ? `<ul class="list mes-list">${rows}</ul>${data.total > data.tickets.length ? `<p class="muted">Showing ${data.tickets.length} of ${data.total}. Search to narrow it down.</p>` : ''}`
-      : data.catchingUp && !data.known ? '' : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
+      : (data.catchingUp && !data.known) || q.length > 1 ? '' : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
 }
 
 async function mesEstimateHtml() {
@@ -5163,6 +5200,8 @@ async function mesEstimateHtml() {
   }
   const q = await api('/api/mes/question', { method: 'POST', body: JSON.stringify({ issueId: e.issueId, answers: e.answers }) });
   e.ticket = q.ticket;
+  // A ticket opened from a link arrives by its key; from here on it's known by its id.
+  e.issueId = q.ticket.issue_id;
   const isBug = q.ticket.type === 'Bug';
   let step;
   if (e.method === 'timebox') {
@@ -5350,6 +5389,13 @@ async function mesRatingsHtml() {
 async function condorHtml() {
   if (!me.linked) return notLinkedCard();
   const asked = location.hash.split('?')[1];
+  // A link from a Jira ticket opens its estimate, as #/condor?estimate=MES-123.
+  const ticket = /^estimate=([A-Z][A-Z0-9]*-\d+)$/.exec(asked || '');
+  if (ticket) {
+    condorTab = 'estimate';
+    mesEst = { issueId: ticket[1], answers: [], tags: [], difficulty: null, timeboxHours: 4, from: null };
+    history.replaceState(null, '', '#/condor');
+  }
   if (asked && ['day', 'estimate', 'triage', 'plan', 'notes', 'ratings'].includes(asked)) {
     condorTab = asked; mesEst = null;
     if (asked === 'notes') { rn.stale = true; rn.view = 'write'; rn.mine = true; }
@@ -5482,8 +5528,11 @@ function condorInput(event) {
   if (el.dataset.triNotes != null) { mesTriage.notes[el.dataset.triNotes] = el.value || null; return true; }
   if (el.matches('[data-plan-version]')) { planVersion = el.value; planCapacityOpen = null; render(); return true; }
   if (el.id === 'mes-search') {
+    mesQuery = el.value;
     const q = el.value.toLowerCase();
-    document.querySelectorAll('[data-mes-row]').forEach((r) => { r.hidden = q.length > 1 && !r.textContent.toLowerCase().includes(q); });
+    let shown = 0;
+    document.querySelectorAll('[data-mes-row]').forEach((r) => { r.hidden = q.length > 1 && !r.textContent.toLowerCase().includes(q); if (!r.hidden) shown++; });
+    searchJiraWhenEmpty({ kind: 'mes', input: el, visible: shown, endpoint: '/api/mes/lookup', status: 'mes-recheck' });
     return true;
   }
   return false;
@@ -7646,6 +7695,7 @@ function wipOrdersHtml(d) {
       <label>Division <select data-wip-division>${[['all', 'Both'], ['ProjectsTeam', 'Projects'], ['ServiceTeam', 'Service']].map(([k, l]) =>
         `<option value="${k}"${wipDivision === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       <input type="search" id="wip-search" value="${esc(wipQuery)}" placeholder="Search orders, customers or quotes" aria-label="Search orders">
+      <p class="muted search-recheck" id="wip-recheck" role="status" hidden></p>
     </div>
     <div class="table-wrap wip-table"><table>
       <thead><tr><th>Order</th><th class="num">Value</th><th>Status</th><th class="num">Complete</th><th class="num">Non admin</th>
@@ -8093,6 +8143,7 @@ function wipInput(event) {
   if (event.target.id !== 'wip-search') return false;
   wipQuery = event.target.value;
   clearTimeout(wipSearchTimer);
+  const input = event.target;
   wipSearchTimer = setTimeout(async () => {
     if (!wipData) return;
     view.querySelector('.wip-table').outerHTML = (() => {
@@ -8100,6 +8151,7 @@ function wipInput(event) {
       box.innerHTML = wipOrdersHtml(wipData);
       return box.querySelector('.wip-table').outerHTML;
     })();
+    searchJiraWhenEmpty({ kind: 'wip', input, visible: wipFiltered(wipData.rows).length, endpoint: '/api/wip/lookup', status: 'wip-recheck' });
   }, 150);
   return true;
 }
@@ -8349,6 +8401,7 @@ function wipSettingsInput(event) {
 // ---------- service contracts ----------
 
 let conTab = 'contracts';      // contracts, insights
+let conQuery = '';
 let conFilter = 'active';
 let conTier = '';
 let conOpen = null;            // the contract opened, by key
@@ -8521,8 +8574,9 @@ async function contractsHtml() {
     <div class="row con-tools">
       <span class="segment">${CON_FILTERS.map(([k, l]) => `<button class="seg${conFilter === k ? ' on' : ''}" data-con-filter="${k}">${l}</button>`).join('')}</span>
       ${tiers.length > 1 ? `<label class="con-tier">Tier <select data-con-tier>${['', ...tiers].map((t) => `<option value="${esc(t)}"${t === conTier ? ' selected' : ''}>${t ? esc(t) : 'All tiers'}</option>`).join('')}</select></label>` : ''}
-      <input type="search" id="con-search" placeholder="Search customers or keys" aria-label="Search contracts">
+      <input type="search" id="con-search" data-jira-search value="${esc(conQuery)}" placeholder="Search customers or keys" aria-label="Search contracts">
     </div>
+    <p class="muted search-recheck" id="con-recheck" role="status" hidden></p>
     <div class="con-grid">${list.map((c) => conCardHtml(c, today)).join('') || '<div class="card"><p style="margin:0">No contracts here.</p></div>'}</div>`;
 }
 
@@ -8671,8 +8725,11 @@ async function contractsClick(event) {
 
 function contractsInput(event) {
   if (event.target.id === 'con-search') {
+    conQuery = event.target.value;
     const q = event.target.value.trim().toLowerCase();
-    for (const card of view.querySelectorAll('.con-card')) card.hidden = Boolean(q) && !card.dataset.search.includes(q);
+    let shown = 0;
+    for (const card of view.querySelectorAll('.con-card')) { card.hidden = Boolean(q) && !card.dataset.search.includes(q); if (!card.hidden) shown++; }
+    searchJiraWhenEmpty({ kind: 'contracts', input: event.target, visible: shown, endpoint: '/api/contracts/lookup', status: 'con-recheck' });
     return true;
   }
   if (event.target.matches('[data-con-tier]')) { conTier = event.target.value; render(); return true; }
@@ -8895,6 +8952,7 @@ let pscTier = '';
 let pscOrgs = null;             // the service desk's Organizations, once loaded
 let pscData = null;
 let pscFetchedAt = 0;
+let pscQuery = '';
 const PSC_KEEP_MS = 5 * 60 * 1000;
 
 // The list is kept on the page and only fetched again when something has
@@ -9144,10 +9202,11 @@ async function pscPageHtml() {
       <label class="con-tier">Contract <select data-psc-tier><option value="">All</option>${Object.entries(data.tiers).map(([k, t]) => `<option value="${k}"${pscTier === k ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
       <label class="con-tier">Customer <select data-psc-customer><option value="">All customers</option>${customers.map((c) => `<option${c === pscCustomer ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
       <label class="con-tier">Sort <select data-psc-sort>${[['attention', 'Needs attention'], ['oldest', 'Oldest first'], ['quiet', 'Longest without an update'], ['customer', 'Customer']].map(([k, l]) => `<option value="${k}"${pscSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
-      <input type="search" id="psc-search" placeholder="Search keys, summaries or people" aria-label="Search PSCs">
+      <input type="search" id="psc-search" data-jira-search value="${esc(pscQuery)}" placeholder="Search keys, summaries or people" aria-label="Search PSCs">
       <label class="inline-check psc-check"><input type="checkbox" data-psc-resolved${pscShow === 'resolved' ? ' checked' : ''}> Resolved</label>
       <label class="inline-check psc-check"><input type="checkbox" data-psc-snags${pscSnags ? ' checked' : ''}> Include Snags</label>
     </div>
+    <p class="muted search-recheck" id="psc-recheck" role="status" hidden></p>
     <div class="psc-list">${list.map((d) => pscCardHtml(d)).join('') || `<div class="card"><p style="margin:0">${pscShow === 'resolved' ? 'Nothing resolved in the last 30 days here.' : 'Nothing open here.'}</p></div>`}</div>`;
 }
 
@@ -9306,8 +9365,12 @@ async function pscChange(event) {
 
 function pscInput(event) {
   if (event.target.id !== 'psc-search') return false;
+  pscQuery = event.target.value;
   const q = event.target.value.trim().toLowerCase();
-  for (const card of view.querySelectorAll('.psc-card')) card.hidden = Boolean(q) && !card.dataset.search.includes(q);
+  let shown = 0;
+  for (const card of view.querySelectorAll('.psc-card')) { card.hidden = Boolean(q) && !card.dataset.search.includes(q); if (!card.hidden) shown++; }
+  searchJiraWhenEmpty({ kind: 'psc', input: event.target, visible: shown, endpoint: '/api/psc/refresh', status: 'psc-recheck',
+    reload: async () => { await pscLoad({ force: true }).catch(() => null); await render(); } });
   return true;
 }
 
@@ -10644,6 +10707,7 @@ async function render() {
       lastView = viewKey;
       scrollTo(0, samePage ? keepY : 0);
       if (!settingsOpen) maybeTour(route);
+      reapplySearch();
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
       if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); }

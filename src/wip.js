@@ -1163,6 +1163,16 @@ export async function saveOverride(env, viewer, body) {
   return { ok: true, key, before, after: { division, upfront, excluded } };
 }
 
+// When a search finds nothing, what changed in Jira since the last read is read now.
+export async function lookup(env, viewer) {
+  mustSee(viewer);
+  const last = Number((await getState(env, 'wip_lookup_at')) || 0);
+  if (Date.now() - last < 30_000) return { ok: true, skipped: true };
+  await setState(env, 'wip_lookup_at', String(Date.now()));
+  const r = await quick(env);
+  return { ok: true, changed: r?.changed ?? 0 };
+}
+
 export async function refresh(env, viewer) {
   mustEdit(viewer);
   await setState(env, 'wip_full_at', '0');

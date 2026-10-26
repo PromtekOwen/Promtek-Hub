@@ -1400,3 +1400,7 @@ label.con-flag-org { display: block; max-width: 420px; }
 .person-section[open] > summary::after { transform: rotate(-135deg); }
 .person-section > summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; border-radius: 6px; }
 .person-section-body { padding: 0 0 1rem; }
+
+/* What a search that found nothing is doing about it */
+.search-recheck { margin: .5rem 0 0; flex-basis: 100%; }
+.search-recheck[hidden] { display: none; }

@@ -550,6 +550,7 @@ export async function runScheduled(rawEnv) {
     mes: async () => {
       const Mes = await import('./mes.js');
       await attempt('MES tickets', () => Mes.scan(env));
+      await attempt('MES estimate links', () => Mes.linkNew(env));
       await attempt('Condor ratings', () => Mes.rateStep(env));
     },
     'hourly-scan': () => onceAnHour('hourly-scan', async () => {

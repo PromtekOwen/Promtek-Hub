@@ -88,6 +88,10 @@ async function savePageReads(rawEnv) {
 export default {
   async fetch(request, rawEnv, ctx) {
     const url = new URL(request.url);
+    // A link from a Jira ticket straight to its estimate. Signing in keeps the path,
+    // so it goes on to the page once someone has signed in.
+    const estimate = /^\/estimate\/([A-Za-z][A-Za-z0-9]*-\d+)\/?$/.exec(url.pathname);
+    if (estimate) return Response.redirect(`${url.origin}/#/condor?estimate=${estimate[1].toUpperCase()}`, 302);
     if (!url.pathname.startsWith('/api/')) return rawEnv.ASSETS.fetch(request);
 
     if (fromAnotherSite(request, url)) return json({ error: 'That request didn\'t come from the hub.' }, 403);
@@ -196,6 +200,10 @@ async function route(request, env, url, user) {
 
   if (method === 'GET' && pathname === '/api/me') {
     try { await (await import('./usage.js')).seen(env, user); } catch (err) { console.warn('Last seen not kept:', err.message); }
+    // The hub's own address, for links it puts in Jira.
+    if (url.hostname.includes('.') && !/^127\./.test(url.hostname)) {
+      try { if ((await getState(env, 'hub_origin')) !== url.origin) await setState(env, 'hub_origin', url.origin); } catch { /* next time */ }
+    }
     return json(await getMe(env, user));
   }
   if (method === 'POST' && pathname === '/api/prefs/usage') {
@@ -347,6 +355,7 @@ async function route(request, env, url, user) {
       return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '',
         releaseId: url.searchParams.get('release') || null }));
     }
+    if (method === 'POST' && pathname === '/api/mes/lookup') return json(await Mes.lookup(env, body.q));
     if (method === 'POST' && pathname === '/api/mes/question') return json(await Mes.nextQuestion(env, body));
     if (method === 'POST' && pathname === '/api/mes/estimate') return json(await Mes.saveEstimate(env, user, body));
     if (method === 'POST' && pathname === '/api/mes/triage') return json(await Mes.triage(env, user, body));
@@ -450,6 +459,7 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/wip') return json(await Wip.overview(env, user, { region: q('region'), month: q('month') }));
     if (method === 'GET' && pathname === '/api/wip/order') return json(await Wip.order(env, user, q('key')));
+    if (method === 'POST' && pathname === '/api/wip/lookup') return json(await Wip.lookup(env, user));
     if (method === 'GET' && pathname === '/api/wip/recurring') return json(await Wip.recurring(env, user, { region: q('region') }));
     if (method === 'GET' && pathname === '/api/wip/history') return json(await Wip.history(env, user, { region: q('region') }));
     if (method === 'GET' && pathname === '/api/wip/insights') return json(await Wip.insights(env, user, { region: q('region') }));
@@ -485,6 +495,13 @@ async function route(request, env, url, user) {
     const Con = await import('./contracts.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/contracts') return json(await Con.overview(env, user));
+    // A search that finds nothing has the contracts read from Jira again, at most once a minute.
+    if (method === 'POST' && pathname === '/api/contracts/lookup') {
+      if (!Con.canSee(user)) return json({ error: 'Service contracts are for the service team and management.' }, 403);
+      if (Date.now() - Number((await getState(env, 'contracts_lookup_at')) || 0) < 60_000) return json({ skipped: true });
+      await setState(env, 'contracts_lookup_at', String(Date.now()));
+      return json(await Con.run(env, { force: true }));
+    }
     if (method === 'GET' && pathname === '/api/contracts/detail') return json(await Con.detail(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/contracts/insights') return json(await Con.insights(env, user));
     if (method === 'GET' && pathname === '/api/contracts/check') return json(await Con.check(env, user, url.searchParams.get('issueId') || ''));

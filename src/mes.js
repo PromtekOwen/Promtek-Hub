@@ -104,6 +104,73 @@ export async function scan(env, { maxBatches = 5 } = {}) {
   return { read, cursor, caughtUp: !full };
 }
 
+// ---------- Estimate links on new tickets ----------
+// Each new MES ticket gets a web link straight to its estimate in the hub, so
+// whoever raised it can set its difficulty there and then. Only tickets created
+// since this started are linked, and each one once: Jira keeps one link per ticket.
+
+const LINK_ID = 'promtek-hub-estimate';
+const LINK_TRIES = 3;
+export const estimateUrl = (origin, key) => `${origin}/estimate/${encodeURIComponent(key)}`;
+
+export async function linkNew(env, { max = 10 } = {}) {
+  const origin = String(env.HUB_URL || (await getState(env, 'hub_origin')) || '').replace(/\/$/, '');
+  if (!origin) return { idle: true, reason: 'The hub\'s address isn\'t known until someone opens it.' };
+  let from = await getState(env, 'mes_link_from');
+  if (!from) { from = new Date().toISOString(); await setState(env, 'mes_link_from', from); }
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const since = (from > weekAgo ? from : weekAgo).slice(0, 19);
+  let kept;
+  try { kept = JSON.parse((await getState(env, 'mes_links')) || '{}'); } catch { kept = {}; }
+  const linked = new Set(kept.done || []);
+  const fails = kept.fails || {};
+  const { results } = await env.DB.prepare(
+    "SELECT issue_id, issue_key FROM mes_tickets WHERE substr(created, 1, 19) >= ? AND type != 'Epic' AND done = 0 ORDER BY created"
+  ).bind(since).all();
+  const todo = results.filter((t) => !linked.has(t.issue_id) && (fails[t.issue_id] || 0) < LINK_TRIES).slice(0, max);
+  if (!todo.length) return { idle: true };
+
+  let added = 0, failed = null;
+  for (const t of todo) {
+    try {
+      await jira(env, `/rest/api/3/issue/${encodeURIComponent(t.issue_key)}/remotelink`, {
+        method: 'POST',
+        body: JSON.stringify({ globalId: `${LINK_ID}:${t.issue_id}`, object: {
+          url: estimateUrl(origin, t.issue_key), title: 'Estimate the difficulty in the Promtek Hub',
+          icon: { url16x16: `${origin}/icon-192.png`, title: 'Promtek Hub' } } }),
+      });
+      linked.add(t.issue_id); delete fails[t.issue_id]; added++;
+    } catch (err) {
+      fails[t.issue_id] = (fails[t.issue_id] || 0) + 1;
+      failed = { key: t.issue_key, message: String(err.message || err).slice(0, 300) };
+      if (err.status === 429 || err.status >= 500) break;
+    }
+  }
+  await setState(env, 'mes_links', JSON.stringify({ done: [...linked].slice(-300), fails }));
+  if (failed) {
+    await raiseAlert(env, { kind: 'mes-link', dedupe: `mes-link:${londonDate()}`,
+      subject: 'Estimate links could not be added to new MES tickets',
+      body: `Jira refused to add the hub's estimate link to ${failed.key}:\n\n  ${failed.message}\n\n`
+        + `The hub's Jira account needs the "Link issues" permission in MES. Each ticket is tried up to ${LINK_TRIES} times.` });
+  }
+  return { added };
+}
+
+// When a search in the hub finds nothing, Jira is asked directly, in case the
+// ticket is new or has changed since it was last read.
+export async function lookup(env, query) {
+  const q = String(query || '').trim().slice(0, 100);
+  if (q.length < 2) return { found: 0 };
+  const key = /^\d+$/.test(q) ? `${PROJECT}-${q}` : q.toUpperCase();
+  const jql = new RegExp(`^${PROJECT}-\\d+$`).test(key)
+    ? `key = "${key}"`
+    : `project = ${PROJECT} AND issuetype not in subTaskIssueTypes() AND summary ~ "${q.replace(/["\\]/g, '')}" ORDER BY updated DESC`;
+  let issues = [];
+  try { issues = await searchJql(env, jql, FIELDS, { limit: 25 }); } catch { issues = []; }
+  if (issues.length) await saveTickets(env, issues);
+  return { found: issues.length };
+}
+
 // ---------- Estimating by comparison ----------
 
 // Tickets with real time on them, as alike as there are enough of: the same
