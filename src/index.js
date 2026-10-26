@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts } from './sync.js';
+import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, backdateRate } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -925,6 +925,16 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/admin/people') return json({ ...(await People.listPeople(env)), icons: People.ICONS.map(([id, label]) => ({ id, label })), departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
     if (method === 'POST' && pathname === '/api/admin/person') {
       return json(await auditedPerson(env, user, body.accountId, (b) => (b ? 'Details changed' : 'Added'), () => People.savePerson(env, body)));
+    }
+    if (method === 'POST' && pathname === '/api/admin/backdate-rate') {
+      const accountId = String(body.accountId || '');
+      if (!accountId) return json({ error: 'Which person?' }, 400);
+      const r = await backdateRate(env, accountId, { preview: Boolean(body.preview) });
+      if (!body.preview && r.changed) {
+        await Audit.record(env, user, { area: 'Employees', action: 'Past XP recalculated at their XP rate', subjectType: 'employee', subjectId: accountId, label: r.name,
+          changes: [{ label: `Logged XP (${r.changed} of ${r.logs} logs, at ${r.rate} an hour)`, before: String(r.before), after: String(r.after) }] });
+      }
+      return json(r);
     }
     if (method === 'POST' && pathname === '/api/admin/person-id') {
       const who = await rowOf(env, 'employees', 'account_id', body.from);

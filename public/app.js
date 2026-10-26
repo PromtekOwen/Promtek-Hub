@@ -998,7 +998,9 @@ function personEditHtml() {
         <label>ELO <input data-person="elo" type="number" min="0" max="4000" value="${p.elo ?? ''}" placeholder="1099"></label>
       </div>
       <p class="muted">XP rate is the base XP per hour. Engineers are on 60, and their rate rises and falls with the
-      difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>`)}
+      difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.</p>
+      ${p.accountId && !p.pending ? `<p class="muted">A new rate counts for time logged from then on. To put all of their past time on the saved rate too,
+        <button class="linklike" data-person-action="backdate">recalculate their past XP</button>. Time on jobs with a difficulty set earns by ELO and stays as it is, as does XP from before the hub went live.</p>` : ''}`)}
 
       ${sec('accounts', 'Accounts', `
       ${field('accountId', 'Jira account ID', p.accountId, p.accountId && !p.pending ? 'readonly' : 'placeholder="712020:..."')}
@@ -1124,6 +1126,25 @@ async function personAction(action, btn) {
       personEdit.accountId = next.trim();
       toast('Account ID changed, history moved with it');
       return render();
+    } catch (err) {
+      return out(err.message, true);
+    }
+  }
+
+  if (action === 'backdate') {
+    const typed = Number(document.querySelector('[data-person="xpRate"]')?.value);
+    try {
+      const body = (preview) => JSON.stringify({ accountId: personEdit.accountId, preview });
+      const check = await api('/api/admin/backdate-rate', { method: 'POST', body: body(true) });
+      if (typed && typed !== check.rate) return out(`Save the new XP rate first. ${check.rate} an hour is the rate saved now.`, true);
+      if (!check.changed) return out(`All of their logged time is already at ${check.rate} XP an hour.`);
+      const diff = check.after - check.before;
+      const ok = confirm(`Recalculate ${personEdit.name}'s past XP at ${check.rate} an hour?\n\n`
+        + `${check.changed.toLocaleString()} of their ${check.logs.toLocaleString()} time logs change. `
+        + `Their logged XP goes from ${check.before.toLocaleString()} to ${check.after.toLocaleString()} (${diff > 0 ? '+' : ''}${diff.toLocaleString()}), and their level and weekly history move with it.`);
+      if (!ok) return;
+      const done = await api('/api/admin/backdate-rate', { method: 'POST', body: body(false) });
+      return out(`Recalculated ${done.changed.toLocaleString()} time logs at ${done.rate} XP an hour. Logged XP is now ${done.after.toLocaleString()}.`);
     } catch (err) {
       return out(err.message, true);
     }

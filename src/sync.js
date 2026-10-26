@@ -239,6 +239,50 @@ export async function recalcIssues(env, issueIds) {
   return { changed };
 }
 
+// Puts all of someone's logged time on their saved XP rate. Each log keeps the
+// job and engineer ELO it was earned with, so only time on items with no
+// difficulty set (where the XP rate applies) changes. Their weekly history follows.
+export async function backdateRate(env, accountId, { preview = false } = {}) {
+  const emp = await env.DB.prepare('SELECT account_id, name, baseline, opening_xp FROM employees WHERE account_id = ?').bind(accountId).first();
+  if (!emp) throw new Error('No such person.');
+  const baseline = emp.baseline ?? DEFAULT_BASELINE;
+  const { results } = await env.DB.prepare(
+    'SELECT worklog_id, work_date, seconds, job_elo, engineer_elo, override, rate, xp, overtime_seconds FROM xp_ledger WHERE account_id = ?'
+  ).bind(accountId).all();
+
+  const now = new Date().toISOString();
+  const stmts = [];
+  const rows = [];
+  let before = 0;
+  let after = 0;
+  for (const r of results) {
+    const rate = xpRate({ jobElo: r.job_elo, engineerElo: r.engineer_elo ?? DEFAULT_ELO, baseline, override: r.override ?? 1 });
+    const xp = xpWith(rate, r.seconds, r.overtime_seconds);
+    before += r.xp || 0;
+    after += xp;
+    rows.push({ date: r.work_date, xp });
+    if (xp !== r.xp || rate !== r.rate) {
+      stmts.push(env.DB.prepare('UPDATE xp_ledger SET rate = ?, xp = ?, updated_at = ? WHERE worklog_id = ?').bind(rate, xp, now, r.worklog_id));
+    }
+  }
+  const summary = { name: emp.name, rate: baseline, logs: results.length, changed: stmts.length, before, after };
+  if (preview || !stmts.length) return summary;
+
+  // Each finished week's total is the opening XP plus everything logged up to its Sunday.
+  const { results: snaps } = await env.DB.prepare('SELECT week_start, xp FROM weekly_snapshots WHERE account_id = ?').bind(accountId).all();
+  for (const snap of snaps) {
+    const sunday = londonDate(Date.parse(`${snap.week_start}T12:00:00Z`) + 6 * 86_400_000);
+    const xp = (emp.opening_xp || 0) + rows.reduce((sum, r) => sum + (r.date <= sunday ? r.xp : 0), 0);
+    if (xp !== snap.xp) {
+      stmts.push(env.DB.prepare('UPDATE weekly_snapshots SET xp = ?, level = ? WHERE account_id = ? AND week_start = ?')
+        .bind(xp, levelFromXp(xp), accountId, snap.week_start));
+    }
+  }
+  await runBatches(env, stmts);
+  await ledgerChanged(env);
+  return summary;
+}
+
 async function raiseUnmatchedAlert(env, accountIds) {
   const day = londonDate();
   await raiseAlert(env, {
