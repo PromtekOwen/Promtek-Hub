@@ -17,7 +17,9 @@ export const NOTE_FIELD = 'customfield_15684';
 export const FIELDS = ['summary', 'issuetype', 'status', 'assignee', 'statuscategorychangedate', 'resolutiondate', 'aggregatetimespent', 'parent', 'created', 'updated', 'fixVersions', 'subtasks', MODULE_FIELD, INCLUDE_FIELD];
 const SCAN_BATCH = 50;
 const SETTLE_DAYS = 3;
-const MAX_QUESTIONS = 3;
+const MAX_QUESTIONS = 8;
+const ACCEPT_AFTER = 3;            // from the third answer, the estimate so far can be accepted
+const TIGHT_ENOUGH = 1.3;          // stops by itself once the range is within about ±15%
 const MIN_REF_SECONDS = 15 * 60;
 const MIN_POOL = 5;               // comparisons narrow to like-for-like once there are this many
 const ENOUGH_FINISHED = 15;       // until then, open tickets with time logged count as well
@@ -200,8 +202,25 @@ export async function referencePool(env, ticket) {
   return [];
 }
 
+// How sure the estimate is so far: the range it sits in, as plus or minus around the
+// middle, and how much of the whole range of comparable tickets the answers have ruled out.
+function sofar(pool, low, high) {
+  const start = { lo: pool[0].hours / 2, hi: pool[pool.length - 1].hours * 1.5 };
+  const lo = low || start.lo;
+  const hi = high === Infinity ? start.hi : high;
+  const hours = Math.sqrt(lo * hi);
+  const whole = Math.log(start.hi / start.lo);
+  return {
+    hours: round25(hours), low: round25(lo), high: round25(hi),
+    plusMinus: Math.round((Math.sqrt(hi / lo) - 1) * 100),
+    narrowed: whole > 0 ? Math.max(0, Math.min(1, 1 - Math.log(hi / lo) / whole)) : 1,
+  };
+}
+
 // Each answer narrows the range; the next question is about the middle of what's left.
-export function compare(pool, answers) {
+// It carries on until nothing is left to compare with, the range is tight, or the
+// most questions are asked; from the third answer the estimate so far can be accepted.
+export function compare(pool, answers, { accept = false } = {}) {
   let low = 0, high = Infinity, same = null;
   for (const a of answers) {
     const ref = pool.find((r) => r.issue_id === String(a.refId));
@@ -211,17 +230,19 @@ export function compare(pool, answers) {
     else if (a.answer === 'same') same = ref;
   }
   const asked = new Set(answers.map((a) => String(a.refId)));
-  const left = pool.filter((r) => r.hours > low && r.hours < high && !asked.has(r.issue_id));
-  if (!same && answers.length < MAX_QUESTIONS && left.length) return { next: left[Math.floor(left.length / 2)] };
   if (!pool.length) return { estimate: null };
-  let hours, lo, hi;
-  if (same) { hours = same.hours; lo = hours * 0.75; hi = hours * 1.33; }
-  else {
-    lo = low || pool[0].hours / 2;
-    hi = high === Infinity ? pool[pool.length - 1].hours * 1.5 : high;
-    hours = Math.sqrt(lo * hi);
+  if (same) {
+    const hours = same.hours;
+    return { estimate: { hours: round25(hours), low: round25(hours * 0.75), high: round25(hours * 1.33), plusMinus: 15, narrowed: 1 } };
   }
-  return { estimate: { hours: round25(hours), low: round25(lo), high: round25(hi) } };
+  const current = sofar(pool, low, high);
+  const left = pool.filter((r) => r.hours > low && r.hours < high && !asked.has(r.issue_id));
+  const tight = current.high / current.low <= TIGHT_ENOUGH;
+  const accepted = accept && answers.length >= ACCEPT_AFTER;
+  if (!accepted && !tight && answers.length < MAX_QUESTIONS && left.length) {
+    return { next: left[Math.floor(left.length / 2)], current, canAccept: answers.length >= ACCEPT_AFTER };
+  }
+  return { estimate: current };
 }
 
 async function ticketFor(env, issueIdOrKey) {
@@ -235,12 +256,13 @@ async function ticketFor(env, issueIdOrKey) {
   return t;
 }
 
-export async function nextQuestion(env, { issueId, answers = [] }) {
+export async function nextQuestion(env, { issueId, answers = [], accept = false }) {
   const ticket = await ticketFor(env, issueId);
   const pool = await referencePool(env, ticket);
-  const r = compare(pool, answers);
+  const r = compare(pool, answers, { accept: Boolean(accept) });
   const ref = r.next && { id: r.next.issue_id, key: r.next.issue_key, summary: r.next.summary, type: r.next.type, module: r.next.module, hours: r.next.hours, done: r.next.done };
-  return { ticket, poolSize: pool.length, next: ref || null, estimate: r.estimate || null, asked: answers.length, maxQuestions: MAX_QUESTIONS };
+  return { ticket, poolSize: pool.length, next: ref || null, estimate: r.estimate || null, current: r.current || null, canAccept: Boolean(r.canAccept),
+    asked: answers.length, maxQuestions: MAX_QUESTIONS, acceptAfter: ACCEPT_AFTER };
 }
 
 const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || viewer.teams?.includes('Condor') || viewer.teams?.includes('Condor Dev'));
@@ -266,7 +288,7 @@ export async function saveEstimate(env, viewer, input) {
     method = 'three-point';
   } else {
     const pool = await referencePool(env, ticket);
-    const r = compare(pool, input.answers || []);
+    const r = compare(pool, input.answers || [], { accept: Boolean(input.accept) });
     if (!r.estimate) throw new Error('Answer the comparisons first.');
     result = r.estimate;
     method = 'compare';

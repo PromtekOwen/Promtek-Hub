@@ -1404,3 +1404,15 @@ label.con-flag-org { display: block; max-width: 420px; }
 /* What a search that found nothing is doing about it */
 .search-recheck { margin: .5rem 0 0; flex-basis: 100%; }
 .search-recheck[hidden] { display: none; }
+
+/* The comparison estimate so far, above each question */
+.mes-sofar { margin: 0 0 1rem; }
+.mes-sofar-figs { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; margin-bottom: .45rem; }
+
+/* Admin, who is using the hub: each person opens to show their tiles */
+.usage-person { cursor: pointer; }
+.usage-person:hover td { background: var(--tint, rgba(14, 98, 147, .06)); }
+.usage-caret { display: inline-block; width: 1em; color: var(--muted, #5b7385); }
+.usage-tiles > td { padding: .25rem 0 .75rem 1.5rem; }
+.usage-tiles table { width: 100%; font-size: .92em; }
+.usage-tiles[hidden] { display: none; }

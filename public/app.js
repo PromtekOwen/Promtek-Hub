@@ -5198,6 +5198,25 @@ async function mesListHtml() {
       : (data.catchingUp && !data.known) || q.length > 1 ? '' : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
 }
 
+// How sure the comparison estimate is, from how wide its range still is: the top of
+// the range over the bottom. Precision is how much of the comparable tickets' range
+// the answers have ruled out.
+const mesSureness = (c) => { const r = c.high / Math.max(c.low, 0.25); return r <= 1.5 ? 'Tight' : r <= 2.5 ? 'Fairly sure' : r <= 5 ? 'Rough' : 'Very rough'; };
+const mesPrecision = (c) => `${Math.round((c.narrowed ?? 0) * 100)}%`;
+
+// Shown above each comparison question: the estimate so far and how far the answers have narrowed it.
+function mesSoFarHtml(q) {
+  const c = q.current;
+  if (!c) return `<p class="muted" style="margin-top:0">Question ${n(q.asked + 1)}</p>`;
+  const pct = Math.round(c.narrowed * 100);
+  return `<div class="mes-sofar">
+      <p class="muted" style="margin:0 0 .35rem">Question ${n(q.asked + 1)}${q.asked >= q.acceptAfter ? '. Accept the estimate below once it\'s close enough' : ''}</p>
+      <div class="mes-sofar-figs"><span>${q.asked ? 'So far, about' : 'Before any answers, anywhere'} <strong>${q.asked ? hoursLabel(c.hours) : `${hoursLabel(c.low)} to ${hoursLabel(c.high)}`}</strong></span>
+        ${q.asked ? `<span class="muted">${hoursLabel(c.low)} to ${hoursLabel(c.high)}. Precision ${mesPrecision(c)}, ${esc(mesSureness(c).toLowerCase())}</span>` : '<span class="muted">Precision 0%</span>'}</div>
+      <div class="bar" role="img" aria-label="Precision ${pct}%"><span style="width:${pct}%"></span></div>
+    </div>`;
+}
+
 async function mesEstimateHtml() {
   const e = mesEst;
   // Only needed when estimating, so a problem here never stops My day loading.
@@ -5205,10 +5224,10 @@ async function mesEstimateHtml() {
     const d = await api('/api/mes/outstanding?filter=none').catch(() => null);
     if (d) { me._mesTags = d.tags; me._mesHints = d.hints; }
   }
-  const q = await api('/api/mes/question', { method: 'POST', body: JSON.stringify({ issueId: e.issueId, answers: e.answers }) });
+  const q = await api('/api/mes/question', { method: 'POST', body: JSON.stringify({ issueId: e.issueId, answers: e.answers, accept: Boolean(e.accept) }) });
   e.ticket = q.ticket;
   // A ticket opened from a link arrives by its key; from here on it's known by its id.
-  e.issueId = q.ticket.issue_id;
+  if (q.ticket.issue_id) e.issueId = q.ticket.issue_id;
   const isBug = q.ticket.type === 'Bug';
   let step;
   if (e.method === 'timebox') {
@@ -5222,16 +5241,19 @@ async function mesEstimateHtml() {
         `<label>${l}<input type="number" min="0" step="0.5" data-mes-field="${k}" value="${esc(e[k] ?? '')}"></label>`).join('')}</div>`;
   } else if (q.next) {
     e.method = 'compare';
-    step = `<p class="muted" style="margin-top:0">Question ${q.asked + 1} of up to ${q.maxQuestions}</p>
+    step = `${mesSoFarHtml(q)}
       <div class="mes-compare">
         <p>Compared with ${mesLink(q.next.key)} <strong>${esc(q.next.summary)}</strong>,<br><span class="muted">${mesMeta(q.next)}, ${q.next.done === false ? `which has had ${hoursLabel(Math.round(q.next.hours * 4) / 4)} logged so far` : `which took ${hoursLabel(Math.round(q.next.hours * 4) / 4)}`}</span></p>
         <p style="margin-bottom:.5rem"><strong>is ${esc(q.ticket.issue_key)}</strong></p>
         <div class="row mes-answers">${[['smaller', 'Smaller'], ['same', 'About the same'], ['bigger', 'Bigger']].map(([k, l]) =>
-          `<button class="btn${k === 'same' ? '' : ' secondary'}" data-mes-answer="${k}" data-ref="${esc(q.next.id)}">${l}</button>`).join('')}</div></div>`;
+          `<button class="btn${k === 'same' ? '' : ' secondary'}" data-mes-answer="${k}" data-ref="${esc(q.next.id)}">${l}</button>`).join('')}</div></div>
+      ${q.canAccept && q.current ? `<div class="row" style="margin-top:.75rem"><button class="btn secondary" data-mes-accept="1">Accept this estimate: about ${hoursLabel(q.current.hours)}</button></div>` : ''}`;
   } else {
     e.result = q.estimate;
+    const est = q.estimate;
     step = `<div class="q-suggest"><div class="q-figures"><div><span>Estimate</span><strong>${hoursLabel(q.estimate.hours)}</strong></div>
-        <div><span>Likely range</span><strong style="font-size:1.15rem">${hoursLabel(q.estimate.low)} to ${hoursLabel(q.estimate.high)}</strong></div></div></div>
+        <div><span>Likely range</span><strong style="font-size:1.15rem">${hoursLabel(q.estimate.low)} to ${hoursLabel(q.estimate.high)}</strong></div>
+        ${est.narrowed != null ? `<div><span>Precision</span><strong style="font-size:1.15rem">${mesPrecision(est)}</strong><small class="muted" style="display:block">${esc(mesSureness(est))}${e.answers.length ? `, from ${n(e.answers.length)} ${e.answers.length === 1 ? 'answer' : 'answers'}` : ''}</small></div>` : ''}</div></div>
       <button class="linklike" data-mes-restart="1" style="margin-top:.5rem">Answer again</button>`;
   }
   const ready = e.method === 'timebox' || e.method === 'three-point' || Boolean(q.estimate);
@@ -5439,7 +5461,8 @@ async function condorClick(event) {
   if (mesEst) {
     const ans = t('[data-mes-answer]');
     if (ans) { mesEst.answers.push({ refId: ans.dataset.ref, answer: ans.dataset.mesAnswer }); return render(); }
-    if (t('[data-mes-restart]')) { mesEst.answers = []; mesEst.method = 'compare'; return render(); }
+    if (t('[data-mes-restart]')) { mesEst.answers = []; mesEst.method = 'compare'; mesEst.accept = false; return render(); }
+    if (t('[data-mes-accept]')) { mesEst.accept = true; return render(); }
     const m = t('[data-mes-method]');
     if (m) { mesEst.method = m.dataset.mesMethod; mesEst.answers = []; return render(); }
     const d = t('[data-mes-difficulty]');
@@ -5455,7 +5478,7 @@ async function condorClick(event) {
     if (save) {
       save.disabled = true;
       try {
-        const r = await api('/api/mes/estimate', { method: 'POST', body: JSON.stringify({ issueId: mesEst.issueId, method: mesEst.method, answers: mesEst.answers,
+        const r = await api('/api/mes/estimate', { method: 'POST', body: JSON.stringify({ issueId: mesEst.issueId, method: mesEst.method, answers: mesEst.answers, accept: Boolean(mesEst.accept),
           difficulty: mesEst.difficulty, tags: mesEst.tags, timeboxHours: mesEst.timeboxHours, best: mesEst.best, likely: mesEst.likely, worst: mesEst.worst }) });
         toast(r.jiraSynced ? `Estimated at ${hoursLabel(r.hours)}` : `Estimated at ${hoursLabel(r.hours)}. Jira will catch up`);
         if (mesEst.from === 'triage') condorTab = 'triage';
@@ -6484,6 +6507,7 @@ function readsHtml(r) {
 // ---------- Who's using the hub (admins) ----------
 
 let usageDays = 30;
+const usageOpen = new Set();   // the people whose tiles are shown, by id
 const PAGE_NAMES = { '#/': 'Home', '#/log': 'Log time', '#/admin': 'Admin' };
 const pageLabel = (page) => PAGE_NAMES[page] || MODULES.find((m) => m.route === page)?.name || page.replace('#/', '');
 function usageHtml(u) {
@@ -6499,8 +6523,19 @@ function usageHtml(u) {
   const pages = [...u.pages.map((p) => p.page), ...MODULES.filter((m) => m.route && !counted.has(m.route)).map((m) => m.route)];
   const pageRows = pages.map((p) => { const c = counted.get(p) || { opens: 0, people: 0 };
     return `<tr${c.opens ? '' : ' class="muted"'}><td>${esc(pageLabel(p))}</td><td class="num">${n(c.opens)}</td><td class="num">${n(c.people)}</td></tr>`; }).join('');
-  const peopleRows = u.people.map((p) => `<tr${p.lastSeen ? '' : ' class="muted"'}><td>${esc(p.name)}</td><td>${esc(seenText(p.lastSeen))}</td>
-      <td class="num">${n(p.days)}</td><td class="num">${n(p.opens)}</td><td>${p.top ? esc(pageLabel(p.top)) : '—'}</td></tr>`).join('');
+  // A tile's last open: its time where known, otherwise just its day.
+  const lastText = (t) => (t.lastAt ? seenText(t.lastAt)
+    : t.lastDay ? new Date(`${t.lastDay}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '—');
+  const peopleRows = u.people.map((p) => {
+    const open = usageOpen.has(p.id);
+    const can = Boolean(p.tiles?.length);
+    const row = `<tr class="${[p.lastSeen ? '' : 'muted', can ? 'usage-person' : ''].filter(Boolean).join(' ')}"${can ? ` data-usage-person="${esc(p.id)}" tabindex="0" aria-expanded="${open}"` : ''}>
+      <td>${can ? `<span class="usage-caret" aria-hidden="true">${open ? '\u25be' : '\u25b8'}</span> ` : ''}${esc(p.name)}</td><td>${esc(seenText(p.lastSeen))}</td>
+      <td class="num">${n(p.days)}</td><td class="num">${n(p.opens)}</td><td>${p.top ? esc(pageLabel(p.top)) : '—'}</td></tr>`;
+    if (!can) return row;
+    return `${row}<tr class="usage-tiles" data-usage-tiles="${esc(p.id)}"${open ? '' : ' hidden'}><td colspan="5"><table><thead><tr><th>Tile</th><th class="num">Opens</th><th class="num">Days used</th><th>Last opened</th></tr></thead>
+      <tbody>${p.tiles.map((t) => `<tr><td>${esc(pageLabel(t.page))}</td><td class="num">${n(t.opens)}</td><td class="num">${n(t.days)}</td><td>${esc(lastText(t))}</td></tr>`).join('')}</tbody></table></td></tr>`;
+  }).join('');
   const never = u.people.filter((p) => !p.lastSeen).length;
   return `<h2>Who's using the hub</h2>
     <div class="card">
@@ -6509,6 +6544,7 @@ function usageHtml(u) {
       <h3 style="margin-bottom:.35rem">Tiles</h3>
       <div class="table-wrap"><table><thead><tr><th>Page</th><th class="num">Opens</th><th class="num">People</th></tr></thead><tbody>${pageRows}</tbody></table></div>
       <h3 style="margin:1.25rem 0 .35rem">People</h3>
+      <p class="muted" style="margin-top:0">Open someone to see each tile they've used, how often, and when they last opened it.</p>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Last opened the hub</th><th class="num">Days used</th><th class="num">Opens</th><th>Most used</th></tr></thead><tbody>${peopleRows}</tbody></table></div>
     </div>`;
 }
@@ -10379,6 +10415,18 @@ view.addEventListener('click', async (event) => {
   }
   const usageTab = event.target.closest('[data-usage-days]');
   if (usageTab) { usageDays = Number(usageTab.dataset.usageDays); return render(); }
+  const usagePerson = event.target.closest('[data-usage-person]');
+  if (usagePerson) {
+    const id = usagePerson.dataset.usagePerson;
+    const open = !usageOpen.has(id);
+    if (open) usageOpen.add(id); else usageOpen.delete(id);
+    const tiles = view.querySelector(`[data-usage-tiles="${CSS.escape(id)}"]`);
+    if (tiles) tiles.hidden = !open;
+    usagePerson.setAttribute('aria-expanded', String(open));
+    const caret = usagePerson.querySelector('.usage-caret');
+    if (caret) caret.textContent = open ? '\u25be' : '\u25b8';
+    return;
+  }
   const orgMoveBtn = event.target.closest('[data-org-move]');
   if (orgMoveBtn) return orgMove(orgMoveBtn.dataset.orgMove);
   if (currentRoute() === '#/org' && !settingsOpen && event.target.closest('#org-svg')) { orgFocus(event.target.closest('.org-card')); return; }
@@ -10739,7 +10787,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 

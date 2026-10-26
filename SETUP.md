@@ -554,8 +554,10 @@ The hub keeps its own copy of MES: two years back on the first run, then kept cu
 
 A ticket is estimated by comparing it with finished tickets that have logged time:
 - Comparison tickets are of the same type and Condor Module where there are at least five. Otherwise the pool widens to the same module, then the same type, then all of MES.
-- Up to three questions are asked, each about the middle of what's left: smaller, about the same, or bigger.
-- The answers narrow the range, and the estimate is the middle of it. "About the same" stops at that ticket's time.
+- Each question is about the middle of what's left: smaller, about the same, or bigger. Each answer narrows the range, and the estimate is the middle of it.
+- Every question shows the estimate so far, its range and its precision: how much of the comparable tickets' range the answers have ruled out, labelled tight, fairly sure, rough or very rough.
+- Questions carry on until there's nothing left between the answers, the range is within about ±15%, or eight have been asked. From the third answer, "Accept this estimate" takes the estimate so far.
+- "About the same" stops at that ticket's time.
 - With nothing to compare against yet, best, likely and worst hours are asked instead.
 - A bug whose cause isn't known can be time-boxed for investigation and re-estimated once the cause is found.
 
