@@ -5168,6 +5168,9 @@ function reapplySearch() {
 
 let condorTab = 'day';
 let mesQuery = '';
+let mesListedFor = '';        // the search the list was last fetched for, across everyone's tickets
+let mesListTimer = null;
+let mesAssignee = null;       // whose tickets the Estimate list shows: an account ID, 'unassigned' or 'all'; starts on their own
 let mesFilter = 'unestimated';
 let mesEst = null;          // the estimate in progress
 let mesTriage = { versionId: null, mode: null, skipped: [], notes: {}, assignee: {}, changeWho: [] };
@@ -5189,19 +5192,42 @@ function mesReadingHtml(data) {
 
 async function mesListHtml() {
   const q = mesQuery.trim();
-  const data = await api(`/api/mes/outstanding?filter=${mesFilter}${q.length > 1 ? `&q=${encodeURIComponent(q)}` : ''}`);
+  if (mesAssignee === null) mesAssignee = me.employee?.accountId || 'all';
+  // A search looks through everyone's tickets, so a ticket assigned to someone else is still found.
+  const searching = q.length > 1;
+  mesListedFor = searching ? q.toLowerCase() : '';
+  const data = await api(`/api/mes/outstanding?filter=${mesFilter}&assignee=${encodeURIComponent(searching ? 'all' : mesAssignee)}${searching ? `&q=${encodeURIComponent(q)}` : ''}`);
+  // Everyone in the Condor team, and anyone else with tickets, with how many each has.
+  const counts = new Map(data.assignees.map((a) => [a.id, a]));
+  const people = new Map(data.team.map((p) => [p.id, { id: p.id, name: p.name, count: counts.get(p.id)?.count || 0 }]));
+  for (const a of data.assignees) if (a.id !== 'unassigned' && !people.has(a.id)) people.set(a.id, { id: a.id, name: a.name || 'Someone outside the hub', count: a.count });
+  const myId = me.employee?.accountId;
+  const options = [
+    ...(myId ? [[myId, `Me (${n(counts.get(myId)?.count || 0)})`]] : []),
+    ...[...people.values()].filter((p) => p.id !== myId).sort((a, b) => a.name.localeCompare(b.name)).map((p) => [p.id, `${p.name} (${n(p.count)})`]),
+    ['unassigned', `Unassigned (${n(counts.get('unassigned')?.count || 0)})`],
+    ['all', `All (${n(data.allTotal)})`],
+  ];
+  const showAssignee = mesAssignee === 'all' || searching;
   const rows = data.tickets.map((t) => `<li data-mes-row>
       <span class="title">${mesLink(t.issue_key)} ${esc(t.summary)}</span>
-      <span class="sub">${mesMeta(t)}. ${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}` : 'No estimate yet'}${t.priority ? `. ${esc(t.priority === 'Not this time' ? 'Not this time' : `${t.priority} for ${t.version_name}`)}` : ''}.</span>
+      <span class="sub">${mesMeta(t)}${showAssignee ? `. ${t.assignee_id ? esc(t.assignee_name || 'Assigned in Jira') : 'Unassigned'}` : ''}. ${t.hours != null ? `${t.timebox ? 'Time-boxed at' : 'Estimated'} ${hoursLabel(t.hours)}, difficulty ${n(t.difficulty)}` : 'No estimate yet'}${t.priority ? `. ${esc(t.priority === 'Not this time' ? 'Not this time' : `${t.priority} for ${t.version_name}`)}` : ''}.</span>
       ${data.canEstimate ? `<button class="chip-btn" data-mes-estimate="${esc(t.issue_id)}" style="margin-top:.4rem">${t.hours != null ? 'Re-estimate' : 'Estimate'}</button>` : ''}</li>`).join('');
   return `<div class="row jobs-tools"><span class="segment">${[['unestimated', 'Needs an estimate'], ['all', 'All open']].map(([k, l]) =>
       `<button class="seg${mesFilter === k ? ' on' : ''}" data-mes-filter="${k}">${l}</button>`).join('')}</span>
+      <label class="mes-who">Assigned to <select data-mes-assignee>${options.map(([k, l]) => `<option value="${esc(k)}"${k === mesAssignee ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
       <input type="search" id="mes-search" data-jira-search value="${esc(mesQuery)}" placeholder="Search MES" aria-label="Search MES"></div>
     <p class="muted search-recheck" id="mes-recheck" role="status" hidden></p>
     <p class="help">Estimates come from comparing each ticket with finished ones of the same kind: a few smaller, same or bigger questions.</p>
     ${mesReadingHtml(data)}
     ${rows ? `<ul class="list mes-list">${rows}</ul>${data.total > data.tickets.length ? `<p class="muted">Showing ${data.tickets.length} of ${data.total}. Search to narrow it down.</p>` : ''}`
-      : (data.catchingUp && !data.known) || q.length > 1 ? '' : `<div class="card"><p style="margin:0">${mesFilter === 'unestimated' ? 'Every open ticket has an estimate.' : 'No open tickets.'}</p></div>`}`;
+      : (data.catchingUp && !data.known) || q.length > 1 ? '' : `<div class="card"><p style="margin:0">${mesEmptyText()}</p></div>`}`;
+}
+
+function mesEmptyText() {
+  const whose = mesAssignee === 'all' ? '' : mesAssignee === 'unassigned' ? ' unassigned' : mesAssignee === me.employee?.accountId ? ' assigned to you' : ' assigned to them';
+  if (mesFilter === 'unestimated') return mesAssignee === 'all' ? 'Every open ticket has an estimate.' : `Nothing${whose} needs an estimate.`;
+  return `No open tickets${whose}.`;
 }
 
 // How sure the comparison estimate is, from how wide its range still is: the top of
@@ -5563,11 +5589,19 @@ function condorInput(event) {
   if (el.dataset.triAssignee != null) { mesTriage.assignee[el.dataset.triAssignee] = el.value || null; return true; }
   if (el.dataset.triNotes != null) { mesTriage.notes[el.dataset.triNotes] = el.value || null; return true; }
   if (el.matches('[data-plan-version]')) { planVersion = el.value; planCapacityOpen = null; render(); return true; }
+  if (el.matches('[data-mes-assignee]')) { mesAssignee = el.value; render(); return true; }
   if (el.id === 'mes-search') {
     mesQuery = el.value;
     const q = el.value.toLowerCase();
     let shown = 0;
     document.querySelectorAll('[data-mes-row]').forEach((r) => { r.hidden = q.length > 1 && !r.textContent.toLowerCase().includes(q); if (!r.hidden) shown++; });
+    // Nothing in this person's tickets: look through everyone's in the hub first, then Jira.
+    clearTimeout(mesListTimer);
+    if (!shown && q.trim().length > 1 && mesListedFor !== q.trim()) {
+      const box = el.id;
+      mesListTimer = setTimeout(async () => { await render(); const b = document.getElementById(box); if (b) { b.focus(); b.setSelectionRange(b.value.length, b.value.length); } }, 400);
+      return true;
+    }
     searchJiraWhenEmpty({ kind: 'mes', input: el, visible: shown, endpoint: '/api/mes/lookup', status: 'mes-recheck' });
     return true;
   }

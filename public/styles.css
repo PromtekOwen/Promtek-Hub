@@ -1454,3 +1454,5 @@ label.con-flag-org { display: block; max-width: 420px; }
 }
 .fb-cat-pick .inline-check { display: flex; align-items: center; justify-content: flex-start; gap: .5rem; margin: 0; text-align: left; font-weight: 400; }
 .fb-cat-pick .inline-check input { width: auto; margin: 0; flex: none; }
+.mes-who { display: flex; align-items: center; gap: .5rem; margin: 0; white-space: nowrap; }
+.mes-who select { width: auto; }

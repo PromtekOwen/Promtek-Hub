@@ -353,7 +353,7 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/mes/outstanding') {
       return json(await Mes.outstanding(env, user, { filter: url.searchParams.get('filter') || 'untriaged', query: url.searchParams.get('q') || '',
-        releaseId: url.searchParams.get('release') || null }));
+        releaseId: url.searchParams.get('release') || null, assignee: url.searchParams.get('assignee') || '' }));
     }
     if (method === 'POST' && pathname === '/api/mes/lookup') return json(await Mes.lookup(env, body.q));
     if (method === 'POST' && pathname === '/api/mes/question') return json(await Mes.nextQuestion(env, body));

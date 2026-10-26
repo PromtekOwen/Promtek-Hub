@@ -359,7 +359,7 @@ const TICKET_SELECT = `SELECT t.*, e.hours, e.low, e.high, e.difficulty, e.timeb
 
 const shape = (r) => ({ ...r, notes_kind: kindOf(r) });
 
-export async function outstanding(env, viewer, { filter = 'untriaged', query = '', releaseId = null } = {}) {
+export async function outstanding(env, viewer, { filter = 'untriaged', query = '', releaseId = null, assignee = '' } = {}) {
   const { results } = await env.DB.prepare(`${TICKET_SELECT} WHERE t.done = 0 AND t.type != 'Epic' ORDER BY t.created DESC LIMIT 1000`).all();
   const q = query.trim().toLowerCase();
   const R = releaseId ? String(releaseId) : null;
@@ -374,6 +374,16 @@ export async function outstanding(env, viewer, { filter = 'untriaged', query = '
     if (filter === 'unestimated') return r.hours == null;
     return true;
   }).map(shape);
+  // Who the tickets are assigned to, with how many each, before narrowing to one of them.
+  const byAssignee = new Map();
+  for (const r of rows) {
+    const k = r.assignee_id || 'unassigned';
+    const a = byAssignee.get(k) || { id: k, name: r.assignee_id ? r.assignee_name || null : null, count: 0 };
+    a.count++;
+    byAssignee.set(k, a);
+  }
+  const who = String(assignee || '');
+  const shown = !who || who === 'all' ? rows : rows.filter((r) => (who === 'unassigned' ? !r.assignee_id : r.assignee_id === who));
   const known = (await env.DB.prepare('SELECT COUNT(*) AS n FROM mes_tickets').first()).n;
   const cursor = await getState(env, 'mes_cursor');
   // Still reading history if the scan's position is more than a day behind.
@@ -383,7 +393,7 @@ export async function outstanding(env, viewer, { filter = 'untriaged', query = '
   return {
     release: release ? { boardId: release.board_id, sprints: JSON.parse(release.sprints || '[]') } : null, inRelease,
     known, catchingUp, readUpTo: cursor ? cursor.slice(0, 10).replace(/\//g, '-') : null,
-    tickets: rows.slice(0, 200), total: rows.length, versions: await versions(env).catch(() => []),
+    tickets: shown.slice(0, 200), total: shown.length, allTotal: rows.length, assignees: [...byAssignee.values()], versions: await versions(env).catch(() => []),
     team: await condorTeam(env), noteKinds: NOTE_KINDS,
     canTriage: canTriage(viewer), canEstimate: canEstimate(viewer), priorities: PRIORITIES, tags: TAGS, hints: DIFFICULTY_HINTS,
   };
