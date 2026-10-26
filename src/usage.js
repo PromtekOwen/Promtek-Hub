@@ -9,13 +9,14 @@ const PAGE = /^#\/[a-z0-9-]{0,40}$/;
 export async function record(env, viewer, page) {
   const p = String(page || '');
   if (!PAGE.test(p)) return { ok: true };
-  const who = viewer.accountId || viewer.email;
+  // Opening anonymous feedback is counted, but never against anyone, so it can't hint at who wrote what.
+  const who = p === '#/feedback' ? 'anonymous' : viewer.accountId || viewer.email;
   if (!who) return { ok: true };
   try {
     await env.DB.prepare(
       `INSERT INTO usage_daily (day, page, account, opens, last_at) VALUES (?, ?, ?, 1, ?)
        ON CONFLICT(day, page, account) DO UPDATE SET opens = usage_daily.opens + 1, last_at = excluded.last_at`
-    ).bind(londonDate(), p, who, new Date().toISOString()).run();
+    ).bind(londonDate(), p, who, who === 'anonymous' ? null : new Date().toISOString()).run();
   } catch {
     // Until schema-049 adds the time of the last open, the count alone is kept.
     await env.DB.prepare(

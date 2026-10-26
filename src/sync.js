@@ -557,6 +557,7 @@ export async function runScheduled(rawEnv) {
       await attempt('Day reminders', async () => (await import('./devtime.js')).reminders(env));
       await attempt('Timer reminders', async () => (await import('./tracker.js')).eveningReminder(env));
       await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));
+      await attempt('Feedback round-up', async () => (await import('./feedback.js')).roundUp(env));
     }),
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {

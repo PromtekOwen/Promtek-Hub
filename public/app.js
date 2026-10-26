@@ -447,6 +447,11 @@ const pages = {
     render: () => requestsHtml(),
   },
 
+  '#/feedback': {
+    band: () => '<h1>Feedback</h1><p>Share feedback or an idea, anonymously. Nobody can see who sent it.</p>',
+    render: () => feedbackHtml(),
+  },
+
   '#/capacity': {
     band: () => '<h1>Capacity</h1><p>What everyone has on, how long they\'ve had it, and what they\'re working on now.</p>',
     render: () => capTileHtml(),
@@ -1670,6 +1675,7 @@ async function renderSettings(route) {
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   if (route === '#/eotq') settingsData.eotq = await api('/api/eotq/settings').catch((err) => ({ error: err.message }));
   if (route === '#/wip') settingsData.wip = await api('/api/wip/settings').catch((err) => ({ error: err.message }));
+  if (route === '#/feedback') settingsData.feedback = await api('/api/feedback/settings').catch((err) => ({ error: err.message }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
 }
@@ -6977,6 +6983,264 @@ async function requestsClick(event) {
   return false;
 }
 
+// ---------- Anonymous feedback ----------
+// Anyone can send feedback or an idea without their name on it. Names, swearing and
+// contact details are refused as it's typed; an admin reads each one before it's
+// posted for everyone to vote on. Replies go between admins and the writer, who
+// stays anonymous.
+
+let fbTab = 'board';            // board, new, mine, review, talk
+let fbCats = new Set();         // categories shown on the board; none means all
+let fbSort = 'top';             // top, new
+let fbDraft = { categories: [], problem: '', solution: '' };
+let fbOpen = null;              // the post whose conversation is open
+let fbData = null;
+const fbChecks = {};            // what the filter said about each box, by box
+let fbCheckTimer = null;
+
+const fbDay = (iso) => (iso ? new Date(`${iso}T12:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '');
+const fbCatName = (k) => fbData?.categories.find(([key]) => key === k)?.[1] || k;
+
+async function feedbackHtml() {
+  fbData = await api('/api/feedback');
+  const d = fbData;
+  const unread = (list) => list.filter((p) => p.unread).length;
+  const tabs = [['board', `Board (${n(d.board.length)})`], ['new', 'Give feedback'], ['mine', `Yours${d.mine.length ? ` (${n(d.mine.length)})` : ''}${unread(d.mine) ? ' •' : ''}`]];
+  if (d.admin) tabs.push(['review', `To review (${n(d.review.length)})`], ['talk', `Conversations${unread(d.conversations) ? ` (${n(unread(d.conversations))} new)` : ''}`]);
+  if (!tabs.some(([k]) => k === fbTab)) fbTab = 'board';
+  const notReady = !d.ready ? `<div class="card notice error" style="margin-bottom:1rem"><p style="margin:0">${d.admin
+    ? 'Anonymous feedback needs a secret before anything can be sent: add FEEDBACK_SECRET to the Worker (see SETUP.md).'
+    : 'Feedback is being set up and can\'t be sent just yet.'}</p></div>` : '';
+  const body = fbTab === 'new' ? fbFormHtml(d) : fbTab === 'mine' ? fbListHtml(d.mine, 'mine')
+    : fbTab === 'review' ? fbListHtml(d.review, 'review') : fbTab === 'talk' ? fbListHtml(d.conversations, 'talk') : fbBoardHtml(d);
+  return `${notReady}<div class="tabs fb-tabs">${tabs.map(([k, l]) => `<button class="tab${fbTab === k ? ' on' : ''}" data-fb-tab="${k}">${esc(l)}</button>`).join('')}</div>
+    ${body}`;
+}
+
+function fbBoardHtml(d) {
+  const shown = d.board.filter((p) => !fbCats.size || p.categories.some((c) => fbCats.has(c)))
+    .sort((a, b) => (fbSort === 'top' ? b.score - a.score || b.ups - a.ups : 0));
+  const count = (k) => d.board.filter((p) => p.categories.includes(k)).length;
+  return `<div class="fb-filters">
+      <div class="row fb-sort"><span class="muted">Sort</span><span class="segment">${[['top', 'Most agreed'], ['new', 'Newest']].map(([k, l]) =>
+        `<button class="seg${fbSort === k ? ' on' : ''}" data-fb-sort="${k}">${l}</button>`).join('')}</span>
+        ${fbCats.size ? '<button class="linklike" data-fb-cat-clear>Show every category</button>' : ''}</div>
+      <div class="chips">${d.categories.map(([k, l]) => `<button class="chip${fbCats.has(k) ? ' on' : ''}" data-fb-cat="${k}" aria-pressed="${fbCats.has(k)}">${esc(l)} <span class="muted">${n(count(k))}</span></button>`).join('')}</div>
+    </div>
+    ${shown.length ? `<ul class="list fb-list">${shown.map((p) => fbPostHtml(p, 'board')).join('')}</ul>`
+      : `<div class="card"><p style="margin:0">${d.board.length ? 'Nothing posted in those categories yet.' : 'Nothing posted yet. Feedback appears here once an admin has read it.'}</p></div>`}`;
+}
+
+function fbListHtml(list, kind) {
+  const empty = { mine: 'Nothing sent yet. Anything you send shows here, with where it has got to and any replies. Nobody else can see that it\'s yours.',
+    review: 'Nothing waiting to be read.', talk: 'No conversations yet.' }[kind];
+  const sorted = kind === 'talk' ? [...list].sort((a, b) => Number(b.unread) - Number(a.unread)) : list;
+  return sorted.length ? `<ul class="list fb-list">${sorted.map((p) => fbPostHtml(p, kind)).join('')}</ul>` : `<div class="card"><p style="margin:0">${empty}</p></div>`;
+}
+
+function fbPostHtml(p, kind) {
+  const d = fbData;
+  const status = p.status !== 'approved' || kind === 'mine'
+    ? `<span class="req-status ${p.status === 'approved' ? 'good' : p.status === 'rejected' ? 'muted' : 'working'}">${esc(d.statuses[p.status] || p.status)}</span>` : '';
+  const vote = p.status === 'approved' ? `<div class="fb-vote" role="group" aria-label="Agree or disagree">
+      <button class="fb-up${p.myVote > 0 ? ' on' : ''}" data-fb-vote="${esc(p.id)}" data-value="${p.myVote > 0 ? 0 : 1}" aria-pressed="${p.myVote > 0}" title="Agree"${d.canVote ? '' : ' disabled'}>▲ <span>${n(p.ups)}</span></button>
+      <strong class="fb-score" title="Agree minus disagree">${p.score > 0 ? '+' : ''}${n(p.score)}</strong>
+      <button class="fb-down${p.myVote < 0 ? ' on' : ''}" data-fb-vote="${esc(p.id)}" data-value="${p.myVote < 0 ? 0 : -1}" aria-pressed="${p.myVote < 0}" title="Disagree"${d.canVote ? '' : ' disabled'}>▼ <span>${n(p.downs)}</span></button>
+    </div>` : '';
+  const canTalk = p.mine || d.admin;
+  const talk = canTalk ? `<button class="linklike" data-fb-thread="${esc(p.id)}">${fbOpen === p.id ? 'Hide the conversation' : p.messages ? `Conversation (${n(p.messages)})` : p.mine ? 'Message the admins' : 'Reply to the writer'}</button>${p.unread ? ' <span class="fb-new">New</span>' : ''}` : '';
+  const review = kind === 'review' || (d.admin && kind !== 'mine' && p.status === 'approved' && fbOpen === p.id) ? `<div class="fb-decide">
+      <label>Reason, if turning it down <small class="muted">The writer sees this</small><textarea rows="2" maxlength="1000" data-fb-reason="${esc(p.id)}" placeholder="For example: this names a team in a way that points at one person. Could you send it again without that?"></textarea></label>
+      <div class="row">${p.status !== 'approved' ? `<button class="btn" data-fb-decide="${esc(p.id)}" data-decision="approve">Post it</button>` : ''}
+        <button class="btn secondary" data-fb-decide="${esc(p.id)}" data-decision="reject">${p.status === 'approved' ? 'Take it down' : 'Turn it down'}</button></div></div>` : '';
+  return `<li class="fb-post${p.unread ? ' unread' : ''}" data-fb-post="${esc(p.id)}">
+      <div class="fb-main">
+        <div class="req-head"><span class="sub">${esc(fbDay(p.day))}${p.mine && kind !== 'mine' ? '. Yours' : ''}</span>${status}</div>
+        <div class="fb-cats">${p.categories.map((c) => `<span class="fb-cat">${esc(fbCatName(c))}</span>`).join('')}</div>
+        <p class="fb-label">The problem</p><p class="pre-wrap">${esc(p.problem)}</p>
+        ${p.solution ? `<p class="fb-label">Ideas for a solution</p><p class="pre-wrap">${esc(p.solution)}</p>` : ''}
+        ${talk ? `<p class="fb-talk">${talk}</p>` : ''}
+        ${fbOpen === p.id ? '<div class="fb-thread" id="fb-thread">Loading the conversation</div>' : ''}
+        ${review}
+      </div>
+      ${vote}
+    </li>`;
+}
+
+function fbFormHtml(d) {
+  const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  return `<div class="card req-form fb-form">
+      <p class="fb-anon"><strong>This is anonymous.</strong> Your name isn't kept with it, and nobody, admins included, can see who sent it or how you vote.
+        Only you can see it's yours, under Yours. Names, swearing, email addresses and phone numbers can't be included, so nobody is identified.</p>
+      <p class="muted" style="margin:.25rem 0 1rem">Date: ${esc(today)}</p>
+      <fieldset class="fb-cat-pick"><legend>What is your feedback about? <span class="muted">Tick all that apply</span></legend>
+        ${d.categories.map(([k, l]) => `<label class="inline-check"><input type="checkbox" data-fb-pick="${k}"${fbDraft.categories.includes(k) ? ' checked' : ''}> ${esc(l)}</label>`).join('')}
+      </fieldset>
+      <label>Describe the problem <textarea rows="6" maxlength="3000" data-fb-field="problem" placeholder="What isn't working, or could be better? Where and when does it happen?">${esc(fbDraft.problem)}</textarea></label>
+      <p class="fb-check" id="fb-check-problem" role="status" hidden></p>
+      <label>Do you have any ideas for a solution? <small class="muted">Optional</small><textarea rows="4" maxlength="3000" data-fb-field="solution" placeholder="Anything you think would help, however small.">${esc(fbDraft.solution)}</textarea></label>
+      <p class="fb-check" id="fb-check-solution" role="status" hidden></p>
+      <p class="muted">An admin reads it before it's posted, to check it's constructive. Once posted, everyone can see it and agree or disagree.</p>
+      <div class="row"><button class="btn" data-fb-send${d.ready ? '' : ' disabled'}>Send anonymously</button></div>
+      <div class="result" id="fb-result" role="status"></div>
+    </div>`;
+}
+
+function fbShowCheck(id, r) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = r?.message || '';
+  el.hidden = !r?.message;
+}
+
+// Checked a moment after typing stops, so problems show before anything is sent.
+function fbCheck(key, text, boxId) {
+  clearTimeout(fbCheckTimer);
+  fbCheckTimer = setTimeout(async () => {
+    if (!text.trim()) { fbChecks[boxId] = null; return fbShowCheck(boxId, null); }
+    try { fbChecks[boxId] = await api('/api/feedback/check', { method: 'POST', body: JSON.stringify({ text }) }); fbShowCheck(boxId, fbChecks[boxId]); } catch { /* checked again on sending */ }
+  }, 500);
+}
+
+async function fbLoadThread(id) {
+  const box = document.getElementById('fb-thread');
+  if (!box) return;
+  try {
+    const t = await api(`/api/feedback/thread?id=${encodeURIComponent(id)}`);
+    box.innerHTML = `${t.messages.length ? `<ul class="fb-messages">${t.messages.map((m) => `<li class="${m.fromAdmin ? 'admin' : 'writer'}">
+        <span class="sub"><strong>${esc(m.fromAdmin ? `${m.by}, admin` : t.asWriter ? 'You' : 'The writer')}</strong>, ${esc(fbDay(m.day))}</span>
+        <p class="pre-wrap">${esc(m.body)}</p></li>`).join('')}</ul>`
+      : `<p class="muted">${t.asWriter ? 'No messages yet. Anything you send goes to the admins only, without your name.' : 'No messages yet. The writer sees your reply with your name, and can answer without theirs.'}</p>`}
+      <label>${t.asWriter ? 'Message the admins' : 'Reply to the writer'} <textarea rows="3" maxlength="2000" data-fb-reply="${esc(id)}" placeholder="${t.asWriter ? 'Your name isn\'t sent with this.' : 'They\'ll see this next time they open Feedback.'}"></textarea></label>
+      ${t.asWriter ? '<p class="fb-check" id="fb-check-reply" role="status" hidden></p>' : ''}
+      <div class="row"><button class="btn secondary" data-fb-send-reply="${esc(id)}">Send</button></div>`;
+    // Reading it clears the new marker.
+    view.querySelector(`[data-fb-post="${CSS.escape(id)}"]`)?.classList.remove('unread');
+    view.querySelector(`[data-fb-post="${CSS.escape(id)}"] .fb-new`)?.remove();
+    if (t.asWriter && me.feedbackUnread) me.feedbackUnread = Math.max(0, me.feedbackUnread - 1);
+  } catch (err) { box.textContent = err.message; }
+}
+
+async function feedbackClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (settingsOpen === '#/feedback') {
+    const save = t('[data-fbs-save]');
+    if (!save) return false;
+    save.disabled = true;
+    try {
+      const r = await api('/api/feedback/settings', { method: 'POST', body: JSON.stringify({
+        blocked: view.querySelector('[data-fbs="blocked"]').value, allowed: view.querySelector('[data-fbs="allowed"]').value }) });
+      settingsData.feedback = { ...settingsData.feedback, ...r };
+      document.getElementById('fbs-result').textContent = 'Saved.';
+    } catch (err) { document.getElementById('fbs-result').textContent = err.message; }
+    save.disabled = false;
+    return true;
+  }
+  const tab = t('[data-fb-tab]');
+  if (tab) { fbTab = tab.dataset.fbTab; fbOpen = null; return render(); }
+  if (t('[data-fb-sort]')) { fbSort = t('[data-fb-sort]').dataset.fbSort; return render(); }
+  const cat = t('[data-fb-cat]');
+  if (cat) { const k = cat.dataset.fbCat; if (fbCats.has(k)) fbCats.delete(k); else fbCats.add(k); return render(); }
+  if (t('[data-fb-cat-clear]')) { fbCats = new Set(); return render(); }
+  const pick = t('[data-fb-pick]');
+  if (pick) {
+    const k = pick.dataset.fbPick;
+    fbDraft.categories = pick.checked ? [...new Set([...fbDraft.categories, k])] : fbDraft.categories.filter((c) => c !== k);
+    return true;
+  }
+  const send = t('[data-fb-send]');
+  if (send) {
+    const out = document.getElementById('fb-result');
+    if (!fbDraft.categories.length) { out.textContent = 'Tick at least one category.'; out.className = 'result bad'; return true; }
+    send.disabled = true;
+    try {
+      await api('/api/feedback', { method: 'POST', body: JSON.stringify(fbDraft) });
+      fbDraft = { categories: [], problem: '', solution: '' };
+      fbTab = 'mine';
+      toast('Sent anonymously. An admin will read it before it\'s posted.');
+      return render();
+    } catch (err) { out.textContent = err.message; out.className = 'result bad'; send.disabled = false; }
+    return true;
+  }
+  const v = t('[data-fb-vote]');
+  if (v) {
+    v.disabled = true;
+    try {
+      const r = await api('/api/feedback/vote', { method: 'POST', body: JSON.stringify({ id: v.dataset.fbVote, vote: Number(v.dataset.value) }) });
+      const post = fbData.board.find((p) => p.id === v.dataset.fbVote);
+      if (post) Object.assign(post, { myVote: r.myVote, ups: r.ups, downs: r.downs, score: r.ups - r.downs });
+      // Redrawn in place, so the list doesn't jump while voting.
+      const li = view.querySelector(`[data-fb-post="${CSS.escape(v.dataset.fbVote)}"]`);
+      if (li && post) li.outerHTML = fbPostHtml(post, fbTab);
+    } catch (err) { toast(err.message); v.disabled = false; }
+    return true;
+  }
+  const th = t('[data-fb-thread]');
+  if (th) {
+    const id = th.dataset.fbThread;
+    fbOpen = fbOpen === id ? null : id;
+    const list = fbTab === 'mine' ? fbData.mine : fbTab === 'review' ? fbData.review : fbTab === 'talk' ? fbData.conversations : fbData.board;
+    const post = list.find((p) => p.id === id);
+    const li = view.querySelector(`[data-fb-post="${CSS.escape(id)}"]`);
+    if (li && post) li.outerHTML = fbPostHtml(post, fbTab);
+    if (fbOpen) await fbLoadThread(id);
+    return true;
+  }
+  const sr = t('[data-fb-send-reply]');
+  if (sr) {
+    const id = sr.dataset.fbSendReply;
+    const box = view.querySelector(`[data-fb-reply="${CSS.escape(id)}"]`);
+    sr.disabled = true;
+    try {
+      await api('/api/feedback/reply', { method: 'POST', body: JSON.stringify({ id, body: box.value }) });
+      toast('Sent');
+      await fbLoadThread(id);
+    } catch (err) { toast(err.message); sr.disabled = false; }
+    return true;
+  }
+  const dec = t('[data-fb-decide]');
+  if (dec) {
+    const id = dec.dataset.fbDecide;
+    const reason = view.querySelector(`[data-fb-reason="${CSS.escape(id)}"]`)?.value || '';
+    if (dec.dataset.decision === 'reject' && !reason.trim() && !confirm('Turn this down without a reason? The writer won\'t know why.')) return true;
+    dec.disabled = true;
+    try {
+      await api('/api/feedback/decide', { method: 'POST', body: JSON.stringify({ id, decision: dec.dataset.decision, reason }) });
+      toast(dec.dataset.decision === 'approve' ? 'Posted for everyone' : 'Turned down');
+      fbOpen = null;
+      return render();
+    } catch (err) { toast(err.message); dec.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+function feedbackInput(event) {
+  const el = event.target;
+  if (el.dataset.fbField) { fbDraft[el.dataset.fbField] = el.value; fbCheck(el.dataset.fbField, el.value, `fb-check-${el.dataset.fbField}`); return true; }
+  if (el.dataset.fbReply && document.getElementById('fb-check-reply')) { fbCheck('reply', el.value, 'fb-check-reply'); return true; }
+  return false;
+}
+
+function settingsFeedbackHtml() {
+  const s = settingsData.feedback;
+  if (s?.error) return `<div class="card"><p class="bad">${esc(s.error)}</p></div>`;
+  return `<div class="card req-form">
+      <h2 style="margin-top:0">Words</h2>
+      <p class="muted">Everyone's names, their usual short forms, swearing, slurs, email addresses and phone numbers are always refused. Names that are also everyday words, like Key or Mark, only count when written with a capital letter partway through a sentence.</p>
+      <label>Also refuse these words <small class="muted">One per line, or separated by commas</small><textarea rows="5" data-fbs="blocked">${esc((s.blocked || []).join('\n'))}</textarea></label>
+      <label>Always allow these words <small class="muted">For words refused that shouldn't be, such as a surname that is also a product name</small><textarea rows="5" data-fbs="allowed">${esc((s.allowed || []).join('\n'))}</textarea></label>
+      <div class="row"><button class="btn" data-fbs-save>Save</button></div>
+      <div class="result" id="fbs-result" role="status"></div>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Anonymity</h2>
+      <p class="muted" style="margin:0">${s.ready ? 'Set up: FEEDBACK_SECRET is in place.' : 'Not set up yet: add FEEDBACK_SECRET to the Worker, as in SETUP.md. Nothing can be sent until it is.'}
+        Posts and votes are kept against codes made from that secret, a different one for every post, so nobody, admins included, can see who wrote or voted on what.
+        Admins hear about new feedback in a round-up at 8am and 2pm rather than straight away, so the time of the email doesn't point to anyone.</p>
+    </div>`;
+}
+
 // ---------- Employee of the Quarter ----------
 
 let eotqView = 'nominate';     // nominate, about, history, manage
@@ -10571,6 +10835,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
+  if (currentRoute() === '#/feedback' && await feedbackClick(event) !== false) return;
   if (currentRoute() === '#/eotq' && await eotqClick(event) !== false) return;
   if (currentRoute() === '#/wip' && settingsOpen !== '#/wip' && await wipClick(event) !== false) return;
   if (currentRoute() === '#/capacity' && await capTileClick(event) !== false) return;
@@ -10702,6 +10967,7 @@ const TILE_SETTINGS = {
   '#/psc': { label: 'PSC settings', render: () => settingsPscHtml() },
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
   '#/eotq': { label: 'Employee of the Quarter settings', render: () => settingsEotqHtml(), who: 'Management and admins.', can: 'eotq' },
+  '#/feedback': { label: 'Feedback settings', render: () => settingsFeedbackHtml() },
   '#/wip': { label: 'WIP settings', render: () => settingsWipHtml(), who: 'Management and admins.', can: 'wip' },
 };
 let settingsOpen = null;
@@ -10794,6 +11060,7 @@ view.addEventListener('keydown', (event) => {
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
+  if (currentRoute() === '#/feedback' && feedbackInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (currentRoute() === '#/contracts' && settingsOpen === '#/contracts' && contractsSettingsInput(event)) return;
   if (currentRoute() === '#/contracts' && contractsInput(event)) return;

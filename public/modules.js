@@ -122,6 +122,13 @@ export const MODULES = [
     detail: (me) => (me.user.can?.developer || me.user.isAdmin ? 'Ideas and problems people have sent' : 'Ask for a new tile, a change, or report a problem'),
   },
   {
+    id: 'feedback',
+    name: 'Feedback',
+    route: '#/feedback',
+    icon: icon('<path d="M4 5.5A1.5 1.5 0 015.5 4h13A1.5 1.5 0 0120 5.5v9a1.5 1.5 0 01-1.5 1.5H10l-4.5 3.5V16h0A1.5 1.5 0 014 14.5z"/><path d="M8.5 9h7M8.5 12h4.5"/>'),
+    detail: (me) => (me.feedbackUnread ? `<b>${fmt(me.feedbackUnread)}</b> new on your feedback` : 'Share feedback or an idea, anonymously'),
+  },
+  {
     id: 'vehicles',
     name: 'Vehicles',
     route: '#/vehicles',

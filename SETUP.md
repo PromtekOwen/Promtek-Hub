@@ -310,6 +310,22 @@ The **Requests** tile lets anyone ask for a new tile or a change to one, or repo
 
 Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead, with an optional reply. Developers are emailed about each new request, and the person who sent one is emailed when its status changes. Emails go through the alert relay.
 
+## Part 14c2: Anonymous feedback
+
+The **Feedback** tile lets anyone send feedback or a suggestion anonymously: the categories it's about, a description of the problem, and any ideas for a solution. It carries the day it was sent.
+
+**Setting it up.** Add one more secret to the Worker before anyone uses it: in the Worker's **Settings**, **Variables and Secrets**, add `FEEDBACK_SECRET` as a **Secret**, set to a long random string (40 or more characters, from a password generator). Keep it only there. Nothing can be sent until it's set. Don't change it later: posts would no longer be recognised as their writers', so writers would lose their replies. Then run `schema-050.sql` in the D1 console.
+
+**How it stays anonymous.**
+- Posts and votes are stored against codes made from the sender's sign-in and `FEEDBACK_SECRET`, a different code for every post. Nobody reading the database, admins included, can see who wrote or voted on what, or match two posts to the same person. While signed in, the writer sees their own posts under **Yours**.
+- Posts carry the day, never the time. Admins hear about new feedback and replies in a round-up email at 8am and 2pm rather than as they're sent, and opening the tile isn't counted against anyone in Admin's usage figures.
+- Developers viewing the hub as someone else never see that person's posts as theirs.
+- Anyone who could read both the Worker's secrets and the database could still work out a writer, by trying everyone's sign-in. Keep the secret to the people who already manage the Worker.
+
+**The filter.** Names (everyone in the employee list, their surnames and usual short forms), swearing and slurs, email addresses, phone numbers and @mentions are refused, with the words shown so they can be taken out. Names that are also everyday words, like Key or Mark, count only when written as a name. Admins can add more words to refuse, or words to always allow, under the tile's cog. Replies from the writer are filtered the same way.
+
+**Admins** read each post under **To review** and post it, or turn it down with an optional reason that only the writer sees. Posted feedback goes on the **Board**, where everyone can agree or disagree once each (and change their mind), sorted by most agreed or newest and filtered by category. Admins can reply to the writer on any post, with their name shown; the writer replies as "the writer". Conversations show what's new on each side, and the tile shows the writer when there's something new for them. Admins can also take a posted item down.
+
 ## Part 14d: Page walkthroughs
 
 The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.

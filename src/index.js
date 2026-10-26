@@ -552,6 +552,23 @@ async function route(request, env, url, user) {
     }
   }
 
+  if (pathname.startsWith('/api/feedback')) {
+    const Fb = await import('./feedback.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/feedback') return json(await Fb.overview(env, user));
+    if (method === 'GET' && pathname === '/api/feedback/thread') return json(await Fb.thread(env, user, url.searchParams.get('id')));
+    if (method === 'POST' && pathname === '/api/feedback/check') return json(await Fb.checkText(env, body.text));
+    if (method === 'POST' && pathname === '/api/feedback') return json(await Fb.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/feedback/vote') return json(await Fb.vote(env, user, body));
+    if (method === 'POST' && pathname === '/api/feedback/reply') return json(await Fb.reply(env, user, body));
+    if (method === 'POST' && pathname === '/api/feedback/decide') return json(await Fb.decide(env, user, body));
+    if (method === 'GET' && pathname === '/api/feedback/settings') {
+      if (!user.isAdmin) return json({ error: 'Only admins can change the word lists.' }, 403);
+      return json({ ...(await Fb.settings(env)), ready: Boolean(env.FEEDBACK_SECRET) });
+    }
+    if (method === 'POST' && pathname === '/api/feedback/settings') return json(await Fb.saveSettings(env, user, body));
+  }
+
   if (pathname.startsWith('/api/requests')) {
     const Req = await import('./requests.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
@@ -1044,6 +1061,8 @@ async function getMe(env, user) {
     teamsList: ALL_TEAMS,
     ledgerStart: await getState(env, 'ledger_start'),
     viewingAs: user.viewingAs || null,
+    // Replies waiting on the viewer's own anonymous feedback, worked out without anyone else knowing which posts are theirs.
+    feedbackUnread: user.viewingAs ? 0 : await (await import('./feedback.js')).unreadFor(env, user).catch(() => 0),
   };
   const emp = user.employee;
   if (!emp) return { ...base, linked: false };
