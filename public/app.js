@@ -2,6 +2,13 @@ import { MODULES } from './modules.js';
 import { TOURS } from './tours.js';
 import { suggestionsFor, closeDropdown } from './dropdown.js';
 
+// A link from a Jira ticket, /estimate/MES-123, opens that ticket's estimate. The
+// page itself is served for any address, so the link is turned into the page's own here.
+{
+  const linked = /^\/estimate\/([A-Za-z][A-Za-z0-9]*-\d+)\/?$/.exec(location.pathname);
+  if (linked) history.replaceState(null, '', `/${location.search}#/condor?estimate=${linked[1].toUpperCase()}`);
+}
+
 const view = document.getElementById('view');
 const band = document.getElementById('band');
 const back = document.getElementById('back');
