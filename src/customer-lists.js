@@ -26,6 +26,9 @@ const RUN_EVERY_MS = 10 * 60 * 1000;
 // Even with nothing new read, the moves are checked again this often.
 const RECHECK_MS = 6 * 3600 * 1000;
 const LISTS_EVERY_MS = 24 * 3600 * 1000;
+// A quote or service item in a project whose list the hub doesn't know yet (a new customer,
+// usually) sends it back to Jira for the lists this often, rather than waiting for the daily read.
+const MISSING_EVERY_MS = 10 * 60 * 1000;
 const RUN_CALLS = 24;
 const MAX_TRIES = 3;
 const QUOTE_FIELDS = ['summary', 'status', 'project', 'parent', 'assignee', 'reporter', 'created', 'updated', TEAM_FIELD];
@@ -71,7 +74,8 @@ export async function readLists(env, b) {
   const now = new Date().toISOString();
   const stmts = [...found.values()].map((l) => env.DB.prepare(
     `INSERT INTO customer_lists (project_key, kind, issue_id, issue_key, status, checked_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(project_key, kind) DO UPDATE SET issue_id = excluded.issue_id, issue_key = excluded.issue_key, status = excluded.status, checked_at = excluded.checked_at`
+     ON CONFLICT(project_key, kind) DO UPDATE SET issue_id = excluded.issue_id, issue_key = excluded.issue_key, status = excluded.status, checked_at = excluded.checked_at
+     WHERE customer_lists.issue_id IS NOT excluded.issue_id OR customer_lists.issue_key IS NOT excluded.issue_key OR customer_lists.status IS NOT excluded.status`
   ).bind(l.project, l.kind, l.id, l.key, l.status, now));
   for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
   await setState(env, 'lists_read_at', String(Date.now()));
@@ -132,6 +136,21 @@ export async function readQuotes(env, b) {
   }
   await setState(env, 'lists_quotes_since', started);
   return read;
+}
+
+// Projects with an open quote or service item but no list the hub knows of.
+export async function missingLists(env) {
+  const { results: q } = await env.DB.prepare(
+    `SELECT DISTINCT q.project_key FROM jira_quotes q WHERE q.done = 0
+       AND NOT EXISTS (SELECT 1 FROM customer_lists l WHERE l.project_key = q.project_key AND l.kind = 'quotes')`
+  ).all();
+  const types = Object.keys(PSC_HOME);
+  const { results: p } = await env.DB.prepare(
+    `SELECT DISTINCT p.project_key FROM psc_items p WHERE p.done = 0 AND p.issuetype IN (${types.map(() => '?').join(',')})
+       AND NOT EXISTS (SELECT 1 FROM customer_lists l WHERE l.project_key = p.project_key
+         AND l.kind = CASE WHEN p.issuetype = 'Service Request' THEN 'service' ELSE 'pscs' END)`
+  ).bind(...types).all();
+  return [...new Set([...q, ...p].map((r) => r.project_key))];
 }
 
 // ---------- what needs moving ----------
@@ -231,9 +250,14 @@ export async function run(env, { force = false } = {}) {
   const b = budget(env, RUN_CALLS);
   const out = { moved: 0, failed: 0, statuses: 0 };
   try {
-    const listsAt = Number((await getState(env, 'lists_read_at')) || 0);
-    if (Date.now() - listsAt > LISTS_EVERY_MS) out.lists = await readLists(env, b);
     out.quotes = await readQuotes(env, b);
+    // The lists once a day, or sooner when something new has turned up in a project
+    // the hub has no list for, such as a new customer's first quote.
+    const listsAt = Number((await getState(env, 'lists_read_at')) || 0);
+    const missingAt = Number((await getState(env, 'lists_missing_at')) || 0);
+    const missing = Date.now() - missingAt > MISSING_EVERY_MS ? await missingLists(env) : [];
+    if (missing.length) await setState(env, 'lists_missing_at', String(Date.now()));
+    if (Date.now() - listsAt > LISTS_EVERY_MS || missing.length) out.lists = await readLists(env, b);
     // Working out what needs moving reads every quote and PSC, so it's only done when
     // something has changed: a quote or PSC read from Jira, the lists, or moves left to retry.
     let checked = {};

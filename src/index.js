@@ -1,6 +1,6 @@
 // Promtek Hub Worker: serves the web app and the /api routes, and runs the
 // scheduled Tempo sync.
-import { getUser } from './auth.js';
+import { getUser, allowedEmail, allowedDomains } from './auth.js';
 import { findAccountIdByEmail } from './jira.js';
 import { progressFor } from './progression.js';
 import * as Elo from './elo.js';
@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, refreshProfiles, runScheduled, startLedger, londonDate, snapshotWeek, sendAlerts } from './sync.js';
+import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -194,7 +194,14 @@ async function route(request, env, url, user) {
   const { pathname } = url;
   const method = request.method;
 
-  if (method === 'GET' && pathname === '/api/me') return json(await getMe(env, user));
+  if (method === 'GET' && pathname === '/api/me') {
+    try { await (await import('./usage.js')).seen(env, user); } catch (err) { console.warn('Last seen not kept:', err.message); }
+    return json(await getMe(env, user));
+  }
+  if (method === 'POST' && pathname === '/api/prefs/usage') {
+    const body = await request.json().catch(() => ({}));
+    try { return json(await (await import('./usage.js')).record(env, user, body.page)); } catch { return json({ ok: true }); }
+  }
 
   if (method === 'GET' && pathname === '/api/time') return json(await getTime(env, user, url));
 
@@ -850,13 +857,6 @@ async function route(request, env, url, user) {
       return json(r);
     }
 
-    if (method === 'POST' && pathname === '/api/admin/start-ledger') {
-      if (body.confirm !== 'START') return json({ error: 'Type START to confirm.' }, 400);
-      const r = await startLedger(env);
-      await Audit.record(env, user, { area: 'Settings', action: 'XP ledger started' });
-      return json(r);
-    }
-    if (method === 'POST' && pathname === '/api/admin/refresh-profiles') return json(await refreshProfiles(env));
     if (method === 'POST' && pathname === '/api/admin/snapshot') return json(await snapshotWeek(env, body.week || null));
     if (method === 'POST' && pathname === '/api/admin/scan-jobs') {
       const orders = await scanCompleted(env);
@@ -936,11 +936,6 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/person-remove') {
       return json(await auditedPerson(env, user, body.accountId, (b, a) => (a ? 'Deactivated' : 'Removed with their history'), () => People.removePerson(env, body)));
     }
-    if (method === 'POST' && pathname === '/api/admin/employees-source') {
-      const r = await People.setSource(env, body.source);
-      await Audit.record(env, user, { area: 'Settings', action: `Employees now kept in ${body.source === 'hub' ? 'the hub' : 'Jira'}` });
-      return json(r);
-    }
     if (method === 'POST' && pathname === '/api/admin/org-order') {
       const r = await Org.saveOrder(env, body.items);
       await Audit.record(env, user, { area: 'Employees', action: 'Chart order changed', subjectType: 'chart', subjectId: 'order', label: 'Company chart',
@@ -955,11 +950,15 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/sync-now') return json(await pollRecent(env, { force: true }));
+    if (method === 'GET' && pathname === '/api/admin/usage') {
+      if (!user.isAdmin) return json({ error: 'Admins only.' }, 403);
+      return json(await (await import('./usage.js')).report(env, { days: url.searchParams.get('days') }));
+    }
 
     if (method === 'POST' && pathname === '/api/admin/link') {
       const email = String(body.email || '').trim().toLowerCase();
-      if (!body.accountId || !email.endsWith('@' + env.ALLOWED_EMAIL_DOMAIN.toLowerCase())) {
-        return json({ error: `Choose an employee and enter an @${env.ALLOWED_EMAIL_DOMAIN} email.` }, 400);
+      if (!body.accountId || !allowedEmail(env, email)) {
+        return json({ error: `Choose an employee and enter an email ending ${allowedDomains(env).map((d) => `@${d}`).join(' or ')}.` }, 400);
       }
       await env.DB.batch([
         env.DB.prepare('UPDATE employees SET email = NULL WHERE email = ?').bind(email),
@@ -1039,7 +1038,6 @@ async function getMe(env, user) {
     employee: {
       name: emp.name,
       accountId: emp.account_id,
-      profileKey: emp.profile_key,
       team: emp.team,
       elo: emp.elo,
       baseline: emp.baseline,
@@ -1084,7 +1082,7 @@ async function adminOverview(env) {
       // Each person's ledger total is kept until the ledger changes, rather than added up on every visit.
       const totals = new Map((await ledgerTotals(env)).map((t) => [t.account_id, t]));
       const { results } = await env.DB.prepare(
-        `SELECT e.account_id, e.name, e.email, e.profile_key, e.elo, e.jira_xp, e.opening_xp, e.role, e.team, e.extension, e.active
+        `SELECT e.account_id, e.name, e.email, e.elo, e.opening_xp, e.role, e.team, e.extension, e.active
            FROM employees e ORDER BY e.name`
       ).all();
       return { results: results.map((e) => ({ ...e, ledger_xp: totals.get(e.account_id)?.xp || 0, worklogs: totals.get(e.account_id)?.worklogs || 0 })) };
@@ -1102,7 +1100,6 @@ async function adminOverview(env) {
     employees: employees.results.map((e) => ({
       ...e,
       app_xp: e.opening_xp + e.ledger_xp,
-      difference: e.opening_xp + e.ledger_xp - e.jira_xp,
     })),
     unmatched: unmatched.results,
     alerts: alerts.results,

@@ -167,10 +167,6 @@ export async function rateStep(env, { limit = STEP_SIZE, worklogsFor } = {}) {
 export async function startEngine(env, from) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from || '')) throw new Error('Choose the date to rate finished jobs from.');
   if (from > londonDate()) throw new Error('That date is in the future.');
-  // Refreshing from DNM would overwrite the ratings the engine sets.
-  if (((await getState(env, 'employees_source')) || 'jira') !== 'hub') {
-    throw new Error('Employees are still read from Jira. Switch them to the hub first.');
-  }
   const ledgerStart = await getState(env, 'ledger_start');
   await setState(env, 'elo_from', from);
   await freezeWeek(env, { force: true });

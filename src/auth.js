@@ -48,7 +48,7 @@ export async function getUser(request, env) {
 
   if (!email) return null;
   email = email.toLowerCase();
-  if (!email.endsWith('@' + env.ALLOWED_EMAIL_DOMAIN.toLowerCase())) return null;
+  if (!allowedEmail(env, email)) return null;
 
   const admins = (env.ADMIN_EMAILS || '')
     .split(',')
@@ -56,3 +56,7 @@ export async function getUser(request, env) {
     .filter(Boolean);
   return { email, isAdmin: admins.includes(email) };
 }
+
+// ALLOWED_EMAIL_DOMAIN can list more than one, separated by commas: promtek.com,promtek.co.za
+export const allowedDomains = (env) => String(env.ALLOWED_EMAIL_DOMAIN || '').split(',').map((d) => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean);
+export const allowedEmail = (env, email) => allowedDomains(env).some((d) => String(email || '').toLowerCase().endsWith(`@${d}`));

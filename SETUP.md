@@ -6,10 +6,9 @@ Allow about an hour and a half the first time. Do the steps in order: some later
 
 What you'll end up with:
 
-- A web app that runs on Cloudflare. Engineers sign in with Google and see their level, title, ELO rank and a breakdown of which time logs earned which XP.
+- A web app that runs on Cloudflare. Everyone at Promtek, in the UK and Promtek Africa, signs in with Google and sees their level, title, ELO rank and a breakdown of which time logs earned which XP.
 - A database (Cloudflare D1) holding an XP ledger with one row per Tempo worklog.
 - A background job every 2 minutes that picks up new and edited Tempo worklogs and removes XP for deleted ones. On the hour it also records finished jobs, and the ELO engine rates them once their time has settled.
-- Shadow mode. Your existing Jira automations and Apps Scripts keep running untouched while you compare the hub's numbers against Jira. Nothing in Jira is changed by the hub.
 
 Cloudflare's dashboard moves things around occasionally. If a menu name below doesn't match exactly, look for the nearest equivalent; the steps themselves don't change.
 
@@ -74,7 +73,7 @@ This lets people log in with the same Google account they use for Atlassian and 
 
 19. In the Worker, open the **Access** tab and select **Protect this Worker behind Access**.
     - Choose **All traffic**.
-    - For the authentication policy, choose **Email domain** and enter `promtek.com`.
+    - For the authentication policy, choose **Email domain** and enter `promtek.com`. Add a second **Email domain** rule (an "Include" of the same policy) for `promtek.co.za`, so Promtek Africa can sign in too.
     - Select **Apply Access**.
 20. Go to **Zero Trust → Access → Applications** and open the application that was just created for `promtek-hub`.
     - Under **Login methods**, tick only **Google**, and turn on **Instant Auth** (sometimes worded "skip identity provider selection"). People then go straight to Google instead of seeing a choice screen.
@@ -84,21 +83,14 @@ This lets people log in with the same Google account they use for Atlassian and 
     - `ACCESS_TEAM_DOMAIN` → `https://YOUR-TEAM-NAME.cloudflareaccess.com`
     - `ACCESS_AUD` → the AUD tag you just copied
     - Check `ADMIN_EMAILS` has your email. To add another admin, separate emails with commas.
+    - `ALLOWED_EMAIL_DOMAIN` lists the email domains that can use the hub, separated by commas: `promtek.com,promtek.co.za`.
 
     Commit the change and wait a minute for the automatic deploy.
 
-## Part 7: First sign-in and starting the ledger
+## Part 7: First sign-in
 
-22. Open `https://promtek-hub.YOUR-SUBDOMAIN.workers.dev`. You should be sent to Google, then land on the hub. It will say your account isn't linked yet; that's expected, because there are no engineers in the database yet.
-23. Open **Admin → Refresh profiles from Jira**. This reads every Employee issue in DNM and lists the engineers.
-    - Check the table looks right.
-    - Any Employee issue without a UserID is listed as skipped. Fill in its UserID in Jira and refresh again.
-24. Choose when to start the ledger. Starting it:
-    - copies everyone's current Jira XP in as their starting balance;
-    - makes the hub count XP from worklogs dated from that day onwards.
-
-    Worklogs already logged earlier that same day would be counted twice (once in the Jira balance, once in the ledger). So do this in the evening, at a weekend, or first thing before anyone has logged time.
-25. Type `START` and select **Start ledger**. Your own profile links automatically the next time you load the page, and the level and XP readout appears.
+22. Open `https://promtek-hub.YOUR-SUBDOMAIN.workers.dev`. You should be sent to Google, then land on the hub.
+23. Add everyone under **Admin, Employees**: name, work email, Jira account ID, department, who they report to, access and teams, and contracted hours. Your own record links to your sign-in by its email.
 
 ## Part 8: Invite the team
 
@@ -108,16 +100,6 @@ This lets people log in with the same Google account they use for Atlassian and 
     - **iPhone:** open the link in **Safari**, tap **Share**, then **Add to Home Screen**.
     - **Android:** open it in **Chrome** and tap **Install** when prompted. You can also use the **⋮** menu → **Install app**, or the account menu (tap your initials) → **Install the app**.
     - **Windows or Mac:** open it in **Chrome** or **Edge** and click the install icon at the right-hand end of the address bar, or use the account menu → **Install the app**. It then opens in its own window and can be pinned to the taskbar or dock.
-
-## Part 9: Run in shadow mode
-
-Leave your Jira automations and Apps Scripts running for a week or two. During that time, check **Admin → Engineers**:
-
-- **Difference** compares the hub's XP with the XP field in Jira. Small differences are normal and mostly come from issues in the old system, such as the Recent XP Gain field not re-triggering when two logs earn the same XP, and reconciliation failing. Large or growing differences on one person are worth looking into.
-- **Worklogs from people without a profile** lists time from people who have no Employee issue. If this shows the whole team, the Tempo worklog author isn't matching the UserID field; the same values that work in your current automation should work here.
-- **Sync** shows the last background run and any error message.
-
-When you're happy the numbers are right, switch employees to the hub and start the ELO engine (Part 19). The old XP and ELO automations can then be switched off.
 
 ## Part 10: Roles, reports and alerts
 
@@ -141,7 +123,7 @@ Employees are managed in the hub, under **Admin, Employees**. Each person has on
 
 **Removing someone** offers two things: hide them and keep their XP history, or remove them and it entirely.
 
-Nothing about employees is read from Jira once they're switched to the hub. The DNM Employee issues can be deleted once everyone is entered here and the ELO engine is running.
+**Who's using the hub** (Admin, admins only) lists each tile with how many times it was opened and by how many people over the last 7, 30 or 90 days, including tiles nobody has opened, and each person with when they last opened the hub, how many days they've used it, and the tile they use most. A page counts once every few minutes per person, so moving around inside it doesn't add up, and a developer viewing as someone isn't counted. Counts are kept for 400 days.
 
 ### The company chart
 
@@ -180,7 +162,7 @@ Access is set with **groups** and **teams**. A person can be in any number of ea
 
 Teams are Projecting, Service, Condor, Sales and Marketing. They decide which tiles someone sees by default (for example Condor Dev for the Condor team) and whose alerts reach them. A Team lead also has the teams they lead ticked under **Leads**; they can only lead teams they're in. Modifiers can be seen and decided only by the person, their supervisor, a lead of one of their teams, Management and admins.
 
-Set all of this on each person under **Admin → Employees**. Changes to anyone's groups or teams are recorded in the audit log. Anyone whose Employee issue has been deleted from Jira is marked "No longer in Jira" the next time profiles are refreshed, and can be removed from the engineer list: either hidden with their XP history kept, or removed completely along with it. Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
+Set all of this on each person under **Admin → Employees**. Changes to anyone's groups or teams are recorded in the audit log.  Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
 
 ### Reports
 
@@ -470,9 +452,7 @@ Each finished category is a match between the job and the people who logged time
 
 ### Starting it
 
-1. Make sure employees are kept in the hub (Admin, Employees). The engine won't start while they're read from Jira, because a refresh would overwrite the ratings.
-2. Under **Admin, ELO engine**, choose the date to rate finished jobs from and select **Start the ELO engine**. Today rates only work finished from now on; an earlier date replays jobs already recorded, oldest first.
-3. Once it's running, switch off the Jira automations that update ELO on the DNM Employee issues.
+1. Under **Admin, ELO engine**, choose the date to rate finished jobs from and select **Start the ELO engine**. Today rates only work finished from now on; an earlier date replays jobs already recorded, oldest first.
 
 ## Part 20: Jobs, disputes and modifiers
 

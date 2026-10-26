@@ -343,78 +343,6 @@ export async function reconcileNextDay(env) {
   return { day, fetched: worklogs.length, deleted: gone.length };
 }
 
-// ---------- Employees (from the DNM Employee issues) ----------
-
-export async function refreshProfiles(env, { importXp = false } = {}) {
-  if ((await getState(env, 'employees_source')) !== 'jira') {
-    return { employees: 0, skippedNoUserId: [], departed: 0, skipped: 'Employees are kept in the hub' };
-  }
-  let userIdField = await getState(env, 'userid_field');
-  if (!userIdField) {
-    userIdField = await findFieldId(env, env.USERID_FIELD_NAME);
-    if (!userIdField) throw new Error(`Couldn't find a Jira field called "${env.USERID_FIELD_NAME}".`);
-    await setState(env, 'userid_field', userIdField);
-  }
-
-  const issues = await searchJql(
-    env,
-    `project = "${env.PROFILE_PROJECT}" AND issuetype = "${env.PROFILE_ISSUETYPE}"`,
-    ['summary', userIdField, env.FIELD_ELO, env.FIELD_BASELINE, env.FIELD_TOTAL_XP]
-  );
-
-  const now = new Date().toISOString();
-  const stmts = [];
-  const skipped = [];
-  for (const issue of issues) {
-    const f = issue.fields || {};
-    const accountId = String(f[userIdField] || '').trim();
-    if (!accountId) { skipped.push(issue.key); continue; }
-    const jiraXp = Math.round(num(f[env.FIELD_TOTAL_XP]) || 0);
-    stmts.push(env.DB.prepare(
-      `INSERT INTO employees (account_id, name, profile_key, elo, baseline, jira_xp, opening_xp, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(account_id) DO UPDATE SET name = excluded.name, profile_key = excluded.profile_key,
-         elo = excluded.elo, baseline = excluded.baseline, jira_xp = excluded.jira_xp,
-         updated_at = excluded.updated_at${importXp ? ', opening_xp = excluded.opening_xp' : ''}`
-    ).bind(accountId, f.summary || issue.key, issue.key, num(f[env.FIELD_ELO]), num(f[env.FIELD_BASELINE]),
-      jiraXp, importXp ? jiraXp : 0, now));
-  }
-  await runBatches(env, stmts);
-
-  // Anyone whose Employee issue has gone is marked as no longer in Jira,
-  // rather than quietly disappearing along with their history.
-  const seen = issues.map((issue) => String(issue.fields?.[userIdField] || '').trim()).filter(Boolean);
-  let departed = 0;
-  if (seen.length) {
-    const { results } = await env.DB.prepare(
-      `SELECT account_id FROM employees WHERE active = 1 AND account_id NOT IN (${seen.map(() => '?').join(',')})`
-    ).bind(...seen).all();
-    departed = results.length;
-    if (departed) {
-      await runBatches(env, results.map((row) => env.DB.prepare(
-        'UPDATE employees SET active = 0, updated_at = ? WHERE account_id = ?'
-      ).bind(now, row.account_id)));
-    }
-  }
-
-  await setState(env, 'last_profile_refresh', now);
-  return { employees: stmts.length, skippedNoUserId: skipped, departed };
-}
-
-// One-off go-live step: carry over current XP from Jira and start the ledger today.
-export async function startLedger(env) {
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM xp_ledger'),
-    env.DB.prepare('DELETE FROM unmatched_worklogs'),
-    env.DB.prepare("DELETE FROM sync_state WHERE key IN ('tempo_cursor', 'reconcile_offset', 'last_poll', 'ledger_start')"),
-  ]);
-  const result = await refreshProfiles(env, { importXp: true });
-  const ledgerStart = londonDate();
-  await setState(env, 'ledger_start', ledgerStart);
-  await setState(env, 'tempo_cursor', Date.now());
-  return { ...result, ledgerStart };
-}
-
 // ---------- Weekly snapshots ----------
 
 export function mondayOf(dateIso) {
@@ -534,6 +462,7 @@ export async function runScheduled(rawEnv) {
     });
   }
   if (new Date().getUTCMinutes() < 2) await attempt('Tidy read counts', () => tidyReads(rawEnv));
+  if (new Date().getUTCHours() === 3 && new Date().getUTCMinutes() < 2) await attempt('Tidy usage', async () => (await import('./usage.js')).tidy(env));
 
   // These make no outside calls, and the freeze must come before Monday's first time is counted.
   const Elo = await import('./elo.js');
@@ -577,7 +506,6 @@ export async function runScheduled(rawEnv) {
       await attempt('Condor ratings', () => Mes.rateStep(env));
     },
     'hourly-scan': () => onceAnHour('hourly-scan', async () => {
-      await attempt('Profile refresh', () => refreshProfiles(env));
       await attempt('Day reminders', async () => (await import('./devtime.js')).reminders(env));
       await attempt('Timer reminders', async () => (await import('./tracker.js')).eveningReminder(env));
       await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));

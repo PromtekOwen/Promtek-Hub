@@ -1,5 +1,4 @@
-// Employees live here now, rather than as issues in the DNM project. Everything
-// the other apps need about a person is on this record.
+// Everyone at Promtek. Everything the other apps need about a person is on this record.
 import { cleanChart } from './org.js';
 import { progressFor } from './progression.js';
 import { peakElos, rankWithPeak } from './elo.js';
@@ -83,7 +82,6 @@ export async function listPeople(env, { includeInactive = true } = {}) {
 
   const peaks = await peakElos(env);
   return {
-    source: (await getState(env, 'employees_source')) || 'jira',
     people: results.map((e) => {
       const xp = (e.opening_xp || 0) + (e.ledger_xp || 0);
       const progress = progressFor(xp);
@@ -121,7 +119,6 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         notes: e.notes,
         active: e.active !== 0,
         pending: String(e.account_id).startsWith('pending-'),
-        profileKey: e.profile_key,
       };
     }),
   };
@@ -237,11 +234,4 @@ export async function removePerson(env, { accountId, keepHistory = false }) {
   ]);
   await ledgerChanged(env);
   return { ok: true, kept: false };
-}
-
-// Once this is switched to the hub, nothing reads the DNM project again.
-export async function setSource(env, source) {
-  if (!['jira', 'hub'].includes(source)) throw new Error('Unknown source.');
-  await setState(env, 'employees_source', source);
-  return { source };
 }

@@ -169,7 +169,7 @@ function ring(progress, size = 104, light = false) {
 
 function notLinkedCard() {
   return `<div class="card notice">
-    <p><strong>Your account isn't linked to an engineer profile yet.</strong></p>
+    <p><strong>Your account isn't linked to an employee record yet.</strong></p>
     <p class="muted">You're signed in as ${esc(me.user.email)}. An admin can link you from the Admin page. Everything else in the hub still works.</p>
   </div>`;
 }
@@ -497,8 +497,9 @@ const pages = {
     async render() {
       if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData, elo, reads] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
-        me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null]);
+      const [data, peopleData, elo, reads, usage] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
+        me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null,
+        api(`/api/admin/usage?days=${usageDays}`).catch(() => null)]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -510,7 +511,6 @@ const pages = {
           <dl class="state">
             <dt>Ledger started</dt><dd>${esc(s.ledger_start || 'Not started')}</dd>
             <dt>Last background run</dt><dd>${when(s.last_scheduled_run)}</dd>
-            <dt>Profiles refreshed</dt><dd>${when(s.last_profile_refresh)}</dd>
           </dl>
           <div class="row">
             <button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
@@ -520,17 +520,9 @@ const pages = {
 
         ${readsHtml(reads)}
 
-        <h2>Start the XP ledger</h2>
-        <div class="card">
-          <p>This copies everyone's current XP from Jira as their starting balance, then counts XP from Tempo worklogs dated from today onwards. Run it once, before anyone logs time for the day. Running it again wipes the ledger and starts over.</p>
-          <div class="row">
-            <label>Type START to confirm <input id="confirm-start" autocomplete="off" size="8"></label>
-            <button class="btn" data-action="start-ledger">Start ledger</button>
-          </div>
-          <div class="result" id="start-result" role="status"></div>
-        </div>
+        ${usageHtml(usage)}
 
-        ${eloAdminHtml(elo, peopleData.source)}
+        ${eloAdminHtml(elo)}
 
         <h2>Home screen messages</h2>
         <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
@@ -604,7 +596,7 @@ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
 function levelSlideHtml() {
   const e = me.employee;
-  if (!me.linked) return '<p class="feed-empty">Your account isn\'t linked to an engineer profile yet, so there\'s no level to show.</p>';
+  if (!me.linked) return '<p class="feed-empty">Your account isn\'t linked to an employee record yet, so there\'s no level to show.</p>';
   return `<a class="summary" href="#/xp">
       ${ring(e.progress, 92)}
       <div>
@@ -1740,11 +1732,11 @@ function settingsCallsHtml() {
     <h2>Extensions</h2>
     <p class="muted" style="margin-top:-.5rem">Calls are matched to people by extension, or by the name on the call if this is blank.</p>
     <div class="table-wrap"><table>
-      <thead><tr><th>Engineer</th><th>Extension</th></tr></thead>
+      <thead><tr><th>Person</th><th>Extension</th></tr></thead>
       <tbody>${people.map((e) => `<tr>
         <td>${esc(e.name)}</td>
         <td><input class="tiny" data-extension="${esc(e.account_id)}" value="${esc(e.extension || '')}" placeholder="—" autocomplete="off"></td>
-      </tr>`).join('') || '<tr><td colspan="2" class="muted">No engineers yet.</td></tr>'}</tbody>
+      </tr>`).join('') || '<tr><td colspan="2" class="muted">Nobody yet.</td></tr>'}</tbody>
     </table></div>`;
 }
 
@@ -3751,7 +3743,7 @@ function teamReportHtml(data) {
       The last column is how long after doing the work people record it, averaged over the last four weeks.</p>
     </div>
     <div class="table-wrap" style="margin-top:1rem"><table>
-      <thead><tr><th>Engineer</th>${header}<th class="num">Logging delay</th></tr></thead>
+      <thead><tr><th>Person</th>${header}<th class="num">Logging delay</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="99" class="muted">No time logged yet.</td></tr>'}</tbody>
     </table></div>`;
 }
@@ -4025,7 +4017,7 @@ function engineerReportHtml(data) {
   return `
     <div class="row" style="margin-bottom:1rem">
       <button class="btn secondary" data-engineer="">Back to the team</button>
-      <a class="btn secondary" href="/api/reports/export?type=ledger&accountId=${encodeURIComponent(e.accountId)}">This engineer's CSV</a>
+      <a class="btn secondary" href="/api/reports/export?type=ledger&accountId=${encodeURIComponent(e.accountId)}">Their CSV</a>
     </div>
     <div class="card">
       <h3 style="margin:0 0 .25rem">${esc(e.name)}</h3>
@@ -6398,6 +6390,38 @@ function readsHtml(r) {
         <ul class="list" style="box-shadow:none;margin-top:.5rem">${earlier.map((d) => `<li><span class="title">${esc(d.day)}</span>
           <span class="sub">Read: background ${n(d.background.total)}, pages ${n(d.pages.total)}. Written ${n((d.background.writes || 0) + (d.pages.writes || 0))}${d.background.top[0] ? `. Busiest: ${esc(d.background.top[0][0])}` : ''}</span>
           <span class="xp">${n(d.background.total + d.pages.total)}</span></li>`).join('')}</ul></details>` : ''}
+    </div>`;
+}
+
+// ---------- Who's using the hub (admins) ----------
+
+let usageDays = 30;
+const PAGE_NAMES = { '#/': 'Home', '#/log': 'Log time', '#/admin': 'Admin' };
+const pageLabel = (page) => PAGE_NAMES[page] || MODULES.find((m) => m.route === page)?.name || page.replace('#/', '');
+function usageHtml(u) {
+  if (!u) return '';
+  const seenText = (iso) => {
+    if (!iso) return 'Never';
+    const d = new Date(iso);
+    const today = new Date().toDateString() === d.toDateString();
+    return today ? `Today, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  };
+  // Every tile, including ones nobody has opened.
+  const counted = new Map(u.pages.map((p) => [p.page, p]));
+  const pages = [...u.pages.map((p) => p.page), ...MODULES.filter((m) => m.route && !counted.has(m.route)).map((m) => m.route)];
+  const pageRows = pages.map((p) => { const c = counted.get(p) || { opens: 0, people: 0 };
+    return `<tr${c.opens ? '' : ' class="muted"'}><td>${esc(pageLabel(p))}</td><td class="num">${n(c.opens)}</td><td class="num">${n(c.people)}</td></tr>`; }).join('');
+  const peopleRows = u.people.map((p) => `<tr${p.lastSeen ? '' : ' class="muted"'}><td>${esc(p.name)}</td><td>${esc(seenText(p.lastSeen))}</td>
+      <td class="num">${n(p.days)}</td><td class="num">${n(p.opens)}</td><td>${p.top ? esc(pageLabel(p.top)) : '—'}</td></tr>`).join('');
+  const never = u.people.filter((p) => !p.lastSeen).length;
+  return `<h2>Who's using the hub</h2>
+    <div class="card">
+      <div class="tabs">${[7, 30, 90].map((d) => `<button class="tab${usageDays === d ? ' on' : ''}" data-usage-days="${d}">${d} days</button>`).join('')}</div>
+      <p class="muted">Pages opened over the last ${n(u.days)} days, counted once every few minutes per person. Only admins can see this.${never ? ` ${n(never)} ${never === 1 ? 'person hasn\'t' : 'people haven\'t'} opened the hub yet.` : ''}</p>
+      <h3 style="margin-bottom:.35rem">Tiles</h3>
+      <div class="table-wrap"><table><thead><tr><th>Page</th><th class="num">Opens</th><th class="num">People</th></tr></thead><tbody>${pageRows}</tbody></table></div>
+      <h3 style="margin:1.25rem 0 .35rem">People</h3>
+      <div class="table-wrap"><table><thead><tr><th>Name</th><th>Last opened the hub</th><th class="num">Days used</th><th class="num">Opens</th><th>Most used</th></tr></thead><tbody>${peopleRows}</tbody></table></div>
     </div>`;
 }
 
@@ -9939,7 +9963,7 @@ const SKIP_PHRASES = {
   'Nobody with a profile logged time on it': 'logged only by people without a profile',
 };
 
-function eloAdminHtml(elo, source) {
+function eloAdminHtml(elo) {
   const skipped = elo.skipped.reduce((a, r) => a + r.n, 0);
   const rows = elo.recent.map((m) => `<tr>
       <td><a href="${esc(me.jiraBaseUrl)}/browse/${esc(m.issue_key)}" target="_blank" rel="noopener">${esc(m.issue_key)}</a><br><span class="muted">${esc(jobName(m.summary))}</span></td>
@@ -9962,7 +9986,7 @@ function eloAdminHtml(elo, source) {
         <button class="btn secondary" data-action="elo-step">Rate the next few now</button>
         <button class="btn secondary" data-action="elo-stop">Pause the engine</button>
       </div>`
-    : `<p style="margin-top:0">The engine rates each finished category against the people who worked on it, once its time has settled. ${source !== 'hub' ? '<strong>Switch employees to the hub before starting it.</strong>' : ''}</p>
+    : `<p style="margin-top:0">The engine rates each finished category against the people who worked on it, once its time has settled.</p>
       <p class="muted">Choose an earlier date to replay jobs already recorded under Completed job tracking, oldest first. Today rates only work finished from now on.</p>
       <div class="row">
         <label>Rate jobs finished from <input type="date" id="elo-from" value="${todayIso()}" max="${todayIso()}"></label>
@@ -9982,7 +10006,7 @@ async function adminAction(action, button) {
     el.className = `result ${isError ? 'bad' : ''}`;
   };
   const target = { 'sync-now': 'sync-result', snapshot: 'sync-result',
-    'start-ledger': 'start-result', link: 'link-result',
+    link: 'link-result',
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'test-live-calls': 'eight8-result', 'lib-list': 'lib-result',
@@ -9996,14 +10020,9 @@ async function adminAction(action, button) {
     } else if (action === 'sync-now') {
       const r = await api('/api/admin/sync-now', { method: 'POST' });
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
-    } else if (action === 'start-ledger') {
-      const confirm = document.getElementById('confirm-start').value.trim();
-      const r = await api('/api/admin/start-ledger', { method: 'POST', body: JSON.stringify({ confirm }) });
-      out(target, `Ledger started for ${r.ledgerStart} with ${r.employees} engineers.`);
-      me = await api('/api/me');
     } else if (action === 'snapshot') {
       const r = await api('/api/admin/snapshot', { method: 'POST', body: JSON.stringify({}) });
-      out(target, r.skipped ? r.skipped : `Recorded ${r.engineers} engineers for the week of ${r.week}.`);
+      out(target, r.skipped ? r.skipped : `Recorded ${r.engineers} ${r.engineers === 1 ? 'person' : 'people'} for the week of ${r.week}.`);
     } else if (action === 'scan-jobs') {
       const r = await api('/api/admin/scan-jobs', { method: 'POST', body: JSON.stringify({}) });
       out(target, `Recorded ${r.epics} finished orders, ${r.categories} finished categories and ${r.rows} items.`);
@@ -10221,6 +10240,8 @@ view.addEventListener('click', async (event) => {
     try { await orgDownload(); } catch (err) { toast(err.message); }
     return;
   }
+  const usageTab = event.target.closest('[data-usage-days]');
+  if (usageTab) { usageDays = Number(usageTab.dataset.usageDays); return render(); }
   const orgMoveBtn = event.target.closest('[data-org-move]');
   if (orgMoveBtn) return orgMove(orgMoveBtn.dataset.orgMove);
   if (currentRoute() === '#/org' && !settingsOpen && event.target.closest('#org-svg')) { orgFocus(event.target.closest('.org-card')); return; }
@@ -10758,7 +10779,20 @@ view.addEventListener('change', async (event) => {
   if (event.target.id === 'quoting-all') { quotingAll = event.target.checked; render(); }
 });
 
+// Which pages are opened, counted for admins. Each page counts once in a few minutes,
+// so moving around inside a page doesn't add up.
+const pageNoted = new Map();
+function notePage() {
+  if (PRACTICE || me?.viewingAs || !me) return;
+  const page = currentRoute();
+  const last = pageNoted.get(page) || 0;
+  if (Date.now() - last < 5 * 60_000) return;
+  pageNoted.set(page, Date.now());
+  fetch('/api/prefs/usage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ page }) }).catch(() => {});
+}
+
 window.addEventListener('hashchange', () => {
+  notePage();
   if (!tour?.practice) endTour(false);     // a walkthrough can lead from one page to the next
   setTimeout(trackerBar, 0);
   settingsOpen = null;
@@ -10816,6 +10850,7 @@ async function start() {
   try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
   if (me.viewingAs) viewAsBar();
   await render();
+  notePage();
   logFab();
   if (PRACTICE) startTour(PRACTICE_ROUTE, { practice: true });
   // Viewing as someone else only looks: their time isn't synced and nothing queued is sent.

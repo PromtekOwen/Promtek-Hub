@@ -297,7 +297,7 @@ export async function stageHint(env, issueKey) {
 // ---------- Writing the worklog ----------
 
 export async function createWorklog(env, viewer, { issueId, issueKey, seconds, date, startTime, description, chargeable }) {
-  if (!viewer.accountId) throw new Error("Your account isn't linked to an engineer profile yet.");
+  if (!viewer.accountId) throw new Error("Your account isn't linked to an employee record yet.");
   if (!issueId) throw new Error('Choose something to log against.');
   const secs = Math.round(Number(seconds));
   if (!Number.isFinite(secs) || secs < 60) throw new Error('Log at least a minute.');
