@@ -497,9 +497,9 @@ const pages = {
     async render() {
       if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData, elo, reads, usage] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
+      const [data, peopleData, elo, reads, usage, backdate] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
         me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null,
-        api(`/api/admin/usage?days=${usageDays}`).catch(() => null)]);
+        api(`/api/admin/usage?days=${usageDays}`).catch(() => null), api('/api/admin/xp-backdate').catch(() => null)]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -523,6 +523,8 @@ const pages = {
         ${usageHtml(usage)}
 
         ${eloAdminHtml(elo)}
+
+        ${xpStartHtml(backdate)}
 
         <h2>Home screen messages</h2>
         <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
@@ -4249,6 +4251,15 @@ function scoreRow(key, label, value, { quoted, name = 'jobs-score' } = {}) {
 function jobsCategoryRow(c) {
   const pct = c.pct ?? 0;
   const state = pct >= 1 ? ' over' : pct >= 0.9 ? ' near' : '';
+  // An item on an order from before categories: no difficulty to show or dispute.
+  if (c.legacy) {
+    return `<li class="job-cat${state}">
+    <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(c.summary)}</span>
+      <span class="muted">Assigned to you</span></div>
+    ${c.estimateSeconds ? `<div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>` : ''}
+    <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}${c.status ? `. ${esc(c.status)}` : ''}</span></div>
+  </li>`;
+  }
   const label = DISCIPLINE_NAMES[c.discipline] || '';
   const extra = jobName(c.summary);
   const name = `${label}${extra && extra.toLowerCase() !== label.toLowerCase() ? `, ${esc(extra)}` : ''}`;
@@ -4298,7 +4309,7 @@ async function jobsHomeHtml() {
         <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}</span></p>
       <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul></div>`).join('');
   const empty = jobsScope === 'mine'
-    ? '<div class="card"><p style="margin:0">Nothing open that you have logged time on in the last six months. My team and All show everything else.</p></div>'
+    ? '<div class="card"><p style="margin:0">Nothing open that you\'re in Promtek Staff Involved on, or assigned to on an older order. My team and All show everything else.</p></div>'
     : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
   return `${approvalsHtml(approvals)}
     ${countChecksHtml(approvals.countChecks)}
@@ -6443,6 +6454,32 @@ function usageHtml(u) {
       <div class="table-wrap"><table><thead><tr><th>Page</th><th class="num">Opens</th><th class="num">People</th></tr></thead><tbody>${pageRows}</tbody></table></div>
       <h3 style="margin:1.25rem 0 .35rem">People</h3>
       <div class="table-wrap"><table><thead><tr><th>Name</th><th>Last opened the hub</th><th class="num">Days used</th><th class="num">Opens</th><th>Most used</th></tr></thead><tbody>${peopleRows}</tbody></table></div>
+    </div>`;
+}
+
+// Moving the date XP counts from earlier, so time logged before then earns XP too.
+function xpStartHtml(b) {
+  if (!b || !b.ledgerStart) return '';
+  const j = b.job;
+  const running = j && !j.done;
+  const day = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+  const now = new Date();
+  const fyStart = `${now.getMonth() >= 4 ? now.getFullYear() : now.getFullYear() - 1}-05-01`;
+  const pct = running && j.days ? Math.round((j.daysDone / j.days) * 100) : 0;
+  return `<h2>XP start date</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">XP counts time logged in Tempo from ${esc(day(b.ledgerStart))}${b.opening.people ? `, plus ${n(b.opening.xp)} XP carried over from Jira for ${n(b.opening.people)} ${b.opening.people === 1 ? 'person' : 'people'}` : ''}.
+        Setting the date makes Tempo the only source of XP from then on: carried-over XP is replaced, an earlier date gives everyone XP for the time they logged before, and a later one takes away the time before it.</p>
+      ${running ? `<p><strong>Reading Tempo from ${esc(day(j.from))}.</strong> ${n(j.daysDone)} of ${n(j.days)} days done, ${n(j.logs)} time logs so far. A few days are read every couple of minutes, and XP appears as each day is done.</p>
+        <div class="bar" aria-hidden="true"><span style="width:${pct}%"></span></div>` : ''}
+      ${j?.done ? `<p>XP set to count from ${esc(day(j.from))} on ${esc(new Date(j.finishedAt).toLocaleString('en-GB'))}.${j.logs ? ` ${n(j.logs)} past time logs were read.` : ''}</p>` : ''}
+      ${running ? '' : `
+      <div class="row" style="margin-top:.75rem">
+        <label>Count XP from <input type="date" id="xp-from" value="${fyStart}" max="${new Date().toISOString().slice(0, 10)}"></label>
+      </div>
+      <p class="muted">Overtime earns 1.5x from the week it was switched on, so earlier weeks earn the normal rate. Nobody is emailed about past time.</p>
+      <div class="row"><button class="btn" data-action="xp-backdate">Set the XP start date</button></div>`}
+      <div class="result" id="xp-backdate-result" role="status"></div>
     </div>`;
 }
 
@@ -10031,11 +10068,20 @@ async function adminAction(action, button) {
     'scan-jobs': 'jobs-result', 'backfill-start': 'jobs-result', 'recompute-stages': 'jobs-result',
     'vehicle-expiries': 'vehicle-result', 'save-vehicle': 'vehicle-result', 'ra-add': 'ra-result',
     'test-8x8': 'eight8-result', 'test-live-calls': 'eight8-result', 'lib-list': 'lib-result',
+    'xp-backdate': 'xp-backdate-result',
     'elo-start': 'elo-result', 'elo-stop': 'elo-result', 'elo-step': 'elo-result', 'reads-carry-on': 'reads-result',
  }[action];
   button.disabled = true;
   try {
-    if (action === 'reads-carry-on') {
+    if (action === 'xp-backdate') {
+      const from = document.getElementById('xp-from')?.value;
+      if (!from) return out(target, 'Choose the date for XP to count from.', true);
+      const when = new Date(`${from}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+      if (!confirm(`Count XP from ${when}?\n\nAll XP will come from time logged in Tempo from then on, and any XP carried over from Jira is replaced. `
+        + `Past time is read over the next hour or two, and levels change as it is. This can't be undone from here.`)) return;
+      const r = await api('/api/admin/xp-backdate', { method: 'POST', body: JSON.stringify({ from }) });
+      out(target, r.job?.done ? `XP now counts from ${when}.` : `XP will count from ${when}. Past time is read in the background, a few days every couple of minutes.`);
+    } else if (action === 'reads-carry-on') {
       await api('/api/admin/reads-carry-on', { method: 'POST' });
       out(target, 'Background jobs will run again from the next run, until the month ends.');
     } else if (action === 'sync-now') {

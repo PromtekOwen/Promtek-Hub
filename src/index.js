@@ -926,6 +926,15 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/person') {
       return json(await auditedPerson(env, user, body.accountId, (b) => (b ? 'Details changed' : 'Added'), () => People.savePerson(env, body)));
     }
+    if (method === 'GET' && pathname === '/api/admin/xp-backdate') return json(await (await import('./backdate.js')).status(env));
+    if (method === 'POST' && pathname === '/api/admin/xp-backdate') {
+      const Backdate = await import('./backdate.js');
+      const r = await Backdate.start(env, { from: body.from, by: user.email });
+      await Audit.record(env, user, { area: 'Admin', action: 'XP backdated', subjectType: 'sync', subjectId: 'ledger', label: 'XP ledger',
+        changes: [{ label: 'XP runs from', before: r.job.previousStart, after: r.job.from },
+          ...(r.job.clearedOpening ? [{ label: 'Carried-over XP', before: String(r.job.clearedOpening), after: '0' }] : [])] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/admin/backdate-rate') {
       const accountId = String(body.accountId || '');
       if (!accountId) return json({ error: 'Which person?' }, 400);

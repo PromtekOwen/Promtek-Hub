@@ -111,7 +111,8 @@ async function loadJobs(env, issueIds) {
 
 // ---------- XP ledger ----------
 
-export async function processWorklogs(env, worklogs) {
+// A backfill of past time leaves Promtek Staff Involved and the unmatched-time alert alone.
+export async function processWorklogs(env, worklogs, { backfill = false } = {}) {
   const ledgerStart = await getState(env, 'ledger_start');
   if (!ledgerStart) return { processed: 0, changed: 0 };
 
@@ -150,7 +151,7 @@ export async function processWorklogs(env, worklogs) {
     const emp = employees.get(wl.accountId);
     const prevRow = existing.get(wl.id);
     // Time newly logged on an item puts its author in Promtek Staff Involved.
-    if (!prevRow || prevRow.issue_id !== wl.issueId) involved.push({ issueId: wl.issueId, accountId: wl.accountId, issueKey: jobs.get(wl.issueId)?.issue_key });
+    if (!backfill && (!prevRow || prevRow.issue_id !== wl.issueId)) involved.push({ issueId: wl.issueId, accountId: wl.accountId, issueKey: jobs.get(wl.issueId)?.issue_key });
     if (!emp) {
       unmatched.add(wl.accountId);
       stmts.push(env.DB.prepare(
@@ -208,7 +209,7 @@ export async function processWorklogs(env, worklogs) {
   if (involved.length) {
     try { await runBatches(env, noteStatements(env, involved)); } catch (err) { console.warn('Staff involved not noted:', err.message); }
   }
-  if (unmatched.size) await raiseUnmatchedAlert(env, [...unmatched]);
+  if (unmatched.size && !backfill) await raiseUnmatchedAlert(env, [...unmatched]);
   return { processed: wls.length, changed, unmatched: unmatched.size };
 }
 
@@ -514,6 +515,8 @@ export async function runScheduled(rawEnv) {
   await attempt('Weekly ELO freeze', () => Elo.freezeWeek(env));
   await attempt('Tempo sync', () => pollRecent(env, { force: true }));
   await attempt('Time logged ahead', () => catchUpToday(env));
+  // While XP is being backdated, a few more past days are read on every run.
+  await attempt('XP backdate', async () => (await import('./backdate.js')).step(env));
   // New time puts its author in Promtek Staff Involved within minutes, a few at a time
   // so the job that follows still has its calls. Its own turn below clears any backlog.
   await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });

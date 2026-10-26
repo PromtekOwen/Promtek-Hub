@@ -2,10 +2,11 @@
 // is never overwritten: each approved dispute is kept alongside it, so quoting
 // can learn where jobs turned out harder than they looked.
 import { searchJql, getIssue, jira } from './jira.js';
-import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone } from './jobs.js';
+import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone, teamOf } from './jobs.js';
 import { raiseAlert, recalcIssues, getState, setState, sendAlerts } from './sync.js';
 import { weightedScore, jobEloFromScore } from './progression.js';
 import { forMe, leadsOfTeam } from './permissions.js';
+import { STAFF_FIELD } from './staff.js';
 
 export const DISPUTE_REASONS = [
   'Scope grew', 'Spec was unclear or wrong', 'Kit faulty or obsolete', 'Customer delays',
@@ -17,23 +18,75 @@ const SCORE_KEYS = ['tech', 'scope', 'risk', 'dep'];
 const chunk = (list, size) => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size));
 const hoursText = (s) => `${Math.round((s || 0) / 360) / 10}h`;
 
-// Every open order in the customer projects, with its categories.
-export async function activeCategories(env) {
+const JOB_FIELDS = [...ALL_FIELDS, STAFF_FIELD, 'assignee'];
+const STAFF_JQL = `cf[${STAFF_FIELD.replace('customfield_', '')}]`;
+// Invoices and paperwork sit under legacy orders too, but aren't work to do.
+const LEGACY_ADMIN_TYPES = ['invoice', 'documentation check phase'];
+const num = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : null; };
+const staffOf = (issue) => {
+  const v = issue.fields?.[STAFF_FIELD];
+  return (Array.isArray(v) ? v : v ? [v] : []).map((u) => u?.accountId).filter(Boolean);
+};
+
+// Every open order in the customer projects, with its categories. Orders from
+// before categories were used ("legacy" orders) have their items straight under
+// the order instead; those come back as legacy items.
+export async function activeJobs(env) {
   const epics = await searchJql(env, `${customerFilter} AND issuetype = Epic AND statusCategory != Done ORDER BY updated DESC`,
     ALL_FIELDS, { limit: 300 });
   const byId = new Map(epics.map((e) => [String(e.id), e]));
-  const out = [];
+  const categories = [];
+  const children = new Map();
   for (const part of chunk(epics.map((e) => e.key), 50)) {
-    const cats = await searchJql(env, `parent in (${part.join(',')}) AND issuetype not in subTaskIssueTypes()`, ALL_FIELDS);
-    for (const category of cats) {
-      if (!disciplineOf(category)) continue;
-      const epic = byId.get(String(category.fields?.parent?.id));
+    const items = await searchJql(env, `parent in (${part.join(',')}) AND issuetype not in subTaskIssueTypes()`, JOB_FIELDS);
+    for (const item of items) {
+      const epic = byId.get(String(item.fields?.parent?.id));
       if (!epic) continue;
-      const [row] = categoryRows({ epic, category, categoryStages: [] });
-      out.push({ ...row, done: isDone(category), order_summary: epic.fields?.summary || '' });
+      if (!children.has(String(epic.id))) children.set(String(epic.id), []);
+      children.get(String(epic.id)).push(item);
+      if (!disciplineOf(item)) continue;
+      const [row] = categoryRows({ epic, category: item, categoryStages: [] });
+      categories.push({ ...row, done: isDone(item), order_summary: epic.fields?.summary || '', staff: staffOf(item) });
     }
   }
-  return out;
+  const legacy = [];
+  for (const [epicId, items] of children) {
+    if (items.some((i) => disciplineOf(i))) continue;
+    const epic = byId.get(epicId);
+    const ef = epic.fields || {};
+    for (const item of items) {
+      const f = item.fields || {};
+      if (LEGACY_ADMIN_TYPES.includes(String(f.issuetype?.name || '').toLowerCase())) continue;
+      legacy.push({
+        issue_id: String(item.id), issue_key: item.key, summary: f.summary || '', status: f.status?.name || null, done: isDone(item),
+        assignee: f.assignee?.accountId || null, epic_key: epic.key, order_summary: ef.summary || '',
+        project_name: ef.project?.name || null, team: teamOf(epic),
+        estimate_seconds: num(f.timeoriginalestimate), actual_seconds: num(f.aggregatetimespent) || num(f.timespent) || 0,
+      });
+    }
+  }
+  return { categories, legacy };
+}
+
+export async function activeCategories(env) {
+  return (await activeJobs(env)).categories;
+}
+
+// The open categories someone is in Promtek Staff Involved on, on the category itself
+// or one of its stages. Time they've just logged counts too, before Jira has caught up.
+async function staffedCategories(env, accountId, categories) {
+  const mine = new Set(categories.filter((c) => c.staff?.includes(accountId)).map((c) => c.issue_id));
+  const open = categories.filter((c) => !c.done && !mine.has(c.issue_id));
+  for (const part of chunk(open.map((c) => c.issue_key), 50)) {
+    const stages = await searchJql(env, `parent in (${part.join(',')}) AND ${STAFF_JQL} = "${accountId.replace(/"/g, '')}"`, ['parent']);
+    for (const s of stages) if (s.fields?.parent?.id) mine.add(String(s.fields.parent.id));
+  }
+  const { results } = await env.DB.prepare(
+    `SELECT s.issue_id, j.parent_id FROM staff_involved s LEFT JOIN jobs j ON j.issue_id = s.issue_id
+      WHERE s.account_id = ? AND s.status = 'pending'`
+  ).bind(accountId).all();
+  for (const r of results) { mine.add(String(r.issue_id)); if (r.parent_id) mine.add(String(r.parent_id)); }
+  return mine;
 }
 
 async function overridesFor(env, ids) {
@@ -49,7 +102,7 @@ async function overridesFor(env, ids) {
 }
 
 export async function listActive(env, viewer, { scope = 'mine' } = {}) {
-  const cats = await activeCategories(env);
+  const { categories: cats, legacy } = await activeJobs(env);
   const ids = cats.map((c) => c.issue_id);
   const overrides = await overridesFor(env, ids);
   const { results: pending } = await env.DB.prepare(
@@ -57,16 +110,8 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
   ).all();
   const pendingBy = new Map(pending.map((p) => [p.category_id, p.account_id]));
 
-  // Logged against the category itself, or against one of its stages.
-  const mine = new Set();
-  if (viewer.accountId) {
-    const since = new Date(Date.now() - 180 * 86_400_000).toISOString().slice(0, 10);
-    const { results } = await env.DB.prepare(
-      `SELECT DISTINCT l.issue_id, j.parent_id FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
-        WHERE l.account_id = ? AND l.work_date >= ?`
-    ).bind(viewer.accountId, since).all();
-    for (const r of results) { mine.add(String(r.issue_id)); if (r.parent_id) mine.add(String(r.parent_id)); }
-  }
+  // Theirs: categories they're in Promtek Staff Involved on (the hub adds anyone who logs time there).
+  const mine = viewer.accountId ? await staffedCategories(env, viewer.accountId, cats) : new Set();
 
   const orders = new Map();
   for (const c of cats) {
@@ -86,6 +131,19 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
       pct: estimate ? c.actual_seconds / estimate : null, mine: isMine, disputed: Boolean(o),
       pendingDispute: pendingBy.has(c.issue_id), pendingIsMine: pendingBy.get(c.issue_id) === viewer.accountId,
     });
+  }
+  // On their own list, the open items assigned to them on legacy orders too.
+  if (scope === 'mine' && viewer.accountId) {
+    for (const item of legacy.filter((i) => i.assignee === viewer.accountId && !i.done)) {
+      if (!orders.has(item.epic_key)) {
+        orders.set(item.epic_key, { key: item.epic_key, summary: item.order_summary, customer: item.project_name, team: item.team, categories: [] });
+      }
+      orders.get(item.epic_key).categories.push({
+        id: item.issue_id, key: item.issue_key, summary: item.summary, legacy: true, status: item.status, done: item.done,
+        estimateSeconds: item.estimate_seconds, loggedSeconds: item.actual_seconds,
+        pct: item.estimate_seconds ? item.actual_seconds / item.estimate_seconds : null, mine: true,
+      });
+    }
   }
   return { scope, orders: [...orders.values()], reasons: DISPUTE_REASONS };
 }
