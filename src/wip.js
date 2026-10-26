@@ -141,6 +141,14 @@ function regionOf(entityText, project) {
   return ENTITIES[lower(entityText)] || project?.region || null;
 }
 
+// An upsert that only writes when something has changed. A full read every half hour would
+// otherwise rewrite every order and item each time, and every row written counts.
+const ifChanged = (table, cols, extra = '') => ` WHERE ${cols.map((c) => `${table}.${c} IS NOT excluded.${c}`).join(' OR ')}${extra}`;
+const ORDER_COLS = ['issue_key', 'project_key', 'region', 'entity', 'summary', 'org', 'status', 'status_cat', 'created', 'done_at', 'updated', 'upfront', 'quote_no', 'labels',
+  'customer_item', 'has_doc', 'doc_yes'];
+const CONTRACT_COLS = ['issue_key', 'project_key', 'region', 'summary', 'org', 'status', 'status_cat', 'start_date', 'end_date', 'ended_at', 'total'];
+const ITEM_COLS = ['issue_key', 'order_id', 'parent_id', 'level', 'issuetype', 'subtask', 'status', 'status_cat', 'summary', 'share', 'inv_due', 'inv_date', 'division', 'created', 'paid_at'];
+
 function orderStatement(env, i, ids, projects, now) {
   const f = i.fields || {};
   const project = projects.get(String(f.project?.key || i.key.split('-')[0]).toUpperCase());
@@ -155,7 +163,8 @@ function orderStatement(env, i, ids, projects, now) {
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, region = excluded.region, entity = excluded.entity,
        summary = excluded.summary, org = excluded.org, status = excluded.status, status_cat = excluded.status_cat, created = excluded.created,
        done_at = excluded.done_at, updated = excluded.updated, upfront = excluded.upfront, quote_no = excluded.quote_no, labels = excluded.labels,
-       customer_item = excluded.customer_item, has_doc = excluded.has_doc, doc_yes = excluded.doc_yes, seen_at = excluded.seen_at, gone = 0`
+       customer_item = excluded.customer_item, has_doc = excluded.has_doc, doc_yes = excluded.doc_yes, seen_at = excluded.seen_at, gone = 0
+     ${ifChanged('wip_orders', ORDER_COLS, ' OR wip_orders.gone = 1')}`
   ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], regionOf(entity, project), entity || null, f.summary || '', f.project?.name || project?.name || '',
     f.status?.name || '', cat, dateOf(f.created), cat === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null, f.updated || null,
     num(f[F.upfront]), text(f[F.quote]) || null, JSON.stringify(f.labels || []),
@@ -172,7 +181,8 @@ function contractStatement(env, i, projects, now) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, region = excluded.region, summary = excluded.summary,
        org = excluded.org, status = excluded.status, status_cat = excluded.status_cat, start_date = excluded.start_date, end_date = excluded.end_date,
-       ended_at = excluded.ended_at, total = excluded.total, seen_at = excluded.seen_at, gone = 0`
+       ended_at = excluded.ended_at, total = excluded.total, seen_at = excluded.seen_at, gone = 0
+     ${ifChanged('wip_contracts', CONTRACT_COLS, ' OR wip_contracts.gone = 1')}`
   ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], regionOf(text(f[F.entity]), project), f.summary || '', f.project?.name || project?.name || '',
     f.status?.name || '', cat, dateOf(f[F.start]), dateOf(f[F.end]), expired || cat === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null,
     num(f[F.upfront]), now);
@@ -186,7 +196,8 @@ function itemStatement(env, i, orderId, level) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, order_id = excluded.order_id, parent_id = excluded.parent_id, level = excluded.level,
        issuetype = excluded.issuetype, subtask = excluded.subtask, status = excluded.status, status_cat = excluded.status_cat, summary = excluded.summary,
-       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created, paid_at = excluded.paid_at`
+       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created, paid_at = excluded.paid_at
+     ${ifChanged('wip_items', ITEM_COLS)}`
   ).bind(String(i.id), i.key, String(orderId), f.parent?.id ? String(f.parent.id) : null, level, f.issuetype?.name || '', f.issuetype?.subtask ? 1 : 0,
     f.status?.name || '', statusCat(i), f.summary || '', num(f[F.share]), dateOf(f[F.due]), dateOf(f[F.invoiceDate]), div, f.created || null,
     statusCat(i) === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null);
@@ -287,7 +298,7 @@ async function recompute(env, ids) {
   const contracts = [];
   for (const part of chunk(list, IN)) {
     orders.push(...(await env.DB.prepare(`SELECT * FROM wip_orders WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results);
-    contracts.push(...(await env.DB.prepare(`SELECT issue_id FROM wip_contracts WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results);
+    contracts.push(...(await env.DB.prepare(`SELECT issue_id, steps, steps_invoiced, steps_paid FROM wip_contracts WHERE issue_id IN (${marks(part.length)})`).bind(...part).all()).results);
   }
   const items = await itemsFor(env, list);
   const byOrder = new Map();
@@ -295,9 +306,11 @@ async function recompute(env, ids) {
   const movesOn = (await getState(env, 'wip_moves_on')) === '1';
   const now = new Date().toISOString();
   const stmts = [];
+  const same = (o, r) => ['legacy', 'progress', 'non_admin', 'children', 'open_work', 'invoiced', 'paid', 'token_qty', 'token_only', 'token_paid', 'division_jira', 'move_sig']
+    .every((k) => (o[k] ?? null) === (r[k] ?? null));
   for (const o of orders) {
     const r = computeOrder(o, byOrder.get(o.issue_id) || []);
-    stmts.push(env.DB.prepare(
+    if (!same(o, r)) stmts.push(env.DB.prepare(
       `UPDATE wip_orders SET legacy = ?, progress = ?, non_admin = ?, children = ?, open_work = ?, invoiced = ?, paid = ?, token_qty = ?, token_only = ?,
          token_paid = ?, division_jira = ?, move_sig = ?, computed_at = ? WHERE issue_id = ?`
     ).bind(r.legacy, r.progress, r.non_admin, r.children, r.open_work, r.invoiced, r.paid, r.token_qty, r.token_only, r.token_paid, r.division_jira,
@@ -316,8 +329,9 @@ async function recompute(env, ids) {
   }
   for (const c of contracts) {
     const inv = (byOrder.get(c.issue_id) || []).filter((i) => i.level === 1 && isInvoice(i));
-    stmts.push(env.DB.prepare('UPDATE wip_contracts SET steps = ?, steps_invoiced = ?, steps_paid = ? WHERE issue_id = ?')
-      .bind(inv.length, inv.filter((i) => invoiceState(i).invoiced).length, inv.filter((i) => invoiceState(i).paid).length, c.issue_id));
+    const steps = [inv.length, inv.filter((i) => invoiceState(i).invoiced).length, inv.filter((i) => invoiceState(i).paid).length];
+    if (steps[0] === c.steps && steps[1] === c.steps_invoiced && steps[2] === c.steps_paid) continue;
+    stmts.push(env.DB.prepare('UPDATE wip_contracts SET steps = ?, steps_invoiced = ?, steps_paid = ? WHERE issue_id = ?').bind(...steps, c.issue_id));
   }
   await runAll(env, stmts);
   return orders.length + contracts.length;
@@ -425,8 +439,16 @@ export async function full(env, { force = false } = {}) {
       await runAll(env, [...orders.issues.map((i) => orderStatement(env, i, ids, projects, at)), ...contracts.issues.map((i) => contractStatement(env, i, projects, at))]);
       // Anything that should have come back and didn't has been deleted, or isn't an order now.
       const since = londonDate(Date.now() - KEEP_DONE_DAYS * 86_400_000);
-      await env.DB.prepare("UPDATE wip_orders SET gone = 1 WHERE seen_at < ? AND (status_cat IS NOT 'done' OR done_at >= ?)").bind(at, since).run();
-      await env.DB.prepare('UPDATE wip_contracts SET gone = 1 WHERE seen_at < ?').bind(at).run();
+      const seenOrders = new Set(orders.issues.map((i) => String(i.id)));
+      const seenContracts = new Set(contracts.issues.map((i) => String(i.id)));
+      const lostOrders = (await env.DB.prepare('SELECT issue_id, status_cat, done_at FROM wip_orders WHERE gone = 0').all()).results
+        .filter((o) => !seenOrders.has(o.issue_id) && (o.status_cat !== 'done' || (o.done_at || '') >= since)).map((o) => o.issue_id);
+      const lostContracts = (await env.DB.prepare('SELECT issue_id FROM wip_contracts WHERE gone = 0').all()).results
+        .filter((c) => !seenContracts.has(c.issue_id)).map((c) => c.issue_id);
+      const goneStmts = [];
+      for (const part of chunk(lostOrders, IN)) goneStmts.push(env.DB.prepare(`UPDATE wip_orders SET gone = 1 WHERE issue_id IN (${marks(part.length)})`).bind(...part));
+      for (const part of chunk(lostContracts, IN)) goneStmts.push(env.DB.prepare(`UPDATE wip_contracts SET gone = 1 WHERE issue_id IN (${marks(part.length)})`).bind(...part));
+      if (goneStmts.length) await runAll(env, goneStmts);
       const keep = londonDate(Date.now() - KEEP_DONE_DAYS * 86_400_000);
       const { results } = await env.DB.prepare(
         `SELECT issue_id FROM wip_orders WHERE gone = 0 AND (status_cat IS NOT 'done' OR done_at >= ?)
@@ -470,7 +492,15 @@ async function readItems(env, b, orderIds) {
   for (const part of chunk(cats.map((i) => String(i.id)), 50)) level2.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
   const orderOf = new Map(level1.map((i) => [String(i.id), String(i.fields.parent.id)]));
   const stmts = [];
-  for (const part of chunk(orderIds, IN)) stmts.push(env.DB.prepare(`DELETE FROM wip_items WHERE order_id IN (${marks(part.length)})`).bind(...part));
+  // Only items that have gone are deleted; the rest are written only if they changed.
+  const fresh = new Set([...level1, ...level2].map((i) => String(i.id)));
+  const lost = [];
+  for (const part of chunk(orderIds.map(String), IN)) {
+    for (const r of (await env.DB.prepare(`SELECT issue_id FROM wip_items WHERE order_id IN (${marks(part.length)})`).bind(...part).all()).results) {
+      if (!fresh.has(r.issue_id)) lost.push(r.issue_id);
+    }
+  }
+  for (const part of chunk(lost, IN)) stmts.push(env.DB.prepare(`DELETE FROM wip_items WHERE issue_id IN (${marks(part.length)})`).bind(...part));
   for (const i of level1) stmts.push(itemStatement(env, i, String(i.fields.parent.id), 1));
   for (const i of level2) stmts.push(itemStatement(env, i, orderOf.get(String(i.fields.parent.id)), 2));
   await runAll(env, stmts);

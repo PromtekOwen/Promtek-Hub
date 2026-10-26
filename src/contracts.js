@@ -229,12 +229,18 @@ async function syncContracts(env, b) {
      ON CONFLICT(issue_key) DO UPDATE SET issue_id = excluded.issue_id, project_key = excluded.project_key, customer = excluded.customer,
        summary = excluded.summary, status = excluded.status, tier = excluded.tier, bank_holiday = excluded.bank_holiday,
        start_date = excluded.start_date, renewal_date = excluded.renewal_date, end_date = excluded.end_date,
-       f_available = excluded.f_available, f_used = excluded.f_used, f_overdraft = excluded.f_overdraft, synced_at = excluded.synced_at`
+       f_available = excluded.f_available, f_used = excluded.f_used, f_overdraft = excluded.f_overdraft, synced_at = excluded.synced_at
+     WHERE ${['issue_id', 'project_key', 'customer', 'summary', 'status', 'tier', 'bank_holiday', 'start_date', 'renewal_date', 'end_date', 'f_available', 'f_used', 'f_overdraft']
+    .map((c) => `contracts.${c} IS NOT excluded.${c}`).join(' OR ')}`
   ).bind(c.issue_key, c.issue_id, c.project_key, c.customer, c.summary, c.status, c.tier, c.bank_holiday, c.start_date, c.renewal_date,
     c.end_date, c.f_available, c.f_used, c.f_overdraft, c.synced_at));
   for (const part of chunk(stmts, 50)) await env.DB.batch(part);
   // Gone from the search: deleted, finished long ago, or not in a customer project.
-  await env.DB.prepare('DELETE FROM contracts WHERE synced_at < ?').bind(now).run();
+  // Unchanged contracts aren't rewritten, so what's gone is worked out from the keys.
+  const seenKeys = new Set(rows.map((r) => r.issue_key));
+  for (const r of (await env.DB.prepare('SELECT issue_key FROM contracts').all()).results) {
+    if (!seenKeys.has(r.issue_key)) await env.DB.prepare('DELETE FROM contracts WHERE issue_key = ?').bind(r.issue_key).run();
+  }
   const allowed = await projectFilter(env);
   for (const c of rows.filter((r) => !allowed(r.project_key))) await env.DB.prepare('DELETE FROM contracts WHERE issue_key = ?').bind(c.issue_key).run();
   return rows.length;
@@ -260,12 +266,15 @@ async function syncItems(env, b, { full }) {
     const stmts = issues.map((i) => env.DB.prepare(
       `INSERT INTO contract_items (issue_id, issue_key, contract_key, kind, summary, status, done, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, contract_key = excluded.contract_key, kind = excluded.kind,
-         summary = excluded.summary, status = excluded.status, done = excluded.done, synced_at = excluded.synced_at`
+         summary = excluded.summary, status = excluded.status, done = excluded.done, synced_at = excluded.synced_at
+       WHERE ${['issue_key', 'contract_key', 'kind', 'summary', 'status', 'done'].map((c) => `contract_items.${c} IS NOT excluded.${c}`).join(' OR ')}`
     ).bind(String(i.id), i.key, i.fields.parent?.key || '', itemKind(i), i.fields.summary || '', i.fields.status?.name || '',
       i.fields.status?.statusCategory?.key === 'done' ? 1 : 0, now));
     for (const s of chunk(stmts, 50)) await env.DB.batch(s);
     if (full) {
-      await env.DB.prepare(`DELETE FROM contract_items WHERE contract_key IN (${placeholders(part.length)}) AND synced_at < ?`).bind(...part, now).run();
+      const seenItems = new Set(issues.map((i) => String(i.id)));
+      const { results: had } = await env.DB.prepare(`SELECT issue_id FROM contract_items WHERE contract_key IN (${placeholders(part.length)})`).bind(...part).all();
+      for (const r of had) if (!seenItems.has(r.issue_id)) await env.DB.prepare('DELETE FROM contract_items WHERE issue_id = ?').bind(r.issue_id).run();
       await setState(env, 'contracts_full_cursor', p + 1);
     }
     count += issues.length;

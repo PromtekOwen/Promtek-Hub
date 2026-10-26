@@ -51,7 +51,9 @@ function itemStatement(env, i, now) {
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, summary = excluded.summary,
        issuetype = excluded.issuetype, subtask = excluded.subtask, status = excluded.status, status_cat = excluded.status_cat, priority = excluded.priority,
        assignee_id = excluded.assignee_id, assignee_name = excluded.assignee_name, parent_key = excluded.parent_key, parent_summary = excluded.parent_summary,
-       created = excluded.created, updated = excluded.updated, due = excluded.due, estimate_left = excluded.estimate_left, seen_at = excluded.seen_at`
+       created = excluded.created, updated = excluded.updated, due = excluded.due, estimate_left = excluded.estimate_left, seen_at = excluded.seen_at
+     WHERE ${['issue_key', 'project_key', 'summary', 'issuetype', 'subtask', 'status', 'status_cat', 'priority', 'assignee_id', 'assignee_name', 'parent_key',
+    'parent_summary', 'created', 'updated', 'due', 'estimate_left'].map((c) => `capacity_items.${c} IS NOT excluded.${c}`).join(' OR ')}`
   ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], f.summary || '', f.issuetype?.name || '', f.issuetype?.subtask ? 1 : 0,
     f.status?.name || '', f.status?.statusCategory?.key || null, f.priority?.name || null, f.assignee?.accountId || null, f.assignee?.displayName || null,
     f.parent?.key || null, f.parent?.fields?.summary || null, f.created || null, f.updated || null, f.duedate || null,
@@ -97,7 +99,12 @@ export async function run(env, { force = false } = {}) {
       const { issues, more } = await search(b, JQL, FIELDS, { pages: 25 });
       for (const part of chunk(issues.map((i) => itemStatement(env, i, now)), 50)) await env.DB.batch(part);
       // Anything not seen is done or no longer assigned. A search cut short leaves the rest alone.
-      if (!more) await env.DB.prepare('DELETE FROM capacity_items WHERE seen_at < ?').bind(now).run();
+      // Unchanged items aren't rewritten, so what's gone is worked out from the ids.
+      if (!more) {
+        const seen = new Set(issues.map((i) => String(i.id)));
+        const gone = (await env.DB.prepare('SELECT issue_id FROM capacity_items').all()).results.map((r) => r.issue_id).filter((id) => !seen.has(id));
+        for (const part of chunk(gone, IN)) await env.DB.prepare(`DELETE FROM capacity_items WHERE issue_id IN (${marks(part.length)})`).bind(...part).run();
+      }
       await setState(env, 'capacity_sync_at', String(Date.now()));
       out.items = issues.length;
     }
