@@ -26,19 +26,12 @@
   "vars": {
     "JIRA_BASE_URL": "https://promtek.atlassian.net",
     "JIRA_EMAIL": "owen.hume@promtek.com",
-    "ALLOWED_EMAIL_DOMAIN": "promtek.com",
+    "ALLOWED_EMAIL_DOMAIN": "promtek.com,promtek.co.za",
     "ADMIN_EMAILS": "owen.hume@promtek.com",
 
     "ACCESS_TEAM_DOMAIN": "https://promtek-hub.cloudflareaccess.com",
     "ACCESS_AUD": "96dedb5ede8c5c733e3d66d48b7340a39b5d7b3bbb603ca3fa63a57f6a5af3ea",
 
-    "PROFILE_PROJECT": "DNM",
-    "PROFILE_ISSUETYPE": "Employee",
-    "USERID_FIELD_NAME": "UserID",
-    "FIELD_ELO": "customfield_15378",
-    "FIELD_BASELINE": "customfield_16566",
-    "FIELD_XP_OVERRIDE": "customfield_16566",
-    "FIELD_TOTAL_XP": "customfield_16499",
 
     "DRIVE_FOLDER_ID": "14T2Tk1YjLt0yEiO9m_Q-zWkP__n3X578",
     "EIGHT8_PBX_ID": "promteklimited",
