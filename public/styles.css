@@ -1551,3 +1551,27 @@ tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; 
 .inv-jump { cursor: pointer; transition: box-shadow .15s, transform .15s; }
 .inv-jump:hover, .inv-jump:focus-visible { box-shadow: 0 0 0 2px var(--blue-deep) inset; }
 .inv-jump dt::after { content: ' ›'; color: var(--muted, #6b7785); }
+.feed-readmore { display: inline-block; background: none; border: 0; padding: .15rem 0; color: #fff; font-weight: 600; text-decoration: underline; cursor: pointer; font-size: .9rem; }
+.feed-all .feed-readmore { color: var(--blue-deep); }
+.hm-q { margin: .6rem 0; padding: .9rem 1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--tint); display: grid; gap: .55rem; }
+.hm-q-head { display: flex; justify-content: space-between; align-items: center; }
+.hm-q-tools { display: flex; gap: .6rem; }
+.hm-q .segment { justify-self: start; }
+.hm-opts { display: grid; gap: .35rem; }
+.hm-opt { display: flex; gap: .4rem; align-items: center; }
+.hm-opt input { flex: 1; }
+.form-fill, .form-answers { max-width: 40rem; max-height: 88vh; overflow-y: auto; }
+.form-answers { max-width: 60rem; }
+.form-q { border: 0; padding: 0; margin: 0 0 1rem; }
+.form-q legend { font-weight: 600; margin-bottom: .4rem; padding: 0; }
+.form-req { color: var(--danger); }
+.form-opt { display: flex; gap: .55rem; align-items: center; font-weight: 400; margin: .25rem 0; cursor: pointer; }
+.form-opt input { width: auto; margin: 0; }
+.form-stat { margin-bottom: 1.1rem; }
+.form-stat h3 { margin: .2rem 0; }
+.form-bars { list-style: none; padding: 0; margin: .4rem 0 0; display: grid; gap: .35rem; }
+.form-bars li { display: grid; grid-template-columns: minmax(6rem, 14rem) 1fr 5.5rem; gap: .6rem; align-items: center; }
+.form-bar { height: .7rem; background: var(--line); border-radius: 99px; overflow: hidden; }
+.form-bar span { display: block; height: 100%; background: var(--blue); border-radius: 99px; }
+.form-bar-n { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { .form-bars li { grid-template-columns: 1fr 4.5rem; } .form-bar { grid-column: 1 / -1; grid-row: 2; } }

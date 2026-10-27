@@ -631,12 +631,15 @@ function levelSlideHtml() {
 const feedWhen = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
 
 function feedItemHtml(a, { full = false } = {}) {
-  const open = a.link ? `<a class="feed-open" href="${esc(a.link)}"${a.link.startsWith('http') ? ' target="_blank" rel="noopener"' : ''}>Open</a>` : '';
+  const open = a.form ? `<button class="feed-open" data-form-open="${a.formId}">Fill in</button>`
+    : a.link ? `<a class="feed-open" href="${esc(a.link)}"${a.link.startsWith('http') ? ' target="_blank" rel="noopener"' : ''}>Open</a>` : '';
   const done = a.id ? `<button class="feed-done" data-feed-dismiss="${a.id}">Got it</button>` : '';
+  const formNote = a.form ? `<span class="feed-from">${n(a.questions)} ${a.questions === 1 ? 'question' : 'questions'}${a.endsAt ? `, closes ${feedWhen(a.endsAt)}` : ''}. ${esc(a.from || '')}</span>` : '';
   return `<li class="feed-item${a.tone === 'important' ? ' important' : ''}${full ? ' full' : ''}">
       <span class="feed-dot" aria-hidden="true"></span>
       <div class="feed-text"><strong>${esc(a.title)}</strong>${a.body ? `<span class="feed-body">${esc(a.body)}</span>` : ''}
-        ${a.from ? `<span class="feed-from">${esc(a.from)}, ${feedWhen(a.at)}</span>` : ''}</div>
+        ${full ? '' : '<button class="feed-readmore" data-feed-read hidden>Read more</button>'}
+        ${formNote || (a.from ? `<span class="feed-from">${esc(a.from)}, ${feedWhen(a.at)}</span>` : '')}</div>
       ${open || done ? `<span class="feed-actions">${open}${done}</span>` : ''}
     </li>`;
 }
@@ -715,7 +718,14 @@ function homeFeedMount() {
   host.innerHTML = homeFeedHtml();
   const feed = host.querySelector('#home-feed');
   const track = feed.querySelector('.feed-track');
-  requestAnimationFrame(() => homeGo(homeSlide, { smooth: false }));
+  requestAnimationFrame(() => {
+    homeGo(homeSlide, { smooth: false });
+    // A message too long for the strip offers the rest.
+    for (const body of feed.querySelectorAll('.feed-slide .feed-body')) {
+      const more = body.parentElement.querySelector('[data-feed-read]');
+      if (more) more.hidden = body.scrollHeight <= body.clientHeight + 2;
+    }
+  });
   feed.addEventListener('pointerenter', () => { homeHold = true; });
   feed.addEventListener('pointerleave', () => { homeHold = false; });
   feed.addEventListener('focusin', () => { homeHold = true; });
@@ -758,6 +768,72 @@ function homeFeedAll(kind) {
   host.querySelector('[data-feed-close]').focus();
 }
 
+// The whole of one message, when it's too long for the strip.
+function homeFeedRead(li) {
+  if (!li) return;
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop';
+  const item = li.cloneNode(true);
+  item.classList.add('full');
+  item.querySelector('[data-feed-read]')?.remove();
+  host.innerHTML = `<div class="modal card feed-all" role="dialog" aria-modal="true" aria-label="Message"><ul class="feed-list"></ul>
+      <div class="modal-actions"><button class="btn secondary" data-feed-close>Close</button></div></div>`;
+  host.querySelector('.feed-list').appendChild(item);
+  document.body.appendChild(host);
+  host.querySelector('[data-feed-close]').focus();
+}
+
+// ---------- forms on the home screen ----------
+
+async function formOpen(id) {
+  document.querySelector('.feed-all')?.closest('.modal-backdrop')?.remove();
+  let data;
+  try { data = await api(`/api/forms/get?id=${encodeURIComponent(id)}`); } catch (err) { toast(err.message); return; }
+  const f = data.form, mine = data.answers || {};
+  const qHtml = (q) => {
+    const name = `form-${f.id}-${q.id}`;
+    const req = q.required ? ' <span class="form-req" title="Needs an answer">*</span>' : '';
+    if (q.type === 'text') {
+      return `<fieldset class="form-q" data-q="${q.id}" data-type="text"><legend>${esc(q.label)}${req}</legend>
+        ${q.long ? `<textarea rows="4" name="${name}" maxlength="2000">${esc(mine[q.id] || '')}</textarea>` : `<input type="text" name="${name}" maxlength="2000" value="${esc(mine[q.id] || '')}">`}</fieldset>`;
+    }
+    const picked = new Set(mine[q.id] || []);
+    return `<fieldset class="form-q" data-q="${q.id}" data-type="${q.multi ? 'multi' : 'one'}"><legend>${esc(q.label)}${req}${q.multi ? ' <span class="muted">Choose any</span>' : ''}</legend>
+      ${q.options.map((o) => `<label class="form-opt"><input type="${q.multi ? 'checkbox' : 'radio'}" name="${name}" value="${esc(o)}"${picked.has(o) ? ' checked' : ''}> ${esc(o)}</label>`).join('')}</fieldset>`;
+  };
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop';
+  host.innerHTML = `<div class="modal card form-fill" role="dialog" aria-modal="true" aria-labelledby="form-fill-title" data-form-id="${f.id}">
+      <h2 id="form-fill-title" style="margin-top:0">${esc(f.title)}</h2>
+      ${f.intro ? `<p class="pre-wrap">${esc(f.intro)}</p>` : ''}
+      ${f.open ? f.questions.map(qHtml).join('') : '<p class="muted">This form has closed.</p>'}
+      <div class="result" id="form-result" role="status"></div>
+      <div class="modal-actions">${f.open ? `<button class="btn" data-form-send>${data.submittedAt ? 'Save my answers' : 'Send'}</button>` : ''}<button class="btn secondary" data-form-close>Close</button></div></div>`;
+  document.body.appendChild(host);
+  host.querySelector('input, textarea, button')?.focus();
+}
+
+async function formSend(btn) {
+  const box = btn.closest('.form-fill');
+  const answers = {};
+  for (const fs of box.querySelectorAll('.form-q')) {
+    const type = fs.dataset.type;
+    if (type === 'text') answers[fs.dataset.q] = fs.querySelector('input, textarea').value;
+    else answers[fs.dataset.q] = [...fs.querySelectorAll('input:checked')].map((i) => i.value);
+  }
+  btn.disabled = true;
+  try {
+    await api('/api/forms/answer', { method: 'POST', body: JSON.stringify({ id: Number(box.dataset.formId), answers }) });
+    toast('Thanks, your answers are in');
+    box.closest('.modal-backdrop').remove();
+    if (homeFeed) homeFeed.alerts = homeFeed.alerts.filter((a) => String(a.formId) !== box.dataset.formId);
+    homeFeedMount();
+  } catch (err) {
+    const out = box.querySelector('#form-result'); out.textContent = err.message; out.className = 'result bad';
+    btn.disabled = false;
+  }
+}
+
 async function homeFeedDismiss(id) {
   try { await api('/api/home/dismiss', { method: 'POST', body: JSON.stringify({ id }) }); } catch (err) { toast(err.message); return; }
   for (const k of ['alerts', 'news']) homeFeed[k] = homeFeed[k].filter((a) => String(a.id) !== String(id));
@@ -772,6 +848,10 @@ document.addEventListener('click', (event) => {
   if (t('[data-feed-pause]')) { homeStopped = !homeStopped; return homeFeedMount(); }
   if (t('[data-feed-all]')) return homeFeedAll(t('[data-feed-all]').dataset.feedAll);
   if (t('[data-feed-dismiss]')) return homeFeedDismiss(t('[data-feed-dismiss]').dataset.feedDismiss);
+  if (t('[data-feed-read]')) return homeFeedRead(t('[data-feed-read]').closest('li'));
+  if (t('[data-form-open]')) return formOpen(t('[data-form-open]').dataset.formOpen);
+  if (t('[data-form-send]')) return formSend(t('[data-form-send]'));
+  if (t('[data-form-close]') || (event.target.classList?.contains('modal-backdrop') && event.target.querySelector('.form-fill'))) { document.querySelector('.form-fill')?.closest('.modal-backdrop')?.remove(); return; }
   const backdrop = t('.modal-backdrop');
   if (backdrop?.querySelector('.feed-all') && (t('[data-feed-close]') || event.target === backdrop || t('.feed-open'))) backdrop.remove();
 });
@@ -781,7 +861,26 @@ addEventListener('resize', () => { if (document.getElementById('home-feed')) hom
 
 let homeAdmin = null;
 let homeDraft = null;
-const blankHomeDraft = () => ({ kind: 'alert', shoutFor: '', everyone: false, teams: [], people: [], title: '', body: '', link: '', linkWeb: '', tone: 'info', until: '', email: false, find: '' });
+const blankQuestion = () => ({ label: '', type: 'choice', multi: false, long: false, required: false, options: ['', ''] });
+const blankHomeDraft = () => ({ kind: 'alert', shoutFor: '', everyone: false, teams: [], people: [], title: '', body: '', link: '', linkWeb: '', tone: 'info', until: '', email: false, find: '',
+  intro: '', questions: [blankQuestion()] });
+
+// The questions on a form being made.
+function hmQuestionsHtml(d) {
+  return d.questions.map((q, i) => `<div class="card-inset hm-q" data-hm-qi="${i}">
+      <div class="hm-q-head"><strong>Question ${i + 1}</strong>
+        <span class="hm-q-tools">${i > 0 ? `<button class="linklike" data-hm-qmove="${i}" data-dir="-1" aria-label="Move up">↑</button>` : ''}${i < d.questions.length - 1 ? `<button class="linklike" data-hm-qmove="${i}" data-dir="1" aria-label="Move down">↓</button>` : ''}
+          ${d.questions.length > 1 ? `<button class="linklike bad" data-hm-qdel="${i}">Remove</button>` : ''}</span></div>
+      <label>Question <input data-hm-q="${i}" data-hm-qf="label" maxlength="300" value="${esc(q.label)}" placeholder="For example: Are you coming to the Christmas party?"></label>
+      <span class="segment">${[['choice', 'Multiple choice'], ['text', 'Text']].map(([k, l]) => `<button class="seg${q.type === k ? ' on' : ''}" data-hm-qset="${i}" data-key="type" data-value="${k}">${l}</button>`).join('')}</span>
+      ${q.type === 'choice' ? `<span class="segment">${[['one', 'One answer'], ['multi', 'Any number']].map(([k, l]) => `<button class="seg${(q.multi ? 'multi' : 'one') === k ? ' on' : ''}" data-hm-qset="${i}" data-key="multi" data-value="${k}">${l}</button>`).join('')}</span>
+        <div class="hm-opts">${q.options.map((o, j) => `<div class="hm-opt"><input data-hm-opt="${i}:${j}" maxlength="120" value="${esc(o)}" placeholder="Answer ${j + 1}" aria-label="Answer ${j + 1}">
+          ${q.options.length > 2 ? `<button class="linklike" data-hm-optdel="${i}:${j}" aria-label="Remove answer ${j + 1}">×</button>` : ''}</div>`).join('')}
+          ${q.options.length < 20 ? `<button class="linklike" data-hm-optadd="${i}">Add an answer</button>` : ''}</div>`
+        : `<span class="segment">${[['short', 'One line'], ['long', 'A paragraph']].map(([k, l]) => `<button class="seg${(q.long ? 'long' : 'short') === k ? ' on' : ''}" data-hm-qset="${i}" data-key="long" data-value="${k}">${l}</button>`).join('')}</span>`}
+      <label class="inline-check"><input type="checkbox" data-hm-q="${i}" data-hm-qf="required"${q.required ? ' checked' : ''}> Needs an answer</label>
+    </div>`).join('') + `<div class="row"><button class="btn secondary" data-hm-qadd>Add a question</button></div>`;
+}
 
 function homeAdminHtml() {
   const a = homeAdmin, d = homeDraft;
@@ -790,8 +889,9 @@ function homeAdminHtml() {
   const found = d.find.trim().length > 1 ? a.people.filter((p) => !d.people.includes(p.id) && p.name.toLowerCase().includes(d.find.trim().toLowerCase())).slice(0, 8) : [];
   const form = `<div class="card hm-form">
       <p class="muted">What is it?</p>
-      ${seg('kind', d.kind, [['alert', 'An alert'], ['announcement', 'News'], ['shoutout', 'A shout-out']])}
+      ${seg('kind', d.kind, [['alert', 'An alert'], ['announcement', 'News'], ['shoutout', 'A shout-out'], ['form', 'A form']])}
       <p class="help">${d.kind === 'alert' ? 'Alerts show under Alerts, for the people you choose. Use them for things someone needs to act on.'
+        : d.kind === 'form' ? 'A form shows under Alerts for the people you choose until they\'ve filled it in or it closes. Use it for sign-ups and quick surveys; the answers are below once people reply.'
         : d.kind === 'shoutout' ? 'A shout-out thanks one person for their effort. Everyone sees it under News for a week, with your name.'
         : 'News shows under News. Use it for things everyone, or a team, should know.'}</p>
       ${d.kind === 'shoutout' ? `<label>Who's it for? <select data-hm-field="shoutFor"><option value="">Choose someone</option>${a.people.map((p) =>
@@ -806,6 +906,15 @@ function homeAdminHtml() {
         <div class="hm-people">${d.people.map((id) => `<span class="con-person">${esc(a.people.find((p) => p.id === id)?.name || id)}<button data-hm-unperson="${esc(id)}" aria-label="Remove">×</button></span>`).join('')}</div>
         <label>Add a person <input type="search" data-hm-field="find" value="${esc(d.find)}" placeholder="Type a name" autocomplete="off"></label>
         ${found.length ? `<div class="hm-found">${found.map((p) => `<button class="chip-btn" data-hm-person="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>` : ''}`}
+      ${d.kind === 'form' ? `<label>Title <input data-hm-field="title" maxlength="120" value="${esc(d.title)}" placeholder="For example: Christmas party"></label>
+      <label>What it's about, optional <textarea data-hm-field="intro" rows="3" maxlength="1000" placeholder="Dates, where, anything people should know before answering">${esc(d.intro)}</textarea></label>
+      <h3>Questions</h3>${hmQuestionsHtml(d)}
+      <p class="muted">How important?</p>
+      ${seg('tone', d.tone, [['info', 'Normal'], ['important', 'Important']])}
+      <div class="row" style="align-items:end"><label>Closes, optional <input type="date" data-hm-field="until" value="${esc(d.until)}" min="${todayIso()}"></label></div>
+      <div class="row"><button class="btn" data-hm-send>Send the form</button></div>
+      <div class="result" id="hm-result" role="status"></div>
+    </div>` : `
       <label>Title <input data-hm-field="title" maxlength="120" value="${esc(d.title)}" placeholder="For example: Return the van keys to reception"></label>
       <label>Message, optional <textarea data-hm-field="body" rows="3" maxlength="1000">${esc(d.body)}</textarea></label>
       <div class="row">
@@ -821,14 +930,47 @@ function homeAdminHtml() {
       </div>
       <div class="row"><button class="btn" data-hm-send>Send</button></div>
       <div class="result" id="hm-result" role="status"></div>
-    </div>`}`;
+    </div>`}`}`;
   const rows = a.messages.map((m) => `<li>
       <span class="title">${m.tone === 'important' ? '<span class="psc-chip warn">Important</span> ' : ''}${esc(m.title)}</span>
       <span class="xp"><small>${m.kind === 'alert' ? 'Alert' : 'News'}</small></span>
       <span class="sub">${esc(m.audienceText)}. Seen by ${n(m.seen)} of ${n(m.reach)}${m.dismissed ? `, ${n(m.dismissed)} dismissed` : ''}${m.emailed ? ', emailed' : ''}.
         ${esc(m.from || '')}, ${feedWhen(m.at)}. ${m.live ? (m.endsAt ? `Showing until ${feedWhen(m.endsAt)}.` : 'Showing until it\'s ended.') : `Ended ${feedWhen(m.endedAt)}.`}
         ${m.live ? `<button class="linklike" data-hm-end="${m.id}">End it</button>` : ''}</span></li>`).join('');
-  return `${form}<h3>Sent</h3>${rows ? `<ul class="list">${rows}</ul>` : '<div class="card"><p class="muted" style="margin:0">Nothing sent yet.</p></div>'}`;
+  const forms = (a.forms || []).map((f) => `<li>
+      <span class="title">${f.tone === 'important' ? '<span class="psc-chip warn">Important</span> ' : ''}${esc(f.title)}</span>
+      <span class="xp"><button class="btn secondary" data-hm-answers="${f.id}">Answers</button></span>
+      <span class="sub">${esc(f.audienceText)}. Answered by ${n(f.answered)} of ${n(f.reach)}. ${n(f.questions)} ${f.questions === 1 ? 'question' : 'questions'}.
+        ${esc(f.from || '')}, ${feedWhen(f.at)}. ${f.live ? (f.endsAt ? `Open until ${feedWhen(f.endsAt)}.` : 'Open until it\'s closed.') : `Closed ${feedWhen(f.closedAt)}.`}
+        ${f.live ? `<button class="linklike" data-hm-formclose="${f.id}">Close it</button>` : ''}</span></li>`).join('');
+  return `${form}${forms ? `<h3>Forms</h3><ul class="list">${forms}</ul>` : ''}<h3>Sent</h3>${rows ? `<ul class="list">${rows}</ul>` : '<div class="card"><p class="muted" style="margin:0">Nothing sent yet.</p></div>'}`;
+}
+
+// Everyone's answers to a form, and how the multiple choice questions came out.
+async function hmAnswersOpen(id) {
+  let r;
+  try { r = await api(`/api/admin/forms/responses?id=${encodeURIComponent(id)}`); } catch (err) { toast(err.message); return; }
+  const f = r.form;
+  const show = (v) => (Array.isArray(v) ? v.map(esc).join(', ') : esc(v ?? ''));
+  const stats = r.stats.map((q) => q.type === 'text'
+    ? `<section class="form-stat"><h3>${esc(q.label)}</h3><p class="muted">${n(q.answered)} typed ${q.answered === 1 ? 'answer' : 'answers'}, below.</p></section>`
+    : `<section class="form-stat"><h3>${esc(q.label)}</h3><p class="muted">${n(q.answered)} answered${q.multi ? '; each could choose more than one' : ''}</p>
+        <ul class="form-bars">${q.options.map((o) => `<li><span class="form-bar-label">${esc(o.option)}</span>
+          <span class="form-bar"><span style="width:${(o.share * 100).toFixed(1)}%"></span></span><span class="form-bar-n">${Math.round(o.share * 100)}% <small>(${n(o.count)})</small></span></li>`).join('')}</ul></section>`).join('');
+  const table = r.rows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Answered</th>${f.questions.map((q) => `<th>${esc(q.label)}</th>`).join('')}</tr></thead>
+      <tbody>${r.rows.map((x) => `<tr><th scope="row">${esc(x.who)}</th><td>${feedWhen(x.at)}</td>${f.questions.map((q) => `<td class="pre-wrap">${show(x.answers[q.id])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+    : '<p class="muted">No answers yet.</p>';
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop';
+  host.innerHTML = `<div class="modal card form-answers" role="dialog" aria-modal="true" aria-labelledby="form-answers-title">
+      <h2 id="form-answers-title" style="margin-top:0">${esc(f.title)}</h2>
+      <p class="muted">${n(r.rows.length)} answered${r.waiting.length ? `, ${n(r.waiting.length)} still to answer` : ''}. ${f.live ? 'Open.' : 'Closed.'}</p>
+      ${stats}
+      <h3>Each person's answers</h3>${table}
+      ${r.waiting.length ? `<details class="wipc-table"><summary>Still to answer (${n(r.waiting.length)})</summary><p>${r.waiting.map(esc).join(', ')}</p></details>` : ''}
+      <div class="modal-actions">${r.rows.length ? `<a class="btn secondary" href="/api/admin/forms/export.csv?id=${f.id}" download>Download as CSV</a>` : ''}<button class="btn secondary" data-feed-close>Close</button></div></div>`;
+  host.addEventListener('click', (e) => { if (e.target === host || e.target.closest('[data-feed-close]')) host.remove(); });
+  document.body.appendChild(host);
 }
 
 async function loadHomeAdmin() {
@@ -864,6 +1006,29 @@ async function homeAdminClick(event) {
   if (person) { d.people.push(person.dataset.hmPerson); d.find = ''; homeAdminRedraw('find'); return true; }
   const un = t('[data-hm-unperson]');
   if (un) { d.people = d.people.filter((p) => p !== un.dataset.hmUnperson); homeAdminRedraw(); return true; }
+  const qset = t('[data-hm-qset]');
+  if (qset) {
+    const q = d.questions[Number(qset.dataset.hmQset)]; const v = qset.dataset.value;
+    if (qset.dataset.key === 'type') q.type = v; else if (qset.dataset.key === 'multi') q.multi = v === 'multi'; else q.long = v === 'long';
+    homeAdminRedraw(); return true;
+  }
+  if (t('[data-hm-qadd]')) { d.questions.push(blankQuestion()); homeAdminRedraw(); return true; }
+  const qdel = t('[data-hm-qdel]');
+  if (qdel) { d.questions.splice(Number(qdel.dataset.hmQdel), 1); homeAdminRedraw(); return true; }
+  const qmove = t('[data-hm-qmove]');
+  if (qmove) { const i = Number(qmove.dataset.hmQmove), j = i + Number(qmove.dataset.dir); [d.questions[i], d.questions[j]] = [d.questions[j], d.questions[i]]; homeAdminRedraw(); return true; }
+  const oadd = t('[data-hm-optadd]');
+  if (oadd) { d.questions[Number(oadd.dataset.hmOptadd)].options.push(''); homeAdminRedraw(); return true; }
+  const odel = t('[data-hm-optdel]');
+  if (odel) { const [i, j] = odel.dataset.hmOptdel.split(':').map(Number); d.questions[i].options.splice(j, 1); homeAdminRedraw(); return true; }
+  const ans = t('[data-hm-answers]');
+  if (ans) { await hmAnswersOpen(ans.dataset.hmAnswers); return true; }
+  const fclose = t('[data-hm-formclose]');
+  if (fclose) {
+    if (!confirm('Close this form? It comes off everyone\'s home screen, and no more answers can be sent.')) return true;
+    try { await api('/api/admin/forms/close', { method: 'POST', body: JSON.stringify({ id: Number(fclose.dataset.hmFormclose) }) }); toast('Closed'); } catch (err) { toast(err.message); }
+    homeFeedAt = 0; await loadHomeAdmin(); return true;
+  }
   const end = t('[data-hm-end]');
   if (end) {
     if (!confirm('Take this off everyone\'s home screen?')) return true;
@@ -876,9 +1041,11 @@ async function homeAdminClick(event) {
     send.disabled = true;
     const out = document.getElementById('hm-result');
     try {
-      const r = await api('/api/admin/home-messages', { method: 'POST', body: JSON.stringify(d.kind === 'shoutout'
-        ? { kind: 'shoutout', accountId: d.shoutFor, message: d.body } : { ...d, link: d.link === 'web' ? d.linkWeb : d.link }) });
-      toast(d.kind === 'shoutout' ? 'Shout-out sent' : r.emailed ? `Sent, and emailed to ${n(r.emailed)}` : 'Sent');
+      const r = d.kind === 'form'
+        ? await api('/api/admin/forms', { method: 'POST', body: JSON.stringify({ title: d.title, intro: d.intro, questions: d.questions, everyone: d.everyone, teams: d.teams, people: d.people, tone: d.tone, until: d.until }) })
+        : await api('/api/admin/home-messages', { method: 'POST', body: JSON.stringify(d.kind === 'shoutout'
+          ? { kind: 'shoutout', accountId: d.shoutFor, message: d.body } : { ...d, link: d.link === 'web' ? d.linkWeb : d.link }) });
+      toast(d.kind === 'form' ? 'Form sent' : d.kind === 'shoutout' ? 'Shout-out sent' : r.emailed ? `Sent, and emailed to ${n(r.emailed)}` : 'Sent');
       homeDraft = blankHomeDraft();
       homeFeedAt = 0;
       await loadHomeAdmin();
@@ -889,6 +1056,9 @@ async function homeAdminClick(event) {
 }
 
 function homeAdminInput(event) {
+  const el = event.target;
+  if (homeDraft && el.dataset?.hmQ != null) { const q = homeDraft.questions[Number(el.dataset.hmQ)]; if (q) q[el.dataset.hmQf] = el.type === 'checkbox' ? el.checked : el.value; return true; }
+  if (homeDraft && el.dataset?.hmOpt) { const [i, j] = el.dataset.hmOpt.split(':').map(Number); if (homeDraft.questions[i]) homeDraft.questions[i].options[j] = el.value; return true; }
   const f = event.target.dataset?.hmField;
   if (!f || !homeDraft) return false;
   homeDraft[f] = event.target.type === 'checkbox' ? event.target.checked : event.target.value;

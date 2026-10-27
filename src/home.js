@@ -55,11 +55,11 @@ export async function feed(env, viewer) {
     ).bind(m.id, reader, now)));
   }
 
-  const [system, week, anniversaries] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer),
-    Eotq.anniversaries(env).catch(() => [])]);
+  const [system, week, anniversaries, forms] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer),
+    Eotq.anniversaries(env).catch(() => []), import('./forms.js').then((F) => F.forFeed(env, viewer)).catch(() => [])]);
   const important = (a) => (a.tone === 'important' ? 0 : 1);
   return {
-    alerts: [...mine.filter((m) => m.kind === 'alert').map(shape), ...system].sort((a, b) => important(a) - important(b)),
+    alerts: [...forms, ...mine.filter((m) => m.kind === 'alert').map(shape), ...system].sort((a, b) => important(a) - important(b)),
     news: [...Eotq.anniversaryNews(anniversaries, viewer), ...mine.filter((m) => m.kind === 'announcement').map(shape)].sort((a, b) => important(a) - important(b)),
     week,
   };
@@ -307,7 +307,9 @@ export async function adminList(env) {
   ).bind('pending:%').all();
   const now = new Date().toISOString();
   const shaped = people.map((p) => ({ id: p.account_id, name: p.name, teams: teamsOf(p) }));
+  const forms = await import('./forms.js').then((F) => F.adminList(env, shaped)).catch(() => []);
   return {
+    forms,
     teams: TEAMS,
     people: shaped,
     messages: results.map((m) => {

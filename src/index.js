@@ -805,6 +805,12 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
   }
 
+  if (pathname === '/api/forms/get' && method === 'GET') return json(await (await import('./forms.js')).get(env, user, url.searchParams.get('id')));
+  if (pathname === '/api/forms/answer' && method === 'POST') {
+    const body = await request.json().catch(() => ({}));
+    return json(await (await import('./forms.js')).answer(env, user, body));
+  }
+
   if (method === 'POST' && pathname === '/api/home/dismiss') {
     const body = await request.json().catch(() => ({}));
     return json(await Home.dismiss(env, user, body.id));
@@ -898,6 +904,16 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/admin/home-messages') return json(await Home.adminList(env));
     if (method === 'POST' && pathname === '/api/admin/home-messages') return json(await Home.send(env, user, body));
     if (method === 'POST' && pathname === '/api/admin/home-messages/end') return json(await Home.end(env, user, body.id));
+    if (pathname.startsWith('/api/admin/forms')) {
+      const Forms = await import('./forms.js');
+      if (method === 'POST' && pathname === '/api/admin/forms') return json(await Forms.create(env, user, body));
+      if (method === 'POST' && pathname === '/api/admin/forms/close') return json(await Forms.close(env, user, body.id));
+      if (method === 'GET' && pathname === '/api/admin/forms/responses') return json(await Forms.responses(env, url.searchParams.get('id')));
+      if (method === 'GET' && pathname === '/api/admin/forms/export.csv') {
+        const { body: text, filename } = await Forms.csv(env, url.searchParams.get('id'));
+        return new Response(text, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${filename.replace(/"/g, '')}"`, 'cache-control': 'no-store' } });
+      }
+    }
     if (method === 'GET' && pathname === '/api/admin/elo') return json(await Elo.status(env));
     if (method === 'GET' && pathname === '/api/admin/bitbucket') return json(await (await import('./devtime.js')).status(env));
     if (method === 'POST' && pathname === '/api/admin/bitbucket-test') return json(await (await import('./devtime.js')).testConnection(env));

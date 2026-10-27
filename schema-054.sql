@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS hub_forms (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, intro TEXT, questions TEXT NOT NULL, audience TEXT NOT NULL, tone TEXT NOT NULL DEFAULT 'info', ends_at TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, closed_at TEXT, closed_by TEXT);
+CREATE TABLE IF NOT EXISTS hub_form_answers (form_id INTEGER NOT NULL, account_id TEXT NOT NULL, name TEXT, answers TEXT NOT NULL, submitted_at TEXT NOT NULL, PRIMARY KEY (form_id, account_id));

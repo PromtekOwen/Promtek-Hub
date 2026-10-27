@@ -290,6 +290,12 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 ## Part 14: Arranging tiles
 
+**Forms.** Admin, Home screen messages, **A form**: a title, what it's about, and questions, each either multiple choice (one answer, or any number) or text (one line or a paragraph), and optionally needing an answer. Run `schema-054.sql` in the D1 console first. A form shows under Alerts for the people chosen, with **Fill in**, until they've answered it or it closes (on its closing date, or with **Close it**). Opening it again before it closes shows their answers to change. **Answers** shows, for each multiple choice question, the share of the people who answered it that chose each answer (so a question allowing any number can add up to more than 100%), then each person's answers, who still hasn't answered, and a CSV download.
+
+**Tile usage** (Admin): how often each tile is opened, by whom and on how many days. Owen Hume's use isn't counted, so testing doesn't skew it; anyone else can be left out by adding their email to an optional `USAGE_IGNORE_EMAILS` variable on the Worker (comma separated). The home screen isn't counted as a tile, as it's passed through between tiles, but opening it still counts towards the days someone used the hub.
+
+**Long messages.** A message too long for its bubble on the home screen has **Read more**, which shows the whole of it.
+
 Everyone can order their own home screen. **Arrange tiles** on the dashboard lets you drag tiles into place with a mouse or a finger, and hide the ones you never use. The order saves as you go. On a phone, hold a tile near the top or bottom of the screen to scroll while dragging. A focused tile can also be moved with the arrow keys. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
 
 ## Part 14b: The active time tracker
