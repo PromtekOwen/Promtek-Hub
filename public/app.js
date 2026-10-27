@@ -10224,7 +10224,8 @@ function pscOrgFlagsHtml(data) {
   return `<section class="card con-flags notice">
       <h2>PSC with no Organization <span class="muted">(${flags.length})</span></h2>
       <ul class="con-flag-list">${shown.map((f) => `<li><div><strong>${jiraLink(f.ref_key)}</strong><p>${esc(f.detail)}</p>${pick(f)}</div>
-        <button class="btn secondary" data-psc-flag-resolve="${f.id}">Mark resolved</button></li>`).join('')}</ul>
+        <div class="psc-flag-buttons"><button class="btn secondary" data-psc-flag-new="${esc(f.ref_key)}">New Customer</button>
+          <button class="btn secondary" data-psc-flag-resolve="${f.id}">Mark resolved</button></div></li>`).join('')}</ul>
       ${flags.length > 4 ? `<button class="linklike" data-psc-all-flags="1">${pscAllFlags ? 'Show fewer' : `Show all ${flags.length}`}</button>` : ''}</section>`;
 }
 
@@ -10458,6 +10459,19 @@ async function pscClick(event) {
   if (await pscHandClick(t)) return true;
   if (t('label')) return false;
   if (t('[data-psc-all-flags]')) { pscAllFlags = !pscAllFlags; return render(); }
+  // A new customer, not yet in Jira: straight into the quote for a New Potential Customer.
+  const nc = t('[data-psc-flag-new]');
+  if (nc) {
+    const key = nc.dataset.pscFlagNew;
+    if (!(pscData?.items || []).some((d) => d.key === key)) { toast(`${key} isn't in the PSC list any more, so it can't become a quote from here.`); return true; }
+    pscOpen = key;
+    pscHand = { key, kind: 'quote', disciplines: [], team: null, projectKey: '', customer: '', prospect: '', prospectMode: true };
+    window.scrollTo(0, 0);
+    await render();
+    view.querySelector('.psc-hand')?.scrollIntoView({ block: 'start' });
+    view.querySelector('[data-psc-hand-field="prospect"]')?.focus();
+    return true;
+  }
   const fr = t('[data-psc-flag-resolve]');
   if (fr) {
     fr.disabled = true;

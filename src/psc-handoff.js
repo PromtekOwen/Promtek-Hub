@@ -192,6 +192,9 @@ async function attempt(env, h) {
     const target = h.kind === 'condor' ? await doCondor(env, h) : await doQuote(env, h);
     await env.DB.prepare("UPDATE psc_handoffs SET status = 'done', target_key = COALESCE(?, target_key), done_at = ?, error = NULL WHERE issue_key = ?")
       .bind(target, new Date().toISOString(), h.issue_key).run();
+    // Its "no Organization" alert goes with it: as a quote or a Bug, it's no longer support time to charge.
+    await env.DB.prepare("UPDATE contract_flags SET resolved_at = ?, resolved_by = ? WHERE kind = 'psc-org' AND resolved_at IS NULL AND ref_key IN (?, ?)")
+      .bind(new Date().toISOString(), `${h.created_name || 'The hub'}, ${h.kind === 'condor' ? 'sent to Condor Dev' : `turned into a quote${h.customer ? ` for ${h.customer}` : ''}`}`, h.issue_key, h.source_key || h.issue_key).run().catch(() => {});
     await changed(env);
     return { ok: true, saved: true, target };
   } catch (err) {

@@ -432,7 +432,7 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 **Triage** lists items with no first look, no owner, or (on the PSC board) no Organization. **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
 
-**PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira and **Mark resolved**.
+**PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira, **New Customer**, which opens the item ready to turn into a quote for a New Potential Customer (see below), and **Mark resolved**. Turning an item into a quote, or sending it to Condor Dev, resolves its alert.
 
 **Not support work: Quote and Condor.** Each open item has two buttons. Run `schema-053.sql` in the D1 console before using them.
 - **Quote** turns it into a quote, with its categories and Promtek team chosen first. In a customer's project, the item's issue type is changed to Quote and it's moved under that project's Quote List; where Jira won't change the type (a different workflow, say), a new Quote is made there instead and linked to it. Either way the quote joins the Quotes tile, with the PSC's description, for the sales team.

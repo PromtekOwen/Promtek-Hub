@@ -1544,3 +1544,4 @@ tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; 
 .q-prospect-row { border-bottom: 1px solid var(--line); padding-bottom: .4rem; margin-bottom: .2rem; }
 .q-link-project { margin-top: .75rem; }
 .mes-psc .sub .bad { display: inline; }
+.psc-flag-buttons { display: flex; flex-direction: column; gap: .4rem; }
