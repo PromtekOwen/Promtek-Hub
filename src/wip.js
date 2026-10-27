@@ -15,6 +15,7 @@
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { canonStatus } from './contracts.js';
+import { canTile } from './permissions.js';
 
 export const F = {
   upfront: 'customfield_12003',
@@ -726,10 +727,12 @@ export function historyFrom(t, prev) {
 // ---------- what people see ----------
 
 export function canSee(viewer) {
-  return Boolean(viewer?.isAdmin || viewer?.can?.wip || viewer?.groups?.includes('management'));
+  return canTile(viewer, 'wip');
 }
+// Changing values, settings and payment terms.
+const canChange = (viewer) => Boolean(viewer?.isAdmin || (viewer?.can && 'wipEdit' in viewer.can ? viewer.can.wipEdit : viewer?.groups?.includes('management')));
 const refuse = (message, status = 403) => { const err = new Error(message); err.status = status; return err; };
-function mustSee(viewer) { if (!canSee(viewer)) throw refuse('The WIP is for management.'); }
+function mustSee(viewer) { if (!canSee(viewer)) throw refuse('The WIP isn\'t open to you.'); }
 const regionArg = (r) => (r in REGIONS ? r : 'uk');
 
 async function header(env) {
@@ -775,7 +778,7 @@ export async function overview(env, viewer, { region, month } = {}) {
     ...head, region, regions: REGIONS, month, live, months: await monthsAvailable(env, region),
     rows: rows.sort((a, b) => a.key.localeCompare(b.key, 'en', { numeric: true })),
     totals: metrics(rows, month), invoices, moves,
-    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')), isAdmin: Boolean(viewer.isAdmin),
+    canEdit: canChange(viewer), isAdmin: Boolean(viewer.isAdmin),
   };
 }
 
@@ -805,7 +808,7 @@ export async function order(env, viewer, key) {
   return {
     row, region: o.region, entity: o.entity, parts, invoices, move, saTime: saStaff,
     override: over.get(o.issue_key) || null, seed: seed.get(o.issue_key) || null, jiraValue: o.upfront, jiraDivision: o.division_jira,
-    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')),
+    canEdit: canChange(viewer),
   };
 }
 
@@ -1109,11 +1112,11 @@ export async function settings(env, viewer) {
   try { ids = JSON.parse(fields || 'null'); } catch { /* not yet */ }
   const rebuild = await (await import('./wip-history.js')).status(env);
   return { ...head, saStaff: staff, people, counts, failing, rebuild, fields: ids ? { customerItem: ids.customerItem, documentation: ids.documentation } : null,
-    canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')) };
+    canEdit: canChange(viewer) };
 }
 
 function mustEdit(viewer) {
-  if (!(viewer.isAdmin || viewer.groups?.includes('management'))) throw refuse('Only management and admins can change the WIP.');
+  if (!canChange(viewer)) throw refuse('Changing the WIP is for management, and anyone else Admin allows.');
 }
 
 export async function saveSettings(env, viewer, body) {
@@ -1359,7 +1362,7 @@ export function paymentDue(date, terms) {
 }
 
 export async function invoicing(env, viewer, { region } = {}) {
-  mustSee(viewer);
+  if (!canTile(viewer, 'invoicing')) throw refuse('Invoicing isn\'t open to you.');
   region = regionArg(region);
   const today = londonDate();
   const month = thisMonth();
@@ -1411,6 +1414,6 @@ export async function invoicing(env, viewer, { region } = {}) {
   return {
     ...head, region, regions: REGIONS, today, month, invoices, orders,
     forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
-    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')),
+    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer),
   };
 }

@@ -7,7 +7,7 @@ import { getState, setState, londonDate, raiseAlert, recalcIssues } from './sync
 import { outcomeScore, expectedScore, matchWeight, K_FACTOR, PROVISIONAL_K, PROVISIONAL_MATCHES } from './elo.js';
 import { approvedFor, factorOn } from './modifiers.js';
 import { DEFAULT_ELO } from './progression.js';
-import { managesPerson, CONDOR_DEVS } from './permissions.js';
+import { managesPerson, CONDOR_DEVS, canTile } from './permissions.js';
 
 const PROJECT = 'MES';
 export const MODULE_FIELD = 'customfield_15583';
@@ -265,7 +265,7 @@ export async function nextQuestion(env, { issueId, answers = [], accept = false 
     asked: answers.length, maxQuestions: MAX_QUESTIONS, acceptAfter: ACCEPT_AFTER };
 }
 
-const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || viewer.teams?.includes('Condor') || viewer.teams?.includes('Condor Dev'));
+const canEstimate = (viewer) => Boolean(viewer.isAdmin || viewer.can?.condorPlan || canTile(viewer, 'condor'));
 const canTriage = (viewer) => Boolean(viewer.can?.condorPlan);
 
 export async function saveEstimate(env, viewer, input) {

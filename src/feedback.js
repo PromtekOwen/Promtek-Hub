@@ -7,7 +7,7 @@
 // they are. Posts carry the day they were made, never the time.
 import { check, explain, nameWords } from './feedback-filter.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
-import { groupsOf } from './permissions.js';
+import { peopleWith } from './permissions.js';
 
 export const CATEGORIES = [
   ['quality', 'Quality Improvement'],
@@ -30,7 +30,7 @@ const IN = 90;
 const refuse = (message, status = 400) => { const err = new Error(message); err.status = status; return err; };
 const clean = (v, max) => String(v ?? '').replace(/\r\n/g, '\n').trim().slice(0, max);
 const chunk = (list, n) => Array.from({ length: Math.ceil(list.length / n) }, (_, i) => list.slice(i * n, i * n + n));
-const isAdmin = (viewer) => Boolean(viewer?.isAdmin);
+const isAdmin = (viewer) => Boolean(viewer?.isAdmin || viewer?.can?.feedbackReview);
 // Who someone is, for working out their codes. Nobody viewing the hub as someone
 // else ever counts as them here, so a developer can't see whose posts are whose.
 const whoOf = (viewer) => (viewer?.viewingAs ? null : String(viewer?.email || '').trim().toLowerCase() || null);
@@ -198,10 +198,10 @@ export async function roundUp(env, { force = false } = {}) {
 
 // ---------- writing ----------
 
+// Everyone who reads feedback: admins, and whoever else has Feedback moderation.
 async function adminEmails(env) {
   const set = new Set((env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean));
-  const { results } = await env.DB.prepare('SELECT email, groups, role FROM employees WHERE active = 1 AND email IS NOT NULL').all();
-  for (const e of results) if (groupsOf(e).includes('admin')) set.add(String(e.email).toLowerCase());
+  for (const e of await peopleWith(env, 'feedbackReview')) set.add(String(e.email).toLowerCase());
   return [...set];
 }
 

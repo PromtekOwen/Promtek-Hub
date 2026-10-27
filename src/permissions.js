@@ -1,6 +1,8 @@
-// Who can do what. Groups are fixed here rather than editable in the hub, so a
-// mis-tick in Admin can never open something up; changes are made in code.
-// A person can be in any number of groups and teams, and can lead some teams.
+// Who can do what. A person can be in any number of groups (roles) and teams, and
+// can lead some teams. Which tiles each role and team can open, and what they can do
+// inside them, start from the defaults here and can be changed by admins in Admin
+// (kept in sync_state as access_config). Admins can always do everything, and the
+// Admin tile and the admin permission can't be changed, so nobody can lock themselves out.
 
 // Condor Dev is the developers within Condor; they alone are planned for and rated in Condor Dev.
 export const TEAMS = ['Projecting', 'Service', 'Condor', 'Condor Dev', 'Sales', 'Marketing'];
@@ -34,17 +36,93 @@ export const GROUPS = {
   },
 };
 
-// What each permission is, and which groups have it. Admin has everything.
+// What each permission is, which groups have it to begin with, and the tile it
+// belongs to. Admin has everything.
 export const PERMISSIONS = {
-  oversight: { about: 'Reports, approvals and everyone\'s records across the teams', groups: ['management', 'lead'] },
-  quotes: { about: 'Start and edit quotes', groups: ['management', 'lead', 'sales'] },
-  condorPlan: { about: 'Triage MES and plan Condor releases', groups: ['management', 'lead'] },
-  shop: { about: 'Preview the XP shop', groups: ['management', 'lead'] },
-  eotq: { about: 'See every Employee of the Quarter nomination and who made it', groups: ['management'] },
-  wip: { about: 'The WIP: every order and service contract, its progress, invoicing and payment', groups: ['management'] },
-  developer: { about: 'Sync and Bitbucket status, connection tests and error details', groups: ['developer'] },
-  admin: { about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [] },
+  oversight: { name: 'Team oversight', about: 'Approvals, disputes, modifiers and count checks, everyone\'s records, and team lists across the hub', groups: ['management', 'lead'] },
+  quotes: { name: 'Build quotes', about: 'Start and edit quotes, and see every quote', groups: ['management', 'lead', 'sales'], tile: 'quotes' },
+  condorPlan: { name: 'Condor planning', about: 'Triage MES and plan Condor releases', groups: ['management', 'lead'], tile: 'condor' },
+  eotq: { name: 'Employee of the Quarter results', about: 'See every nomination and who made it, and choose the winner', groups: ['management'], tile: 'eotq' },
+  wipEdit: { name: 'Change the WIP', about: 'Change an order\'s value or division, WIP settings, and customers\' payment terms', groups: ['management'], tile: 'wip' },
+  contractInsights: { name: 'Contract insights', about: 'Insights across every service contract', groups: ['management'], leads: ['Service'], tile: 'contracts' },
+  feedbackReview: { name: 'Feedback moderation', about: 'Read anonymous feedback before it\'s posted, post or turn it down, and reply to writers', groups: [], tile: 'feedback' },
+  developer: { name: 'Developer tools', about: 'Sync and Bitbucket status, connection tests, error details and viewing the hub as someone else', groups: ['developer'] },
+  admin: { name: 'Admin', about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [], fixed: true },
 };
+
+// Who can open each tile to begin with: everyone, unless roles, teams or leads are
+// given. These match the tiles in public/modules.js. Admin's own tile isn't here: it
+// is always admins and developers.
+export const TILES = {
+  xp: { name: 'XP & rank' },
+  time: { name: 'My time' },
+  condor: { name: 'Condor Dev', groups: ['management', 'lead'], teams: ['Condor', 'Condor Dev'] },
+  quotes: { name: 'Quotes' },
+  jobs: { name: 'Jobs' },
+  obsolescence: { name: 'Obsolescence' },
+  pow: { name: 'Point of work' },
+  psc: { name: 'PSC', groups: ['management', 'lead'], teams: ['Service'] },
+  contracts: { name: 'Service contracts', groups: ['management', 'lead'], teams: ['Service'] },
+  capacity: { name: 'Capacity', groups: ['management', 'lead'] },
+  wip: { name: 'WIP', groups: ['management'] },
+  invoicing: { name: 'Invoicing', groups: ['management'] },
+  calls: { name: '8x8 calls' },
+  it: { name: 'IT support' },
+  requests: { name: 'Requests' },
+  feedback: { name: 'Feedback' },
+  vehicles: { name: 'Vehicles' },
+  eotq: { name: 'Employee of the Quarter' },
+  shop: { name: 'XP shop', groups: ['management', 'lead'] },
+  org: { name: 'Company chart' },
+  reports: { name: 'Reports', groups: ['management', 'lead'] },
+};
+
+// A rule: open to everyone, or to the roles, teams and leads of teams listed.
+const asList = (v, allowed) => [...new Set(Array.isArray(v) ? v : [])].filter((x) => allowed.includes(x));
+export function cleanRule(rule, { tile = false } = {}) {
+  return {
+    open: tile ? Boolean(rule?.open) : false,
+    groups: asList(rule?.groups, Object.keys(GROUPS)),
+    teams: asList(rule?.teams, TEAMS),
+    leads: asList(rule?.leads, TEAMS),
+  };
+}
+export const defaultTileRule = (id) => {
+  const t = TILES[id] || {};
+  return { open: !t.groups && !t.teams && !t.leads, groups: t.groups || [], teams: t.teams || [], leads: t.leads || [] };
+};
+export const defaultPermissionRule = (key) => ({ open: false, groups: PERMISSIONS[key]?.groups || [], teams: [], leads: PERMISSIONS[key]?.leads || [] });
+
+// What's in force: the defaults, with whatever admins have changed on top.
+export function rulesFrom(config) {
+  const c = config && typeof config === 'object' ? config : {};
+  const tiles = Object.fromEntries(Object.keys(TILES).map((id) => [id, c.tiles?.[id] ? cleanRule(c.tiles[id], { tile: true }) : defaultTileRule(id)]));
+  const permissions = Object.fromEntries(Object.keys(PERMISSIONS).map((k) => [k,
+    !PERMISSIONS[k].fixed && c.permissions?.[k] ? cleanRule(c.permissions[k]) : defaultPermissionRule(k)]));
+  return { tiles, permissions };
+}
+
+export const matches = (rule, { groups, teams, leads }) => Boolean(rule.open
+  || rule.groups.some((g) => groups.includes(g)) || rule.teams.some((t) => teams.includes(t)) || rule.leads.some((t) => leads.includes(t)));
+
+// Read once in a while, rather than on every request; saving clears it straight away.
+let kept = { at: 0, value: null };
+const KEEP_MS = 30_000;
+export async function loadAccessConfig(env) {
+  if (kept.value && Date.now() - kept.at < KEEP_MS) return kept.value;
+  let value = {};
+  try {
+    const row = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'access_config'").first();
+    value = row?.value ? JSON.parse(row.value) : {};
+  } catch { value = {}; }
+  kept = { at: Date.now(), value };
+  return value;
+}
+export async function saveAccessConfig(env, value) {
+  await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('access_config', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .bind(JSON.stringify(value)).run();
+  kept = { at: Date.now(), value };
+}
 
 const parseList = (v) => {
   if (Array.isArray(v)) return v;
@@ -72,15 +150,23 @@ export function leadOf(emp) {
   return emp?.role === 'lead' && emp?.team ? [emp.team] : [];
 }
 
-// Builds what the rest of the hub asks about the signed-in person.
-export function access(emp, { fallbackAdmin = false } = {}) {
+// Builds what the rest of the hub asks about the signed-in person. config is the
+// access_config admins have saved; without it, the defaults apply.
+export function access(emp, { fallbackAdmin = false, config = null } = {}) {
   const groups = new Set(groupsOf(emp));
   if (fallbackAdmin) groups.add('admin');
   const teams = teamsOf(emp);
   const leads = groups.has('lead') ? leadOf(emp) : [];
-  const can = Object.fromEntries(Object.entries(PERMISSIONS).map(([key, p]) =>
-    [key, groups.has('admin') || p.groups.some((g) => groups.has(g))]));
+  const admin = groups.has('admin');
+  const rules = rulesFrom(config);
+  const who = { groups: [...groups], teams, leads };
+  const can = Object.fromEntries(Object.keys(PERMISSIONS).map((key) => [key, admin || (key !== 'admin' && matches(rules.permissions[key], who))]));
+  const tiles = Object.fromEntries(Object.keys(TILES).map((id) => [id, admin || matches(rules.tiles[id], who)]));
+  // The names older parts of the hub ask for.
+  can.wip = tiles.wip;
+  can.shop = tiles.shop;
   return {
+    tiles,
     groups: [...groups],
     teams,
     leads,
@@ -101,6 +187,21 @@ export function forMe(viewer, team) {
   if (viewer.scopeTeams === null) return true;
   if (!team) return true;
   return viewer.scopeTeams.includes(team);
+}
+
+// Whether someone can open a tile. A viewer built without tiles (in a test, say) gets the default.
+export function canTile(viewer, id) {
+  if (viewer?.isAdmin) return true;
+  if (viewer?.tiles) return Boolean(viewer.tiles[id]);
+  return matches(defaultTileRule(id), { groups: viewer?.groups || [], teams: viewer?.teams || [], leads: viewer?.leads || [] });
+}
+
+// Everyone active who can do something, as the hub works it out for them.
+export async function peopleWith(env, permission) {
+  const config = await loadAccessConfig(env);
+  const admins = (env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const { results } = await env.DB.prepare('SELECT * FROM employees WHERE active = 1 AND email IS NOT NULL').all();
+  return results.filter((e) => access(e, { config, fallbackAdmin: admins.includes(String(e.email).toLowerCase()) }).can[permission]);
 }
 
 export function requireCan(viewer, permission, message) {

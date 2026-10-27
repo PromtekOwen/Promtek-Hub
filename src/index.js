@@ -8,7 +8,7 @@ import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
-import { access, TEAMS as ALL_TEAMS } from './permissions.js';
+import { access, canTile, loadAccessConfig, saveAccessConfig, rulesFrom, cleanRule, defaultTileRule, defaultPermissionRule, groupsOf, teamsOf, leadOf, TILES, PERMISSIONS, GROUPS, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
 import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, backdateRate } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
@@ -141,8 +141,8 @@ export default {
 // Combines the signed-in identity with the role stored against their profile.
 // The emails in ADMIN_EMAILS are always admins, so you can't lock yourself out.
 async function resolveViewer(env, user) {
-  const emp = await findEmployee(env, user.email);
-  return { ...user, employee: emp, accountId: emp?.account_id || null, ...access(emp, { fallbackAdmin: user.isAdmin }) };
+  const [emp, config] = await Promise.all([findEmployee(env, user.email), loadAccessConfig(env)]);
+  return { ...user, employee: emp, accountId: emp?.account_id || null, ...access(emp, { fallbackAdmin: user.isAdmin, config }) };
 }
 
 // ---------- viewing as someone else ----------
@@ -159,7 +159,7 @@ async function viewAs(env, real, accountId) {
   const admins = (env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
   const isAdmin = Boolean(emp.email && admins.includes(String(emp.email).toLowerCase()));
   return {
-    email: emp.email || '', isAdmin, employee: emp, accountId: emp.account_id, ...access(emp, { fallbackAdmin: isAdmin }),
+    email: emp.email || '', isAdmin, employee: emp, accountId: emp.account_id, ...access(emp, { fallbackAdmin: isAdmin, config: await loadAccessConfig(env) }),
     viewingAs: { name: emp.name, email: emp.email || null }, realEmail: real.email,
   };
 }
@@ -190,6 +190,12 @@ async function devRoute(request, env, url, real) {
   return json({ error: 'Not found' }, 404);
 }
 
+// The requests that belong to one tile alone.
+const TILE_APIS = {
+  condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], it: ['/api/it/'],
+  requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'],
+};
+
 // Developers can reach the hub's technical side of Admin, and nothing else there.
 const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/reads', '/api/admin/sync-now', '/api/admin/bitbucket', '/api/admin/bitbucket-test',
   '/api/admin/bitbucket-poll', '/api/admin/bitbucket-reread', '/api/admin/org-order', '/api/admin/bitbucket-link', '/api/admin/send-alerts', '/api/admin/test-8x8']);
@@ -197,6 +203,13 @@ const DEVELOPER_ADMIN = new Set(['/api/admin/overview', '/api/admin/reads', '/ap
 async function route(request, env, url, user) {
   const { pathname } = url;
   const method = request.method;
+  // A tile someone can't open: its own requests are refused too, not just the tile hidden.
+  // Tiles with their own checks inside (PSC, contracts, WIP and so on) aren't listed here.
+  for (const [tile, prefixes] of Object.entries(TILE_APIS)) {
+    if (prefixes.some((x) => pathname.startsWith(x)) && !canTile(user, tile)) {
+      return json({ error: `${TILES[tile].name} isn't open to you.` }, 403);
+    }
+  }
 
   if (method === 'GET' && pathname === '/api/me') {
     try { await (await import('./usage.js')).seen(env, user); } catch (err) { console.warn('Last seen not kept:', err.message); }
@@ -318,7 +331,7 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/shop')) {
     // Demonstration only: admins can look, and nothing here spends anything.
-    if (!user.can.shop) return json({ error: 'The shop is still being worked on.' }, 403);
+    if (!canTile(user, 'shop')) return json({ error: 'The shop is still being worked on.' }, 403);
     const totals = user.accountId
       ? await env.DB.prepare('SELECT COALESCE(SUM(xp), 0) AS xp FROM xp_ledger WHERE account_id = ?').bind(user.accountId).first()
       : { xp: 0 };
@@ -776,7 +789,7 @@ async function route(request, env, url, user) {
   }
 
   if (pathname.startsWith('/api/reports/')) {
-    if (!user.isLead) return json({ error: 'Only team leads and admins can see team reports.' }, 403);
+    if (!canTile(user, 'reports')) return json({ error: 'Team reports aren\'t open to you.' }, 403);
 
     if (method === 'GET' && pathname === '/api/reports/team') {
       return json(await teamWeeks(env, {
@@ -965,6 +978,8 @@ async function route(request, env, url, user) {
       await ledgerChanged(env);
       return json({ ok: true, kept: false });
     }
+    if (method === 'GET' && pathname === '/api/admin/access') return json(await accessOverview(env));
+    if (method === 'POST' && pathname === '/api/admin/access') return json(await saveAccess(env, user, body));
     if (method === 'GET' && pathname === '/api/admin/people') return json({ ...(await People.listPeople(env)), icons: People.ICONS.map(([id, label]) => ({ id, label })), departments: Org.DEPARTMENTS.map(([name, colour]) => ({ name, colour })) });
     if (method === 'POST' && pathname === '/api/admin/person') {
       return json(await auditedPerson(env, user, body.accountId, (b) => (b ? 'Details changed' : 'Added'), () => People.savePerson(env, body)));
@@ -1064,7 +1079,7 @@ function weekStart() {
 
 async function getMe(env, user) {
   const base = {
-    user: { email: user.email, role: user.role, team: user.team, teams: user.teams, leads: user.leads, groups: user.groups, can: user.can,
+    user: { email: user.email, role: user.role, team: user.team, teams: user.teams, leads: user.leads, groups: user.groups, can: user.can, tiles: user.tiles,
       scopeTeams: user.scopeTeams, isAdmin: user.isAdmin, isLead: user.isLead },
     jiraBaseUrl: env.JIRA_BASE_URL,
     teamsList: ALL_TEAMS,
@@ -1133,6 +1148,47 @@ async function getTime(env, user, url) {
 }
 
 // ---------- Admin ----------
+
+// Who can open each tile and do each thing inside them, with everyone's roles and
+// teams so Admin can show who that comes to as the ticks change.
+async function accessOverview(env) {
+  const config = await loadAccessConfig(env);
+  const rules = rulesFrom(config);
+  const admins = (env.ADMIN_EMAILS || '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const { results } = await env.DB.prepare("SELECT * FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending-%' ORDER BY name").all();
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  return {
+    groups: Object.entries(GROUPS).map(([k, g]) => [k, g.name]), teams: ALL_TEAMS,
+    tiles: Object.entries(TILES).map(([id, t]) => ({ id, name: t.name, rule: rules.tiles[id], changed: !same(rules.tiles[id], defaultTileRule(id)) })),
+    permissions: Object.entries(PERMISSIONS).map(([key, p]) => ({ key, name: p.name, about: p.about, tile: p.tile || null, fixed: Boolean(p.fixed),
+      rule: rules.permissions[key], changed: !same(rules.permissions[key], defaultPermissionRule(key)) })),
+    people: results.map((e) => {
+      const groups = groupsOf(e);
+      const admin = groups.includes('admin') || admins.includes(String(e.email || '').toLowerCase());
+      return { id: e.account_id, name: e.name, admin, groups, teams: teamsOf(e), leads: groups.includes('lead') ? leadOf(e) : [] };
+    }),
+  };
+}
+
+async function saveAccess(env, user, body) {
+  const kind = body.kind === 'tile' ? 'tile' : body.kind === 'permission' ? 'permission' : null;
+  const key = String(body.key || '');
+  const bad = (message) => { const err = new Error(message); err.status = 400; return err; };
+  if (!kind || !(kind === 'tile' ? TILES[key] : PERMISSIONS[key])) throw bad('That isn\'t a tile or permission the hub knows.');
+  if (kind === 'permission' && PERMISSIONS[key].fixed) throw bad('Admin access can\'t be changed, so nobody is locked out.');
+  const config = JSON.parse(JSON.stringify(await loadAccessConfig(env)));
+  const bucket = kind === 'tile' ? 'tiles' : 'permissions';
+  config[bucket] ||= {};
+  const before = rulesFrom(config)[bucket][key];
+  if (body.reset) delete config[bucket][key];
+  else config[bucket][key] = cleanRule(body.rule, { tile: kind === 'tile' });
+  await saveAccessConfig(env, config);
+  const after = rulesFrom(config)[bucket][key];
+  const say = (r) => (r.open ? 'Everyone' : [...r.groups.map((g) => GROUPS[g]?.name || g), ...r.teams, ...r.leads.map((t) => `Leads of ${t}`)].join(', ') || 'Admins only');
+  await Audit.record(env, user, { area: 'Admin', action: kind === 'tile' ? 'Tile access changed' : 'Permission changed', subjectType: 'access', subjectId: `${kind}:${key}`,
+    label: kind === 'tile' ? TILES[key].name : PERMISSIONS[key].name, changes: [{ label: 'Who', before: say(before), after: say(after) }] });
+  return { ok: true, rule: after };
+}
 
 async function ledgerTotals(env) {
   return remembered(env, 'ledger_totals', await ledgerStamp(env), async () => (await env.DB.prepare(

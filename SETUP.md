@@ -151,7 +151,7 @@ Someone new with no manager and no level appears on the Directors row, which mak
 
 ### Roles
 
-Access is set with **groups** and **teams**. A person can be in any number of each. Groups are fixed in the hub's code (`src/permissions.js`), so a stray tick in Admin can never open something up; changes are made there.
+Access is set with **groups** (roles) and **teams**. A person can be in any number of each. What each role and team can open starts from the defaults below, and admins can change it under **Admin → Who can use what** (see below).
 
 - **Everyone:** their own XP, time and profile, the leaderboard, and the tiles for their teams.
 - **Admin:** everything, including Admin, every settings cog, the audit log, employees, vehicles and issuing the company chart.
@@ -163,6 +163,14 @@ Access is set with **groups** and **teams**. A person can be in any number of ea
 Teams are Projecting, Service, Condor, Sales and Marketing. They decide which tiles someone sees by default (for example Condor Dev for the Condor team) and whose alerts reach them. A Team lead also has the teams they lead ticked under **Leads**; they can only lead teams they're in. Modifiers can be seen and decided only by the person, their supervisor, a lead of one of their teams, Management and admins.
 
 Set all of this on each person under **Admin → Employees**. Changes to anyone's groups or teams are recorded in the audit log.  Your own email stays in `ADMIN_EMAILS` in `wrangler.jsonc` as a fallback, so you can't lock yourself out.
+
+### Who can use what
+
+**Admin → Who can use what** lists every tile, then the parts inside tiles that are only for some people. For each one, choose **Everyone** (tiles only) or any mix of roles, teams and **Leads of** a team; the count and names of who that comes to update as you tick, before saving. Each change is in the audit log, takes effect within about half a minute, and **Back to how it started** returns it to the default. A tile's own settings cog shows the same for that tile.
+
+- A tile someone can't open is hidden from their home screen, and the hub refuses its requests: Condor Dev, Jobs, Obsolescence, Point of work, PSC, Service contracts, Capacity, WIP, Invoicing, IT support, Requests, Feedback, Vehicles, Employee of the Quarter, the XP shop and Reports. XP & rank, My time, Quotes, 8x8 calls and the Company chart are only hidden, because other parts of the hub (logging time, the home screen) use them.
+- Inside the tiles: Team oversight, Build quotes, Condor planning, Employee of the Quarter results, Change the WIP (including payment terms), Contract insights, Feedback moderation and Developer tools.
+- Admins always have everything, and the Admin tile and Admin permission can't be changed, so nobody can lock themselves out.
 
 ### Reports
 

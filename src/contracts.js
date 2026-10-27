@@ -9,7 +9,7 @@
 // run if they don't finish.
 import { jira, searchPage, customerProjects, projectFilter } from './jira.js';
 import { raiseAlert, getState, setState, londonDate, ledgerStamp } from './sync.js';
-import { leadsOfTeam, groupsOf } from './permissions.js';
+import { leadsOfTeam, groupsOf, canTile } from './permissions.js';
 
 export const FIELDS = {
   start: 'customfield_14268',
@@ -916,17 +916,19 @@ async function noteClockChanges(env, clocks) {
 // ---------- what people see ----------
 
 export function canSee(viewer) {
-  return Boolean(viewer.isAdmin || viewer.can?.oversight || viewer.teams?.includes('Service'));
+  return canTile(viewer, 'contracts');
 }
 export function canInsights(viewer) {
-  return Boolean(viewer.isAdmin || viewer.groups?.includes('management') || viewer.leads?.includes('Service'));
+  if (viewer.isAdmin) return true;
+  if (viewer.can && 'contractInsights' in viewer.can) return Boolean(viewer.can.contractInsights);
+  return Boolean(viewer.groups?.includes('management') || viewer.leads?.includes('Service'));
 }
 const refuse = (message, status = 403) => { const err = new Error(message); err.status = status; return err; };
 const mustAdmin = (viewer) => { if (!viewer.isAdmin) throw refuse('Admin only.'); };
 
 function mustSee(viewer, insights = false) {
   if (!(insights ? canInsights(viewer) : canSee(viewer))) {
-    const err = new Error('Service contracts are for the Service team.'); err.status = 403; throw err;
+    const err = new Error(insights ? 'Contract insights aren\'t open to you.' : 'Service contracts aren\'t open to you.'); err.status = 403; throw err;
   }
 }
 

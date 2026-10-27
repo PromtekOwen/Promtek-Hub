@@ -9,7 +9,7 @@
 import { customerProjects } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
 import { budget, search, OutOfCalls, chunk, marks, IN } from './wip.js';
-import { TEAMS } from './permissions.js';
+import { TEAMS, canTile } from './permissions.js';
 import { workDaysOf, weekHoursOf, DEFAULT_DAYS } from './hours.js';
 
 const RUN_CALLS = 30;
@@ -132,7 +132,7 @@ export async function run(env, { force = false } = {}) {
 
 const refuse = (message, status = 403) => { const err = new Error(message); err.status = status; return err; };
 export function canSee(viewer) {
-  return Boolean(viewer?.isAdmin || viewer?.can?.oversight);
+  return canTile(viewer, 'capacity');
 }
 // Admin and management see every team; a team lead sees the teams they lead.
 function teamsFor(viewer) {

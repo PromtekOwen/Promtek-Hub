@@ -514,9 +514,9 @@ const pages = {
     async render() {
       if (!me.user.isAdmin && me.user.can?.developer) return developerAdminHtml();
       if (!me.user.isAdmin) return `<div class="card"><p>Only admins can see this page.</p></div>`;
-      const [data, peopleData, elo, reads, usage, backdate] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
+      const [data, peopleData, elo, reads, usage, backdate, accessInfo] = await Promise.all([api('/api/admin/overview'), api('/api/admin/people'), api('/api/admin/elo'),
         me.user.groups?.includes('developer') ? api('/api/admin/reads').catch(() => null) : null,
-        api(`/api/admin/usage?days=${usageDays}`).catch(() => null), api('/api/admin/xp-backdate').catch(() => null)]);
+        api(`/api/admin/usage?days=${usageDays}`).catch(() => null), api('/api/admin/xp-backdate').catch(() => null), api('/api/admin/access').catch(() => null)]);
       peopleCache = peopleData;
       if (personEdit) return personEditHtml();
       const s = data.state;
@@ -542,6 +542,8 @@ const pages = {
         ${eloAdminHtml(elo)}
 
         ${xpStartHtml(backdate)}
+
+        ${accessAdminHtml(accessInfo)}
 
         <h2>Home screen messages</h2>
         <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
@@ -902,6 +904,8 @@ let arrangeMode = false;
 // 'open', 'locked' (shown greyed out as under construction) or false (not shown).
 function tileAccess(m) {
   const u = me.user;
+  // Who can open each tile is set in Admin; the server works it out for each person.
+  if (u.tiles && m.id in u.tiles) return u.isAdmin || u.tiles[m.id] ? 'open' : m.whenLocked === 'construction' ? 'locked' : false;
   const needs = m.needs || (m.adminOnly ? 'admin' : m.leadOnly ? 'oversight' : null);
   const hasNeed = !needs || u.isAdmin || [].concat(needs).some((n) => Boolean(u.can?.[n]));
   const inTeams = !m.teams || u.isAdmin || u.isLead || m.teams.some((t) => (u.teams || []).includes(t));
@@ -1683,7 +1687,8 @@ async function renderSettings(route) {
   if (route === '#/invoicing') { settingsData.invoicing = await api(`/api/invoicing?region=${invRegion}`).catch((err) => ({ error: err.message })); invTerms = null; }
   if (route === '#/feedback') settingsData.feedback = await api('/api/feedback/settings').catch((err) => ({ error: err.message }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
-  return back + TILE_SETTINGS[route].render();
+  if (me.user.isAdmin) await loadAccess().catch(() => null);
+  return back + TILE_SETTINGS[route].render() + accessCardHtml(route);
 }
 
 function settingsQuotesHtml() {
@@ -6500,6 +6505,162 @@ function personAccessHtml(p) {
     </div>`;
 }
 
+// ---------- Who can use what ----------
+// Which roles and teams can open each tile, and do each thing inside them. Admins
+// always can. Changes apply to everyone within about half a minute.
+
+let accessData = null;
+const accessOpen = new Set();   // rows whose list of people is showing
+const accessEditing = new Set(); // rows open for changing
+
+const accMatch = (rule, p) => Boolean(p.admin || rule.open || rule.groups.some((g) => p.groups.includes(g))
+  || rule.teams.some((t) => p.teams.includes(t)) || rule.leads.some((t) => p.leads.includes(t)));
+const accSay = (rule, d = accessData) => (rule.open ? 'Everyone'
+  : [...rule.groups.map((g) => d.groups.find(([k]) => k === g)?.[1] || g), ...rule.teams.map((t) => `${t} team`), ...rule.leads.map((t) => `Leads of ${t}`)].join(', ') || 'Admins only');
+
+async function loadAccess() {
+  accessData = await api('/api/admin/access');
+  return accessData;
+}
+
+// One tile or permission: who it's for, and who that comes to.
+function accRuleHtml(kind, item, { title = item.name, about = '', expanded = false } = {}) {
+  const d = accessData;
+  const r = item.rule;
+  const id = `${kind}:${item.key || item.id}`;
+  const people = d.people.filter((p) => accMatch(r, p));
+  const chips = (list, attr, on) => list.map(([k, l]) => `<button type="button" class="chip${on.includes(k) ? ' on' : ''}" data-acc-${attr}="${esc(k)}" aria-pressed="${on.includes(k)}">${esc(l)}</button>`).join('');
+  const teams = d.teams.map((t) => [t, t]);
+  const editing = expanded || accessEditing.has(id);
+  return `<div class="acc-rule" data-acc-rule="${esc(id)}" data-kind="${kind}" data-key="${esc(item.key || item.id)}"${expanded ? ' data-expanded' : ''}>
+      <div class="acc-head"><span><b>${esc(title)}</b>${item.changed ? ' <span class="acc-changed">Changed</span>' : ''}${about ? `<small class="muted">${esc(about)}</small>` : ''}</span>
+        <button class="linklike acc-count" data-acc-people>${n(people.length)} ${people.length === 1 ? 'person' : 'people'}</button></div>
+      ${item.fixed ? '<p class="muted" style="margin:.25rem 0 0">Admins only. This can\'t be changed, so nobody is locked out.</p>' : `
+      <p class="acc-summary">${esc(accSay(r))}${expanded ? '' : ` <button class="linklike" data-acc-edit>${editing ? 'Done' : 'Change'}</button>`}</p>
+      <div class="acc-edit"${editing ? '' : ' hidden'}>
+      ${kind === 'tile' ? `<label class="inline-check"><input type="checkbox" data-acc-open${r.open ? ' checked' : ''}> Everyone</label>` : ''}
+      <div class="acc-picks"${r.open ? ' hidden' : ''}>
+        <p class="acc-label">Roles</p><div class="chips">${chips(d.groups.filter(([k]) => k !== 'admin'), 'group', r.groups)}</div>
+        <p class="acc-label">Teams</p><div class="chips">${chips(teams, 'team', r.teams)}</div>
+        <p class="acc-label">Leads of</p><div class="chips">${chips(teams, 'lead', r.leads)}</div>
+      </div>
+      <div class="row acc-actions"><button class="btn secondary" data-acc-save>Save</button>${item.changed ? '<button class="linklike" data-acc-reset>Back to how it started</button>' : ''}
+        <span class="result" data-acc-result role="status"></span></div></div>`}
+      <p class="acc-people muted"${accessOpen.has(id) ? '' : ' hidden'}>${people.length ? people.map((p) => esc(p.name) + (p.admin ? ' <small>(admin)</small>' : '')).join(', ') : 'Nobody yet.'}</p>
+    </div>`;
+}
+
+// What the ticks in one row add up to.
+function accRuleFrom(box) {
+  const on = (attr) => [...box.querySelectorAll(`[data-acc-${attr}].on`)].map((c) => c.dataset[`acc${attr[0].toUpperCase()}${attr.slice(1)}`]);
+  return { open: Boolean(box.querySelector('[data-acc-open]')?.checked), groups: on('group'), teams: on('team'), leads: on('lead') };
+}
+
+// The admin page's section: every tile, then everything inside them.
+function accessAdminHtml(d) {
+  if (!d) return '';
+  accessData = d;
+  const tileName = (id) => d.tiles.find((t) => t.id === id)?.name;
+  return `<h2>Who can use what</h2>
+    <div class="card">
+      <p class="muted" style="margin-top:0">Who can open each tile, and who can do the parts inside them that aren't for everyone. Roles and teams are set on each person under Employees; admins can always do everything. A tile someone can't open is hidden from their home screen, and the hub refuses what's inside it. Changes apply within about half a minute.</p>
+      <h3>Tiles</h3>
+      <div class="acc-list">${d.tiles.map((t) => accRuleHtml('tile', t)).join('')}
+        <div class="acc-rule"><div class="acc-head"><span><b>Admin</b><small class="muted">Admins, and developers for the technical side. This can't be changed.</small></span></div></div></div>
+      <h3 style="margin-top:1.5rem">Inside the tiles</h3>
+      <div class="acc-list">${d.permissions.map((p) => accRuleHtml('permission', p, { about: `${p.about}${p.tile ? ` (${tileName(p.tile)})` : ''}` })).join('')}</div>
+    </div>`;
+}
+
+// Under a tile's cog: who can open it, and the parts of it that are for some people only.
+function accessCardHtml(route) {
+  if (!me.user.isAdmin || !accessData) return '';
+  const mod = MODULES.find((m) => m.route === route);
+  const tile = mod && accessData.tiles.find((t) => t.id === mod.id);
+  const perms = mod ? accessData.permissions.filter((p) => p.tile === mod.id) : [];
+  if (!tile && !perms.length) return '';
+  return `<div class="card acc-card" style="margin-top:1rem">
+      <h2 style="margin-top:0">Who can use this</h2>
+      <div class="acc-list">${tile ? accRuleHtml('tile', tile, { title: 'Open the tile', expanded: true }) : ''}
+        ${perms.map((p) => accRuleHtml('permission', p, { about: p.about, expanded: true })).join('')}</div>
+      <p class="help" style="padding:0">Every tile is listed in Admin, under Who can use what.</p>
+    </div>`;
+}
+
+// Redraws one row after a change, keeping the page where it is.
+function accRedraw(box) {
+  const [kind, key] = box.dataset.accRule.split(':');
+  const item = (kind === 'tile' ? accessData.tiles.find((t) => t.id === key) : accessData.permissions.find((p) => p.key === key));
+  const title = box.querySelector('.acc-head b')?.textContent;
+  const about = box.querySelector('.acc-head small')?.textContent || '';
+  box.outerHTML = accRuleHtml(kind, item, { title, about, expanded: box.hasAttribute('data-expanded') });
+}
+
+async function accessClick(event) {
+  const box = event.target.closest('[data-acc-rule]');
+  if (!box || !accessData) return false;
+  const [kind, key] = box.dataset.accRule.split(':');
+  const item = kind === 'tile' ? accessData.tiles.find((t) => t.id === key) : accessData.permissions.find((p) => p.key === key);
+  const chip = event.target.closest('[data-acc-group], [data-acc-team], [data-acc-lead]');
+  if (chip) {
+    chip.classList.toggle('on');
+    chip.setAttribute('aria-pressed', chip.classList.contains('on'));
+    accLive(box);
+    return true;
+  }
+  if (event.target.matches('[data-acc-open]')) {
+    box.querySelector('.acc-picks').hidden = event.target.checked;
+    accLive(box);
+    return true;
+  }
+  if (event.target.closest('[data-acc-edit]')) {
+    const id = box.dataset.accRule;
+    if (accessEditing.has(id)) accessEditing.delete(id); else accessEditing.add(id);
+    accRedraw(box);
+    return true;
+  }
+  if (event.target.closest('[data-acc-people]')) {
+    const id = box.dataset.accRule;
+    if (accessOpen.has(id)) accessOpen.delete(id); else accessOpen.add(id);
+    box.querySelector('.acc-people').hidden = !accessOpen.has(id);
+    return true;
+  }
+  const save = event.target.closest('[data-acc-save], [data-acc-reset]');
+  if (save) {
+    const reset = save.matches('[data-acc-reset]');
+    const rule = accRuleFrom(box);
+    // Nobody but admins would have it: worth a second look before saving.
+    if (!reset && !rule.open && !rule.groups.length && !rule.teams.length && !rule.leads.length
+      && !confirm(`Only admins will have ${item.name}. Save anyway?`)) return true;
+    save.disabled = true;
+    try {
+      const r = await api('/api/admin/access', { method: 'POST', body: JSON.stringify({ kind, key, rule, reset }) });
+      item.rule = r.rule;
+      await loadAccess();
+      accRedraw(box);
+      toast(`${item.name}: ${accSay(r.rule)}`);
+    } catch (err) {
+      const out = box.querySelector('[data-acc-result]');
+      if (out) { out.textContent = err.message; out.className = 'result bad'; }
+      save.disabled = false;
+    }
+    return true;
+  }
+  return false;
+}
+
+// The count and names follow the ticks before anything is saved.
+function accLive(box) {
+  const rule = accRuleFrom(box);
+  const people = accessData.people.filter((p) => accMatch(rule, p));
+  const summary = box.querySelector('.acc-summary');
+  if (summary && summary.firstChild) summary.firstChild.textContent = `${accSay(rule)} `;
+  const count = box.querySelector('.acc-count');
+  if (count) count.textContent = `${n(people.length)} ${people.length === 1 ? 'person' : 'people'}`;
+  const list = box.querySelector('.acc-people');
+  if (list) list.innerHTML = people.length ? people.map((p) => esc(p.name) + (p.admin ? ' <small>(admin)</small>' : '')).join(', ') : 'Nobody yet.';
+}
+
 // What the hub has read from the database today, against Cloudflare's free daily limit.
 function readsHtml(r) {
   if (!r || !me.user.groups?.includes('developer')) return '';
@@ -11038,6 +11199,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
+  if (event.target.closest('[data-acc-rule]') && await accessClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/feedback' && await feedbackClick(event) !== false) return;
   if (currentRoute() === '#/invoicing' && await invoicingClick(event) !== false) return;

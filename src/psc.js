@@ -7,7 +7,7 @@
 // an item is moved to In Progress in Jira, read from its history.
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
-import { leadsOfTeam } from './permissions.js';
+import { leadsOfTeam, canTile } from './permissions.js';
 import { orgMatcher, tokenCounts, holidaysFor, chargeOf, CHARGE } from './contracts.js';
 
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
@@ -575,9 +575,9 @@ export function byAttention(a, b) {
   return a.tierRank - b.tierRank || ms(a.created) - ms(b.created);
 }
 
-const canSee = (viewer) => Boolean(viewer.isAdmin || viewer.can?.oversight || viewer.teams?.includes('Service'));
+const canSee = (viewer) => canTile(viewer, 'psc');
 function mustSee(viewer) {
-  if (!canSee(viewer)) { const err = new Error('PSC is for the Service team.'); err.status = 403; throw err; }
+  if (!canSee(viewer)) { const err = new Error('PSC isn\'t open to you.'); err.status = 403; throw err; }
 }
 
 export async function overview(env, viewer) {
