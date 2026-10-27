@@ -197,8 +197,9 @@ function itemStatement(env, i, orderId, level) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, order_id = excluded.order_id, parent_id = excluded.parent_id, level = excluded.level,
        issuetype = excluded.issuetype, subtask = excluded.subtask, status = excluded.status, status_cat = excluded.status_cat, summary = excluded.summary,
-       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created, paid_at = excluded.paid_at
-     ${ifChanged('wip_items', ITEM_COLS)}`
+       share = excluded.share, inv_due = excluded.inv_due, inv_date = excluded.inv_date, division = excluded.division, created = excluded.created,
+       paid_at = CASE WHEN excluded.paid_at IS NULL THEN NULL ELSE COALESCE(wip_items.paid_at, excluded.paid_at) END
+     ${ifChanged('wip_items', ITEM_COLS.filter((c) => c !== 'paid_at'), ' OR (wip_items.paid_at IS NULL) IS NOT (excluded.paid_at IS NULL)')}`
   ).bind(String(i.id), i.key, String(orderId), f.parent?.id ? String(f.parent.id) : null, level, f.issuetype?.name || '', f.issuetype?.subtask ? 1 : 0,
     f.status?.name || '', statusCat(i), f.summary || '', num(f[F.share]), dateOf(f[F.due]), dateOf(f[F.invoiceDate]), div, f.created || null,
     statusCat(i) === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null);
@@ -1333,7 +1334,7 @@ export async function importSheet(env, viewer, body) {
 }
 
 // Shared with the rebuild of past months from Jira's own history (wip-history.js).
-export { OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };
+export { overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse, OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };
 
 // ---------- Invoicing ----------
 // Every invoice milestone on the live orders, by where it has got to, and when the
@@ -1457,6 +1458,7 @@ export async function invoiceAction(env, viewer, { key, action, date } = {}) {
   const cols = Object.keys(after);
   await env.DB.prepare(`UPDATE wip_items SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE issue_id = ?`).bind(...cols.map((c) => after[c]), item.issue_id).run();
   await recompute(env, [item.order_id]);
+  try { await (await import('./invoice-stats.js')).noteAction(env, item, action, after, today); } catch (err) { console.warn('Invoice history not noted:', err.message); }
   return { ok: true, key: item.issue_key, order: order?.issue_key || null, label, ...after };
 }
 

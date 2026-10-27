@@ -1527,3 +1527,11 @@ label.con-flag-org { display: block; max-width: 420px; }
 .inv-group:not([open]) { margin: .6rem 0; }
 .inv-group.nodate > summary h2 { color: var(--blue-deep); }
 .inv-group.nodate .inv-card { border-left: 4px solid var(--blue-deep); }
+.wipc-mark { position: absolute; left: 0; right: 0; height: 0; border-top: 2px dashed; z-index: 2; pointer-events: none; }
+.wipc-legend i.mark { background: none; border-top: 2px dashed; border-radius: 0; height: 0; width: 14px; vertical-align: 3px; }
+.inv-charts { margin-bottom: 1rem; }
+.inv-stats + .inv-charts { margin-top: 1rem; }
+.inv-heat td, .inv-heat th { white-space: nowrap; }
+.inv-heat tbody th { min-width: 11rem; }
+tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; }
+.wipc + .wipc, .inv-charts + .wipc { margin-top: 1rem; }

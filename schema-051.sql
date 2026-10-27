@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS invoice_history (issue_id TEXT PRIMARY KEY, issue_key TEXT, read_status TEXT, read_due TEXT, read_date TEXT, read_at TEXT, ready_at TEXT, invoiced_at TEXT, overdue_at TEXT, paid_at TEXT, first_due TEXT, due_moves INTEGER NOT NULL DEFAULT 0, first_date TEXT, date_moves INTEGER NOT NULL DEFAULT 0);

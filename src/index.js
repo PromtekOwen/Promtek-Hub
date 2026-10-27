@@ -469,6 +469,7 @@ async function route(request, env, url, user) {
   if (pathname.startsWith('/api/invoicing')) {
     const Wip = await import('./wip.js');
     if (method === 'GET' && pathname === '/api/invoicing') return json(await Wip.invoicing(env, user, { region: url.searchParams.get('region') }));
+    if (method === 'GET' && pathname === '/api/invoicing/insights') return json(await (await import('./invoice-stats.js')).insights(env, user, { region: url.searchParams.get('region'), months: url.searchParams.get('months') }));
     if (method === 'POST' && pathname === '/api/invoicing/terms') {
       const body = await request.json().catch(() => ({}));
       return json(await Wip.saveTerms(env, user, body.terms));

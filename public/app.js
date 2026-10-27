@@ -448,7 +448,7 @@ const pages = {
   },
 
   '#/invoicing': {
-    band: () => '<h1>Invoicing</h1><p>Every order\'s invoices, where each has got to, and the money expected each month.</p>',
+    band: () => '<h1>Invoicing</h1><p>Every order and service contract invoice, where each has got to, the money expected each month, and how invoicing and payment have gone.</p>',
     render: () => invoicingHtml(),
   },
 
@@ -8080,7 +8080,8 @@ const WIP_FILTERS = [
   ['done', 'Done', (r) => /^(done|archive)$/i.test(r.status || '')],
 ];
 const WIP_DIVISIONS = { ServiceTeam: 'Service', ProjectsTeam: 'Projects' };
-const wipSym = () => (wipRegion === 'sa' ? 'R' : '£');
+let wipSymFor = null;          // the currency while another tile draws with these charts
+const wipSym = () => wipSymFor || (wipRegion === 'sa' ? 'R' : '£');
 const wipMoney = (v, { sign = false } = {}) => {
   if (v === null || v === undefined || Number.isNaN(v)) return '—';
   const r = Math.round(v);
@@ -8364,10 +8365,11 @@ const wipMonthLabel = (m, i, n) => {
 };
 
 // Columns for each month (or bucket): series side by side, or stacked. Values below zero go under the line.
-function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = false, count = false, note = '' }) {
+function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = false, count = false, note = '', marks = [] }) {
   const len = labels.length;
   const val = (s, i) => s.values[i];
   let min = 0, max = 0;
+  for (const m of marks) if (m.value !== null && m.value !== undefined) max = Math.max(max, m.value);
   for (let i = 0; i < len; i++) {
     if (stacked) {
       max = Math.max(max, series.reduce((t, s) => t + Math.max(0, val(s, i) || 0), 0));
@@ -8379,7 +8381,8 @@ function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = f
   const y = (v) => ((v - sc.bottom) / range) * 100;
   const fmt = (v) => (v === null || v === undefined ? 'No figures' : count ? n(v) : pct ? wipAvg(v) : wipMoney(v));
   const every = Math.max(1, Math.ceil(len / 9));
-  const grid = sc.ticks.map((t) => `<span class="wipc-line${t === 0 ? ' zero' : ''}" style="bottom:${y(t)}%"><i>${count ? n(t) : wipShort(t, pct)}</i></span>`).join('');
+  const grid = sc.ticks.map((t) => `<span class="wipc-line${t === 0 ? ' zero' : ''}" style="bottom:${y(t)}%"><i>${count ? n(t) : wipShort(t, pct)}</i></span>`).join('')
+    + marks.filter((m) => m.value !== null && m.value !== undefined).map((m) => `<span class="wipc-mark" style="bottom:${y(m.value)}%;border-color:${m.color}" title="${esc(`${m.name}: ${fmt(m.value)}`)}"></span>`).join('');
   const cols = labels.map((label, i) => {
     const tip = [tips ? tips[i] : label, ...series.map((s) => `${s.name}: ${fmt(val(s, i))}`), ...(series.extra ? series.extra(i) : [])].join('\n');
     let bars;
@@ -8401,7 +8404,7 @@ function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = f
     return `<div class="wipc-col" tabindex="0" data-tip="${esc(tip)}" aria-label="${esc(tip.replace(/\n/g, ', '))}">${bars}
       <span class="wipc-x">${i % every === 0 ? esc(label) : ''}</span></div>`;
   }).join('');
-  const legend = series.length > 1 ? `<p class="wipc-legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}</p>` : '';
+  const legend = series.length > 1 || marks.length ? `<p class="wipc-legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}${marks.map((m) => `<span><i class="mark" style="border-color:${m.color}"></i>${esc(m.name)}</span>`).join('')}</p>` : '';
   const table = `<details class="wipc-table"><summary>Show as a table</summary><div class="table-wrap"><table><thead><tr><th></th>${series.map((s) => `<th class="num">${esc(s.name)}</th>`).join('')}</tr></thead>
     <tbody>${labels.map((l, i) => `<tr><th scope="row">${esc(tips ? tips[i] : l)}</th>${series.map((s) => `<td class="num">${fmt(val(s, i))}</td>`).join('')}</tr>`).join('')}</tbody></table></div></details>`;
   return `<section class="card wipc"><h2>${esc(title)}</h2>${sub ? `<p class="wipc-sub">${sub}</p>` : ''}${legend}
@@ -8685,7 +8688,13 @@ const invStage = (i) => (i.stage === 'upcoming' && !i.targetEnd ? 'nodate' : i.s
 let invShut = (() => { try { return new Set(JSON.parse(localStorage.getItem('inv-shut') || '["order:paid","contract:paid"]')); } catch { return new Set(['order:paid', 'contract:paid']); } })();
 const invShutSave = () => { try { localStorage.setItem('inv-shut', JSON.stringify([...invShut])); } catch { /* kept for this visit only */ } };
 
+let invTab = 'invoices';        // invoices, insights
+let invSpan = 12;               // months the insights cover
+const invTabsHtml = () => `<div class="tabs wip-tabs">${[['invoices', 'Invoices'], ['insights', 'Insights']].map(([k, l]) =>
+  `<button class="tab${invTab === k ? ' on' : ''}" data-inv-tab="${k}">${l}</button>`).join('')}</div>`;
+
 async function invoicingHtml() {
+  if (invTab === 'insights') return invInsightsHtml();
   const d = invData = invKeep && invData?.region === invRegion ? invData : await api(`/api/invoicing?region=${invRegion}`);
   invKeep = false;
   const q = invQuery.trim().toLowerCase();
@@ -8705,7 +8714,7 @@ async function invoicingHtml() {
   const missing = d.missingTerms.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>No payment terms for ${n(d.missingTerms.length)} ${d.missingTerms.length === 1 ? 'customer' : 'customers'}:</strong>
       ${d.missingTerms.map(esc).join(', ')}. Until terms are added${d.canEdit ? ' under the cog above' : ''}, payment on invoices without an Invoice Due Date is expected on Target End itself.</p></div>` : '';
 
-  return `<div class="row wip-tools">${regions}<input type="search" id="inv-search" value="${esc(invQuery)}" placeholder="Search customers, orders or milestones" aria-label="Search invoices"></div>
+  return `${invTabsHtml()}<div class="row wip-tools">${regions}<input type="search" id="inv-search" value="${esc(invQuery)}" placeholder="Search customers, orders or milestones" aria-label="Search invoices"></div>
     ${wipSyncLine(d)}
     ${missing}
     <dl class="stats inv-stats">
@@ -8883,6 +8892,8 @@ async function invoicingClick(event) {
     return true;
   }
   if (settingsOpen === '#/invoicing') return invTermsClick(event);
+  const tab = t('[data-inv-tab]');
+  if (tab) { invTab = tab.dataset.invTab; return render(); }
   const reg = t('[data-inv-region]');
   if (reg) { invRegion = reg.dataset.invRegion; invOpen = new Set(); return render(); }
   const m = t('[data-inv-month]');
@@ -8894,6 +8905,169 @@ async function invoicingClick(event) {
     return true;
   }
   return false;
+}
+
+function invoicingChange(event) {
+  if (event.target.matches('[data-inv-span]')) { invSpan = Number(event.target.value) || 12; render(); return true; }
+  return false;
+}
+
+// ---------- Invoicing insights ----------
+// How milestones and payments have gone: on time or late, what's owed and how old it is,
+// by customer and month by month.
+
+const invDays = (v) => (v === null || v === undefined ? '—' : `${Math.round(v)} ${Math.round(v) === 1 ? 'day' : 'days'}`);
+const invRate = (v) => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`);
+const invCustName = (d, a) => `${esc(d.names[a] || a)} <span class="muted">${esc(a)}</span>`;
+
+// A customers-by-month table, each cell shaded by how big it is.
+function invGridHtml(d, { title, sub, months, valueOf, accounts, fmt, total = true }) {
+  const all = accounts.flatMap((a) => months.map((m) => valueOf(a, m) || 0));
+  const max = Math.max(1, ...all);
+  const cell = (v) => (v === null ? '<td class="num muted">—</td>' : `<td class="num" style="background:rgba(42,120,214,${v ? (0.08 + 0.42 * (v / max)).toFixed(2) : 0})">${v ? fmt(v) : '<span class="muted">0</span>'}</td>`);
+  const rows = accounts.map((a) => `<tr><th scope="row">${invCustName(d, a)}</th>${months.map((m) => cell(valueOf(a, m))).join('')}</tr>`).join('');
+  const foot = total ? `<tr class="total"><th scope="row">All customers</th>${months.map((m) => {
+    const v = valueOf(null, m);
+    return `<td class="num">${v === null ? '—' : fmt(v)}</td>`;
+  }).join('')}</tr>` : '';
+  return `<section class="card wipc inv-grid-card"><h2>${esc(title)}</h2>${sub ? `<p class="wipc-sub">${sub}</p>` : ''}
+    <div class="table-wrap"><table class="inv-heat"><thead><tr><th>Customer</th>${months.map((m) => `<th class="num">${esc(wipMonthName(m, false))}</th>`).join('')}</tr></thead>
+    <tbody>${rows || `<tr><td colspan="${months.length + 1}" class="muted">Nothing to show.</td></tr>`}${foot}</tbody></table></div></section>`;
+}
+
+async function invInsightsHtml() {
+  const d = await api(`/api/invoicing/insights?region=${invRegion}&months=${invSpan}`);
+  wipSymFor = d.regions[d.region]?.symbol || '£';
+  try { return invInsightsBody(d); } finally { wipSymFor = null; }
+}
+
+function invInsightsBody(d) {
+  const k = d.kpis;
+  const money = wipMoney;
+  const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
+  const regions = `<span class="segment">${Object.entries(d.regions).map(([key, r]) =>
+    `<button class="seg${invRegion === key ? ' on' : ''}" data-inv-region="${key}">${esc(r.name)}</button>`).join('')}</span>`;
+  const span = `<label class="wip-month">Covering <select data-inv-span>${[6, 12, 24].map((m) => `<option value="${m}"${d.span === m ? ' selected' : ''}>the last ${m} months</option>`).join('')}</select></label>`;
+  const cover = d.coverage.read < d.coverage.invoices ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>Still reading invoice histories from Jira:</strong>
+      ${n(d.coverage.read)} of ${n(d.coverage.invoices)} so far. Figures that depend on when an invoice was drafted, sent or paid fill in as it goes, over the next few hours.</p></div>` : '';
+
+  const pastIdx = d.monthly.map((m, i) => (m.future ? -1 : i)).filter((i) => i >= 0);
+  const past = pastIdx.map((i) => d.monthly[i]);
+  const all = d.monthly;
+  const labels = (list) => list.map((m, i) => `${wipMonthLabel(m.month, i, list.length)}${m.future ? '*' : ''}`);
+  const tips = (list) => list.map((m) => `${wipMonthName(m.month)}${m.live ? ', so far' : m.future ? ', forecast' : ''}`);
+  const col = (list, key) => list.map((m) => (m[key] === undefined ? null : m[key]));
+
+  const stats = `<dl class="stats inv-stats">
+      ${stat('Owed to us', money(k.owed), `${n(k.owedCount)} ${k.owedCount === 1 ? 'invoice' : 'invoices'}${k.contractsOwed ? `, ${money(k.contractsOwed)} on contracts` : ''}`)}
+      ${stat('Overdue', money(k.overdue), k.owed ? `${invRate(k.overdue / k.owed)} of what's owed, ${n(k.overdueCount)} ${k.overdueCount === 1 ? 'invoice' : 'invoices'}` : 'Nothing owed')}
+      ${stat('Over 90 days overdue', money(k.over90), 'The ones most at risk')}
+      ${stat('Days sales outstanding', k.dso === null ? '—' : invDays(k.dso), 'What\'s owed, in days of invoicing')}
+      ${stat('Paid on time', invRate(k.paidOnTimeRate), `${n(k.dueCount - k.paidLateCount - k.stillOwedCount)} of ${n(k.dueCount)} due${k.paidOnTimeValue !== null ? `, ${invRate(k.paidOnTimeValue)} by value` : ''}`)}
+      ${stat('Paid late, on average', invDays(k.avgDaysLate), `past the Invoice Due Date, ${n(k.paidLateCount)} paid late`)}
+      ${stat('Time to be paid', invDays(k.avgDaysToPay), k.avgTerms ? `from sending; terms average ${invDays(k.avgTerms)}` : 'from sending the invoice')}
+      ${stat('Milestones invoiced on time', invRate(k.msOnTimeRate), `${n(k.msOnTime)} of ${n(k.msDue)} due${k.msOpen ? `, ${n(k.msOpen)} still not invoiced` : ''}`)}
+      ${stat('Milestones late, on average', invDays(k.msAvgLate), k.msMoved ? `${n(k.msMoved)} had Target End moved` : 'past the first Target End')}
+      ${stat('Draft to sent', invDays(k.draftToSent), k.readyNow ? `${n(k.readyNow)} waiting now${k.readyOldest ? `, oldest ${invDays(k.readyOldest)}` : ''}` : 'Nothing waiting now')}
+    </dl>`;
+
+  const best = k.bestMonth ? wipMonthName(k.bestMonth) : null, worst = k.worstMonth ? wipMonthName(k.worstMonth) : null;
+  const expected = wipColumns({
+    title: 'Expected and paid each month', labels: labels(all), tips: tips(all),
+    sub: `What was due each month by its Invoice Due Date (and, for the months ahead marked *, what's expected on the customer's terms), against what was actually paid.
+      ${k.avgPaid !== null ? `Across the full months shown, ${money(k.avgExpected)} was due and ${money(k.avgPaid)} paid on average.` : ''}${best && best !== worst ? ` Most paid in ${esc(best)}, least in ${esc(worst)}.` : ''}`,
+    series: [{ name: 'Expected', color: WIP_C.blue, values: col(all, 'expected') }, { name: 'Paid', color: WIP_C.orange, values: col(all, 'paid') }],
+    marks: [{ name: 'Average paid', color: '#14532d', value: k.avgPaid }],
+  });
+  const owedChart = wipColumns({
+    title: 'Owed at each month end', labels: labels(past), tips: tips(past), stacked: true,
+    sub: 'Invoices sent and not yet paid at the end of each month, split into overdue and not yet due.',
+    series: [{ name: 'Overdue', color: WIP_C.orange, values: past.map((m) => m.overdue) }, { name: 'Not yet due', color: WIP_C.tint, values: past.map((m) => (m.owed === null ? null : m.owed - (m.overdue || 0))) }],
+  });
+  const msChart = wipColumns({
+    title: 'Milestones each month, on time and late', labels: labels(past), tips: tips(past), stacked: true, count: true,
+    sub: 'Milestones by the month of the first Target End they were given: on time if drafted or invoiced by then. Late includes ones still not invoiced.',
+    series: [{ name: 'On time', color: WIP_C.aqua, values: col(past, 'onTime') }, { name: 'Late', color: WIP_C.orange, values: col(past, 'late') }],
+  });
+  const sentChart = wipColumns({
+    title: 'Invoiced and paid each month', labels: labels(past), tips: tips(past),
+    sub: 'The value of invoices sent each month, against payments received.',
+    series: [{ name: 'Invoiced', color: WIP_C.blue, values: col(past, 'invoiced') }, { name: 'Paid', color: WIP_C.orange, values: col(past, 'paid') }],
+  });
+
+  // Aged debt.
+  const owing = d.customers.filter((c) => c.owed > 0).sort((a, b) => b.overdue - a.overdue || b.owed - a.owed);
+  const ageTotals = Object.fromEntries(d.ages.map(([key]) => [key, owing.reduce((t, c) => t + c.ages[key], 0)]));
+  const aged = `<section class="card wipc"><h2>Aged debt</h2><p class="wipc-sub">Everything owed now, by how far past its Invoice Due Date it is. Most overdue customers first.</p>
+    <div class="table-wrap"><table><thead><tr><th>Customer</th>${d.ages.map(([, l]) => `<th class="num">${esc(l)}</th>`).join('')}<th class="num">Owed</th></tr></thead><tbody>
+    ${owing.map((c) => `<tr><th scope="row">${invCustName(d, c.account)}</th>${d.ages.map(([key]) => `<td class="num${key !== 'notDue' && c.ages[key] ? ' bad' : ''}">${c.ages[key] ? money(c.ages[key]) : '<span class="muted">—</span>'}</td>`).join('')}<td class="num"><strong>${money(c.owed)}</strong></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Nothing owed.</td></tr>'}
+    ${owing.length ? `<tr class="total"><th scope="row">All customers</th>${d.ages.map(([key]) => `<td class="num">${money(ageTotals[key])}</td>`).join('')}<td class="num"><strong>${money(k.owed)}</strong></td></tr>` : ''}
+    </tbody></table></div></section>`;
+
+  // How each customer pays.
+  const payers = d.customers.filter((c) => c.due).sort((a, b) => (b.lateRate ?? 0) - (a.lateRate ?? 0) || b.due - a.due);
+  const trend = (c) => (c.trend === 'slower' ? '<span class="bad">Paying later</span>' : c.trend === 'faster' ? '<span class="good">Paying sooner</span>' : '<span class="muted">Steady</span>');
+  const behaviour = `<section class="card wipc"><h2>How each customer pays</h2>
+    <p class="wipc-sub">Invoices due in the period: how many were paid by the Invoice Due Date, how late the rest were (or are, if still unpaid), and whether the customer is paying later than they did earlier in the period.</p>
+    <div class="table-wrap"><table><thead><tr><th>Customer</th><th>Terms</th><th class="num">Due</th><th class="num">Paid on time</th><th class="num">Late or unpaid</th><th class="num">Average days late</th><th class="num">Time to be paid</th><th class="num">Overdue now</th><th>Trend</th></tr></thead><tbody>
+    ${payers.map((c) => `<tr><th scope="row">${invCustName(d, c.account)}</th><td>${esc(invTermsText(c.terms).replace(/^Terms: /, ''))}</td><td class="num">${n(c.due)}</td>
+      <td class="num">${invRate(c.due ? c.onTime / c.due : null)}</td><td class="num${c.late + c.unpaid ? ' bad' : ''}">${n(c.late + c.unpaid)}${c.unpaid ? ` <small>${n(c.unpaid)} unpaid</small>` : ''}</td>
+      <td class="num">${invDays(c.avgDaysLate)}</td><td class="num">${invDays(c.avgDaysToPay)}</td><td class="num${c.overdue ? ' bad' : ''}">${c.overdue ? money(c.overdue) : '—'}</td><td>${trend(c)}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">No invoices were due in the period.</td></tr>'}
+    </tbody></table></div></section>`;
+
+  // Owed and open orders by customer, month by month.
+  const top = (score, many = 12) => d.customers.filter((c) => score(c) > 0).sort((a, b) => score(b) - score(a)).slice(0, many).map((c) => c.account);
+  const owedAccounts = [...new Set([...top((c) => c.owed), ...top((c) => c.invoiced, 6)])].slice(0, 14);
+  const owedGrid = invGridHtml(d, {
+    title: 'Owed by customer at each month end', months: past.map((m) => m.month), accounts: owedAccounts, fmt: money,
+    sub: 'Invoices sent and not yet paid at the end of each month, for the customers owing or invoiced the most.',
+    valueOf: (a, m) => { const row = past.find((x) => x.month === m); return a === null ? row.owed : row.owedBy?.[a] || 0; },
+  });
+  const ordersBy = d.openOrders;
+  const orderAccounts = (() => {
+    const totals = new Map();
+    for (const map of Object.values(ordersBy)) for (const [a, v] of Object.entries(map || {})) totals.set(a, Math.max(totals.get(a) || 0, v));
+    return [...totals].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([a]) => a);
+  })();
+  const ordersGrid = invGridHtml(d, {
+    title: 'Open orders by customer at each month end', months: d.months, accounts: orderAccounts, fmt: (v) => n(v),
+    sub: 'Orders and service contracts not yet done at the end of each month, for the customers with the most. A dash is a month the hub has no record of.',
+    valueOf: (a, m) => { const map = ordersBy[m]; if (!map) return null; return a === null ? Object.values(map).reduce((t, v) => t + v, 0) : map[a] || 0; },
+  });
+
+  // Milestones by division and customer.
+  const msCust = d.customers.filter((c) => c.milestones).sort((a, b) => b.msLate - a.msLate || b.milestones - a.milestones);
+  const milestones = `<section class="card wipc"><h2>Milestones against Target End</h2>
+    <p class="wipc-sub">Milestones whose first Target End fell in the period. On time means drafted or invoiced by that date; late counts days past it, to today for ones still not invoiced. Moved is how many had their Target End changed.</p>
+    <div class="table-wrap"><table><thead><tr><th>Division</th><th class="num">Due</th><th class="num">On time</th><th class="num">Late</th><th class="num">Average days late</th><th class="num">Moved</th></tr></thead><tbody>
+    ${d.divisions.map((x) => `<tr><th scope="row">${esc(x.division)}</th><td class="num">${n(x.due)}</td><td class="num">${invRate(x.onTime / x.due)}</td><td class="num${x.late ? ' bad' : ''}">${n(x.late)}</td><td class="num">${invDays(x.avgLate)}</td><td class="num">${n(x.moved)}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No milestones were due in the period.</td></tr>'}
+    </tbody></table></div>
+    ${msCust.length ? `<details class="wipc-table"><summary>By customer</summary><div class="table-wrap"><table><thead><tr><th>Customer</th><th class="num">Due</th><th class="num">On time</th><th class="num">Late</th><th class="num">Average days late</th><th class="num">Moved</th></tr></thead><tbody>
+    ${msCust.map((c) => `<tr><th scope="row">${invCustName(d, c.account)}</th><td class="num">${n(c.milestones)}</td><td class="num">${invRate(c.msOnTime / c.milestones)}</td><td class="num${c.msLate ? ' bad' : ''}">${n(c.msLate)}</td><td class="num">${invDays(c.msAvgLate)}</td><td class="num">${n(c.moved)}</td></tr>`).join('')}
+    </tbody></table></div></details>` : ''}</section>`;
+
+  // Who the invoicing comes from.
+  const billed = d.customers.filter((c) => c.invoiced > 0).sort((a, b) => b.invoiced - a.invoiced);
+  const top5 = billed.slice(0, 5).reduce((t, c) => t + c.invoiced, 0);
+  const concentration = wipRowsChart({
+    title: 'Invoiced by customer',
+    sub: `Value invoiced in the period, largest customers first.${k.invoiced ? ` The top five make up ${invRate(top5 / k.invoiced)} of the ${money(k.invoiced)} invoiced.` : ''}`,
+    rows: billed.slice(0, 10).map((c) => ({ name: d.names[c.account] || c.account, value: c.invoiced, share: k.invoiced ? c.invoiced / k.invoiced : 0 })),
+    parts: [{ key: 'value', name: 'Invoiced', color: WIP_C.blue }],
+    note: (r) => `${invRate(r.share)} of the total`,
+  });
+
+  return `${invTabsHtml()}<div class="row wip-tools">${regions}${span}</div>
+    ${cover}
+    ${stats}
+    <div class="wipc-grid inv-charts">${expected}${owedChart}${msChart}${sentChart}</div>
+    ${aged}
+    ${behaviour}
+    ${owedGrid}
+    ${ordersGrid}
+    ${milestones}
+    ${concentration}
+    <p class="help">Days sales outstanding is what's owed now divided by what was invoiced in the last 90 days, times 90: lower means money comes in sooner after invoicing. Paid on time compares the day an invoice was marked paid with its Invoice Due Date. When each invoice was drafted, sent and paid comes from its history in Jira${d.coverage.guessedSent ? `; for ${n(d.coverage.guessedSent)} without one yet, the day sent is worked back from the Invoice Due Date and the customer's terms` : ''}. Tokens are left out.</p>`;
 }
 
 let invSearchTimer = null;
@@ -11686,6 +11860,7 @@ view.addEventListener('change', async (event) => {
   if (event.target.closest('[data-draft-ticket]') && dayChange(event)) return;
   if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
+  if (currentRoute() === '#/invoicing' && !settingsOpen && invoicingChange(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
