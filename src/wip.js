@@ -867,15 +867,20 @@ async function saTime(env, orderId, items) {
 // moves contracts along there; Jira's own status otherwise.
 const ACTIVE_CONTRACT = ['in contract', 'requires renewal'];
 
-export async function recurring(env, viewer, { region } = {}) {
-  mustSee(viewer);
-  region = regionArg(region);
+async function contractsIn(env, region) {
   const { results } = await env.DB.prepare(
     `SELECT w.*, c.status AS tile_status, c.customer AS tile_customer, c.start_date AS tile_start, c.end_date AS tile_end
        FROM wip_contracts w LEFT JOIN contracts c ON c.issue_key = w.issue_key
       WHERE w.region = ? AND w.gone = 0 ORDER BY w.issue_key`
   ).bind(region).all();
-  const active = results.filter((c) => ACTIVE_CONTRACT.includes(lower(canonStatus(c.tile_status || c.status))));
+  return results;
+}
+const isActiveContract = (c) => ACTIVE_CONTRACT.includes(lower(canonStatus(c.tile_status || c.status)));
+
+export async function recurring(env, viewer, { region } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const active = (await contractsIn(env, region)).filter(isActiveContract);
   const { over, seed } = await overridesAndSeeds(env, active.map((c) => c.issue_key));
   const rows = [];
   for (const c of active) {
@@ -1375,6 +1380,7 @@ export async function paymentTerms(env) {
 // change an Invoice Due Date.
 
 const canUpdateInvoices = (viewer) => Boolean(viewer?.isAdmin || viewer?.can?.invoiceUpdate);
+const canSetDates = (viewer) => canUpdateInvoices(viewer) || Boolean(viewer?.can?.invoiceDates);
 const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(`${v}T12:00:00Z`));
 
 async function moveItem(env, key, match, fields = null) {
@@ -1393,10 +1399,11 @@ async function moveItem(env, key, match, fields = null) {
 const setFields = (env, key, fields) => jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ fields }) });
 
 export async function invoiceAction(env, viewer, { key, action, date } = {}) {
-  if (!canUpdateInvoices(viewer)) throw refuse('Updating invoices isn\'t open to you.');
+  if (!(action === 'targetEnd' ? canSetDates(viewer) : canUpdateInvoices(viewer))) throw refuse('Updating invoices isn\'t open to you.');
   const item = await env.DB.prepare("SELECT * FROM wip_items WHERE issue_key = ? AND level = 1").bind(String(key || '').toUpperCase()).first();
   if (!item || !isInvoice(item)) throw refuse('That isn\'t an invoice the hub knows.', 404);
-  const order = await env.DB.prepare('SELECT issue_key, project_key FROM wip_orders WHERE issue_id = ?').bind(item.order_id).first();
+  const order = await env.DB.prepare('SELECT issue_key, project_key FROM wip_orders WHERE issue_id = ?').bind(item.order_id).first()
+    || await env.DB.prepare('SELECT issue_key, project_key FROM wip_contracts WHERE issue_id = ?').bind(item.order_id).first();
   const s = invoiceState(item);
   const today = londonDate();
   let label, after = {};
@@ -1435,6 +1442,15 @@ export async function invoiceAction(env, viewer, { key, action, date } = {}) {
         label += ', and back to Invoiced';
       } catch { /* left Overdue; the date is still changed */ }
     }
+  } else if (action === 'paid') {
+    if (!s.invoiced || s.paid) throw refuse('Only an invoiced, unpaid invoice can be marked paid.', 400);
+    const on = isDay(date) ? date : today;
+    if (on > today) throw refuse('The date it was paid can\'t be in the future.', 400);
+    const m = await moveItem(env, item.issue_key, (to) => /\bpaid\b/.test(to) && !/\b(un|not )paid\b/.test(to));
+    after = { status: m.name, status_cat: m.cat, paid_at: on };
+    label = `Marked paid on ${on}`;
+    // Nothing left to move to Overdue.
+    await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ? AND status = 'pending'").bind(new Date().toISOString(), item.issue_key).run();
   } else throw refuse('That isn\'t something the hub can do to an invoice.', 400);
 
   // What the hub holds follows straight away, without waiting for the next read.
@@ -1524,6 +1540,9 @@ export async function invoicing(env, viewer, { region } = {}) {
       hasTerms: Boolean(t), created: i.created,
     });
   }
+  for (const i of invoices) i.kind = 'order';
+  const contracts = await contractInvoices(env, region, today, terms);
+  invoices.push(...contracts.invoices);
   invoices.sort((a, b) => a.order.localeCompare(b.order, 'en', { numeric: true }) || String(a.created || '').localeCompare(String(b.created || '')));
 
   // The money still to come, by the month it's due. Anything due before this month
@@ -1547,12 +1566,92 @@ export async function invoicing(env, viewer, { region } = {}) {
     .map((c) => ({ ...c, orders: [...c.orders].sort((x, y) => x[0].localeCompare(y[0], 'en', { numeric: true })).map(([key, amount]) => ({ key, amount })) })) });
 
   const orders = Object.fromEntries(rows.map((r) => [r.key, { key: r.key, title: r.title, org: r.org, account: accountOf(r), value: r.value,
-    uninvoiced: r.value === null ? null : r.value * (1 - (r.invoiced || 0)), remaining: r.remaining, division: r.division }]));
+    uninvoiced: r.value === null ? null : r.value * (1 - (r.invoiced || 0)), remaining: r.remaining, division: r.division, kind: 'order' }]));
+  Object.assign(orders, contracts.orders);
   // Terms matter until an invoice has its own due date.
   const missing = [...new Set(invoices.filter((i) => !i.hasTerms && i.guessed).map((i) => i.account))].sort();
   return {
     ...head, region, regions: REGIONS, today, month, invoices, orders,
     forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
-    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer), canUpdate: canUpdateInvoices(viewer), overdueOn: await overdueOn(env), overdueMoves: await overdueMoves(env),
+    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer), canUpdate: canUpdateInvoices(viewer), canSetDates: canSetDates(viewer), overdueOn: await overdueOn(env), overdueMoves: await overdueMoves(env),
   };
+}
+
+// ---------- service contract invoices ----------
+// A contract's sub-invoices share its value equally, and are spread evenly over its
+// year from the start date: 12 is one a month, 4 one a quarter, 1 all at the start.
+// A Target End set on a sub-invoice in Jira is used instead of its place in the spread.
+
+const addMonthsIso = (day, months) => {
+  const [y, m, d] = day.split('-').map(Number);
+  const whole = Math.floor(months);
+  const first = new Date(Date.UTC(y, m - 1 + whole, 1));
+  const last = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
+  const out = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(d, last)));
+  return out.toISOString().slice(0, 10);
+};
+
+export function contractSchedule(start, count) {
+  if (!start || !/^\d{4}-\d{2}-\d{2}/.test(start) || !(count > 0)) return [];
+  const every = 12 / count;
+  return Array.from({ length: count }, (_, n) => addMonthsIso(start.slice(0, 10), Math.round(n * every)));
+}
+
+export const scheduleName = (count) => ({ 1: 'All upfront', 2: 'Twice a year', 3: 'Every 4 months', 4: 'Quarterly', 6: 'Every 2 months', 12: 'Monthly' }[count]
+  || (count > 0 ? `${count} a year` : null));
+
+async function contractInvoices(env, region, today, terms) {
+  const list = await contractsIn(env, region);
+  if (!list.length) return { invoices: [], orders: {} };
+  const { over, seed } = await overridesAndSeeds(env, list.map((c) => c.issue_key));
+  const items = await itemsFor(env, list.map((c) => c.issue_id));
+  const byContract = new Map();
+  for (const i of items) {
+    if (i.level !== 1 || !isInvoice(i)) continue;
+    if (!byContract.has(i.order_id)) byContract.set(i.order_id, []);
+    byContract.get(i.order_id).push(i);
+  }
+  const invoices = [], orders = {};
+  for (const c of list) {
+    if (over.get(c.issue_key)?.excluded) continue;
+    const subs = (byContract.get(c.issue_id) || [])
+      .sort((a, b) => String(a.created || '').localeCompare(String(b.created || '')) || a.issue_key.localeCompare(b.issue_key, 'en', { numeric: true }));
+    if (!subs.length) continue;
+    const active = isActiveContract(c);
+    const s0 = seed.get(c.issue_key), o = over.get(c.issue_key);
+    const total = o?.upfront ?? s0?.upfront ?? c.total ?? null;
+    const start = c.tile_start || c.start_date || s0?.start_date || null;
+    const plan = contractSchedule(start, subs.length);
+    const account = String(c.project_key || c.issue_key.split('-')[0]).toUpperCase();
+    const t = terms[account] || null;
+    const each = total === null ? null : total / subs.length;
+    let shown = 0;
+    subs.forEach((i, n) => {
+      const s = invoiceState(i);
+      // An ended contract only keeps the invoices still waiting to be paid.
+      if (!active && !(s.invoiced && !s.paid)) return;
+      shown++;
+      const targetEnd = i.inv_due || plan[n] || null;
+      const invoiceDue = i.inv_date || null;
+      const stage = s.paid ? 'paid'
+        : s.invoiced ? (s.overdue || (invoiceDue && invoiceDue < today) ? 'overdue' : 'invoiced')
+        : s.ready ? 'ready'
+        : targetEnd && targetEnd < today ? 'exceeded' : 'upcoming';
+      const from = targetEnd && targetEnd > today ? targetEnd : today;
+      const expected = s.paid ? null : s.invoiced ? invoiceDue || paymentDue(targetEnd || today, t) : paymentDue(from, t);
+      invoices.push({
+        kind: 'contract', order: c.issue_key, org: c.tile_customer || c.org, account, key: i.issue_key,
+        terms: String(i.summary || '').trim() || `Invoice ${n + 1} of ${subs.length}`, number: n + 1, of: subs.length,
+        share: 1 / subs.length, value: each, token: false,
+        status: i.status, state: s.label, stage, targetEnd, scheduled: !i.inv_due && Boolean(plan[n]), invoiceDue, paidAt: i.paid_at || null,
+        expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue,
+        hasTerms: Boolean(t), created: i.created,
+      });
+    });
+    if (!shown) continue;
+    orders[c.issue_key] = { key: c.issue_key, title: c.summary, org: c.tile_customer || c.org, account, value: total, kind: 'contract',
+      uninvoiced: each === null ? null : each * subs.filter((i) => !invoiceState(i).invoiced).length,
+      start, end: c.tile_end || c.end_date || s0?.end_date || null, steps: subs.length, schedule: scheduleName(subs.length), active };
+  }
+  return { invoices, orders };
 }

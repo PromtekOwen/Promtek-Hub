@@ -8662,12 +8662,28 @@ const invTermsText = (t) => (!t ? 'No payment terms set' : `Terms: ${t.type === 
 // In the order an invoice moves through: the ones needing someone first.
 const INV_GROUPS = [
   ['overdue', 'Overdue', 'Invoiced, and the Invoice Due Date has passed without payment.'],
+  ['exceeded', 'Milestone estimate exceeded', 'Still New, and the Target End for finishing the milestone has passed. Worth checking how the work is going, or setting a new Target End.'],
+  ['nodate', 'No Target End', 'Still New, with no Target End: add the date the work for the milestone should be finished.'],
   ['ready', 'Ready to be invoiced', 'The draft invoice is made: check it, send it to the customer, then mark it sent.'],
   ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
-  ['exceeded', 'Milestone estimate exceeded', 'Still New, and the Target End for finishing the milestone has passed. Worth checking how the work is going, or setting a new Target End.'],
   ['upcoming', 'Not invoiced yet', 'Still New: the work for the milestone is under way, due to finish by its Target End.'],
   ['paid', 'Paid', 'Paid in full.'],
 ];
+const INV_CONTRACT_GROUPS = [
+  ['overdue', 'Overdue', 'Invoiced, and the Invoice Due Date has passed without payment.'],
+  ['exceeded', 'Invoice date passed', 'Still New, and the date it was due to be invoiced has passed.'],
+  ['nodate', 'No invoice date', 'Still New, and the contract has no start date to place it: add a Target End.'],
+  ['ready', 'Ready to be invoiced', 'The draft invoice is made: check it, send it to the customer, then mark it sent.'],
+  ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
+  ['upcoming', 'Not invoiced yet', 'Still New, and due to be invoiced on its date.'],
+  ['paid', 'Paid', 'Paid in full.'],
+];
+// New with no Target End has its own group, so the dates can be filled in.
+const invStage = (i) => (i.stage === 'upcoming' && !i.targetEnd ? 'nodate' : i.stage);
+
+// The groups someone has folded away, kept for next time on this browser.
+let invShut = (() => { try { return new Set(JSON.parse(localStorage.getItem('inv-shut') || '["order:paid","contract:paid"]')); } catch { return new Set(['order:paid', 'contract:paid']); } })();
+const invShutSave = () => { try { localStorage.setItem('inv-shut', JSON.stringify([...invShut])); } catch { /* kept for this visit only */ } };
 
 async function invoicingHtml() {
   const d = invData = invKeep && invData?.region === invRegion ? invData : await api(`/api/invoicing?region=${invRegion}`);
@@ -8676,7 +8692,8 @@ async function invoicingHtml() {
   const matches = (i) => !q || `${i.order} ${i.org || ''} ${i.account} ${i.key} ${i.terms || ''} ${d.orders[i.order]?.title || ''}`.toLowerCase().includes(q);
   const list = d.invoices.filter((i) => !i.token && matches(i));
   const sum = (l) => l.reduce((t, i) => t + (i.value || 0), 0);
-  const by = (stage) => list.filter((i) => i.stage === stage);
+  const by = (stage, kind) => list.filter((i) => (kind ? invStage(i) : i.stage) === stage && (!kind || i.kind === kind));
+  const ofKind = (kind) => list.filter((i) => i.kind === kind);
   const paidThisMonth = by('paid').filter((i) => (i.paidAt || '').slice(0, 7) === d.month);
   const noDue = list.filter((i) => i.noDueDate);
   const thisMonth = d.forecast.find((f) => f.month === d.month);
@@ -8695,15 +8712,20 @@ async function invoicingHtml() {
       ${stat('Overdue', invMoney(sum(by('overdue'))), count(by('overdue').length, 'invoice', 'invoices'))}
       ${stat('Ready to be invoiced', invMoney(sum(by('ready'))), count(by('ready').length, 'invoice', 'invoices'))}
       ${stat('Waiting for payment', invMoney(sum(by('invoiced'))), count(by('invoiced').length, 'invoice', 'invoices'))}
-      ${stat('Estimate exceeded', invMoney(sum(by('exceeded'))), count(by('exceeded').length, 'milestone', 'milestones'))}
+      ${stat('Late to invoice', invMoney(sum(by('exceeded'))), count(by('exceeded').length, 'item', 'items'))}
       ${stat('Expected this month', invMoney(thisMonth?.total || 0), count(thisMonth?.count || 0, 'payment', 'payments'))}
       ${stat('Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
     </dl>
     ${noDue.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>${count(noDue.length, 'invoice has', 'invoices have')} no Invoice Due Date:</strong>
       ${noDue.map((i) => jiraLink(i.key)).join(', ')}. Until it's set, payment is expected on the customer's terms from Target End.</p></div>` : ''}
     ${invForecastHtml(d)}
-    ${INV_GROUPS.map(([stage, title, help]) => invGroupHtml(d, stage, title, help, by(stage))).join('')}
-    <p class="help">Milestones are each order's Invoice items in Jira; tokens are left out. Target End is when the work for a milestone should be finished and invoiced; Invoice Due Date is when the customer should pay. Until there's an Invoice Due Date, payment is expected on the customer's terms from Target End, or from today once Target End has passed.</p>`;
+    ${[['order', 'Orders', INV_GROUPS], ['contract', 'Service contracts', INV_CONTRACT_GROUPS]].map(([kind, name, groups]) => {
+      const all = ofKind(kind);
+      return `<details class="inv-part"${invShut.has(kind) ? '' : ' open'}><summary data-inv-fold="${kind}"><h2 class="inv-part-head">${name} <span class="muted">${n(all.length)}, ${invMoney(sum(all.filter((i) => i.stage !== 'paid')))} not yet paid</span></h2></summary>
+        ${groups.map(([stage, title, help]) => invGroupHtml(d, stage, title, help, by(stage, kind), kind)).join('')}</details>`;
+    }).join('')}
+    <p class="help">Order milestones are each order's Invoice items in Jira; tokens are left out. Target End is when the work for a milestone should be finished and invoiced; Invoice Due Date is when the customer should pay. Until there's an Invoice Due Date, payment is expected on the customer's terms from Target End, or from today once Target End has passed.</p>
+    <p class="help">Service contract invoices are the Invoice items under each active contract. They share the contract's value equally and are spread evenly over its year from the start date: 12 is one a month, 6 every 2 months, 4 a quarter, 2 twice a year and 1 all upfront. A Target End set on one in Jira is used in place of its date in the spread. Once a contract has ended, only its invoices still waiting to be paid are shown.</p>`;
 }
 
 function invForecastHtml(d) {
@@ -8730,7 +8752,7 @@ function invForecastHtml(d) {
 }
 
 // One status's milestones, a card for each order, as the old board had them.
-function invGroupHtml(d, stage, title, help, list) {
+function invGroupHtml(d, stage, title, help, list, kind = 'order') {
   const state = stage;
   const byOrder = new Map();
   for (const i of list) { if (!byOrder.has(i.order)) byOrder.set(i.order, []); byOrder.get(i.order).push(i); }
@@ -8738,34 +8760,43 @@ function invGroupHtml(d, stage, title, help, list) {
   const cards = [...byOrder].map(([key, items]) => {
     const o = d.orders[key] || {};
     const here = items.reduce((t, i) => t + (i.value || 0), 0);
-    const lines = items.map((i) => {
+    const lineHtml = (i) => {
       const te = i.targetEnd ? fullDate(i.targetEnd) : null;
-      const date = {
+      const contract = i.kind === 'contract';
+      const date = contract && ['ready', 'exceeded', 'upcoming', 'nodate'].includes(state) ? (!te ? 'no start date to place it' : state === 'exceeded' ? `was to be invoiced ${te}` : `invoice date ${te}`) : {
         paid: i.paidAt ? `paid ${fullDate(i.paidAt)}` : 'paid',
         overdue: i.invoiceDue ? `was due ${fullDate(i.invoiceDue)}` : 'overdue in Jira',
         invoiced: i.invoiceDue ? `due ${fullDate(i.invoiceDue)}` : 'no Invoice Due Date yet',
         ready: te ? `Target End ${te}` : 'no Target End',
+        nodate: 'no Target End yet',
         exceeded: `Target End was ${te}`,
         upcoming: te ? `Target End ${te}` : 'no Target End yet',
       }[state];
-      const due = ['ready', 'exceeded', 'upcoming'].includes(state) || (state === 'invoiced' && !i.invoiceDue)
+      const due = ['ready', 'exceeded', 'upcoming', 'nodate'].includes(state) || (state === 'invoiced' && !i.invoiceDue)
         ? (i.expected ? `<span class="muted">payment expected ${fullDate(i.expected)}</span>` : '') : '';
       const dateHtml = `<span class="${state === 'overdue' || state === 'exceeded' ? 'bad' : ''}">${esc(date)}</span>`;
       return `<li data-inv-item="${esc(i.key)}"><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${dateHtml}${due ? ` · ${due}` : ''}</span>
-        <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span>
-        ${d.canUpdate ? invActionsHtml(d, i, state, o.account || i.account) : ''}</li>`;
-    }).join('');
+        <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${contract ? `, ${n(i.number)} of ${n(i.of)}` : i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span>
+        ${d.canUpdate || d.canSetDates ? invActionsHtml(d, i, state, o.account || i.account) : ''}</li>`;
+    };
+    // A contract's invoices still to come: the next one, with the rest folded away.
+    const later = o.kind === 'contract' && state === 'upcoming' ? items.slice(1) : [];
+    const lines = (later.length ? items.slice(0, 1) : items).map(lineHtml).join('')
+      + (later.length ? `<li class="inv-later"><details><summary>${n(later.length)} more to come, the last ${esc(later.at(-1).targetEnd ? fullDate(later.at(-1).targetEnd) : 'not yet placed')}</summary>
+        <ul class="inv-lines">${later.map(lineHtml).join('')}</ul></details></li>` : '');
     const termsLine = state === 'paid' ? '' : `<span class="muted">${esc(invTermsText(d.terms[o.account || items[0].account]))}</span>`;
     return `<article class="card inv-card">
         <p class="inv-card-head"><b>${esc(o.org || items[0].org || '')} – ${jiraLink(key)}</b><span class="muted">${esc(o.title || '')}</span></p>
-        <p class="inv-card-total"><strong>${invMoney(here)}</strong> ${state === 'paid' ? 'paid' : `in ${items.length === 1 ? 'this milestone' : 'these milestones'}`}
-          ${state !== 'paid' && o.uninvoiced !== null && o.uninvoiced !== undefined ? `<span class="muted">· ${invMoney(o.uninvoiced)} of ${invMoney(o.value)} not yet invoiced</span>` : ''}</p>
+        <p class="inv-card-total"><strong>${invMoney(here)}</strong> ${state === 'paid' ? 'paid' : `in ${items.length === 1 ? `this ${o.kind === 'contract' ? 'invoice' : 'milestone'}` : `these ${o.kind === 'contract' ? 'invoices' : 'milestones'}`}`}
+          ${state !== 'paid' && o.uninvoiced !== null && o.uninvoiced !== undefined ? `<span class="muted">· ${invMoney(o.uninvoiced)} of ${invMoney(o.value)} not yet invoiced</span>` : ''}
+          ${o.kind === 'contract' ? `<span class="muted">· ${esc(o.schedule || '')}${o.value !== null && o.value !== undefined ? `, ${invMoney(o.value / o.steps)} each` : ', no contract value'}${o.start ? `, from ${esc(fullDate(o.start))}` : ''}${o.active === false ? ', ended' : ''}</span>` : ''}</p>
         <ul class="inv-lines">${lines}</ul>${termsLine}</article>`;
   }).join('');
   const head = `${esc(title)} <span class="muted">${n(list.length)}${list.length ? `, ${invMoney(total)}` : ''}</span>`;
   const inner = `<p class="muted" style="margin:0 0 .75rem">${esc(help)}</p>${cards ? `<div class="inv-grid">${cards}</div>` : '<p class="muted" style="margin:0">None.</p>'}`;
-  if (state === 'paid') return `<details class="inv-group"><summary><h2>${head}</h2></summary>${inner}</details>`;
-  return `<section class="inv-group${(state === 'overdue' || state === 'exceeded') && list.length ? ' late' : ''}${state === 'ready' && list.length ? ' ready' : ''}"><h2>${head}</h2>${inner}</section>`;
+  const id = `${kind}:${state}`;
+  return `<details class="inv-group${(state === 'overdue' || state === 'exceeded') && list.length ? ' late' : ''}${state === 'ready' && list.length ? ' ready' : ''}${state === 'nodate' && list.length ? ' nodate' : ''}"${invShut.has(id) ? '' : ' open'}>
+      <summary data-inv-fold="${esc(id)}"><h2>${head}</h2></summary>${inner}</details>`;
 }
 
 // The next step for an invoice, done from here straight to Jira.
@@ -8778,18 +8809,22 @@ function invDueFrom(day, t) {
   return invDayAdd(invMonthEnd(day), t.days);
 }
 let invSending = null;   // the invoice being marked sent, or having its due date changed
+let invPaying = null;    // the invoice being marked paid
 
 function invActionsHtml(d, i, state, account) {
   const k = esc(i.key);
   const open = invSending === i.key;
-  if (state === 'upcoming' || state === 'exceeded') {
+  if (state === 'upcoming' || state === 'exceeded' || state === 'nodate') {
     const needsDate = !i.targetEnd || state === 'exceeded';
+    const date = needsDate && (d.canUpdate || d.canSetDates);
+    if (!date && !d.canUpdate) return '';
     return `<div class="inv-acts">
-        ${needsDate ? `<label class="inv-date">${state === 'exceeded' ? 'New Target End' : 'Target End'} <input type="date" data-inv-date="${k}" min="${esc(d.today)}"></label>
+        ${date ? `<label class="inv-date">${state === 'exceeded' ? 'New Target End' : 'Target End'} <input type="date" data-inv-date="${k}" min="${esc(d.today)}"></label>
           <button class="btn secondary" data-inv-act="targetEnd" data-key="${k}">Save</button>` : ''}
-        <button class="btn" data-inv-act="draft" data-key="${k}">Create Draft</button>
+        ${d.canUpdate ? `<button class="btn" data-inv-act="draft" data-key="${k}">Create Draft</button>` : ''}
       </div>`;
   }
+  if (!d.canUpdate) return '';
   if (state === 'ready') {
     if (!open) return `<div class="inv-acts"><button class="btn" data-inv-open="${k}">Invoice Sent</button></div>`;
     const due = invDueFrom(d.today, d.terms[account]);
@@ -8800,7 +8835,12 @@ function invActionsHtml(d, i, state, account) {
       </div>`;
   }
   if (state === 'invoiced' || state === 'overdue') {
-    if (!open) return `<div class="inv-acts"><button class="linklike" data-inv-open="${k}">Change Invoice Due Date</button></div>`;
+    if (invPaying === i.key) return `<div class="inv-acts inv-confirm">
+        <label class="inv-date">Paid on <input type="date" data-inv-date="${k}" value="${esc(d.today)}" max="${esc(d.today)}"></label>
+        <span class="muted">Moves it to Paid in Jira.</span>
+        <div class="row"><button class="btn" data-inv-act="paid" data-key="${k}">Mark as Paid</button><button class="linklike" data-inv-pay="">Cancel</button></div>
+      </div>`;
+    if (!open) return `<div class="inv-acts"><button class="btn" data-inv-pay="${k}">Paid</button><button class="linklike" data-inv-open="${k}">Change Invoice Due Date</button></div>`;
     return `<div class="inv-acts inv-confirm">
         <label class="inv-date">Invoice Due Date <input type="date" data-inv-date="${k}" value="${esc(i.invoiceDue || '')}"></label>
         <div class="row"><button class="btn secondary" data-inv-act="dueDate" data-key="${k}">Save</button><button class="linklike" data-inv-open="">Cancel</button></div>
@@ -8809,12 +8849,24 @@ function invActionsHtml(d, i, state, account) {
   return '';
 }
 
-const INV_ACT_DONE = { targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed' };
+const INV_ACT_DONE = { targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed', paid: 'Marked as paid' };
 
 async function invoicingClick(event) {
   const t = (sel) => event.target.closest(sel);
+  const fold = t('[data-inv-fold]');
+  if (fold && !event.target.closest('a')) {
+    event.preventDefault();
+    const id = fold.dataset.invFold;
+    const box = fold.parentElement;
+    box.open = !box.open;
+    if (box.open) invShut.delete(id); else invShut.add(id);
+    invShutSave();
+    return true;
+  }
   const opener = t('[data-inv-open]');
-  if (opener) { invSending = opener.dataset.invOpen || null; invKeep = true; return render(); }
+  if (opener) { invSending = opener.dataset.invOpen || null; invPaying = null; invKeep = true; return render(); }
+  const payer = t('[data-inv-pay]');
+  if (payer) { invPaying = payer.dataset.invPay || null; invSending = null; invKeep = true; return render(); }
   const act = t('[data-inv-act]');
   if (act) {
     const key = act.dataset.key;
@@ -8824,7 +8876,7 @@ async function invoicingClick(event) {
     act.disabled = true;
     try {
       await api('/api/invoicing/action', { method: 'POST', body: JSON.stringify({ key, action, date }) });
-      invSending = null;
+      invSending = null; invPaying = null;
       toast(`${key}: ${INV_ACT_DONE[action]}`);
       return render();
     } catch (err) { toast(err.message); act.disabled = false; }

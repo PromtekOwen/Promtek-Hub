@@ -1473,7 +1473,7 @@ label.con-flag-org { display: block; max-width: 420px; }
 .inv-group { margin: 1.25rem 0; }
 .inv-group > h2, .inv-group > summary h2 { margin: 0 0 .25rem; }
 .inv-group > summary { cursor: pointer; list-style: none; }
-.inv-group.late > h2 { color: var(--danger); }
+.inv-group.late > h2, .inv-group.late > summary h2 { color: var(--danger); }
 .inv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: .75rem; }
 .inv-card { margin: 0; padding: .9rem 1rem; }
 .inv-group.late .inv-card { border-left: 4px solid var(--danger); }
@@ -1505,7 +1505,7 @@ label.con-flag-org { display: block; max-width: 420px; }
 .acc-summary { margin: .3rem 0 0; }
 .acc-edit[hidden] { display: none; }
 .acc-edit { margin-top: .5rem; }
-.inv-group.ready > h2 { color: #8a5a00; }
+.inv-group.ready > h2, .inv-group.ready > summary h2 { color: #8a5a00; }
 .inv-group.ready .inv-card { border-left: 4px solid var(--gold); }
 .inv-check { display: flex; align-items: center; gap: .5rem; justify-content: flex-start; font-weight: 600; }
 .inv-check input { width: auto; margin: 0; flex: none; }
@@ -1515,3 +1515,15 @@ label.con-flag-org { display: block; max-width: 420px; }
 .inv-confirm .row { gap: .75rem; align-items: center; }
 .inv-date { display: flex; flex-direction: column; font-size: .85rem; font-weight: 600; margin: 0; }
 .inv-date input { width: auto; padding: .35rem .5rem; }
+.inv-part { margin-top: 2rem; }
+.inv-part-head { font-size: 1.35rem; margin: 0 0 .5rem; padding-bottom: .4rem; border-bottom: 2px solid var(--line, #d9dee5); }
+.inv-part-head .muted { font-size: .95rem; font-weight: 400; }
+.inv-later summary { cursor: pointer; color: var(--blue-deep); font-size: .9rem; padding: .35rem 0; }
+.inv-later .inv-lines { margin-top: .25rem; }
+.inv-part > summary, .inv-group > summary { cursor: pointer; list-style: none; }
+.inv-part > summary::-webkit-details-marker, .inv-group > summary::-webkit-details-marker { display: none; }
+.inv-part > summary h2::before, .inv-group > summary h2::before { content: '▸'; display: inline-block; width: 1.1em; color: var(--muted, #6b7785); font-size: .85em; }
+.inv-part[open] > summary h2::before, .inv-group[open] > summary h2::before { content: '▾'; }
+.inv-group:not([open]) { margin: .6rem 0; }
+.inv-group.nodate > summary h2 { color: var(--blue-deep); }
+.inv-group.nodate .inv-card { border-left: 4px solid var(--blue-deep); }
