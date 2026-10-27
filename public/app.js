@@ -10093,8 +10093,15 @@ function pscCardHtml(d, { triage = false } = {}) {
       <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span>
         <span class="muted">· ${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'} · ${esc(d.status)} · raised ${agoText(d.created)}</span></p>
       <div class="psc-chips">${pscResponseChip(d)}${pscUpdateChips(d)}${d.uncopied ? `<span class="psc-chip warn" title="It has an Organization but no copy in the customer's project has been found">Not copied to ${esc(d.customer || 'the customer')}'s project</span>` : ''}</div>
-      ${triage ? pscTriageActions(d) : pscCanResolve(d) ? `<div class="psc-actions psc-card-actions"><button class="btn secondary" data-psc-resolve="${esc(d.key)}">Resolve</button></div>` : ''}
+      ${triage ? pscTriageActions(d) : pscCanResolve(d) || pscQuickHand(d) ? `<div class="psc-actions psc-card-actions">${pscCanResolve(d) ? `<button class="btn secondary" data-psc-resolve="${esc(d.key)}">Resolve</button>` : ''}${pscQuickHand(d)}</div>` : ''}
     </article>`;
+}
+
+// Quote or Condor from the list: opens the item with that ready to go.
+function pscQuickHand(d) {
+  if (d.state === 'resolved' || d.orderWork) return '';
+  return `<button class="btn secondary" data-psc-hand="quote" data-key="${esc(d.key)}" data-open="1">Quote</button>
+    <button class="btn secondary" data-psc-hand="condor" data-key="${esc(d.key)}" data-open="1">Condor</button>`;
 }
 
 function pscPeopleSelect(d) {
@@ -10116,6 +10123,7 @@ function pscTriageActions(d) {
       <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${need[m]}</span>`).join('')}</p>
       <div class="psc-actions">
         ${d.missing.includes('response') || d.assigneeId !== pscData?.me ? '<button class="btn" data-psc-pickup="KEY">I\'m on it</button>'.replace('KEY', esc(d.key)) : ''}
+        ${pscQuickHand(d)}
         ${pscPeopleSelect(d)}
         ${d.missing.includes('org') ? pscOrgSelect(d) : ''}
         ${d.missing.includes('charge') ? pscChargeSelect(d) : ''}
@@ -10318,9 +10326,13 @@ async function pscHandClick(t) {
   const open = t('[data-psc-hand]');
   if (open) {
     const kind = open.dataset.pscHand;
-    pscHand = kind && !(pscHand?.key === open.dataset.key && pscHand.kind === kind)
+    const fromList = Boolean(open.dataset.open);
+    pscHand = kind && (fromList || !(pscHand?.key === open.dataset.key && pscHand.kind === kind))
       ? { key: open.dataset.key, kind, disciplines: [], team: null, projectKey: '', customer: '', prospect: '', prospectMode: false } : null;
-    render(); return true;
+    if (fromList) { pscOpen = open.dataset.key; window.scrollTo(0, 0); }
+    await render();
+    if (fromList) view.querySelector('.psc-hand')?.scrollIntoView({ block: 'start' });
+    return true;
   }
   if (!pscHand) return false;
   if (t('[data-psc-hand-prospect]')) { pscHand.prospectMode = true; pscHand.projectKey = ''; render(); return true; }

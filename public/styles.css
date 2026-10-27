@@ -864,6 +864,7 @@ body.has-tracker-bar { padding-bottom: 4rem; }
 .psc-needs { margin: 0 0 .55rem; display: flex; flex-wrap: wrap; gap: .35rem; }
 .psc-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .75rem; }
 .psc-actions select { width: auto; max-width: 100%; flex: 1 1 12rem; }
+.psc-triage .psc-actions select { flex: 1 1 9rem; max-width: 15rem; }
 .psc-actions .btn { flex: 0 0 auto; }
 .psc-facts { display: grid; grid-template-columns: minmax(0, 1fr); gap: .55rem 1.5rem; margin: 1rem 0 0; }
 @media (min-width: 720px) { .psc-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
