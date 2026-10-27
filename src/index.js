@@ -257,21 +257,36 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/prefs/tiles') {
-    const row = await env.DB.prepare('SELECT tile_order, hidden_tiles FROM user_prefs WHERE account_id = ?')
-      .bind(user.accountId || user.email).first();
-    return json({
-      order: row?.tile_order ? JSON.parse(row.tile_order) : null,
-      hidden: row?.hidden_tiles ? JSON.parse(row.hidden_tiles) : [],
-    });
+    // Folders came later; until schema-056 adds them, the order and hidden tiles still load.
+    const row = await env.DB.prepare('SELECT tile_order, hidden_tiles, tile_folders FROM user_prefs WHERE account_id = ?').bind(user.accountId || user.email).first()
+      .catch(() => env.DB.prepare('SELECT tile_order, hidden_tiles FROM user_prefs WHERE account_id = ?').bind(user.accountId || user.email).first());
+    const parse = (v, d) => { try { return v ? JSON.parse(v) : d; } catch { return d; } };
+    return json({ order: parse(row?.tile_order, null), hidden: parse(row?.hidden_tiles, []), folders: parse(row?.tile_folders, []) });
   }
   if (method === 'POST' && pathname === '/api/prefs/tiles') {
     const body = await request.json().catch(() => ({}));
-    await env.DB.prepare(
-      `INSERT INTO user_prefs (account_id, tile_order, hidden_tiles, updated_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(account_id) DO UPDATE SET tile_order = excluded.tile_order,
-         hidden_tiles = excluded.hidden_tiles, updated_at = excluded.updated_at`
-    ).bind(user.accountId || user.email, JSON.stringify(body.order || []), JSON.stringify(body.hidden || []),
-      new Date().toISOString()).run();
+    // Each person's own layout: tile ids, and folders of them with a name.
+    const id = (v) => String(v || '').slice(0, 60);
+    const order = (Array.isArray(body.order) ? body.order : []).map(id).filter(Boolean).slice(0, 200);
+    const hidden = (Array.isArray(body.hidden) ? body.hidden : []).map(id).filter(Boolean).slice(0, 200);
+    const folders = (Array.isArray(body.folders) ? body.folders : []).slice(0, 40).map((f) => ({
+      id: id(f?.id).replace(/[^\w-]/g, ''), name: String(f?.name || 'Folder').trim().slice(0, 40) || 'Folder',
+      tiles: [...new Set((Array.isArray(f?.tiles) ? f.tiles : []).map(id).filter(Boolean))].slice(0, 60),
+    })).filter((f) => f.id && f.tiles.length);
+    const who = user.accountId || user.email, now = new Date().toISOString();
+    try {
+      await env.DB.prepare(
+        `INSERT INTO user_prefs (account_id, tile_order, hidden_tiles, tile_folders, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET tile_order = excluded.tile_order, hidden_tiles = excluded.hidden_tiles,
+           tile_folders = excluded.tile_folders, updated_at = excluded.updated_at`
+      ).bind(who, JSON.stringify(order), JSON.stringify(hidden), JSON.stringify(folders), now).run();
+    } catch {
+      await env.DB.prepare(
+        `INSERT INTO user_prefs (account_id, tile_order, hidden_tiles, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET tile_order = excluded.tile_order, hidden_tiles = excluded.hidden_tiles, updated_at = excluded.updated_at`
+      ).bind(who, JSON.stringify(order), JSON.stringify(hidden), now).run();
+      return json({ ok: true, folders: false });
+    }
     return json({ ok: true });
   }
 

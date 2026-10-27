@@ -210,15 +210,18 @@ const pages = {
       return `<h1>${greeting()}${first ? `, ${esc(first)}` : ''}</h1><p>${longDate(todayIso())}</p><div id="home-feed-host">${homeFeedHtml()}</div>`;
     },
     render() {
-      const visible = orderedTiles();
-      const hidden = MODULES.filter((m) => allowedTile(m) && tilePrefs.hidden.includes(m.id));
-      const tiles = visible.map((m, i) => {
+      const visible = homeEntries();
+      const hidden = MODULES.filter((m) => allowedTile(m) && tilePrefs.hidden.includes(m.id) && !folderOf(m.id));
+      const tiles = visible.map((e, i) => {
+        if (e.f) return folderTileHtml(e, i, visible.length);
+        const m = e.m;
         const detail = m.detail ? `<span class="detail">${m.detail(me)}</span>` : '';
         const inner = `<span class="tile-icon">${m.icon}</span><strong>${esc(m.name)}</strong>${detail}`;
         if (arrangeMode) {
           return `<div class="tile arranging" data-tile-id="${esc(m.id)}" tabindex="0" role="listitem" aria-roledescription="Movable tile"
               aria-label="${esc(m.name)}, position ${i + 1} of ${visible.length}. Drag, or use the arrow keys, to move it.">${inner}<span class="arrange">
               <span class="drag-grip" aria-hidden="true">${svgIcon('<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>')}</span>
+              <button class="icon-btn" data-folder-pick="${esc(m.id)}" aria-label="Put ${esc(m.name)} in a folder" title="Put in a folder">${svgIcon('<path d="M3.5 7.5a2 2 0 012-2h4l2 2h7a2 2 0 012 2v7.5a2 2 0 01-2 2h-13a2 2 0 01-2-2z"/><path d="M12 11v5M9.5 13.5h5"/>')}</button>
               <button class="icon-btn" data-tile="hide" data-value="${esc(m.id)}" aria-label="Hide ${esc(m.name)}">${svgIcon('<path d="M4 4l16 16"/><path d="M12 6c5 0 9 6 9 6a15 15 0 01-3 3.4M7.5 7.6A15 15 0 003 12s4 6 9 6a8 8 0 003.7-.9"/>')}</button>
             </span></div>`;
         }
@@ -238,7 +241,7 @@ const pages = {
         <div class="row" style="justify-content:flex-end;margin-bottom:.75rem">
           <button class="btn secondary" data-tile="${arrangeMode ? 'done' : 'arrange'}">${arrangeMode ? 'Done arranging' : 'Arrange tiles'}</button>
         </div>
-        ${arrangeMode ? '<p class="help" style="margin-top:0">Drag tiles into the order you want. Your order is saved as you go.</p>' : ''}
+        ${arrangeMode ? '<p class="help" style="margin-top:0">Drag tiles into the order you want. To make a folder, drag one tile onto the middle of another and hold it there, or use the folder button on a tile. Your layout is saved to you as you go, and nobody else\'s changes.</p>' : ''}
         <div class="tiles${arrangeMode ? ' arranging-grid' : ''}"${arrangeMode ? ' role="list" aria-label="Your tiles"' : ''}>${tiles}</div>
         <div class="visually-hidden" aria-live="polite" id="tile-live"></div>${hiddenBlock}
         ${me.linked && !arrangeMode ? `<h2>Latest XP</h2>${xpList(me.recent.slice(0, 4), 'Log time in Tempo and your XP appears here within a couple of minutes.')}` : ''}`;
@@ -1073,7 +1076,7 @@ function homeAdminInput(event) {
 
 // ---------- arranging tiles ----------
 
-let tilePrefs = { order: null, hidden: [] };
+let tilePrefs = { order: null, hidden: [], folders: [] };
 let arrangeMode = false;
 
 // 'open', 'locked' (shown greyed out as under construction) or false (not shown).
@@ -1089,16 +1092,137 @@ function tileAccess(m) {
 }
 const allowedTile = (m) => Boolean(tileAccess(m));
 
-function orderedTiles() {
-  const allowed = MODULES.filter((m) => allowedTile(m) && !tilePrefs.hidden.includes(m.id));
-  if (!tilePrefs.order?.length) return allowed;
+// ---------- folders of tiles ----------
+// Anyone can gather tiles into folders on their own home screen, as on a phone. A folder sits
+// in the order as "folder:<id>"; the tiles in it leave the order until they're taken out.
+const folderKey = (f) => `folder:${f.id}`;
+const folderOf = (tileId) => (tilePrefs.folders || []).find((f) => f.tiles.includes(tileId)) || null;
+const folderTiles = (f) => f.tiles.map((id) => MODULES.find((m) => m.id === id)).filter((m) => m && allowedTile(m));
+
+// What's on the home screen, in their order: tiles not in a folder, and folders with something in them they can open.
+function homeEntries() {
+  const tucked = new Set((tilePrefs.folders || []).flatMap((f) => f.tiles));
+  const loose = MODULES.filter((m) => allowedTile(m) && !tilePrefs.hidden.includes(m.id) && !tucked.has(m.id)).map((m) => ({ key: m.id, m }));
+  const folders = (tilePrefs.folders || []).map((f) => ({ key: folderKey(f), f, tiles: folderTiles(f) })).filter((e) => e.tiles.length);
+  const all = [...loose, ...folders];
+  if (!tilePrefs.order?.length) return all;
   const position = new Map(tilePrefs.order.map((id, i) => [id, i]));
   // Anything new since they last arranged goes to the end.
-  return allowed.sort((a, b) => (position.get(a.id) ?? 999) - (position.get(b.id) ?? 999));
+  return all.sort((a, b) => (position.get(a.key) ?? 999) - (position.get(b.key) ?? 999));
+}
+const orderedTiles = () => homeEntries().filter((e) => e.m).map((e) => e.m);
+
+function folderTileHtml(e, i, count) {
+  const { f, tiles } = e;
+  const minis = tiles.slice(0, 4).map((m) => `<span class="folder-mini">${m.icon}</span>`).join('');
+  const label = `${esc(f.name)}, a folder of ${tiles.length} ${tiles.length === 1 ? 'tile' : 'tiles'}`;
+  const inner = `<span class="folder-icons" aria-hidden="true">${minis}</span><strong>${esc(f.name)}</strong>
+    <span class="detail">${tiles.map((m) => esc(m.name)).slice(0, 3).join(', ')}${tiles.length > 3 ? ` and ${tiles.length - 3} more` : ''}</span>`;
+  if (arrangeMode) {
+    return `<div class="tile arranging folder-tile" data-tile-id="${esc(e.key)}" tabindex="0" role="listitem" aria-roledescription="Movable folder"
+        aria-label="${label}, position ${i + 1} of ${count}. Drag, or use the arrow keys, to move it.">${inner}<span class="arrange">
+        <span class="drag-grip" aria-hidden="true">${svgIcon('<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>')}</span>
+        <button class="icon-btn" data-folder-open="${esc(f.id)}" aria-label="Change ${esc(f.name)}" title="Rename, or take tiles out">${svgIcon('<path d="M4 20h4l10.5-10.5a2.1 2.1 0 00-4-4L4 16z"/>')}</button>
+      </span></div>`;
+  }
+  return `<button class="tile folder-tile" data-folder-open="${esc(f.id)}" aria-label="${label}">${inner}</button>`;
+}
+
+function folderSheet(html, label) {
+  document.querySelector('.folder-sheet')?.closest('.modal-backdrop')?.remove();
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop folder-backdrop';
+  host.innerHTML = `<div class="modal card folder-sheet" role="dialog" aria-modal="true" aria-label="${esc(label)}">${html}</div>`;
+  host.addEventListener('click', (ev) => { if (ev.target === host || ev.target.closest('[data-folder-close]')) host.remove(); });
+  host.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') host.remove(); });
+  document.body.appendChild(host);
+  host.querySelector('input, a, button')?.focus();
+  return host;
+}
+
+// Opening a folder: its tiles, ready to open; while arranging, its name and taking tiles out.
+function folderOpen(id) {
+  const f = (tilePrefs.folders || []).find((x) => x.id === id);
+  if (!f) return;
+  const tiles = folderTiles(f);
+  if (!arrangeMode) {
+    const host = folderSheet(`<h2 style="margin-top:0">${esc(f.name)}</h2>
+      <div class="tiles folder-tiles">${tiles.map((m) => {
+        const inner = `<span class="tile-icon">${m.icon}</span><strong>${esc(m.name)}</strong>${m.detail ? `<span class="detail">${m.detail(me)}</span>` : ''}`;
+        return m.construction || tileAccess(m) === 'locked' ? `<div class="tile construction" aria-disabled="true">${inner}<span class="badge">Under construction</span></div>`
+          : `<a class="tile" href="${esc(m.route || m.href)}">${inner}</a>`;
+      }).join('')}</div>
+      <div class="modal-actions"><button class="btn secondary" data-folder-close>Close</button></div>`, f.name);
+    host.querySelectorAll('a.tile').forEach((a) => a.addEventListener('click', () => host.remove()));
+    return;
+  }
+  const host = folderSheet(`<label style="margin-top:0">Folder name <input data-folder-name="${esc(f.id)}" maxlength="40" value="${esc(f.name)}"></label>
+    <ul class="list folder-edit">${tiles.map((m) => `<li><span class="title">${esc(m.name)}</span>
+      <span class="xp"><button class="btn secondary" data-folder-out="${esc(m.id)}">Take out</button></span></li>`).join('')}</ul>
+    <p class="help">Taking the last tile out removes the folder.</p>
+    <div class="modal-actions"><button class="btn secondary" data-folder-ungroup="${esc(f.id)}">Take them all out</button><button class="btn" data-folder-close>Done</button></div>`, `Change ${f.name}`);
+  const name = host.querySelector('[data-folder-name]');
+  name.select();
+  const keepName = async () => { const v = name.value.trim().slice(0, 40); if (v && v !== f.name) { f.name = v; await saveTilePrefs(); render(); } };
+  name.addEventListener('change', keepName);
+  host.addEventListener('click', async (ev) => {
+    const out = ev.target.closest('[data-folder-out]');
+    if (out) { await keepName(); folderTakeOut(f, [out.dataset.folderOut]); await saveTilePrefs(); await render(); if ((tilePrefs.folders || []).includes(f)) folderOpen(f.id); else host.remove(); }
+    if (ev.target.closest('[data-folder-ungroup]')) { folderTakeOut(f, [...f.tiles]); await saveTilePrefs(); host.remove(); render(); }
+    if (ev.target.closest('[data-folder-close]')) await keepName();
+  });
+}
+
+// Tiles taken out go back where the folder is; an empty folder goes.
+function folderTakeOut(f, ids) {
+  const order = homeEntries().map((e) => e.key);
+  const at = order.indexOf(folderKey(f));
+  f.tiles = f.tiles.filter((t) => !ids.includes(t));
+  order.splice(at < 0 ? order.length : at + 1, 0, ...ids);
+  if (!f.tiles.length) { tilePrefs.folders = tilePrefs.folders.filter((x) => x !== f); order.splice(order.indexOf(folderKey(f)), 1); }
+  tilePrefs.order = order;
+}
+
+// A tile into a folder: an existing one, or a new one made with another tile (or on its own).
+function folderPut(tileId, { folderId = null, withTile = null } = {}) {
+  tilePrefs.folders ||= [];
+  const order = homeEntries().map((e) => e.key);
+  let f = folderId ? tilePrefs.folders.find((x) => x.id === folderId) : null;
+  if (!f) {
+    const anchor = withTile || tileId;
+    f = { id: `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, name: 'New folder', tiles: withTile ? [withTile] : [] };
+    tilePrefs.folders.push(f);
+    order.splice(order.indexOf(anchor), 0, folderKey(f));
+  }
+  for (const other of tilePrefs.folders) other.tiles = other.tiles.filter((t) => t !== tileId);
+  if (!f.tiles.includes(tileId)) f.tiles.push(tileId);
+  tilePrefs.order = order.filter((k) => k !== tileId && !(withTile && k === withTile));
+  tilePrefs.folders = tilePrefs.folders.filter((x) => x.tiles.length);
+  return f;
+}
+
+// The folder button on a tile while arranging: a new folder, or one already made.
+function folderPick(tileId) {
+  const m = MODULES.find((x) => x.id === tileId);
+  const folders = (tilePrefs.folders || []).filter((f) => folderTiles(f).length);
+  const host = folderSheet(`<h2 style="margin-top:0">Put ${esc(m?.name || 'it')} in a folder</h2>
+    <div class="options">${folders.map((f) => `<button class="option" data-folder-into="${esc(f.id)}"><span class="option-main"><strong>${esc(f.name)}</strong>
+      <span class="muted">${folderTiles(f).map((t) => esc(t.name)).join(', ')}</span></span></button>`).join('')}
+      <button class="option" data-folder-into=""><span class="option-main"><strong>A new folder</strong></span></button></div>
+    <div class="modal-actions"><button class="btn secondary" data-folder-close>Cancel</button></div>`, 'Choose a folder');
+  host.addEventListener('click', async (ev) => {
+    const into = ev.target.closest('[data-folder-into]');
+    if (!into) return;
+    const f = folderPut(tileId, { folderId: into.dataset.folderInto || null });
+    host.remove();
+    await saveTilePrefs(); await render();
+    if (!into.dataset.folderInto) folderOpen(f.id);
+    else toast(`Put in ${f.name}`);
+  });
 }
 
 async function saveTilePrefs() {
-  tilePrefs.order = orderedTiles().map((m) => m.id);
+  tilePrefs.order = homeEntries().map((e) => e.key);
   try {
     await api('/api/prefs/tiles', { method: 'POST', body: JSON.stringify(tilePrefs) });
   } catch {
@@ -1110,7 +1234,7 @@ async function tileControl(action, id) {
   if (action === 'arrange') { arrangeMode = true; return render(); }
   if (action === 'done') { arrangeMode = false; await saveTilePrefs(); return render(); }
 
-  const order = orderedTiles().map((m) => m.id);
+  const order = homeEntries().map((e) => e.key);
   const index = order.indexOf(id);
   if (action === 'up' && index > 0) order.splice(index - 1, 0, ...order.splice(index, 1));
   if (action === 'down' && index < order.length - 1) order.splice(index + 1, 0, ...order.splice(index, 1));
@@ -6782,14 +6906,42 @@ function tileFlip(grid, move) {
   }
 }
 
+const TILE_MERGE_MS = 450;          // held over the middle of a tile this long, a drop makes a folder
+const tileShiftClear = (d) => { clearTimeout(d.shiftTimer); d.shiftOver = null; };
+function tileMergeClear(d) {
+  clearTimeout(d.mergeTimer); d.mergeTimer = null;
+  d.mergeOver?.classList.remove('merge-target'); d.mergeOver = null; d.merge = null;
+}
+
 function tileDragMove(x, y) {
   const d = tileDrag;
   d.ghost.style.transform = `translate(${x - d.offsetX}px, ${y - d.offsetY}px) scale(1.04)`;
   const over = document.elementFromPoint(x, y)?.closest('.arranging-grid [data-tile-id]');
-  if (!over || over === d.tile) return;
-  const tiles = [...d.grid.querySelectorAll('[data-tile-id]')];
-  const from = tiles.indexOf(d.tile), to = tiles.indexOf(over);
-  tileFlip(d.grid, () => over.insertAdjacentElement(from < to ? 'afterend' : 'beforebegin', d.tile));
+  if (!over || over === d.tile) { if (!over) { tileMergeClear(d); tileShiftClear(d); } return; }
+  // The middle of another tile, for a tile (not a folder): hold there to put them in a folder together.
+  const r = over.getBoundingClientRect();
+  const middle = x > r.left + r.width * 0.25 && x < r.right - r.width * 0.25 && y > r.top + r.height * 0.2 && y < r.bottom - r.height * 0.2;
+  if (middle && !d.tile.dataset.tileId.startsWith('folder:')) {
+    tileShiftClear(d);
+    if (d.mergeOver !== over) {
+      tileMergeClear(d);
+      d.mergeOver = over;
+      d.mergeTimer = setTimeout(() => { if (tileDrag === d && d.mergeOver === over) { d.merge = over.dataset.tileId; over.classList.add('merge-target'); } }, TILE_MERGE_MS);
+    }
+    return;
+  }
+  tileMergeClear(d);
+  // Near its edge: it makes room, after a moment, so sweeping across to the middle of a tile doesn't move it away.
+  if (d.shiftOver === over) return;
+  clearTimeout(d.shiftTimer);
+  d.shiftOver = over;
+  d.shiftTimer = setTimeout(() => {
+    if (tileDrag !== d || d.shiftOver !== over) return;
+    const tiles = [...d.grid.querySelectorAll('[data-tile-id]')];
+    const from = tiles.indexOf(d.tile), to = tiles.indexOf(over);
+    tileFlip(d.grid, () => over.insertAdjacentElement(from < to ? 'afterend' : 'beforebegin', d.tile));
+    d.shiftOver = null;
+  }, 140);
 }
 
 function tileAutoScroll() {
@@ -6808,7 +6960,18 @@ async function tileDragEnd(cancelled = false) {
   d.ghost.remove();
   d.tile.classList.remove('drag-placeholder');
   document.body.classList.remove('tile-dragging');
+  const merge = d.merge;
+  tileMergeClear(d); tileShiftClear(d);
   if (cancelled) { render(); return; }
+  if (merge) {
+    tilePrefs.order = tileOrderFromDom();
+    const id = d.tile.dataset.tileId;
+    const f = merge.startsWith('folder:') ? folderPut(id, { folderId: merge.slice(7) }) : folderPut(id, { withTile: merge });
+    await saveTilePrefs(); await render();
+    if (!merge.startsWith('folder:')) folderOpen(f.id);
+    else toast(`Put in ${f.name}`);
+    return;
+  }
   const order = tileOrderFromDom();
   if (order.join() === d.startOrder.join()) return;
   tilePrefs.order = order;
@@ -12070,6 +12233,10 @@ view.addEventListener('click', async (event) => {
 
   const tileBtn = event.target.closest('[data-tile]');
   if (tileBtn) return tileControl(tileBtn.dataset.tile, tileBtn.dataset.value);
+  const fOpen = event.target.closest('[data-folder-open]');
+  if (fOpen && !document.querySelector('.folder-sheet')) return folderOpen(fOpen.dataset.folderOpen);
+  const fPick = event.target.closest('[data-folder-pick]');
+  if (fPick) return folderPick(fPick.dataset.folderPick);
 
   const powBtn = event.target.closest('[data-pow]');
   if (powBtn) return powControl(powBtn.dataset.pow);
@@ -12570,7 +12737,7 @@ async function start() {
     view.innerHTML = `<div class="card notice error"><p><strong>Couldn't load the hub.</strong></p><p>${esc(err.message)}</p></div>`;
     return;
   }
-  try { tilePrefs = { hidden: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
+  try { tilePrefs = { hidden: [], folders: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
   if (me.viewingAs) viewAsBar();
   await render();

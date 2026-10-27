@@ -298,6 +298,8 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 Everyone can order their own home screen. **Arrange tiles** on the dashboard lets you drag tiles into place with a mouse or a finger, and hide the ones you never use. The order saves as you go. On a phone, hold a tile near the top or bottom of the screen to scroll while dragging. A focused tile can also be moved with the arrow keys. Hidden tiles sit under Hidden and come back with one tap. New tiles appear at the end of whatever order someone has chosen.
 
+**Folders.** While arranging, drag one tile onto the middle of another and hold it there for a moment (it's outlined when it will make a folder), then let go: the two go into a new folder, which opens to be named. Dropping a tile on a folder puts it in that folder. Each tile also has a folder button, to choose a folder (or a new one) without dragging. A folder moves like a tile; its pencil button renames it and takes tiles out, and taking the last one out removes it. Tapping a folder opens it to show its tiles. Folders are saved to each person, like their order, and change nobody else's home screen. Run `schema-056.sql` in the D1 console first (until then, folders only last until the page is reloaded).
+
 ## Part 14b: The active time tracker
 
 **Log time** is the button at the bottom of the home screen: centred on a phone, bottom-right on a larger screen. While a timer runs, it shows the job and the running clock. After picking a job, the engineer chooses **Add time already done** (the usual form) or **Start the timer**. Logging an 8x8 call's time goes straight to the form. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
