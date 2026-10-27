@@ -1548,3 +1548,6 @@ tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; 
 .psc-flag-buttons { display: flex; flex-direction: column; gap: .4rem; }
 .inv-cancel-link { color: var(--danger); font-size: .85rem; }
 .inv-cancel span { font-size: .9rem; }
+.inv-jump { cursor: pointer; transition: box-shadow .15s, transform .15s; }
+.inv-jump:hover, .inv-jump:focus-visible { box-shadow: 0 0 0 2px var(--blue-deep) inset; }
+.inv-jump dt::after { content: ' ›'; color: var(--muted, #6b7785); }

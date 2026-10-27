@@ -360,7 +360,7 @@ An Invoice item in **Ready to be Invoiced** doesn't count as invoiced in the WIP
 
 **Deleted in Jira.** Items deleted from a service contract leave the Service contracts tile once the WIP has read that contract again (every half hour), and a contract or order deleted in Jira is let go rather than tried again on every read.
 
-**Groups on the tile.** Orders and service contracts each list their invoices by group: Overdue, estimate exceeded (invoice date passed, for contracts), No Target End, Ready to be invoiced, Invoiced, Not invoiced yet and Paid. Each group, and each of the two sections, folds away with a click on its heading, and stays as it was left on that browser. Paid starts folded.
+**Groups on the tile.** Orders and service contracts each list their invoices by group: Overdue, estimate exceeded (invoice date passed, for contracts), No Target End, Ready to be invoiced, Invoiced, Not invoiced yet and Paid. Each group, and each of the two sections, folds away with a click on its heading, and stays as it was left on that browser. Paid starts folded. Clicking a total at the top (Overdue, Ready to be invoiced, Waiting for payment, Late to invoice, Paid this month) opens that group in both sections, folds the rest and scrolls to it; Expected this month opens this month in Expected payments.
 
 **Updating invoices from the tile.** People with *Update invoices* (Management by default; change it under Admin → Who can use what) get buttons on each milestone, which write straight to Jira:
 - **New, with no Target End or with Target End passed:** a date and Save, which sets Target End. Anyone with *Set invoice Target Ends* (Management and team leads by default) can do this one alone, as long as they can open the tile.

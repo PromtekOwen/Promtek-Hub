@@ -8767,6 +8767,9 @@ async function invoicingHtml() {
   const thisMonth = d.forecast.find((f) => f.month === d.month);
   const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
   const count = (k, one, many) => `${n(k)} ${k === 1 ? one : many}`;
+  // Each total opens its group below (in both Orders and Service contracts) and folds the rest.
+  const jumpStat = (stage, label, value, small = '') => `<div class="inv-jump" data-inv-jump="${stage}" role="button" tabindex="0" aria-label="${esc(label)}: show the list">
+      <dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
 
   const regions = `<span class="segment">${Object.entries(d.regions).map(([k, r]) =>
     `<button class="seg${invRegion === k ? ' on' : ''}" data-inv-region="${k}">${esc(r.name)}</button>`).join('')}</span>`;
@@ -8777,12 +8780,12 @@ async function invoicingHtml() {
     ${wipSyncLine(d)}
     ${missing}
     <dl class="stats inv-stats">
-      ${stat('Overdue', invMoney(sum(by('overdue'))), count(by('overdue').length, 'invoice', 'invoices'))}
-      ${stat('Ready to be invoiced', invMoney(sum(by('ready'))), count(by('ready').length, 'invoice', 'invoices'))}
-      ${stat('Waiting for payment', invMoney(sum(by('invoiced'))), count(by('invoiced').length, 'invoice', 'invoices'))}
-      ${stat('Late to invoice', invMoney(sum(by('exceeded'))), count(by('exceeded').length, 'item', 'items'))}
-      ${stat('Expected this month', invMoney(thisMonth?.total || 0), count(thisMonth?.count || 0, 'payment', 'payments'))}
-      ${stat('Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
+      ${jumpStat('overdue', 'Overdue', invMoney(sum(by('overdue'))), count(by('overdue').length, 'invoice', 'invoices'))}
+      ${jumpStat('ready', 'Ready to be invoiced', invMoney(sum(by('ready'))), count(by('ready').length, 'invoice', 'invoices'))}
+      ${jumpStat('invoiced', 'Waiting for payment', invMoney(sum(by('invoiced'))), count(by('invoiced').length, 'invoice', 'invoices'))}
+      ${jumpStat('exceeded', 'Late to invoice', invMoney(sum(by('exceeded'))), count(by('exceeded').length, 'item', 'items'))}
+      ${jumpStat('forecast', 'Expected this month', invMoney(thisMonth?.total || 0), count(thisMonth?.count || 0, 'payment', 'payments'))}
+      ${jumpStat('paid', 'Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
     </dl>
     ${noDue.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>${count(noDue.length, 'invoice has', 'invoices have')} no Invoice Due Date:</strong>
       ${noDue.map((i) => jiraLink(i.key)).join(', ')}. Until it's set, payment is expected on the customer's terms from the day it was invoiced, where the hub knows it.</p></div>` : ''}
@@ -8935,8 +8938,35 @@ function invActionsCore(d, i, state, account) {
 
 const INV_ACT_DONE = { cancel: 'Cancelled', targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed', paid: 'Marked as paid' };
 
+// From a total at the top: that group opened in both sections, every other one folded, and scrolled to.
+async function invJump(stage) {
+  if (stage === 'forecast') {
+    invOpen.add(invData?.month); invKeep = true;
+    await render();
+    view.querySelector('.inv-forecast')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return true;
+  }
+  let first = null;
+  for (const kind of ['order', 'contract']) {
+    const groups = kind === 'order' ? INV_GROUPS : INV_CONTRACT_GROUPS;
+    invShut.delete(kind);
+    const part = view.querySelector(`summary[data-inv-fold="${kind}"]`)?.parentElement;
+    if (part) part.open = true;
+    for (const [g] of groups) {
+      const id = `${kind}:${g}`;
+      const box = view.querySelector(`summary[data-inv-fold="${id}"]`)?.parentElement;
+      if (g === stage) { invShut.delete(id); if (box) { box.open = true; first = first || box; } } else { invShut.add(id); if (box) box.open = false; }
+    }
+  }
+  invShutSave();
+  first?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return true;
+}
+
 async function invoicingClick(event) {
   const t = (sel) => event.target.closest(sel);
+  const jump = t('[data-inv-jump]');
+  if (jump) return invJump(jump.dataset.invJump);
   const fold = t('[data-inv-fold]');
   if (fold && !event.target.closest('a')) {
     event.preventDefault();
@@ -11964,7 +11994,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 
