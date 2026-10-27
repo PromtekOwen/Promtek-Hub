@@ -336,12 +336,21 @@ The **Feedback** tile lets anyone send feedback or a suggestion anonymously: the
 
 ## Part 14c3: Invoicing
 
-The **Invoicing** tile, for anyone who can see the WIP, replaces the old invoice board. It reads the same orders as the WIP, UK or South Africa, and shows every Invoice item on them:
-- **Totals:** overdue, waiting for payment, still to invoice by the end of this month, expected this month, and paid this month.
-- **Expected payments:** everything not yet paid, by the month it's due, opening up to each customer and order. Anything that fell due before this month and isn't paid is kept at the top rather than left out.
-- **Overdue, Invoiced, Not invoiced and Paid:** a card for each order, with each milestone's value, its invoice or planned date and when payment is due. An invoice past its payment date counts as overdue even if Jira hasn't been changed yet.
+The **Invoicing** tile replaces the old invoice board. It reads the same orders as the WIP, UK or South Africa, and shows every Invoice item on them. Two dates on each Invoice item matter:
+- **Target End:** when the work for the milestone should be finished, so the invoice can go out.
+- **Invoice Due Date:** when the customer should pay, set when the item is moved to Invoiced.
 
-Payment is expected on each customer's terms, by the Jira project key their orders start with: from the invoice date once it's invoiced, or the planned date before. The terms from the old board are filled in to start with, and admins and management can change them under the tile's cog. Customers with unpaid invoices and no terms are listed, and until terms are added their payment is expected on the invoice date.
+Each invoice sits in one of these, in this order:
+- **Overdue:** invoiced, and its Invoice Due Date has passed (or Jira says Overdue).
+- **Ready to be invoiced:** check the draft invoice, then set the item to Invoiced and fill in its Invoice Due Date.
+- **Invoiced, waiting for payment:** sent and not yet due.
+- **Milestone estimate exceeded:** still New, and Target End has passed.
+- **Not invoiced yet:** still New, with Target End still ahead.
+- **Paid.**
+
+**Expected payments** adds up everything not yet paid by the month it's due: the Invoice Due Date once there is one, otherwise the customer's payment terms from Target End (or from today, once Target End has passed). Anything invoiced that fell due before this month is kept at the top. Customers' terms are set by the Jira project key their orders start with, under the tile's cog; the old board's terms are filled in to start with, and customers with no terms are listed.
+
+An Invoice item in **Ready to be Invoiced** doesn't count as invoiced in the WIP either until it's moved to Invoiced.
 
 ## Part 14d: Page walkthroughs
 

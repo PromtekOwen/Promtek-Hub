@@ -8226,7 +8226,7 @@ async function wipOrderHtml() {
       <span class="xp">${p.done ? '<span class="good">Done</span>' : p.subs ? wipPct(p.subsDone / p.subs) : ''}</span>
       ${p.open.length ? `<span class="sub wip-open">${p.open.map((s) => `${jiraLink(s.key)} ${esc(s.summary)} <span class="muted">(${esc(s.status)})</span>`).join('<br>')}</span>` : ''}</li>`).join('');
   const invoices = d.invoices.map((i) => `<tr><td>${esc(i.terms)}<small>${jiraLink(i.key)}</small></td><td class="num">${i.token ? `${n(i.share)} token${i.share === 1 ? '' : 's'}` : wipPct(i.share)}</td>
-      <td class="num">${wipMoney(i.value)}</td><td>${i.invoiceDate ? fullDate(i.invoiceDate) : i.due ? `${fullDate(i.due)} <small>planned</small>` : '—'}</td><td>${wipStatusChip(i.status)}</td></tr>`).join('');
+      <td class="num">${wipMoney(i.value)}</td><td>${i.invoiceDate ? `${fullDate(i.invoiceDate)} <small>Invoice Due Date</small>` : i.due ? `${fullDate(i.due)} <small>Target End</small>` : '—'}</td><td>${wipStatusChip(i.status)}</td></tr>`).join('');
   const move = d.move && d.move.status === 'pending'
     ? `<div class="card notice"><p><strong>Waiting to move to ${esc(d.move.target)} in Jira.</strong> ${esc(d.move.reason || '')}.${d.move.last_error ? ` Jira refused: ${esc(d.move.last_error)}` : ''}</p></div>` : '';
   const doc = r.docYes ? 'Yes' : r.hasDoc ? 'Ticked, but not just Yes' : 'Not ticked';
@@ -8658,11 +8658,14 @@ const invMoney = (v, d = invData) => {
 const invMonthName = (m) => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
 const invTermsText = (t, d = invData) => (t ? `${d.termTypes[t.type] === d.termTypes['EOFM +7'] ? d.termTypes[t.type] : `${t.days} ${String(d.termTypes[t.type] || t.type).toLowerCase()}`}` : 'No payment terms set');
 
+// In the order an invoice moves through: the ones needing someone first.
 const INV_GROUPS = [
-  ['Overdue', 'Overdue', 'Invoiced and past the date it should have been paid by.'],
-  ['Invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, not yet paid.'],
-  ['Not Invoiced', 'Not invoiced', 'Still to be invoiced, by the date each is planned for.'],
-  ['Paid', 'Paid', 'Paid in full.'],
+  ['overdue', 'Overdue', 'Invoiced, and the Invoice Due Date has passed without payment.'],
+  ['ready', 'Ready to be invoiced', 'Check the draft invoice, then set the item to Invoiced in Jira and fill in its Invoice Due Date.'],
+  ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
+  ['exceeded', 'Milestone estimate exceeded', 'Still New, and the Target End for finishing the milestone has passed. Worth checking how the work is going, or moving Target End.'],
+  ['upcoming', 'Not invoiced yet', 'Still New: the work for the milestone is under way, due to finish by its Target End.'],
+  ['paid', 'Paid', 'Paid in full.'],
 ];
 
 async function invoicingHtml() {
@@ -8672,11 +8675,9 @@ async function invoicingHtml() {
   const matches = (i) => !q || `${i.order} ${i.org || ''} ${i.account} ${i.key} ${i.terms || ''} ${d.orders[i.order]?.title || ''}`.toLowerCase().includes(q);
   const list = d.invoices.filter((i) => !i.token && matches(i));
   const sum = (l) => l.reduce((t, i) => t + (i.value || 0), 0);
-  // Overdue in Jira, or invoiced and past its payment date by the customer's terms.
-  const stateOf = (i) => (i.state === 'Invoiced' && i.late ? 'Overdue' : i.state);
-  const by = (s) => list.filter((i) => stateOf(i) === s);
-  const toInvoiceNow = by('Not Invoiced').filter((i) => i.planned && i.planned.slice(0, 7) <= d.month);
-  const paidThisMonth = by('Paid').filter((i) => (i.paidAt || '').slice(0, 7) === d.month);
+  const by = (stage) => list.filter((i) => i.stage === stage);
+  const paidThisMonth = by('paid').filter((i) => (i.paidAt || '').slice(0, 7) === d.month);
+  const noDue = list.filter((i) => i.noDueDate);
   const thisMonth = d.forecast.find((f) => f.month === d.month);
   const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
   const count = (k, one, many) => `${n(k)} ${k === 1 ? one : many}`;
@@ -8684,21 +8685,24 @@ async function invoicingHtml() {
   const regions = `<span class="segment">${Object.entries(d.regions).map(([k, r]) =>
     `<button class="seg${invRegion === k ? ' on' : ''}" data-inv-region="${k}">${esc(r.name)}</button>`).join('')}</span>`;
   const missing = d.missingTerms.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>No payment terms for ${n(d.missingTerms.length)} ${d.missingTerms.length === 1 ? 'customer' : 'customers'}:</strong>
-      ${d.missingTerms.map(esc).join(', ')}. Their payments are expected on the invoice date until terms are added${d.canEdit ? ' under the cog above' : ''}.</p></div>` : '';
+      ${d.missingTerms.map(esc).join(', ')}. Until terms are added${d.canEdit ? ' under the cog above' : ''}, payment on invoices without an Invoice Due Date is expected on Target End itself.</p></div>` : '';
 
   return `<div class="row wip-tools">${regions}<input type="search" id="inv-search" value="${esc(invQuery)}" placeholder="Search customers, orders or milestones" aria-label="Search invoices"></div>
     ${wipSyncLine(d)}
     ${missing}
     <dl class="stats inv-stats">
-      ${stat('Overdue', invMoney(sum(by('Overdue'))), count(by('Overdue').length, 'invoice', 'invoices'))}
-      ${stat('Waiting for payment', invMoney(sum(by('Invoiced'))), count(by('Invoiced').length, 'invoice', 'invoices'))}
-      ${stat(`To invoice by end of ${new Date(`${d.month}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long' })}`, invMoney(sum(toInvoiceNow)), count(toInvoiceNow.length, 'milestone', 'milestones'))}
+      ${stat('Overdue', invMoney(sum(by('overdue'))), count(by('overdue').length, 'invoice', 'invoices'))}
+      ${stat('Ready to be invoiced', invMoney(sum(by('ready'))), count(by('ready').length, 'invoice', 'invoices'))}
+      ${stat('Waiting for payment', invMoney(sum(by('invoiced'))), count(by('invoiced').length, 'invoice', 'invoices'))}
+      ${stat('Estimate exceeded', invMoney(sum(by('exceeded'))), count(by('exceeded').length, 'milestone', 'milestones'))}
       ${stat('Expected this month', invMoney(thisMonth?.total || 0), count(thisMonth?.count || 0, 'payment', 'payments'))}
       ${stat('Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
     </dl>
+    ${noDue.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>${count(noDue.length, 'invoice has', 'invoices have')} no Invoice Due Date:</strong>
+      ${noDue.map((i) => jiraLink(i.key)).join(', ')}. Until it's set, payment is expected on the customer's terms from Target End.</p></div>` : ''}
     ${invForecastHtml(d)}
-    ${INV_GROUPS.map(([state, title, help]) => invGroupHtml(d, state, title, help, by(state))).join('')}
-    <p class="help">Milestones are each order's Invoice items in Jira; tokens are left out. Payment is expected on the customer's terms from the invoice date, or from the planned date before it's invoiced.</p>`;
+    ${INV_GROUPS.map(([stage, title, help]) => invGroupHtml(d, stage, title, help, by(stage))).join('')}
+    <p class="help">Milestones are each order's Invoice items in Jira; tokens are left out. Target End is when the work for a milestone should be finished and invoiced; Invoice Due Date is when the customer should pay. Until there's an Invoice Due Date, payment is expected on the customer's terms from Target End, or from today once Target End has passed.</p>`;
 }
 
 function invForecastHtml(d) {
@@ -8725,7 +8729,8 @@ function invForecastHtml(d) {
 }
 
 // One status's milestones, a card for each order, as the old board had them.
-function invGroupHtml(d, state, title, help, list) {
+function invGroupHtml(d, stage, title, help, list) {
+  const state = stage;
   const byOrder = new Map();
   for (const i of list) { if (!byOrder.has(i.order)) byOrder.set(i.order, []); byOrder.get(i.order).push(i); }
   const total = list.reduce((t, i) => t + (i.value || 0), 0);
@@ -8733,23 +8738,32 @@ function invGroupHtml(d, state, title, help, list) {
     const o = d.orders[key] || {};
     const here = items.reduce((t, i) => t + (i.value || 0), 0);
     const lines = items.map((i) => {
-      const date = state === 'Paid' ? (i.paidAt ? `paid ${fullDate(i.paidAt)}` : i.invoiceDate ? `invoiced ${fullDate(i.invoiceDate)}` : '')
-        : state === 'Not Invoiced' ? (i.planned ? `to invoice ${fullDate(i.planned)}` : 'no planned date') : i.invoiceDate ? `invoiced ${fullDate(i.invoiceDate)}` : i.planned ? `planned ${fullDate(i.planned)}` : 'no invoice date';
-      const due = state !== 'Paid' && i.payDue ? `<span class="${i.late ? 'bad' : 'muted'}">${i.late ? 'was due' : 'payment due'} ${fullDate(i.payDue)}</span>` : '';
-      return `<li><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${esc(date)}${due ? ` · ${due}` : ''}</span>
+      const te = i.targetEnd ? fullDate(i.targetEnd) : null;
+      const date = {
+        paid: i.paidAt ? `paid ${fullDate(i.paidAt)}` : 'paid',
+        overdue: i.invoiceDue ? `was due ${fullDate(i.invoiceDue)}` : 'overdue in Jira',
+        invoiced: i.invoiceDue ? `due ${fullDate(i.invoiceDue)}` : 'no Invoice Due Date yet',
+        ready: te ? `Target End ${te}` : 'no Target End',
+        exceeded: `Target End was ${te}`,
+        upcoming: te ? `Target End ${te}` : 'no Target End yet',
+      }[state];
+      const due = ['ready', 'exceeded', 'upcoming'].includes(state) || (state === 'invoiced' && !i.invoiceDue)
+        ? (i.expected ? `<span class="muted">payment expected ${fullDate(i.expected)}</span>` : '') : '';
+      const dateHtml = `<span class="${state === 'overdue' || state === 'exceeded' ? 'bad' : ''}">${esc(date)}</span>`;
+      return `<li><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${dateHtml}${due ? ` · ${due}` : ''}</span>
         <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span></li>`;
     }).join('');
-    const termsLine = state === 'Paid' ? '' : `<span class="muted">${esc(invTermsText(d.terms[o.account || items[0].account]))}</span>`;
+    const termsLine = state === 'paid' ? '' : `<span class="muted">${esc(invTermsText(d.terms[o.account || items[0].account]))}</span>`;
     return `<article class="card inv-card">
         <p class="inv-card-head"><b>${esc(o.org || items[0].org || '')} – ${jiraLink(key)}</b><span class="muted">${esc(o.title || '')}</span></p>
-        <p class="inv-card-total"><strong>${invMoney(here)}</strong> ${state === 'Paid' ? 'paid' : `in ${items.length === 1 ? 'this milestone' : 'these milestones'}`}
-          ${state !== 'Paid' && o.uninvoiced !== null && o.uninvoiced !== undefined ? `<span class="muted">· ${invMoney(o.uninvoiced)} of ${invMoney(o.value)} not yet invoiced</span>` : ''}</p>
+        <p class="inv-card-total"><strong>${invMoney(here)}</strong> ${state === 'paid' ? 'paid' : `in ${items.length === 1 ? 'this milestone' : 'these milestones'}`}
+          ${state !== 'paid' && o.uninvoiced !== null && o.uninvoiced !== undefined ? `<span class="muted">· ${invMoney(o.uninvoiced)} of ${invMoney(o.value)} not yet invoiced</span>` : ''}</p>
         <ul class="inv-lines">${lines}</ul>${termsLine}</article>`;
   }).join('');
   const head = `${esc(title)} <span class="muted">${n(list.length)}${list.length ? `, ${invMoney(total)}` : ''}</span>`;
   const inner = `<p class="muted" style="margin:0 0 .75rem">${esc(help)}</p>${cards ? `<div class="inv-grid">${cards}</div>` : '<p class="muted" style="margin:0">None.</p>'}`;
-  if (state === 'Paid') return `<details class="inv-group"><summary><h2>${head}</h2></summary>${inner}</details>`;
-  return `<section class="inv-group${state === 'Overdue' && list.length ? ' late' : ''}"><h2>${head}</h2>${inner}</section>`;
+  if (state === 'paid') return `<details class="inv-group"><summary><h2>${head}</h2></summary>${inner}</details>`;
+  return `<section class="inv-group${(state === 'overdue' || state === 'exceeded') && list.length ? ' late' : ''}${state === 'ready' && list.length ? ' ready' : ''}"><h2>${head}</h2>${inner}</section>`;
 }
 
 async function invoicingClick(event) {

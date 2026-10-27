@@ -1505,3 +1505,5 @@ label.con-flag-org { display: block; max-width: 420px; }
 .acc-summary { margin: .3rem 0 0; }
 .acc-edit[hidden] { display: none; }
 .acc-edit { margin-top: .5rem; }
+.inv-group.ready > h2 { color: #8a5a00; }
+.inv-group.ready .inv-card { border-left: 4px solid var(--gold); }

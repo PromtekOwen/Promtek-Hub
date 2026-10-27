@@ -214,8 +214,10 @@ export function invoiceState(item) {
   const s = lower(item.status);
   const paid = (/\bpaid\b/.test(s) && !/\b(un|not )paid\b/.test(s)) || item.status_cat === 'done';
   const overdue = !paid && /overdue/.test(s);
-  const invoiced = paid || overdue || (/invoiced/.test(s) && !/not invoiced/.test(s));
-  return { paid, invoiced, overdue, label: paid ? 'Paid' : overdue ? 'Overdue' : invoiced ? 'Invoiced' : 'Not Invoiced' };
+  // "Ready to be Invoiced" is waiting for its invoice to be checked and sent, so it isn't invoiced yet.
+  const ready = !paid && !overdue && /ready/.test(s);
+  const invoiced = paid || overdue || (!ready && /invoiced/.test(s) && !/not invoiced/.test(s));
+  return { paid, invoiced, overdue, ready, label: paid ? 'Paid' : overdue ? 'Overdue' : invoiced ? 'Invoiced' : 'Not Invoiced' };
 }
 export const isTokenInvoice = (item) => /token/i.test(item.summary || '');
 const isInvoice = (item) => /\binvoice\b/i.test(item.issuetype || '');
@@ -1376,14 +1378,26 @@ export async function invoicing(env, viewer, { region } = {}) {
     const token = isTokenInvoice(i);
     const account = accountOf(r);
     const t = terms[account] || null;
-    // Before it's invoiced, payment follows the planned date; after, the invoice date.
-    const basis = s.invoiced ? i.inv_date || i.inv_due : i.inv_due;
-    const payDue = s.paid ? null : paymentDue(basis, t);
+    // Target End is when the work for the milestone should be done and the invoice sent;
+    // Invoice Due Date is when the customer should pay it, set once it's invoiced.
+    const targetEnd = i.inv_due || null;
+    const invoiceDue = i.inv_date || null;
+    const stage = s.paid ? 'paid'
+      : s.invoiced ? (s.overdue || (invoiceDue && invoiceDue < today) ? 'overdue' : 'invoiced')
+      : s.ready ? 'ready'
+      : targetEnd && targetEnd < today ? 'exceeded' : 'upcoming';
+    // When the money should come: the Invoice Due Date once invoiced; before that, the
+    // customer's terms from Target End, or from today if Target End has passed.
+    const from = targetEnd && targetEnd > today ? targetEnd : today;
+    const expected = s.paid ? null
+      : s.invoiced ? invoiceDue || paymentDue(targetEnd || today, t)
+      : paymentDue(from, t);
     invoices.push({
       order: r.key, org: r.org, account, key: i.issue_key, terms: String(i.summary || '').replace(/^(\s*[\d.]+%\s*)+/, '').trim() || i.summary,
       share: i.share, value: r.value === null || token ? null : r.value * (Number(i.share) || 0), token,
-      status: i.status, state: s.label, invoiceDate: i.inv_date || null, planned: i.inv_due || null, paidAt: i.paid_at || null,
-      payDue, late: Boolean(payDue && payDue < today), hasTerms: Boolean(t), created: i.created,
+      status: i.status, state: s.label, stage, targetEnd, invoiceDue, paidAt: i.paid_at || null,
+      expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue,
+      hasTerms: Boolean(t), created: i.created,
     });
   }
   invoices.sort((a, b) => a.order.localeCompare(b.order, 'en', { numeric: true }) || String(a.created || '').localeCompare(String(b.created || '')));
@@ -1399,9 +1413,9 @@ export async function invoicing(env, viewer, { region } = {}) {
     bucket.customers.set(i.account, c);
   };
   for (const i of invoices) {
-    if (i.state === 'Paid' || !i.value || i.value <= 0 || !i.payDue) continue;
-    if (i.payDue.slice(0, 7) < month) { addTo(earlier, i); continue; }
-    const m = i.payDue.slice(0, 7);
+    if (i.stage === 'paid' || !i.value || i.value <= 0 || !i.expected) continue;
+    if (i.expected.slice(0, 7) < month) { addTo(earlier, i); continue; }
+    const m = i.expected.slice(0, 7);
     if (!forecast.has(m)) forecast.set(m, { month: m, total: 0, count: 0, customers: new Map() });
     addTo(forecast.get(m), i);
   }
@@ -1410,7 +1424,8 @@ export async function invoicing(env, viewer, { region } = {}) {
 
   const orders = Object.fromEntries(rows.map((r) => [r.key, { key: r.key, title: r.title, org: r.org, account: accountOf(r), value: r.value,
     uninvoiced: r.value === null ? null : r.value * (1 - (r.invoiced || 0)), remaining: r.remaining, division: r.division }]));
-  const missing = [...new Set(invoices.filter((i) => !i.hasTerms && i.state !== 'Paid').map((i) => i.account))].sort();
+  // Terms matter until an invoice has its own due date.
+  const missing = [...new Set(invoices.filter((i) => !i.hasTerms && i.guessed).map((i) => i.account))].sort();
   return {
     ...head, region, regions: REGIONS, today, month, invoices, orders,
     forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
