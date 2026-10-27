@@ -27,6 +27,8 @@ export const F = {
   division: 'customfield_14562',
   start: 'customfield_14268',
   end: 'customfield_14269',
+  paidFlag: 'customfield_16325',
+  documentation: 'customfield_15983',
 };
 const ENTITIES = { 'promtek ltd': 'uk', 'promtek africa': 'sa' };
 export const REGIONS = { uk: { name: 'UK', currency: 'GBP', symbol: '£' }, sa: { name: 'South Africa', currency: 'ZAR', symbol: 'R' } };
@@ -41,7 +43,7 @@ export const STATUS = {
 };
 const ACTIVE = [STATUS.wip, STATUS.fresh].map((s) => s.toLowerCase());
 
-const QUICK_CALLS = 4;                 // every run, of the 50 outside calls a scheduled run may make
+const QUICK_CALLS = 7;                 // every run, of the 50 outside calls a scheduled run may make
 const FULL_CALLS = 30;                 // on its own turn
 const FULL_EVERY_MS = 30 * 60 * 1000;
 const FIELD_IDS_EVERY_MS = 24 * 3600 * 1000;
@@ -120,13 +122,22 @@ async function fieldIds(env, b) {
   const fields = await b.call('/rest/api/3/field');
   const named = (name) => (fields || []).filter((f) => lower(f.name) === name);
   const pick = (list) => (list.find((f) => /multicheckboxes$/.test(f.schema?.custom || '')) || list[0])?.id || null;
-  const ids = { at: Date.now(), customerItem: pick(named('customer item')), documentation: pick(named('documentation')) };
+  // How each field takes a value: a list of options (check boxes), one option, or plain text.
+  const kind = (id) => {
+    const f = (fields || []).find((x) => x.id === id);
+    if (!f) return null;
+    if (f.schema?.type === 'array' || /multicheckboxes|multiselect/.test(f.schema?.custom || '')) return 'array';
+    if (f.schema?.type === 'option' || /select|radiobuttons/.test(f.schema?.custom || '')) return 'option';
+    return 'string';
+  };
+  const documentation = pick(named('documentation')) || F.documentation;
+  const ids = { at: Date.now(), customerItem: pick(named('customer item')), documentation, docKind: kind(documentation) || 'array', paidKind: kind(F.paidFlag) || 'option' };
   await setState(env, 'wip_field_ids', JSON.stringify(ids));
   return ids;
 }
 
 const ORDER_FIELDS = (ids) => ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', 'labels',
-  F.upfront, F.quote, F.entity, ids.customerItem, ids.documentation].filter(Boolean);
+  F.upfront, F.quote, F.entity, F.paidFlag, ids.customerItem, ids.documentation].filter(Boolean);
 const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'parent', 'created', 'updated', 'statuscategorychangedate', F.share, F.due, F.invoiceDate, F.division];
 const CONTRACT_FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'statuscategorychangedate', F.start, F.end, F.upfront, F.entity];
 const ALL_FIELDS = (ids) => [...new Set([...ORDER_FIELDS(ids), ...ITEM_FIELDS, ...CONTRACT_FIELDS])];
@@ -146,7 +157,7 @@ function regionOf(entityText, project) {
 // otherwise rewrite every order and item each time, and every row written counts.
 const ifChanged = (table, cols, extra = '') => ` WHERE ${cols.map((c) => `${table}.${c} IS NOT excluded.${c}`).join(' OR ')}${extra}`;
 const ORDER_COLS = ['issue_key', 'project_key', 'region', 'entity', 'summary', 'org', 'status', 'status_cat', 'created', 'done_at', 'updated', 'upfront', 'quote_no', 'labels',
-  'customer_item', 'has_doc', 'doc_yes'];
+  'customer_item', 'has_doc', 'doc_yes', 'paid_yes'];
 const CONTRACT_COLS = ['issue_key', 'project_key', 'region', 'summary', 'org', 'status', 'status_cat', 'start_date', 'end_date', 'ended_at', 'total'];
 const ITEM_COLS = ['issue_key', 'order_id', 'parent_id', 'level', 'issuetype', 'subtask', 'status', 'status_cat', 'summary', 'share', 'inv_due', 'inv_date', 'division', 'created', 'paid_at'];
 
@@ -159,17 +170,18 @@ function orderStatement(env, i, ids, projects, now) {
   const cat = statusCat(i);
   return env.DB.prepare(
     `INSERT INTO wip_orders (issue_id, issue_key, project_key, region, entity, summary, org, status, status_cat, created, done_at, updated, upfront, quote_no, labels,
-       customer_item, has_doc, doc_yes, seen_at, gone)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+       customer_item, has_doc, doc_yes, paid_yes, seen_at, gone)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
      ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, project_key = excluded.project_key, region = excluded.region, entity = excluded.entity,
        summary = excluded.summary, org = excluded.org, status = excluded.status, status_cat = excluded.status_cat, created = excluded.created,
        done_at = excluded.done_at, updated = excluded.updated, upfront = excluded.upfront, quote_no = excluded.quote_no, labels = excluded.labels,
-       customer_item = excluded.customer_item, has_doc = excluded.has_doc, doc_yes = excluded.doc_yes, seen_at = excluded.seen_at, gone = 0
+       customer_item = excluded.customer_item, has_doc = excluded.has_doc, doc_yes = excluded.doc_yes, paid_yes = excluded.paid_yes, seen_at = excluded.seen_at, gone = 0
      ${ifChanged('wip_orders', ORDER_COLS, ' OR wip_orders.gone = 1')}`
   ).bind(String(i.id), i.key, f.project?.key || i.key.split('-')[0], regionOf(entity, project), entity || null, f.summary || '', f.project?.name || project?.name || '',
     f.status?.name || '', cat, dateOf(f.created), cat === 'done' ? dateOf(f.statuscategorychangedate || f.updated) : null, f.updated || null,
     num(f[F.upfront]), text(f[F.quote]) || null, JSON.stringify(f.labels || []),
-    custom.includes('customer item') ? 1 : 0, doc.length ? 1 : 0, doc.length === 1 && lower(doc[0]) === 'yes' ? 1 : 0, now);
+    custom.includes('customer item') ? 1 : 0, doc.length ? 1 : 0, doc.length === 1 && lower(doc[0]) === 'yes' ? 1 : 0,
+    options(f[F.paidFlag]).some((o) => lower(o.value) === 'paid') ? 1 : 0, now);
 }
 
 function contractStatement(env, i, projects, now) {
@@ -264,24 +276,41 @@ export function computeOrder(order, items) {
     token_paid: tokenPaid ? 1 : 0,
     division_jira: divisionFromJira(order, items),
   };
-  // What the old Jira rule looked at: open sub-tasks, whether it's fully paid (or its tokens are), and the Documentation box.
+  // Each category is complete once every sub-task under it is; the order moves on once every
+  // category is complete. Paid? is marked Paid once every invoice is paid (or its tokens are),
+  // and Documentation marked Yes once the Documentation Check Phase is done.
   const paidEnough = tokenOnly ? tokenPaid : (paid || 0) >= 0.9999;
-  const doc = order.doc_yes ? 'yes' : order.has_doc ? 'other' : 'empty';
+  const cats = level1.filter(isCategoryItem);
+  const subsOf = (c) => subs.filter((x) => String(x.parent_id) === String(c.issue_id));
+  const catDone = (c) => done(c) || lower(c.status) === 'complete';
+  r.completeCats = cats.filter((c) => !catDone(c) && subsOf(c).length > 0 && subsOf(c).every(done)).map((c) => ({ key: c.issue_key, id: c.issue_id, status: c.status }));
+  const catsDone = cats.length > 0 && cats.every(catDone);
+  const docPhase = level1.filter((i) => lower(i.issuetype) === 'documentation check phase');
+  const docDone = docPhase.length > 0 && docPhase.every(done);
+  r.setPaid = !legacy && paidEnough && !order.paid_yes;
+  r.setDoc = !legacy && docDone && !order.doc_yes;
+  const paidFlag = Boolean(order.paid_yes) || r.setPaid;
+  const docFlag = Boolean(order.doc_yes) || r.setDoc;
   r.paidEnough = paidEnough;
-  r.move_sig = `${r.progress}|${r.open_work ?? '-'}|${paidEnough ? 1 : 0}|${doc}`;
-  r.target = legacy ? null : moveFor(order.status, r.open_work, paidEnough, doc);
+  r.catsDone = catsDone;
+  r.paidFlag = paidFlag; r.docFlag = docFlag;
+  r.move_sig = `v2|${cats.filter(catDone).length}/${cats.length}|${r.open_work ?? '-'}|${paidFlag ? 1 : 0}|${docFlag ? 1 : 0}`;
+  r.target = legacy ? null : moveFor(order.status, catsDone, paidFlag, docFlag);
   return r;
 }
 
-// The five steps of the Jira rule "Auto Transitions from Tasks", unchanged.
-export function moveFor(status, open, paidEnough, doc) {
-  if (open !== 0) return null;
+const isCategoryItem = (i) => i.level === 1 && /^category\s*-/.test(lower(i.issuetype));
+
+// Where an order goes once every category is complete: Awaiting Payment until Paid? is Paid,
+// then Documentation Check until Documentation is Yes, then Done. Either can be skipped
+// when its field was marked first.
+export function moveFor(status, catsDone, paidFlag, docFlag) {
+  if (!catsDone) return null;
   const s = lower(status);
-  if (s === lower(STATUS.wip) && !paidEnough && doc === 'empty') return STATUS.ap;
-  if (s === lower(STATUS.wip) && paidEnough && doc === 'empty') return STATUS.doc;
-  if (s === lower(STATUS.ap) && paidEnough && doc === 'empty') return STATUS.doc;
-  if (s === lower(STATUS.ap) && paidEnough && doc === 'yes') return STATUS.done;
-  if (s === lower(STATUS.doc) && paidEnough && doc === 'yes') return STATUS.done;
+  const next = !paidFlag ? STATUS.ap : !docFlag ? STATUS.doc : STATUS.done;
+  if (s === lower(STATUS.wip)) return next;
+  if (s === lower(STATUS.ap)) return paidFlag ? next : null;
+  if (s === lower(STATUS.doc)) return paidFlag && docFlag ? STATUS.done : null;
   return null;
 }
 
@@ -321,14 +350,18 @@ async function recompute(env, ids) {
       r.move_sig, now, o.issue_id));
     // Like the rule, which ran when progress changed: an order is only moved when what it depends on
     // has changed since it was last looked at, so moving one back by hand is left alone.
-    const changed = o.move_sig !== null && o.move_sig !== r.move_sig;
-    if (movesOn && changed && r.target && !o.customer_item && o.entity) {
-      stmts.push(env.DB.prepare(
-        `INSERT INTO wip_moves (issue_key, issue_id, target, from_status, reason, status, tries, next_at, last_error, queued_at, done_at)
-         VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, NULL, ?, NULL)
+    // Orders last looked at under the old rule start from where they are, so nothing moves just for the change of rule.
+    const changed = typeof o.move_sig === 'string' && o.move_sig.startsWith('v2|') && o.move_sig !== r.move_sig;
+    if (movesOn && changed && !o.customer_item && o.entity) {
+      const queue = (key, id, target, from, reason, fields = null) => stmts.push(env.DB.prepare(
+        `INSERT INTO wip_moves (issue_key, issue_id, target, from_status, reason, status, tries, next_at, last_error, queued_at, done_at, fields)
+         VALUES (?, ?, ?, ?, ?, 'pending', 0, 0, NULL, ?, NULL, ?)
          ON CONFLICT(issue_key) DO UPDATE SET issue_id = excluded.issue_id, target = excluded.target, from_status = excluded.from_status, reason = excluded.reason,
-           status = 'pending', tries = 0, next_at = 0, last_error = NULL, queued_at = excluded.queued_at, done_at = NULL`
-      ).bind(o.issue_key, o.issue_id, r.target, o.status, moveReason(r), now));
+           status = 'pending', tries = 0, next_at = 0, last_error = NULL, queued_at = excluded.queued_at, done_at = NULL, fields = excluded.fields`
+      ).bind(key, id, target, from, reason, now, fields));
+      for (const c of r.completeCats) queue(c.key, c.id, CATEGORY_DONE, c.status, `Every sub-task under it is done, on ${o.issue_key}`);
+      const fields = r.setPaid || r.setDoc ? JSON.stringify({ paid: r.setPaid, doc: r.setDoc }) : null;
+      if (r.target || fields) queue(o.issue_key, o.issue_id, r.target || FIELDS_ONLY, o.status, moveReason(r), fields);
     }
   }
   // Invoices past their Invoice Due Date are moved to Overdue in Jira, in place of the Jira automation.
@@ -357,8 +390,14 @@ async function recompute(env, ids) {
   await runAll(env, stmts);
   return orders.length + contracts.length;
 }
+const CATEGORY_DONE = 'Complete';
+const FIELDS_ONLY = 'Fields';
 function moveReason(r) {
-  return r.paidEnough ? 'All sub-tasks are done and it is fully paid' : 'All sub-tasks are done and it is not yet fully paid';
+  const marks = [r.setPaid && 'Paid? marked Paid, as every invoice is paid', r.setDoc && 'Documentation marked Yes, as the Documentation Check Phase is done'].filter(Boolean);
+  const why = !r.target ? '' : !r.catsDone ? '' : r.target === STATUS.ap ? 'Every category is complete and it isn\'t yet marked paid'
+    : r.target === STATUS.doc ? 'Every category is complete and it\'s paid, waiting for its documentation'
+    : 'Every category is complete, it\'s paid and its documentation is done';
+  return [why, ...marks].filter(Boolean).join('. ');
 }
 
 // ---------- reading Jira ----------
@@ -508,7 +547,7 @@ async function readItems(env, b, orderIds) {
   for (const part of chunk(orderIds, 50)) level1.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
   // Sub-tasks sit under the category items (and, on older orders, under ordinary tasks).
   const cats = level1.filter((i) => !ADMIN_TYPES.includes(lower(i.fields?.issuetype?.name)) && !isContract({ fields: { issuetype: i.fields?.issuetype } })
-    && !/visit|token/i.test(i.fields?.issuetype?.name || ''));
+    && !/token/i.test(i.fields?.issuetype?.name || '') && (/^category\s*-/i.test(i.fields?.issuetype?.name || '') || !/visit/i.test(i.fields?.issuetype?.name || '')));
   const level2 = [];
   for (const part of chunk(cats.map((i) => String(i.id)), 50)) level2.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
   const orderOf = new Map(level1.map((i) => [String(i.id), String(i.fields.parent.id)]));
@@ -535,38 +574,82 @@ async function anyMovesOn(env) {
   return (await getState(env, 'wip_moves_on')) === '1' || (await overdueOn(env));
 }
 
-async function processMoves(env, b, max) {
+async function processMoves(env, b, max, only = null) {
   const ordersOn = (await getState(env, 'wip_moves_on')) === '1';
   const invoicesOn = await overdueOn(env);
   if (!ordersOn && !invoicesOn) return 0;
-  const { results } = await env.DB.prepare("SELECT * FROM wip_moves WHERE status = 'pending' AND next_at <= ? ORDER BY queued_at LIMIT ?").bind(Date.now(), max).all();
+  const { results } = only
+    ? await env.DB.prepare(`SELECT * FROM wip_moves WHERE status = 'pending' AND next_at <= ? AND issue_key IN (${marks(only.length)})`).bind(Date.now(), ...only).all()
+    : await env.DB.prepare("SELECT * FROM wip_moves WHERE status = 'pending' AND next_at <= ? ORDER BY queued_at LIMIT ?").bind(Date.now(), max).all();
   let moved = 0;
+  const after = new Set();
   for (const m of results) {
     if (b.left() < 2) break;
-    // An order moving on, or an invoice moving to Overdue.
-    let order = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(m.issue_key).first();
+    // An order moving on (or having Paid? and Documentation marked), a category completing, or an invoice moving to Overdue.
+    const order = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(m.issue_key).first();
     const item = order ? null : await env.DB.prepare('SELECT * FROM wip_items WHERE issue_key = ?').bind(m.issue_key).first();
-    if (item) order = item;
-    if ((item && !invoicesOn) || (!item && !ordersOn)) continue;
+    const kind = order ? 'order' : item && isInvoice(item) ? 'invoice' : item && isCategoryItem(item) ? 'category' : null;
+    const subject = order || item;
+    const skip = () => env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ?").bind(new Date().toISOString(), m.issue_key).run();
+    if (!kind) { await skip(); continue; }
+    if ((kind === 'invoice' && !invoicesOn) || (kind !== 'invoice' && !ordersOn)) continue;
     // Someone moved it first, or it no longer qualifies (paid, say, or given a later due date): nothing to do.
-    const stillDue = !item || (item.inv_date && item.inv_date < londonDate() && !invoiceState(item).paid);
-    if (!order || lower(order.status) !== lower(m.from_status) || lower(order.status) === lower(m.target) || !stillDue) {
-      await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ?").bind(new Date().toISOString(), m.issue_key).run();
-      continue;
+    let target = m.target, fields = null;
+    try { fields = m.fields ? JSON.parse(m.fields) : null; } catch { fields = null; }
+    let still = true;
+    if (kind === 'invoice') still = Boolean(item.inv_date && item.inv_date < londonDate() && !invoiceState(item).paid);
+    else if (kind === 'category') still = !(item.status_cat === 'done' || lower(item.status) === lower(CATEGORY_DONE));
+    else {
+      // What the order needs now, from everything under it as the hub last read it.
+      const r = computeOrder(order, await itemsFor(env, [order.issue_id]));
+      target = r.target || (r.setPaid || r.setDoc ? FIELDS_ONLY : null);
+      fields = r.setPaid || r.setDoc ? { paid: r.setPaid, doc: r.setDoc } : null;
+      still = Boolean(target);
     }
+    if (!still || lower(subject.status) !== lower(m.from_status) || lower(subject.status) === lower(target)) { await skip(); continue; }
     try {
-      const { transitions = [] } = await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`);
-      const t = transitions.find((x) => lower(x.to?.name || x.name) === lower(m.target));
-      if (!t) throw new Error(`Jira has no way to move ${m.issue_key} from ${order.status} to ${m.target}.`);
-      await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });
-      const cat = t.to?.statusCategory?.key || (lower(m.target) === 'done' ? 'done' : 'indeterminate');
       const now = new Date().toISOString();
+      if (kind === 'order' && fields && (fields.paid || fields.doc)) {
+        const ids = await fieldIds(env, b);
+        const as = (k, v) => (k === 'array' ? [{ value: v }] : k === 'option' ? { value: v } : v);
+        const set = {};
+        if (fields.paid) set[F.paidFlag] = as(ids.paidKind || 'option', 'Paid');
+        if (fields.doc) set[ids.documentation || F.documentation] = as(ids.docKind || 'array', 'Yes');
+        await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}`, { method: 'PUT', body: JSON.stringify({ fields: set }) });
+        await env.DB.prepare(`UPDATE wip_orders SET ${[fields.paid && 'paid_yes = 1', fields.doc && 'doc_yes = 1, has_doc = 1'].filter(Boolean).join(', ')} WHERE issue_key = ?`).bind(m.issue_key).run();
+      }
+      if (target === FIELDS_ONLY) {
+        await env.DB.prepare("UPDATE wip_moves SET status = 'done', done_at = ?, last_error = NULL WHERE issue_key = ?").bind(now, m.issue_key).run();
+        moved++;
+        continue;
+      }
+      const { transitions = [] } = await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`);
+      const to = (name) => transitions.find((x) => lower(x.to?.name || x.name) === lower(name));
+      let t = to(target), arrived = true;
+      // No way straight there: through the statuses on the way, one at a time.
+      if (!t && kind === 'order') {
+        const way = [STATUS.ap, STATUS.doc, STATUS.done];
+        const step = way.slice(0, way.findIndex((x) => lower(x) === lower(target))).reverse().find((x) => lower(x) !== lower(subject.status) && to(x));
+        if (step) { t = to(step); arrived = false; }
+      }
+      if (!t) throw new Error(`Jira has no way to move ${m.issue_key} from ${subject.status} to ${target}.`);
+      await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });
+      const name = t.to?.name || target;
+      const cat = t.to?.statusCategory?.key || (lower(name) === 'done' || lower(name) === lower(CATEGORY_DONE) ? 'done' : 'indeterminate');
       await env.DB.batch([
-        env.DB.prepare("UPDATE wip_moves SET status = 'done', done_at = ?, last_error = NULL WHERE issue_key = ?").bind(now, m.issue_key),
+        arrived
+          ? env.DB.prepare("UPDATE wip_moves SET status = 'done', done_at = ?, last_error = NULL, target = ? WHERE issue_key = ?").bind(now, target, m.issue_key)
+          : env.DB.prepare('UPDATE wip_moves SET from_status = ?, target = ?, last_error = NULL WHERE issue_key = ?').bind(name, target, m.issue_key),
         item
-          ? env.DB.prepare('UPDATE wip_items SET status = ?, status_cat = ? WHERE issue_key = ?').bind(t.to?.name || m.target, cat, m.issue_key)
-          : env.DB.prepare('UPDATE wip_orders SET status = ?, status_cat = ?, done_at = ? WHERE issue_key = ?').bind(m.target, cat, cat === 'done' ? londonDate() : null, m.issue_key),
+          ? env.DB.prepare('UPDATE wip_items SET status = ?, status_cat = ? WHERE issue_key = ?').bind(name, cat, m.issue_key)
+          : env.DB.prepare('UPDATE wip_orders SET status = ?, status_cat = ?, done_at = ? WHERE issue_key = ?').bind(name, cat, cat === 'done' ? londonDate() : null, m.issue_key),
       ]);
+      // A category completing may let its order move on, straight away.
+      if (kind === 'category') {
+        await recompute(env, [item.order_id]);
+        const o = await env.DB.prepare('SELECT issue_key FROM wip_orders WHERE issue_id = ?').bind(item.order_id).first();
+        if (o) after.add(o.issue_key);
+      }
       moved++;
     } catch (err) {
       if (err instanceof OutOfCalls) throw err;
@@ -584,6 +667,7 @@ async function processMoves(env, b, max) {
       }
     }
   }
+  if (after.size && !only && b.left() >= 2) moved += await processMoves(env, b, after.size, [...after]);
   return moved;
 }
 
@@ -806,7 +890,9 @@ export async function overview(env, viewer, { region, month } = {}) {
     invoices.sort((a, b) => a.order.localeCompare(b.order) || String(a.created || '').localeCompare(String(b.created || '')));
   }
   const { results: moves } = await env.DB.prepare(
-    `SELECT m.* FROM wip_moves m JOIN wip_orders o ON o.issue_key = m.issue_key WHERE o.region = ? AND (m.status = 'pending' OR (m.status = 'done' AND m.done_at >= ?))
+    `SELECT m.* FROM wip_moves m LEFT JOIN wip_orders o ON o.issue_key = m.issue_key LEFT JOIN wip_items i ON o.issue_id IS NULL AND i.issue_key = m.issue_key
+       LEFT JOIN wip_orders p ON p.issue_id = i.order_id
+      WHERE COALESCE(o.region, p.region) = ? AND m.target != 'Overdue' AND (m.status = 'pending' OR (m.status = 'done' AND m.done_at >= ?))
      ORDER BY m.queued_at DESC LIMIT 100`
   ).bind(region, new Date(Date.now() - 7 * 86_400_000).toISOString()).all();
   return {

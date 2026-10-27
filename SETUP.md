@@ -367,6 +367,15 @@ Each change is in the audit log. Jira's workflow needs the New → Ready to be I
 
 **Overdue in Jira.** The hub moves each Invoiced, unpaid invoice to **Overdue** in Jira once its Invoice Due Date has passed, checking at least every half hour, so the Jira automation that did this can be turned off. Paid invoices, and ones given a later Invoice Due Date first, are left alone. It can be switched off under Invoicing's cog, which also lists the last week's moves and any Jira refused; a refused move is tried again, less often, and an alert is sent after a few tries. Jira's workflow needs a transition from Invoiced to Overdue, which it already has if the automation worked.
 
+**Orders moving on in Jira.** With "Moves orders in Jira" on in the WIP settings, the hub runs the order workflow in place of the Jira rule. Run `schema-052.sql` in the D1 console first.
+- A **Category** item (Hardware, Software, Condor or Site Visit) is moved to **Complete** once every sub-task under it is done. A category with no sub-tasks is left for someone to complete.
+- Once every Category item on an order is Complete, the order moves from Work in progress to **Awaiting Payment** if **Paid?** isn't Paid, to **Documentation Check** if it's Paid and **Documentation** isn't Yes, or to **Done** if both are.
+- **Paid?** (customfield_16325) is marked **Paid** once every invoice on the order is paid (or its tokens are). **Documentation** (customfield_15983) is marked **Yes** once the Documentation Check Phase item is done. Each is marked before the order is moved, so Jira lets it leave Awaiting Payment.
+- Awaiting Payment moves on once Paid? is Paid, and Documentation Check moves to Done once Documentation is Yes.
+- Where Jira has no direct transition, the order goes through the statuses in between, one at a time.
+- An order is only moved when something it depends on changes, so one moved back by hand stays put. Orders the hub last looked at under the old rule start from where they are now, and are moved only once something under them changes.
+- The WIP's "Status changes in Jira" lists each move, including categories completed and fields marked.
+
 ## Part 14d: Page walkthroughs
 
 The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.

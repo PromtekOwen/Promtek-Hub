@@ -8170,7 +8170,7 @@ function wipMovesHtml(d) {
   if (!d.movesOn && !d.moves.length) return '';
   const pending = d.moves.filter((m) => m.status === 'pending');
   const done = d.moves.filter((m) => m.status === 'done');
-  const line = (m) => `<li><span class="title">${jiraLink(m.issue_key)} to ${esc(m.target)}</span>
+  const line = (m) => `<li><span class="title">${jiraLink(m.issue_key)} ${m.target === 'Fields' ? 'fields marked' : `to ${esc(m.target)}`}</span>
       <span class="sub">${esc(m.reason || '')}${m.last_error ? ` <span class="bad">Jira refused: ${esc(m.last_error)}</span>` : ''}</span>
       <span class="xp">${m.status === 'done' ? `<small>${whenText(m.done_at)}</small>` : '<small>Waiting</small>'}</span></li>`;
   return `<div class="card"><h2>Status changes in Jira</h2>
