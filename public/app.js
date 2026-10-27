@@ -8656,14 +8656,15 @@ const invMoney = (v, d = invData) => {
   return `${v < 0 ? '−' : ''}${sym}${Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 const invMonthName = (m) => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
-const invTermsText = (t, d = invData) => (t ? `${d.termTypes[t.type] === d.termTypes['EOFM +7'] ? d.termTypes[t.type] : `${t.days} ${String(d.termTypes[t.type] || t.type).toLowerCase()}`}` : 'No payment terms set');
+const invTermsText = (t) => (!t ? 'No payment terms set' : `Terms: ${t.type === 'Days After' ? `${t.days} days`
+  : t.type === 'EOFM +7' ? 'end of the month, plus 7 days' : `${t.days} days after the end of the month`}`);
 
 // In the order an invoice moves through: the ones needing someone first.
 const INV_GROUPS = [
   ['overdue', 'Overdue', 'Invoiced, and the Invoice Due Date has passed without payment.'],
-  ['ready', 'Ready to be invoiced', 'Check the draft invoice, then set the item to Invoiced in Jira and fill in its Invoice Due Date.'],
+  ['ready', 'Ready to be invoiced', 'The draft invoice is made: check it, send it to the customer, then mark it sent.'],
   ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
-  ['exceeded', 'Milestone estimate exceeded', 'Still New, and the Target End for finishing the milestone has passed. Worth checking how the work is going, or moving Target End.'],
+  ['exceeded', 'Milestone estimate exceeded', 'Still New, and the Target End for finishing the milestone has passed. Worth checking how the work is going, or setting a new Target End.'],
   ['upcoming', 'Not invoiced yet', 'Still New: the work for the milestone is under way, due to finish by its Target End.'],
   ['paid', 'Paid', 'Paid in full.'],
 ];
@@ -8750,8 +8751,9 @@ function invGroupHtml(d, stage, title, help, list) {
       const due = ['ready', 'exceeded', 'upcoming'].includes(state) || (state === 'invoiced' && !i.invoiceDue)
         ? (i.expected ? `<span class="muted">payment expected ${fullDate(i.expected)}</span>` : '') : '';
       const dateHtml = `<span class="${state === 'overdue' || state === 'exceeded' ? 'bad' : ''}">${esc(date)}</span>`;
-      return `<li><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${dateHtml}${due ? ` · ${due}` : ''}</span>
-        <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span></li>`;
+      return `<li data-inv-item="${esc(i.key)}"><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${dateHtml}${due ? ` · ${due}` : ''}</span>
+        <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span>
+        ${d.canUpdate ? invActionsHtml(d, i, state, o.account || i.account) : ''}</li>`;
     }).join('');
     const termsLine = state === 'paid' ? '' : `<span class="muted">${esc(invTermsText(d.terms[o.account || items[0].account]))}</span>`;
     return `<article class="card inv-card">
@@ -8766,8 +8768,68 @@ function invGroupHtml(d, stage, title, help, list) {
   return `<section class="inv-group${(state === 'overdue' || state === 'exceeded') && list.length ? ' late' : ''}${state === 'ready' && list.length ? ' ready' : ''}"><h2>${head}</h2>${inner}</section>`;
 }
 
+// The next step for an invoice, done from here straight to Jira.
+const invDayAdd = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+const invMonthEnd = (iso) => { const [y, m] = iso.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); };
+function invDueFrom(day, t) {
+  if (!t) return '';
+  if (t.type === 'Days After') return invDayAdd(day, t.days);
+  if (t.type === 'EOFM +7') return invDayAdd(invMonthEnd(day), 7);
+  return invDayAdd(invMonthEnd(day), t.days);
+}
+let invSending = null;   // the invoice being marked sent, or having its due date changed
+
+function invActionsHtml(d, i, state, account) {
+  const k = esc(i.key);
+  const open = invSending === i.key;
+  if (state === 'upcoming' || state === 'exceeded') {
+    const needsDate = !i.targetEnd || state === 'exceeded';
+    return `<div class="inv-acts">
+        ${needsDate ? `<label class="inv-date">${state === 'exceeded' ? 'New Target End' : 'Target End'} <input type="date" data-inv-date="${k}" min="${esc(d.today)}"></label>
+          <button class="btn secondary" data-inv-act="targetEnd" data-key="${k}">Save</button>` : ''}
+        <button class="btn" data-inv-act="draft" data-key="${k}">Create Draft</button>
+      </div>`;
+  }
+  if (state === 'ready') {
+    if (!open) return `<div class="inv-acts"><button class="btn" data-inv-open="${k}">Invoice Sent</button></div>`;
+    const due = invDueFrom(d.today, d.terms[account]);
+    return `<div class="inv-acts inv-confirm">
+        <label class="inv-date">Invoice Due Date <input type="date" data-inv-date="${k}" value="${esc(due)}"></label>
+        <span class="muted">${d.terms[account] ? `From today on the customer's terms (${esc(invTermsText(d.terms[account]).replace(/^Terms: /, ''))}). Change it for special terms.` : 'No payment terms for this customer: enter the date.'}</span>
+        <div class="row"><button class="btn" data-inv-act="sent" data-key="${k}">Mark as sent</button><button class="linklike" data-inv-open="">Cancel</button></div>
+      </div>`;
+  }
+  if (state === 'invoiced' || state === 'overdue') {
+    if (!open) return `<div class="inv-acts"><button class="linklike" data-inv-open="${k}">Change Invoice Due Date</button></div>`;
+    return `<div class="inv-acts inv-confirm">
+        <label class="inv-date">Invoice Due Date <input type="date" data-inv-date="${k}" value="${esc(i.invoiceDue || '')}"></label>
+        <div class="row"><button class="btn secondary" data-inv-act="dueDate" data-key="${k}">Save</button><button class="linklike" data-inv-open="">Cancel</button></div>
+      </div>`;
+  }
+  return '';
+}
+
+const INV_ACT_DONE = { targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed' };
+
 async function invoicingClick(event) {
   const t = (sel) => event.target.closest(sel);
+  const opener = t('[data-inv-open]');
+  if (opener) { invSending = opener.dataset.invOpen || null; invKeep = true; return render(); }
+  const act = t('[data-inv-act]');
+  if (act) {
+    const key = act.dataset.key;
+    const action = act.dataset.invAct;
+    const date = view.querySelector(`[data-inv-date="${CSS.escape(key)}"]`)?.value || '';
+    if ((action === 'targetEnd' || action === 'dueDate') && !date) { toast('Choose a date first'); return true; }
+    act.disabled = true;
+    try {
+      await api('/api/invoicing/action', { method: 'POST', body: JSON.stringify({ key, action, date }) });
+      invSending = null;
+      toast(`${key}: ${INV_ACT_DONE[action]}`);
+      return render();
+    } catch (err) { toast(err.message); act.disabled = false; }
+    return true;
+  }
   if (settingsOpen === '#/invoicing') return invTermsClick(event);
   const reg = t('[data-inv-region]');
   if (reg) { invRegion = reg.dataset.invRegion; invOpen = new Set(); return render(); }
@@ -8804,9 +8866,19 @@ function settingsInvoicingHtml() {
       <td><input type="number" min="0" max="365" data-invt="days" data-i="${i}" value="${esc(t.days)}" aria-label="Days"></td>
       <td><select data-invt="type" data-i="${i}" aria-label="Terms">${Object.entries(s.termTypes).map(([k, l]) => `<option value="${esc(k)}"${t.type === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></td>
       <td><button class="linklike" data-invt-remove="${i}">Remove</button></td></tr>`;
+  const moves = s.overdueMoves || [];
+  const moveRow = (m) => `<li><span class="title">${jiraLink(m.issue_key)} <span class="muted">from ${esc(m.from_status || '')}</span></span>
+      <span class="sub">${m.status === 'done' ? `Moved ${esc(whenText(m.done_at))}` : m.tries ? `Jira refused ${n(m.tries)} ${m.tries === 1 ? 'time' : 'times'}: ${esc(m.last_error || '')}. Trying again.` : 'Waiting to move'}</span></li>`;
   return `<div class="card req-form">
+      <h2 style="margin-top:0">Overdue invoices</h2>
+      <label class="inline-check inv-check"><input type="checkbox" data-inv-overdue${s.overdueOn ? ' checked' : ''}${s.canEdit ? '' : ' disabled'}> Move invoices to Overdue in Jira when their Invoice Due Date passes</label>
+      <p class="muted">Each day the hub checks every invoice that's Invoiced and not paid. Once its Invoice Due Date has passed, it's moved to Overdue in Jira, so the Jira automation that did this can be turned off. Invoices that are paid, or given a later Invoice Due Date, first are left alone.</p>
+      ${moves.length ? `<p class="acc-label">In the last week</p><ul class="list plain">${moves.map(moveRow).join('')}</ul>` : ''}
+      <div class="result" id="inv-overdue-result" role="status"></div>
+    </div>
+    <div class="card req-form" style="margin-top:1rem">
       <h2 style="margin-top:0">Payment terms</h2>
-      <p class="muted">Each customer by their Jira project key, the start of every order key (WYNNL for WYNNL-704). Payment is expected this long after the invoice date. ${s.missingTerms.length ? 'Customers with invoices still to be paid and no terms are at the top.' : ''}</p>
+      <p class="muted">Each customer by their Jira project key, the start of every order key (WYNNL for WYNNL-704). Until an invoice has its own Invoice Due Date, payment is expected this long after its Target End (or after today, once Target End has passed). ${s.missingTerms.length ? 'Customers with invoices still to be paid and no terms are at the top.' : ''}</p>
       <div class="table-wrap"><table class="inv-terms-table"><thead><tr><th>Account</th><th>Days</th><th>Terms</th><th></th></tr></thead>
         <tbody>${invTerms.map(row).join('')}</tbody></table></div>
       <div class="row"><button class="btn secondary" data-invt-add>Add a customer</button>${s.canEdit ? '<button class="btn" data-invt-save>Save</button>' : ''}</div>
@@ -8821,6 +8893,16 @@ function invTermsRead() {
 
 async function invTermsClick(event) {
   const t = (sel) => event.target.closest(sel);
+  const od = t('[data-inv-overdue]');
+  if (od) {
+    const out = document.getElementById('inv-overdue-result');
+    try {
+      const r = await api('/api/invoicing/overdue', { method: 'POST', body: JSON.stringify({ on: od.checked }) });
+      settingsData.invoicing.overdueOn = r.on;
+      out.textContent = r.on ? 'On: invoices past their Invoice Due Date are moved to Overdue.' : 'Off: invoices are left as they are.'; out.className = 'result good';
+    } catch (err) { od.checked = !od.checked; out.textContent = err.message; out.className = 'result bad'; }
+    return true;
+  }
   if (t('[data-invt-add]')) { invTermsRead(); invTerms.unshift({ account: '', days: 30, type: 'Days After' }); return render(); }
   const rm = t('[data-invt-remove]');
   if (rm) { invTermsRead(); invTerms.splice(Number(rm.dataset.invtRemove), 1); return render(); }
@@ -11349,7 +11431,7 @@ const TILE_SETTINGS = {
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
   '#/eotq': { label: 'Employee of the Quarter settings', render: () => settingsEotqHtml(), who: 'Management and admins.', can: 'eotq' },
   '#/feedback': { label: 'Feedback settings', render: () => settingsFeedbackHtml() },
-  '#/invoicing': { label: 'Payment terms', render: () => settingsInvoicingHtml(), who: 'Admins and management.', can: 'wip' },
+  '#/invoicing': { label: 'Invoicing settings', render: () => settingsInvoicingHtml(), who: 'Admins and management.', can: 'wip' },
   '#/wip': { label: 'WIP settings', render: () => settingsWipHtml(), who: 'Management and admins.', can: 'wip' },
 };
 let settingsOpen = null;

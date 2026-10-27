@@ -43,6 +43,7 @@ export const PERMISSIONS = {
   quotes: { name: 'Build quotes', about: 'Start and edit quotes, and see every quote', groups: ['management', 'lead', 'sales'], tile: 'quotes' },
   condorPlan: { name: 'Condor planning', about: 'Triage MES and plan Condor releases', groups: ['management', 'lead'], tile: 'condor' },
   eotq: { name: 'Employee of the Quarter results', about: 'See every nomination and who made it, and choose the winner', groups: ['management'], tile: 'eotq' },
+  invoiceUpdate: { name: 'Update invoices', about: 'Set Target End, create drafts, mark invoices sent and change Invoice Due Dates in Jira', groups: ['management'], tile: 'invoicing' },
   wipEdit: { name: 'Change the WIP', about: 'Change an order\'s value or division, WIP settings, and customers\' payment terms', groups: ['management'], tile: 'wip' },
   contractInsights: { name: 'Contract insights', about: 'Insights across every service contract', groups: ['management'], leads: ['Service'], tile: 'contracts' },
   feedbackReview: { name: 'Feedback moderation', about: 'Read anonymous feedback before it\'s posted, post or turn it down, and reply to writers', groups: [], tile: 'feedback' },

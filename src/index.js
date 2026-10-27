@@ -473,6 +473,18 @@ async function route(request, env, url, user) {
       const body = await request.json().catch(() => ({}));
       return json(await Wip.saveTerms(env, user, body.terms));
     }
+    if (method === 'POST' && pathname === '/api/invoicing/action') {
+      const body = await request.json().catch(() => ({}));
+      const r = await Wip.invoiceAction(env, user, body);
+      await Audit.record(env, user, { area: 'Invoicing', action: r.label, subjectType: 'invoice', subjectId: r.key, label: r.order ? `${r.key} on ${r.order}` : r.key });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/invoicing/overdue') {
+      const body = await request.json().catch(() => ({}));
+      const r = await Wip.setOverdue(env, user, Boolean(body.on));
+      await Audit.record(env, user, { area: 'Invoicing', action: r.on ? 'Moving invoices to Overdue switched on' : 'Moving invoices to Overdue switched off', subjectType: 'setting', subjectId: 'invoice_overdue_on', label: 'Invoicing' });
+      return json(r);
+    }
   }
 
   if (pathname.startsWith('/api/wip')) {

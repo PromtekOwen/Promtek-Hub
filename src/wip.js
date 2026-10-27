@@ -330,6 +330,23 @@ async function recompute(env, ids) {
       ).bind(o.issue_key, o.issue_id, r.target, o.status, moveReason(r), now));
     }
   }
+  // Invoices past their Invoice Due Date are moved to Overdue in Jira, in place of the Jira automation.
+  if (await overdueOn(env)) {
+    const today = londonDate();
+    for (const i of items) {
+      if (i.level !== 1 || !isInvoice(i) || !i.issue_key || !i.inv_date || i.inv_date >= today) continue;
+      const st = invoiceState(i);
+      if (!st.invoiced || st.paid || st.overdue) continue;
+      // Waiting already (with its own retries) is left as it is; one done or skipped before is queued again.
+      stmts.push(env.DB.prepare(
+        `INSERT INTO wip_moves (issue_key, issue_id, target, from_status, reason, status, tries, next_at, last_error, queued_at, done_at)
+         VALUES (?, ?, 'Overdue', ?, ?, 'pending', 0, 0, NULL, ?, NULL)
+         ON CONFLICT(issue_key) DO UPDATE SET issue_id = excluded.issue_id, target = excluded.target, from_status = excluded.from_status, reason = excluded.reason,
+           status = 'pending', tries = 0, next_at = 0, last_error = NULL, queued_at = excluded.queued_at, done_at = NULL
+         WHERE wip_moves.status != 'pending'`
+      ).bind(i.issue_key, i.issue_id, i.status, `Its Invoice Due Date, ${i.inv_date}, has passed without payment`, now));
+    }
+  }
   for (const c of contracts) {
     const inv = (byOrder.get(c.issue_id) || []).filter((i) => i.level === 1 && isInvoice(i));
     const steps = [inv.length, inv.filter((i) => invoiceState(i).invoiced).length, inv.filter((i) => invoiceState(i).paid).length];
@@ -429,7 +446,7 @@ export async function full(env, { force = false } = {}) {
     const due = force || Date.now() - Number((await getState(env, 'wip_full_at')) || 0) >= FULL_EVERY_MS;
     if (!state && !due) {
       const waiting = await env.DB.prepare("SELECT 1 AS n FROM wip_moves WHERE status = 'pending' AND next_at <= ? LIMIT 1").bind(Date.now()).first();
-      if (!waiting || (await getState(env, 'wip_moves_on')) !== '1') return out.month ? out : { idle: true };
+      if (!waiting || !(await anyMovesOn(env))) return out.month ? out : { idle: true };
       out.moved = await processMoves(env, b, 5);
       return out;
     }
@@ -474,7 +491,7 @@ export async function full(env, { force = false } = {}) {
       await setState(env, 'wip_full_done', new Date().toISOString());
       await setState(env, 'wip_quick_at', String(Date.now()));
     }
-    if (b.left() >= 2 && (await getState(env, 'wip_moves_on')) === '1') out.moved = await processMoves(env, b, Math.floor(b.left() / 2));
+    if (b.left() >= 2 && (await anyMovesOn(env))) out.moved = await processMoves(env, b, Math.floor(b.left() / 2));
     await setState(env, 'wip_error', '');
   } catch (err) {
     if (!(err instanceof OutOfCalls)) { await setState(env, 'wip_error', `${new Date().toISOString()} ${err.message}`); throw err; }
@@ -511,15 +528,28 @@ async function readItems(env, b, orderIds) {
 
 // ---------- moving orders on in Jira ----------
 
+// Whether invoices are moved to Overdue by the hub. On unless turned off under Invoicing's cog.
+export const overdueOn = async (env) => (await getState(env, 'invoice_overdue_on')) !== '0';
+async function anyMovesOn(env) {
+  return (await getState(env, 'wip_moves_on')) === '1' || (await overdueOn(env));
+}
+
 async function processMoves(env, b, max) {
-  if ((await getState(env, 'wip_moves_on')) !== '1') return 0;
+  const ordersOn = (await getState(env, 'wip_moves_on')) === '1';
+  const invoicesOn = await overdueOn(env);
+  if (!ordersOn && !invoicesOn) return 0;
   const { results } = await env.DB.prepare("SELECT * FROM wip_moves WHERE status = 'pending' AND next_at <= ? ORDER BY queued_at LIMIT ?").bind(Date.now(), max).all();
   let moved = 0;
   for (const m of results) {
     if (b.left() < 2) break;
-    const order = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(m.issue_key).first();
-    // Someone moved it first, or it no longer qualifies: nothing to do.
-    if (!order || lower(order.status) !== lower(m.from_status) || lower(order.status) === lower(m.target)) {
+    // An order moving on, or an invoice moving to Overdue.
+    let order = await env.DB.prepare('SELECT * FROM wip_orders WHERE issue_key = ?').bind(m.issue_key).first();
+    const item = order ? null : await env.DB.prepare('SELECT * FROM wip_items WHERE issue_key = ?').bind(m.issue_key).first();
+    if (item) order = item;
+    if ((item && !invoicesOn) || (!item && !ordersOn)) continue;
+    // Someone moved it first, or it no longer qualifies (paid, say, or given a later due date): nothing to do.
+    const stillDue = !item || (item.inv_date && item.inv_date < londonDate() && !invoiceState(item).paid);
+    if (!order || lower(order.status) !== lower(m.from_status) || lower(order.status) === lower(m.target) || !stillDue) {
       await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ?").bind(new Date().toISOString(), m.issue_key).run();
       continue;
     }
@@ -532,7 +562,9 @@ async function processMoves(env, b, max) {
       const now = new Date().toISOString();
       await env.DB.batch([
         env.DB.prepare("UPDATE wip_moves SET status = 'done', done_at = ?, last_error = NULL WHERE issue_key = ?").bind(now, m.issue_key),
-        env.DB.prepare('UPDATE wip_orders SET status = ?, status_cat = ?, done_at = ? WHERE issue_key = ?').bind(m.target, cat, cat === 'done' ? londonDate() : null, m.issue_key),
+        item
+          ? env.DB.prepare('UPDATE wip_items SET status = ?, status_cat = ? WHERE issue_key = ?').bind(t.to?.name || m.target, cat, m.issue_key)
+          : env.DB.prepare('UPDATE wip_orders SET status = ?, status_cat = ?, done_at = ? WHERE issue_key = ?').bind(m.target, cat, cat === 'done' ? londonDate() : null, m.issue_key),
       ]);
       moved++;
     } catch (err) {
@@ -1132,7 +1164,7 @@ export async function saveSettings(env, viewer, body) {
       await setState(env, 'wip_moves_on', on ? '1' : '0');
       if (on) {
         // Starts from where every order is now, so nothing is moved just for being switched on.
-        await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE status = 'pending'").bind(new Date().toISOString()).run();
+        await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE status = 'pending' AND target != 'Overdue'").bind(new Date().toISOString()).run();
         await setState(env, 'wip_moves_since', new Date().toISOString());
       }
       changes.push({ label: 'Moves orders in Jira', before: was ? 'On' : 'Off', after: on ? 'On' : 'Off' });
@@ -1304,8 +1336,8 @@ export { OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, sna
 // the planned date, before it's invoiced), added up by month.
 
 export const TERM_TYPES = {
-  'Days After': 'Days after the invoice date',
-  'Following Month': 'Days after the end of the invoice\'s month',
+  'Days After': 'Days after',
+  'Following Month': 'Days after the end of that month',
   'Days After End of Month': 'Days after the end of the month',
   'EOFM +7': 'End of the month, plus 7 days',
 };
@@ -1334,6 +1366,98 @@ export async function paymentTerms(env) {
   try { saved = JSON.parse((await getState(env, TERMS_KEY)) || 'null'); } catch { saved = null; }
   if (saved && typeof saved === 'object') return saved;
   return Object.fromEntries(Object.entries(DEFAULT_TERMS).map(([k, [days, type]]) => [k, { days, type }]));
+}
+
+// ---------- updating invoices from the Invoicing tile ----------
+// What finance do to an Invoice item, straight to Jira: give a New one its Target End,
+// create its draft (Ready to be Invoiced, which starts the draft invoice automation),
+// mark it sent (Invoiced, with its Invoice Due Date from the customer's terms), and
+// change an Invoice Due Date.
+
+const canUpdateInvoices = (viewer) => Boolean(viewer?.isAdmin || viewer?.can?.invoiceUpdate);
+const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(`${v}T12:00:00Z`));
+
+async function moveItem(env, key, match, fields = null) {
+  const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`)) || {};
+  const t = transitions.find((x) => match(lower(x.to?.name || x.name)));
+  if (!t) throw refuse(`Jira has no way to move ${key} there from where it is now.`, 409);
+  const send = (body) => jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { method: 'POST', body: JSON.stringify(body) });
+  let fieldsSet = false;
+  if (fields) {
+    // Set with the move where Jira allows it; otherwise moved, then set.
+    try { await send({ transition: { id: t.id }, fields }); fieldsSet = true; } catch (err) { if (err.status !== 400) throw err; }
+  }
+  if (!fieldsSet) await send({ transition: { id: t.id } });
+  return { name: t.to?.name || t.name, cat: t.to?.statusCategory?.key || 'indeterminate', fieldsSet };
+}
+const setFields = (env, key, fields) => jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ fields }) });
+
+export async function invoiceAction(env, viewer, { key, action, date } = {}) {
+  if (!canUpdateInvoices(viewer)) throw refuse('Updating invoices isn\'t open to you.');
+  const item = await env.DB.prepare("SELECT * FROM wip_items WHERE issue_key = ? AND level = 1").bind(String(key || '').toUpperCase()).first();
+  if (!item || !isInvoice(item)) throw refuse('That isn\'t an invoice the hub knows.', 404);
+  const order = await env.DB.prepare('SELECT issue_key, project_key FROM wip_orders WHERE issue_id = ?').bind(item.order_id).first();
+  const s = invoiceState(item);
+  const today = londonDate();
+  let label, after = {};
+
+  if (action === 'targetEnd') {
+    if (s.invoiced || s.paid) throw refuse('It\'s already invoiced, so Target End no longer matters.', 400);
+    if (!isDay(date)) throw refuse('Choose the date the milestone should be finished.', 400);
+    await setFields(env, item.issue_key, { [F.due]: date });
+    after = { inv_due: date };
+    label = `Target End set to ${date}`;
+  } else if (action === 'draft') {
+    if (s.invoiced || s.paid || s.ready) throw refuse('It\'s past New, so it already has its draft.', 400);
+    const m = await moveItem(env, item.issue_key, (to) => /ready/.test(to));
+    after = { status: m.name, status_cat: m.cat };
+    label = `Moved to ${m.name} to create the draft invoice`;
+  } else if (action === 'sent') {
+    if (!s.ready) throw refuse('Create the draft first: only a Ready to be Invoiced item can be marked sent.', 400);
+    const terms = (await paymentTerms(env))[String(order?.project_key || item.issue_key.split('-')[0]).toUpperCase()];
+    const due = isDay(date) ? date : terms ? paymentDue(today, terms) : null;
+    if (!due) throw refuse('This customer has no payment terms: enter the Invoice Due Date.', 400);
+    const m = await moveItem(env, item.issue_key, (to) => to === 'invoiced', { [F.invoiceDate]: due });
+    if (!m.fieldsSet) await setFields(env, item.issue_key, { [F.invoiceDate]: due });
+    after = { status: m.name, status_cat: m.cat, inv_date: due };
+    label = `Marked sent, Invoice Due Date ${due}`;
+  } else if (action === 'dueDate') {
+    if (!s.invoiced || s.paid) throw refuse('Only an invoiced, unpaid invoice has an Invoice Due Date to change.', 400);
+    if (!isDay(date)) throw refuse('Choose the new Invoice Due Date.', 400);
+    await setFields(env, item.issue_key, { [F.invoiceDate]: date });
+    after = { inv_date: date };
+    label = `Invoice Due Date changed to ${date}`;
+    // A later date on an Overdue invoice puts it back to Invoiced, where Jira allows it.
+    if (s.overdue && date >= today) {
+      try {
+        const m = await moveItem(env, item.issue_key, (to) => to === 'invoiced');
+        after = { ...after, status: m.name, status_cat: m.cat };
+        label += ', and back to Invoiced';
+      } catch { /* left Overdue; the date is still changed */ }
+    }
+  } else throw refuse('That isn\'t something the hub can do to an invoice.', 400);
+
+  // What the hub holds follows straight away, without waiting for the next read.
+  const cols = Object.keys(after);
+  await env.DB.prepare(`UPDATE wip_items SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE issue_id = ?`).bind(...cols.map((c) => after[c]), item.issue_id).run();
+  await recompute(env, [item.order_id]);
+  return { ok: true, key: item.issue_key, order: order?.issue_key || null, label, ...after };
+}
+
+// Invoices waiting to be moved to Overdue, and any Jira has refused.
+async function overdueMoves(env) {
+  const { results } = await env.DB.prepare(
+    "SELECT issue_key, from_status, status, tries, last_error, queued_at, done_at FROM wip_moves WHERE target = 'Overdue' AND (status = 'pending' OR done_at >= ?) ORDER BY queued_at DESC LIMIT 50"
+  ).bind(new Date(Date.now() - 7 * 86_400_000).toISOString()).all();
+  return results;
+}
+
+export async function setOverdue(env, viewer, on) {
+  mustEdit(viewer);
+  await setState(env, 'invoice_overdue_on', on ? '1' : '0');
+  // Turned off: anything waiting is let go.
+  if (!on) await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE status = 'pending' AND target = 'Overdue'").bind(new Date().toISOString()).run();
+  return { ok: true, on: Boolean(on) };
 }
 
 export async function saveTerms(env, viewer, list) {
@@ -1429,6 +1553,6 @@ export async function invoicing(env, viewer, { region } = {}) {
   return {
     ...head, region, regions: REGIONS, today, month, invoices, orders,
     forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
-    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer),
+    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer), canUpdate: canUpdateInvoices(viewer), overdueOn: await overdueOn(env), overdueMoves: await overdueMoves(env),
   };
 }

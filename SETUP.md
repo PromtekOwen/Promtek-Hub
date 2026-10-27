@@ -352,6 +352,15 @@ Each invoice sits in one of these, in this order:
 
 An Invoice item in **Ready to be Invoiced** doesn't count as invoiced in the WIP either until it's moved to Invoiced.
 
+**Updating invoices from the tile.** People with *Update invoices* (Management by default; change it under Admin → Who can use what) get buttons on each milestone, which write straight to Jira:
+- **New, with no Target End or with Target End passed:** a date and Save, which sets Target End.
+- **New:** **Create Draft**, which moves it to Ready to be Invoiced at once, so Jira's draft-invoice automation runs.
+- **Ready to be Invoiced:** **Invoice Sent**, which moves it to Invoiced and sets its Invoice Due Date to today plus the customer's payment terms. The date is shown first and can be changed for special terms; a customer with no terms needs the date entered.
+- **Invoiced or Overdue:** **Change Invoice Due Date**. A later date on an Overdue invoice moves it back to Invoiced.
+Each change is in the audit log. Jira's workflow needs the New → Ready to be Invoiced and Ready to be Invoiced → Invoiced transitions, and the Invoice Due Date field editable on Invoiced items.
+
+**Overdue in Jira.** The hub moves each Invoiced, unpaid invoice to **Overdue** in Jira once its Invoice Due Date has passed, checking at least every half hour, so the Jira automation that did this can be turned off. Paid invoices, and ones given a later Invoice Due Date first, are left alone. It can be switched off under Invoicing's cog, which also lists the last week's moves and any Jira refused; a refused move is tried again, less often, and an alert is sent after a few tries. Jira's workflow needs a transition from Invoiced to Overdue, which it already has if the automation worked.
+
 ## Part 14d: Page walkthroughs
 
 The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.
