@@ -326,6 +326,15 @@ The **Feedback** tile lets anyone send feedback or a suggestion anonymously: the
 
 **Admins** read each post under **To review** and post it, or turn it down with an optional reason that only the writer sees. Posted feedback goes on the **Board**, where everyone can agree or disagree once each (and change their mind), sorted by most agreed or newest and filtered by category. Admins can reply to the writer on any post, with their name shown; the writer replies as "the writer". Conversations show what's new on each side, and the tile shows the writer when there's something new for them. Admins can also take a posted item down.
 
+## Part 14c3: Invoicing
+
+The **Invoicing** tile, for anyone who can see the WIP, replaces the old invoice board. It reads the same orders as the WIP, UK or South Africa, and shows every Invoice item on them:
+- **Totals:** overdue, waiting for payment, still to invoice by the end of this month, expected this month, and paid this month.
+- **Expected payments:** everything not yet paid, by the month it's due, opening up to each customer and order. Anything that fell due before this month and isn't paid is kept at the top rather than left out.
+- **Overdue, Invoiced, Not invoiced and Paid:** a card for each order, with each milestone's value, its invoice or planned date and when payment is due. An invoice past its payment date counts as overdue even if Jira hasn't been changed yet.
+
+Payment is expected on each customer's terms, by the Jira project key their orders start with: from the invoice date once it's invoiced, or the planned date before. The terms from the old board are filled in to start with, and admins and management can change them under the tile's cog. Customers with unpaid invoices and no terms are listed, and until terms are added their payment is expected on the invoice date.
+
 ## Part 14d: Page walkthroughs
 
 The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.

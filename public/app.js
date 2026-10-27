@@ -447,6 +447,11 @@ const pages = {
     render: () => requestsHtml(),
   },
 
+  '#/invoicing': {
+    band: () => '<h1>Invoicing</h1><p>Every order\'s invoices, where each has got to, and the money expected each month.</p>',
+    render: () => invoicingHtml(),
+  },
+
   '#/feedback': {
     band: () => '<h1>Feedback</h1><p>Share feedback or an idea, anonymously. Nobody can see who sent it.</p>',
     render: () => feedbackHtml(),
@@ -1675,6 +1680,7 @@ async function renderSettings(route) {
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   if (route === '#/eotq') settingsData.eotq = await api('/api/eotq/settings').catch((err) => ({ error: err.message }));
   if (route === '#/wip') settingsData.wip = await api('/api/wip/settings').catch((err) => ({ error: err.message }));
+  if (route === '#/invoicing') { settingsData.invoicing = await api(`/api/invoicing?region=${invRegion}`).catch((err) => ({ error: err.message })); invTerms = null; }
   if (route === '#/feedback') settingsData.feedback = await api('/api/feedback/settings').catch((err) => ({ error: err.message }));
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   return back + TILE_SETTINGS[route].render();
@@ -7901,7 +7907,7 @@ let wipQuery = '';
 let wipData = null;
 let wipImport = null;         // what was read from a sheet, waiting to be confirmed
 
-const WIP_TABS = [['summary', 'Summary'], ['overview', 'Overview'], ['orders', 'Orders'], ['invoices', 'Invoices'], ['recurring', 'Recurring'], ['history', 'History']];
+const WIP_TABS = [['summary', 'Summary'], ['overview', 'Overview'], ['orders', 'Orders'], ['recurring', 'Recurring'], ['history', 'History']];
 const WIP_STATUS_ORDER = ['New', 'Work in progress', 'Snagging', 'Phase Complete', 'Backlog', 'Awaiting Payment', 'Documentation Check',
   'On Hold [Customer]', 'On Hold [Promtek]', 'Reoccuring Monthly', 'Done', 'Archive'];
 const WIP_FILTERS = [
@@ -7954,7 +7960,7 @@ async function wipHtml() {
   if (wipTab === 'overview') return wipChartsHtml();
   const d = await api(`/api/wip?region=${wipRegion}${wipMonth ? `&month=${wipMonth}` : ''}`);
   wipData = d;
-  const body = wipTab === 'orders' ? wipOrdersHtml(d) : wipTab === 'invoices' ? wipInvoicesHtml(d) : wipOverviewHtml(d);
+  const body = wipTab === 'orders' ? wipOrdersHtml(d) : wipOverviewHtml(d);
   return `${wipControls({ months: d.months })}${wipSyncLine(d)}${d.live ? '' : `<p class="help">${esc(wipMonthName(d.month))} as it stood when the month ended.</p>`}${body}`;
 }
 
@@ -8046,31 +8052,6 @@ function wipOrdersHtml(d) {
         <th class="num">${wipMoney(sum('wipValue'))}</th><th class="num">${wipMoney(sum('invoicedValue'))}</th><th class="num">${wipMoney(sum('paidValue'))}</th></tr></tfoot>` : ''}
     </table></div>
     <p class="help">Complete is the share of the order's items that are done, and Non admin the share of its sub-tasks (leaving out invoices and the documentation check on older orders). The small figures are the change since last month. Select an order for its milestones and work.</p>`;
-}
-
-function wipInvoicesHtml(d) {
-  if (!d.live) return '<div class="card"><p style="margin:0">Invoices show for this month. Pick this month above to see them.</p></div>';
-  const month = d.month;
-  const inv = d.invoices;
-  const groups = [
-    ['Overdue', inv.filter((i) => i.state === 'Overdue')],
-    ['Invoiced, waiting for payment', inv.filter((i) => i.state === 'Invoiced')],
-    [`Due to invoice in ${wipMonthName(month, true)}`, inv.filter((i) => i.state === 'Not Invoiced' && !i.token && i.date && i.date.slice(0, 7) <= month)],
-    ['Not invoiced yet', inv.filter((i) => i.state === 'Not Invoiced' && !i.token && !(i.date && i.date.slice(0, 7) <= month))],
-    ['Paid', inv.filter((i) => i.state === 'Paid' && !i.token)],
-  ];
-  const table = (list) => `<div class="table-wrap"><table>
-      <thead><tr><th>Order</th><th>Milestone</th><th class="num">Share</th><th class="num">Value</th><th>Date</th><th>Status</th></tr></thead>
-      <tbody>${list.map((i) => `<tr class="wip-row" data-wip-open="${esc(i.order)}" tabindex="0">
-        <td><b>${esc(i.order)}</b><small>${esc(i.org || '')}</small></td><td class="wip-title">${esc(i.terms || '')}<small>${esc(i.key)}</small></td>
-        <td class="num">${i.share === null || i.share === undefined ? '—' : wipPct(i.share)}</td><td class="num">${wipMoney(i.value)}</td>
-        <td>${i.date ? fullDate(i.date) : '—'}</td><td>${wipStatusChip(i.status)}</td></tr>`).join('')}</tbody></table></div>`;
-  return groups.map(([title, list], idx) => {
-    const total = list.reduce((t, i) => t + (i.value || 0), 0);
-    const head = `${esc(title)} <span class="muted">${n(list.length)}${list.length ? `, ${wipMoney(total)}` : ''}</span>`;
-    if (idx === groups.length - 1) return `<details class="card wip-group"><summary><h2>${head}</h2></summary>${list.length ? table(list) : ''}</details>`;
-    return `<section class="card wip-group"><h2>${head}</h2>${list.length ? table(list) : '<p class="muted" style="margin:0">None.</p>'}</section>`;
-  }).join('') + '<p class="help">Milestones are each order\'s Invoice items in Jira. The date is the invoice date once there is one, otherwise the date it is planned for. Token payments are left out.</p>';
 }
 
 async function wipOrderHtml() {
@@ -8495,6 +8476,195 @@ function wipInput(event) {
     searchJiraWhenEmpty({ kind: 'wip', input, visible: wipFiltered(wipData.rows).length, endpoint: '/api/wip/lookup', status: 'wip-recheck' });
   }, 150);
   return true;
+}
+
+// ---------- Invoicing ----------
+// Every invoice milestone on the live orders, grouped by where it has got to, and
+// the money expected each month once each customer's payment terms are applied.
+
+let invRegion = 'uk';
+let invQuery = '';
+let invData = null;
+let invOpen = new Set();          // months of the forecast opened up
+let invTerms = null;              // the payment terms being edited, under the cog
+let invKeep = false;              // the next draw reuses what was read, as when searching
+
+const invMoney = (v, d = invData) => {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const sym = d?.regions?.[d.region]?.symbol || '£';
+  return `${v < 0 ? '−' : ''}${sym}${Math.abs(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+const invMonthName = (m) => new Date(`${m}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+const invTermsText = (t, d = invData) => (t ? `${d.termTypes[t.type] === d.termTypes['EOFM +7'] ? d.termTypes[t.type] : `${t.days} ${String(d.termTypes[t.type] || t.type).toLowerCase()}`}` : 'No payment terms set');
+
+const INV_GROUPS = [
+  ['Overdue', 'Overdue', 'Invoiced and past the date it should have been paid by.'],
+  ['Invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, not yet paid.'],
+  ['Not Invoiced', 'Not invoiced', 'Still to be invoiced, by the date each is planned for.'],
+  ['Paid', 'Paid', 'Paid in full.'],
+];
+
+async function invoicingHtml() {
+  const d = invData = invKeep && invData?.region === invRegion ? invData : await api(`/api/invoicing?region=${invRegion}`);
+  invKeep = false;
+  const q = invQuery.trim().toLowerCase();
+  const matches = (i) => !q || `${i.order} ${i.org || ''} ${i.account} ${i.key} ${i.terms || ''} ${d.orders[i.order]?.title || ''}`.toLowerCase().includes(q);
+  const list = d.invoices.filter((i) => !i.token && matches(i));
+  const sum = (l) => l.reduce((t, i) => t + (i.value || 0), 0);
+  // Overdue in Jira, or invoiced and past its payment date by the customer's terms.
+  const stateOf = (i) => (i.state === 'Invoiced' && i.late ? 'Overdue' : i.state);
+  const by = (s) => list.filter((i) => stateOf(i) === s);
+  const toInvoiceNow = by('Not Invoiced').filter((i) => i.planned && i.planned.slice(0, 7) <= d.month);
+  const paidThisMonth = by('Paid').filter((i) => (i.paidAt || '').slice(0, 7) === d.month);
+  const thisMonth = d.forecast.find((f) => f.month === d.month);
+  const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
+  const count = (k, one, many) => `${n(k)} ${k === 1 ? one : many}`;
+
+  const regions = `<span class="segment">${Object.entries(d.regions).map(([k, r]) =>
+    `<button class="seg${invRegion === k ? ' on' : ''}" data-inv-region="${k}">${esc(r.name)}</button>`).join('')}</span>`;
+  const missing = d.missingTerms.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>No payment terms for ${n(d.missingTerms.length)} ${d.missingTerms.length === 1 ? 'customer' : 'customers'}:</strong>
+      ${d.missingTerms.map(esc).join(', ')}. Their payments are expected on the invoice date until terms are added${d.canEdit ? ' under the cog above' : ''}.</p></div>` : '';
+
+  return `<div class="row wip-tools">${regions}<input type="search" id="inv-search" value="${esc(invQuery)}" placeholder="Search customers, orders or milestones" aria-label="Search invoices"></div>
+    ${wipSyncLine(d)}
+    ${missing}
+    <dl class="stats inv-stats">
+      ${stat('Overdue', invMoney(sum(by('Overdue'))), count(by('Overdue').length, 'invoice', 'invoices'))}
+      ${stat('Waiting for payment', invMoney(sum(by('Invoiced'))), count(by('Invoiced').length, 'invoice', 'invoices'))}
+      ${stat(`To invoice by end of ${new Date(`${d.month}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'long' })}`, invMoney(sum(toInvoiceNow)), count(toInvoiceNow.length, 'milestone', 'milestones'))}
+      ${stat('Expected this month', invMoney(thisMonth?.total || 0), count(thisMonth?.count || 0, 'payment', 'payments'))}
+      ${stat('Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
+    </dl>
+    ${invForecastHtml(d)}
+    ${INV_GROUPS.map(([state, title, help]) => invGroupHtml(d, state, title, help, by(state))).join('')}
+    <p class="help">Milestones are each order's Invoice items in Jira; tokens are left out. Payment is expected on the customer's terms from the invoice date, or from the planned date before it's invoiced.</p>`;
+}
+
+function invForecastHtml(d) {
+  const q = invQuery.trim().toLowerCase();
+  const keep = (c) => !q || `${c.account} ${c.org || ''} ${c.orders.map((o) => o.key).join(' ')}`.toLowerCase().includes(q);
+  const rows = [...(d.earlier.count ? [{ ...d.earlier, month: 'earlier' }] : []), ...d.forecast];
+  if (!rows.length) return '<section class="card"><h2 style="margin-top:0">Expected payments</h2><p class="muted" style="margin:0">Nothing still to be paid.</p></section>';
+  const body = rows.map((f) => {
+    const customers = f.customers.filter(keep);
+    if (!customers.length) return '';
+    const total = customers.reduce((t, c) => t + c.total, 0);
+    const label = f.month === 'earlier' ? 'Due before this month, not yet paid' : invMonthName(f.month);
+    const open = invOpen.has(f.month);
+    const detail = open ? `<tr class="inv-month-detail"><td colspan="3"><ul class="inv-customers">${customers.map((c) => `<li>
+        <div class="inv-cust"><b>${esc(c.org || c.account)}</b> <span class="muted">${esc(c.account)}</span><span class="num">${invMoney(c.total)}</span></div>
+        <ul>${c.orders.map((o) => `<li>${jiraLink(o.key)} <span class="muted">${esc(d.orders[o.key]?.title || '')}</span><span class="num">${invMoney(o.amount)}</span></li>`).join('')}</ul></li>`).join('')}</ul></td></tr>` : '';
+    return `<tr class="inv-month${f.month === 'earlier' ? ' late' : ''}" data-inv-month="${esc(f.month)}" tabindex="0" aria-expanded="${open}">
+        <td><span class="usage-caret" aria-hidden="true">${open ? '▾' : '▸'}</span> ${esc(label)}</td><td class="num">${invMoney(total)}</td>
+        <td class="num">${n(customers.reduce((t, c) => t + c.orders.length, 0))} ${customers.length === 1 ? 'order' : 'orders'}, ${n(customers.length)} ${customers.length === 1 ? 'customer' : 'customers'}</td></tr>${detail}`;
+  }).join('');
+  return `<section class="card inv-forecast"><h2 style="margin-top:0">Expected payments</h2>
+      <p class="muted" style="margin-top:0">Everything not yet paid, by the month it's due. Open a month to see each customer and order.</p>
+      <div class="table-wrap"><table><thead><tr><th>Month</th><th class="num">Expected</th><th class="num">From</th></tr></thead><tbody>${body}</tbody></table></div></section>`;
+}
+
+// One status's milestones, a card for each order, as the old board had them.
+function invGroupHtml(d, state, title, help, list) {
+  const byOrder = new Map();
+  for (const i of list) { if (!byOrder.has(i.order)) byOrder.set(i.order, []); byOrder.get(i.order).push(i); }
+  const total = list.reduce((t, i) => t + (i.value || 0), 0);
+  const cards = [...byOrder].map(([key, items]) => {
+    const o = d.orders[key] || {};
+    const here = items.reduce((t, i) => t + (i.value || 0), 0);
+    const lines = items.map((i) => {
+      const date = state === 'Paid' ? (i.paidAt ? `paid ${fullDate(i.paidAt)}` : i.invoiceDate ? `invoiced ${fullDate(i.invoiceDate)}` : '')
+        : state === 'Not Invoiced' ? (i.planned ? `to invoice ${fullDate(i.planned)}` : 'no planned date') : i.invoiceDate ? `invoiced ${fullDate(i.invoiceDate)}` : i.planned ? `planned ${fullDate(i.planned)}` : 'no invoice date';
+      const due = state !== 'Paid' && i.payDue ? `<span class="${i.late ? 'bad' : 'muted'}">${i.late ? 'was due' : 'payment due'} ${fullDate(i.payDue)}</span>` : '';
+      return `<li><span class="inv-amount">${invMoney(i.value)}</span><span class="inv-when">${esc(date)}${due ? ` · ${due}` : ''}</span>
+        <span class="inv-terms">${esc(i.terms || '')} <span class="muted">${jiraLink(i.key)}${i.share !== null && i.share !== undefined ? `, ${wipPct(i.share)}` : ''}${i.status && i.status !== i.state ? `, ${esc(i.status)}` : ''}</span></span></li>`;
+    }).join('');
+    const termsLine = state === 'Paid' ? '' : `<span class="muted">${esc(invTermsText(d.terms[o.account || items[0].account]))}</span>`;
+    return `<article class="card inv-card">
+        <p class="inv-card-head"><b>${esc(o.org || items[0].org || '')} – ${jiraLink(key)}</b><span class="muted">${esc(o.title || '')}</span></p>
+        <p class="inv-card-total"><strong>${invMoney(here)}</strong> ${state === 'Paid' ? 'paid' : `in ${items.length === 1 ? 'this milestone' : 'these milestones'}`}
+          ${state !== 'Paid' && o.uninvoiced !== null && o.uninvoiced !== undefined ? `<span class="muted">· ${invMoney(o.uninvoiced)} of ${invMoney(o.value)} not yet invoiced</span>` : ''}</p>
+        <ul class="inv-lines">${lines}</ul>${termsLine}</article>`;
+  }).join('');
+  const head = `${esc(title)} <span class="muted">${n(list.length)}${list.length ? `, ${invMoney(total)}` : ''}</span>`;
+  const inner = `<p class="muted" style="margin:0 0 .75rem">${esc(help)}</p>${cards ? `<div class="inv-grid">${cards}</div>` : '<p class="muted" style="margin:0">None.</p>'}`;
+  if (state === 'Paid') return `<details class="inv-group"><summary><h2>${head}</h2></summary>${inner}</details>`;
+  return `<section class="inv-group${state === 'Overdue' && list.length ? ' late' : ''}"><h2>${head}</h2>${inner}</section>`;
+}
+
+async function invoicingClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (settingsOpen === '#/invoicing') return invTermsClick(event);
+  const reg = t('[data-inv-region]');
+  if (reg) { invRegion = reg.dataset.invRegion; invOpen = new Set(); return render(); }
+  const m = t('[data-inv-month]');
+  if (m) {
+    const k = m.dataset.invMonth;
+    if (invOpen.has(k)) invOpen.delete(k); else invOpen.add(k);
+    const box = view.querySelector('.inv-forecast');
+    if (box && invData) box.outerHTML = invForecastHtml(invData);
+    return true;
+  }
+  return false;
+}
+
+let invSearchTimer = null;
+function invoicingInput(event) {
+  if (event.target.id !== 'inv-search') return false;
+  invQuery = event.target.value;
+  clearTimeout(invSearchTimer);
+  invSearchTimer = setTimeout(async () => { invKeep = true; await render(); const b = document.getElementById('inv-search'); if (b) { b.focus(); b.setSelectionRange(b.value.length, b.value.length); } }, 250);
+  return true;
+}
+
+// Under the cog: each customer's payment terms, by the Jira project key their orders start with.
+function settingsInvoicingHtml() {
+  const s = settingsData.invoicing;
+  if (s?.error) return `<div class="card"><p class="bad">${esc(s.error)}</p></div>`;
+  if (!invTerms) {
+    const known = Object.entries(s.terms).map(([account, t]) => ({ account, ...t }));
+    invTerms = [...s.missingTerms.filter((a) => !s.terms[a]).map((account) => ({ account, days: '', type: 'Days After', missing: true })),
+      ...known.sort((a, b) => a.account.localeCompare(b.account))];
+  }
+  const row = (t, i) => `<tr${t.missing ? ' class="inv-missing"' : ''}><td><input data-invt="account" data-i="${i}" value="${esc(t.account)}" maxlength="20" aria-label="Account" placeholder="WYNNL"></td>
+      <td><input type="number" min="0" max="365" data-invt="days" data-i="${i}" value="${esc(t.days)}" aria-label="Days"></td>
+      <td><select data-invt="type" data-i="${i}" aria-label="Terms">${Object.entries(s.termTypes).map(([k, l]) => `<option value="${esc(k)}"${t.type === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></td>
+      <td><button class="linklike" data-invt-remove="${i}">Remove</button></td></tr>`;
+  return `<div class="card req-form">
+      <h2 style="margin-top:0">Payment terms</h2>
+      <p class="muted">Each customer by their Jira project key, the start of every order key (WYNNL for WYNNL-704). Payment is expected this long after the invoice date. ${s.missingTerms.length ? 'Customers with invoices still to be paid and no terms are at the top.' : ''}</p>
+      <div class="table-wrap"><table class="inv-terms-table"><thead><tr><th>Account</th><th>Days</th><th>Terms</th><th></th></tr></thead>
+        <tbody>${invTerms.map(row).join('')}</tbody></table></div>
+      <div class="row"><button class="btn secondary" data-invt-add>Add a customer</button>${s.canEdit ? '<button class="btn" data-invt-save>Save</button>' : ''}</div>
+      ${s.canEdit ? '' : '<p class="muted">Only admins and management can change these.</p>'}
+      <div class="result" id="invt-result" role="status"></div>
+    </div>`;
+}
+
+function invTermsRead() {
+  view.querySelectorAll('[data-invt]').forEach((el) => { const t = invTerms[Number(el.dataset.i)]; if (t) t[el.dataset.invt] = el.value; });
+}
+
+async function invTermsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-invt-add]')) { invTermsRead(); invTerms.unshift({ account: '', days: 30, type: 'Days After' }); return render(); }
+  const rm = t('[data-invt-remove]');
+  if (rm) { invTermsRead(); invTerms.splice(Number(rm.dataset.invtRemove), 1); return render(); }
+  const save = t('[data-invt-save]');
+  if (save) {
+    invTermsRead();
+    save.disabled = true;
+    const out = document.getElementById('invt-result');
+    try {
+      const keep = invTerms.filter((x) => String(x.account).trim() && String(x.days).trim() !== '');
+      const r = await api('/api/invoicing/terms', { method: 'POST', body: JSON.stringify({ terms: keep }) });
+      settingsData.invoicing.terms = r.terms;
+      invTerms = null;
+      out.textContent = 'Saved.'; out.className = 'result good';
+    } catch (err) { out.textContent = err.message; out.className = 'result bad'; }
+    save.disabled = false;
+    return true;
+  }
+  return false;
 }
 
 // ---------- WIP: settings ----------
@@ -10870,6 +11040,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/feedback' && await feedbackClick(event) !== false) return;
+  if (currentRoute() === '#/invoicing' && await invoicingClick(event) !== false) return;
   if (currentRoute() === '#/eotq' && await eotqClick(event) !== false) return;
   if (currentRoute() === '#/wip' && settingsOpen !== '#/wip' && await wipClick(event) !== false) return;
   if (currentRoute() === '#/capacity' && await capTileClick(event) !== false) return;
@@ -11002,6 +11173,7 @@ const TILE_SETTINGS = {
   '#/org': { label: 'Company chart versions', render: () => settingsOrgHtml() },
   '#/eotq': { label: 'Employee of the Quarter settings', render: () => settingsEotqHtml(), who: 'Management and admins.', can: 'eotq' },
   '#/feedback': { label: 'Feedback settings', render: () => settingsFeedbackHtml() },
+  '#/invoicing': { label: 'Payment terms', render: () => settingsInvoicingHtml(), who: 'Admins and management.', can: 'wip' },
   '#/wip': { label: 'WIP settings', render: () => settingsWipHtml(), who: 'Management and admins.', can: 'wip' },
 };
 let settingsOpen = null;
@@ -11087,7 +11259,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 
@@ -11095,6 +11267,7 @@ let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/feedback' && feedbackInput(event)) return;
+  if (currentRoute() === '#/invoicing' && invoicingInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
   if (currentRoute() === '#/contracts' && settingsOpen === '#/contracts' && contractsSettingsInput(event)) return;
   if (currentRoute() === '#/contracts' && contractsInput(event)) return;

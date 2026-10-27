@@ -453,6 +453,15 @@ async function route(request, env, url, user) {
     return json({ ok: true });
   }
 
+  if (pathname.startsWith('/api/invoicing')) {
+    const Wip = await import('./wip.js');
+    if (method === 'GET' && pathname === '/api/invoicing') return json(await Wip.invoicing(env, user, { region: url.searchParams.get('region') }));
+    if (method === 'POST' && pathname === '/api/invoicing/terms') {
+      const body = await request.json().catch(() => ({}));
+      return json(await Wip.saveTerms(env, user, body.terms));
+    }
+  }
+
   if (pathname.startsWith('/api/wip')) {
     const Wip = await import('./wip.js');
     const q = (k) => url.searchParams.get(k);

@@ -1292,3 +1292,125 @@ export async function importSheet(env, viewer, body) {
 
 // Shared with the rebuild of past months from Jira's own history (wip-history.js).
 export { OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };
+
+// ---------- Invoicing ----------
+// Every invoice milestone on the live orders, by where it has got to, and when the
+// money is expected: each customer's payment terms applied to the invoice date (or
+// the planned date, before it's invoiced), added up by month.
+
+export const TERM_TYPES = {
+  'Days After': 'Days after the invoice date',
+  'Following Month': 'Days after the end of the invoice\'s month',
+  'Days After End of Month': 'Days after the end of the month',
+  'EOFM +7': 'End of the month, plus 7 days',
+};
+// From the old invoice board. Keyed by the customer's Jira project key, which starts each order key.
+const DEFAULT_TERMS = {
+  ABAGRI: [50, 'Days After'], ADM: [60, 'Days After'], AFTON: [60, 'Days After'], ALLEN: [40, 'Days After'], ANPARIO: [31, 'Following Month'],
+  AONE: [75, 'Days After'], DOC: [70, 'Days After'], AUR: [99, 'Days After'], BAILEYS: [60, 'Days After'], BATA: [30, 'Days After'],
+  CBCARLISLE: [70, 'Days After'], CBSTONE: [30, 'Days After'], CHARLESRWY: [70, 'Days After'], CRED: [60, 'Days After'], MCLCUBIS: [60, 'Days After'],
+  DAWNFOODS: [70, 'Days After'], DENIS: [60, 'Days After'], AMN: [30, 'Days After'], PENMILL: [30, 'Days After'], ELSHAM: [30, 'Days After'],
+  FB: [30, 'Following Month'], FIN: [60, 'Days After End of Month'], FIRSTWATER: [60, 'Days After'], FOLDHILL: [30, 'Following Month'],
+  FORMPAVE: [60, 'Days After End of Month'], BURL: [60, 'Days After'], BURTONSED: [70, 'Days After'], FWF: [90, 'Days After'], FRANKE: [30, 'Days After'],
+  FUCHS: [30, 'Days After'], FDL: [30, 'Days After'], GALL: [30, 'Days After'], GOLDLINE: [30, 'Following Month'], GOODWIN: [60, 'Days After End of Month'],
+  HUMPHREY: [30, 'Following Month'], INFINEUM: [60, 'Days After'], INFORM: [30, 'Following Month'], AKZO: [65, 'Days After End of Month'],
+  JCL: [30, 'Following Month'], CAM: [30, 'Following Month'], SOFINA: [7, 'EOFM +7'], TILE: [45, 'Days After'], LAXEY: [30, 'Following Month'],
+  MAELOR: [30, 'Following Month'], MALIBAN: [30, 'Days After'], MASS: [30, 'Following Month'], MATWALK: [30, 'Days After'], MERVUE: [30, 'Days After'],
+  MVS: [30, 'Following Month'], MVH: [30, 'Following Month'], NEWLAY: [30, 'Days After'], PALRAM: [30, 'Following Month'], PAT: [30, 'Following Month'],
+  PROV: [30, 'Following Month'], RWSCOTT: [30, 'Following Month'], MCBRID: [60, 'Days After'], ROGER: [30, 'Days After'], RS: [60, 'Days After End of Month'],
+  GOBAINMEX: [45, 'Days After'], SAINTGOBN: [30, 'Following Month'], SAR: [30, 'Days After'], SCOTMIN: [30, 'Following Month'], STWEED: [30, 'Days After'],
+  SIMS: [30, 'Following Month'], SIMSB: [30, 'Following Month'], SIMST: [30, 'Following Month'], SOUTHERN: [30, 'Days After'], DUFFIELD: [30, 'Following Month'],
+  WYNNL: [30, 'Days After'],
+};
+const TERMS_KEY = 'invoice_terms';
+
+export async function paymentTerms(env) {
+  let saved = null;
+  try { saved = JSON.parse((await getState(env, TERMS_KEY)) || 'null'); } catch { saved = null; }
+  if (saved && typeof saved === 'object') return saved;
+  return Object.fromEntries(Object.entries(DEFAULT_TERMS).map(([k, [days, type]]) => [k, { days, type }]));
+}
+
+export async function saveTerms(env, viewer, list) {
+  mustEdit(viewer);
+  const out = {};
+  for (const t of Array.isArray(list) ? list : []) {
+    const account = String(t.account || '').trim().toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]{0,19}$/.test(account)) continue;
+    const days = Math.round(Number(t.days));
+    if (!(days >= 0 && days <= 365) || !TERM_TYPES[t.type]) throw refuse(`Check the terms for ${account}: days from 0 to 365, and a type.`, 400);
+    out[account] = { days, type: t.type };
+  }
+  await setState(env, TERMS_KEY, JSON.stringify(out));
+  return { ok: true, terms: out };
+}
+
+const addDaysIso = (iso, n) => new Date(Date.parse(`${iso}T12:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
+
+// When an invoice dated on this day is due to be paid, on these terms. With no terms, the day itself.
+export function paymentDue(date, terms) {
+  if (!date || !/^\d{4}-\d{2}-\d{2}/.test(date)) return null;
+  const day = date.slice(0, 10);
+  if (!terms) return day;
+  if (terms.type === 'Days After') return addDaysIso(day, terms.days);
+  if (terms.type === 'Following Month' || terms.type === 'Days After End of Month') return addDaysIso(endOfMonth(day.slice(0, 7)), terms.days);
+  if (terms.type === 'EOFM +7') return addDaysIso(endOfMonth(day.slice(0, 7)), 7);
+  return day;
+}
+
+export async function invoicing(env, viewer, { region } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const today = londonDate();
+  const month = thisMonth();
+  const [head, rows, terms] = await Promise.all([header(env), liveRows(env, region, month), paymentTerms(env)]);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const accountOf = (r) => String(r.project || r.key.split('-')[0]).toUpperCase();
+  const invoices = [];
+  for (const i of rows.length ? (await itemsFor(env, [...byId.keys()])).filter((x) => x.level === 1 && isInvoice(x)) : []) {
+    const r = byId.get(i.order_id);
+    const s = invoiceState(i);
+    const token = isTokenInvoice(i);
+    const account = accountOf(r);
+    const t = terms[account] || null;
+    // Before it's invoiced, payment follows the planned date; after, the invoice date.
+    const basis = s.invoiced ? i.inv_date || i.inv_due : i.inv_due;
+    const payDue = s.paid ? null : paymentDue(basis, t);
+    invoices.push({
+      order: r.key, org: r.org, account, key: i.issue_key, terms: String(i.summary || '').replace(/^(\s*[\d.]+%\s*)+/, '').trim() || i.summary,
+      share: i.share, value: r.value === null || token ? null : r.value * (Number(i.share) || 0), token,
+      status: i.status, state: s.label, invoiceDate: i.inv_date || null, planned: i.inv_due || null, paidAt: i.paid_at || null,
+      payDue, late: Boolean(payDue && payDue < today), hasTerms: Boolean(t), created: i.created,
+    });
+  }
+  invoices.sort((a, b) => a.order.localeCompare(b.order, 'en', { numeric: true }) || String(a.created || '').localeCompare(String(b.created || '')));
+
+  // The money still to come, by the month it's due. Anything due before this month
+  // and not yet paid is kept apart, rather than left out.
+  const forecast = new Map();
+  const earlier = { total: 0, count: 0, customers: new Map() };
+  const addTo = (bucket, i) => {
+    bucket.total += i.value; bucket.count++;
+    const c = bucket.customers.get(i.account) || { account: i.account, org: i.org, total: 0, orders: new Map() };
+    c.total += i.value; c.orders.set(i.order, (c.orders.get(i.order) || 0) + i.value);
+    bucket.customers.set(i.account, c);
+  };
+  for (const i of invoices) {
+    if (i.state === 'Paid' || !i.value || i.value <= 0 || !i.payDue) continue;
+    if (i.payDue.slice(0, 7) < month) { addTo(earlier, i); continue; }
+    const m = i.payDue.slice(0, 7);
+    if (!forecast.has(m)) forecast.set(m, { month: m, total: 0, count: 0, customers: new Map() });
+    addTo(forecast.get(m), i);
+  }
+  const shapeBucket = (b) => ({ ...b, customers: [...b.customers.values()].sort((x, y) => x.account.localeCompare(y.account))
+    .map((c) => ({ ...c, orders: [...c.orders].sort((x, y) => x[0].localeCompare(y[0], 'en', { numeric: true })).map(([key, amount]) => ({ key, amount })) })) });
+
+  const orders = Object.fromEntries(rows.map((r) => [r.key, { key: r.key, title: r.title, org: r.org, account: accountOf(r), value: r.value,
+    uninvoiced: r.value === null ? null : r.value * (1 - (r.invoiced || 0)), remaining: r.remaining, division: r.division }]));
+  const missing = [...new Set(invoices.filter((i) => !i.hasTerms && i.state !== 'Paid').map((i) => i.account))].sort();
+  return {
+    ...head, region, regions: REGIONS, today, month, invoices, orders,
+    forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
+    terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: Boolean(viewer.isAdmin || viewer.groups?.includes('management')),
+  };
+}

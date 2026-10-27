@@ -98,7 +98,15 @@ export const MODULES = [
     route: '#/wip',
     needs: 'wip',
     icon: icon('<path d="M4 19.5h16"/><path d="M6.5 16V11M10.5 16V7M14.5 16v-6M18.5 16V5"/>'),
-    detail: () => 'Orders, invoicing and contract income',
+    detail: () => 'Orders, progress and contract income',
+  },
+  {
+    id: 'invoicing',
+    name: 'Invoicing',
+    route: '#/invoicing',
+    needs: 'wip',
+    icon: icon('<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8h6M9 11.5h6M9 15h3.5"/>'),
+    detail: () => 'Invoices due, waiting and paid, and payments expected',
   },
   {
     id: 'calls',
