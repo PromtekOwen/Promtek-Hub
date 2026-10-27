@@ -1575,3 +1575,14 @@ tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; 
 .form-bar span { display: block; height: 100%; background: var(--blue); border-radius: 99px; }
 .form-bar-n { text-align: right; font-variant-numeric: tabular-nums; }
 @media (max-width: 520px) { .form-bars li { grid-template-columns: 1fr 4.5rem; } .form-bar { grid-column: 1 / -1; grid-row: 2; } }
+.nm-form label { margin-top: .75rem; }
+.nm-people { border: 0; padding: 0; margin: 1rem 0 0; }
+.nm-people legend { font-weight: 600; padding: 0; margin-bottom: .4rem; }
+.nm-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
+.nm-outside { margin-top: .5rem; align-items: center; }
+.nm-outside input { flex: 1 1 14rem; }
+.nm-q { font-weight: 600; margin: 1rem 0 .4rem; }
+.nm-row { cursor: pointer; }
+.nm-excerpt { color: var(--ink); }
+.nm-review { border-top: 1px solid var(--line); margin-top: 1rem; padding-top: .75rem; }
+[data-nm-open] { cursor: pointer; }

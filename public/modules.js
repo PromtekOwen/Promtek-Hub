@@ -69,6 +69,13 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'nearmiss',
+    name: 'Near misses',
+    route: '#/nearmiss',
+    icon: icon('<path d="M12 3.5l9 16H3z"/><path d="M12 10v4.5M12 17h.01"/>'),
+    detail: (me) => (me.user.can?.nearMissReview ? 'Report a near miss, or read the reports' : 'Report a near miss, so it doesn\'t happen again'),
+  },
+  {
     id: 'psc',
     name: 'PSC',
     route: '#/psc',

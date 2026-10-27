@@ -467,6 +467,11 @@ const pages = {
     render: () => wipHtml(),
   },
 
+  '#/nearmiss': {
+    band: () => '<h1>Near misses</h1><p>Something that nearly went wrong: report it, so it doesn\'t happen again.</p>',
+    render: () => nmHtml(),
+  },
+
   '#/eotq': {
     band: () => '<h1>Employee of the Quarter</h1><p>Nominate someone who has gone above and beyond.</p>',
     render: () => eotqHtml(),
@@ -5122,6 +5127,155 @@ async function quotesClick(event) {
     return true;
   }
   return false;
+}
+
+// ---------- Near misses ----------
+// Report one (who's reporting is filled in), see your own, and for reviewers, every report.
+
+let nmTab = 'report';            // report, all
+let nmSetup = null;
+let nmOpenId = null;             // the report opened
+let nmStatus = 'open';           // which reports reviewers see: open, closed, all
+let nmOutside = false;           // adding someone from outside Promtek
+const NM_KEY = 'nearmiss-draft';
+const nmBlank = () => ({ date: nmSetup?.today || todayIso(), location: '', involved: [], description: '', actionNeeded: null, recommendations: '' });
+let nmDraft = (() => { try { return JSON.parse(localStorage.getItem(NM_KEY) || 'null'); } catch { return null; } })();
+const nmKeep = () => { try { localStorage.setItem(NM_KEY, JSON.stringify(nmDraft)); } catch { /* kept for this visit only */ } };
+const nmForget = () => { try { localStorage.removeItem(NM_KEY); } catch { /* nothing kept */ } };
+const nmWho = (p) => (p.outside ? `${esc(p.name)} <span class="muted">(outside Promtek)</span>` : esc(p.name));
+
+async function nmHtml() {
+  if (!nmSetup) nmSetup = await api('/api/nearmiss');
+  if (!nmDraft) nmDraft = nmBlank();
+  if (nmOpenId) return nmReportHtml();
+  const tabs = nmSetup.canReview ? `<div class="tabs">${[['report', 'Report a near miss'], ['all', 'Reports']].map(([k, l]) =>
+    `<button class="tab${nmTab === k ? ' on' : ''}" data-nm-tab="${k}">${l}</button>`).join('')}</div>` : '';
+  return `${tabs}${nmTab === 'all' && nmSetup.canReview ? await nmAllHtml() : await nmFormHtml()}`;
+}
+
+async function nmFormHtml() {
+  const d = nmDraft, people = nmSetup.people.filter((p) => !d.involved.some((x) => x.id === p.id));
+  const { reports } = await api('/api/nearmiss/mine');
+  const mine = reports.map((r) => `<li data-nm-open="${r.id}" tabindex="0" role="button">
+      <span class="title">${esc(fullDate(r.date))}, ${esc(r.location)}</span>
+      <span class="xp"><small>${r.status === 'closed' ? 'Closed' : 'Open'}</small></span>
+      <span class="sub">${esc(r.description)}</span></li>`).join('');
+  return `<div class="card nm-form">
+      <p class="muted" style="margin-top:0">Reported by <strong>${esc(nmSetup.me.name)}</strong></p>
+      <label>Date it happened <input type="date" data-nm-field="date" value="${esc(d.date)}" max="${esc(nmSetup.today)}"></label>
+      <label>Where it happened <input data-nm-field="location" maxlength="300" value="${esc(d.location)}" placeholder="The site and where on it, or the office, or the road"></label>
+      <fieldset class="nm-people"><legend>Who was involved</legend>
+        <div class="nm-chips">${d.involved.map((p, i) => `<span class="con-person">${nmWho(p)}<button data-nm-unperson="${i}" aria-label="Remove ${esc(p.name)}">×</button></span>`).join('') || '<span class="muted">No one yet.</span>'}</div>
+        <select data-nm-add aria-label="Add someone"><option value="">Add someone…</option><option value="outside">Outside of Promtek</option>
+          ${people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>
+        ${nmOutside ? `<div class="row nm-outside"><input data-nm-outside maxlength="120" placeholder="Their name, and company if you know it" aria-label="Name of the person from outside Promtek">
+          <button class="btn secondary" data-nm-outside-add>Add</button><button class="linklike" data-nm-outside-cancel>Cancel</button></div>` : ''}</fieldset>
+      <label>What happened <textarea data-nm-field="description" rows="5" maxlength="5000" placeholder="What nearly went wrong, and how">${esc(d.description)}</textarea></label>
+      <p class="nm-q">Is further action needed?</p>
+      <span class="segment" role="group" aria-label="Is further action needed?">${[[true, 'Yes'], [false, 'No']].map(([v, l]) =>
+        `<button class="seg${d.actionNeeded === v ? ' on' : ''}" data-nm-action="${v ? 1 : 0}">${l}</button>`).join('')}</span>
+      <label style="margin-top:1rem">Recommendations to stop it happening again <textarea data-nm-field="recommendations" rows="3" maxlength="3000" placeholder="Optional">${esc(d.recommendations)}</textarea></label>
+      <div class="row"><button class="btn" data-nm-send>Send the report</button></div>
+      <div class="result" id="nm-result" role="status"></div></div>
+    <h2>Yours</h2>
+    ${mine ? `<ul class="list">${mine}</ul>` : '<div class="card"><p class="muted" style="margin:0">You haven\'t reported any yet.</p></div>'}`;
+}
+
+async function nmAllHtml() {
+  const r = await api(`/api/nearmiss/all?status=${nmStatus}`);
+  const c = r.counts;
+  const list = r.reports.map((x) => `<li data-nm-open="${x.id}" tabindex="0" role="button" class="nm-row">
+      <span class="title">${esc(fullDate(x.date))}, ${esc(x.location)}${x.actionNeeded && x.status !== 'closed' ? ' <span class="psc-chip warn">Action needed</span>' : ''}</span>
+      <span class="xp"><small>${x.status === 'closed' ? 'Closed' : 'Open'}</small></span>
+      <span class="sub">Reported by ${esc(x.reporter)}, ${feedWhen(x.at)}. Involved: ${x.involved.map(nmWho).join(', ')}</span>
+      <span class="sub nm-excerpt">${esc(x.description.slice(0, 220))}${x.description.length > 220 ? '…' : ''}</span></li>`).join('');
+  return `<dl class="stats">
+      <div><dt>Open</dt><dd>${n(c.open)}<small>${n(c.openAction)} needing action</small></dd></div>
+      <div><dt>Closed</dt><dd>${n(c.closed)}</dd></div>
+      <div><dt>All reported</dt><dd>${n(c.all)}</dd></div></dl>
+    <div class="row con-tools"><span class="segment">${[['open', 'Open'], ['closed', 'Closed'], ['all', 'All']].map(([k, l]) =>
+      `<button class="seg${nmStatus === k ? ' on' : ''}" data-nm-status="${k}">${l}</button>`).join('')}</span>
+      ${c.all ? '<a class="btn secondary" href="/api/nearmiss/export.csv" download>Download as CSV</a>' : ''}</div>
+    ${list ? `<ul class="list">${list}</ul>` : `<div class="card"><p class="muted" style="margin:0">${nmStatus === 'closed' ? 'None closed yet.' : nmStatus === 'open' ? 'Nothing open.' : 'None reported yet.'}</p></div>`}`;
+}
+
+async function nmReportHtml() {
+  const { report: r, canReview } = await api(`/api/nearmiss/get?id=${encodeURIComponent(nmOpenId)}`);
+  const row = (label, value) => `<div><dt>${label}</dt><dd>${value}</dd></div>`;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-nm-back>Back</button></div>
+    <section class="card nm-report">
+      <p class="muted" style="margin-top:0">${r.status === 'closed' ? 'Closed' : 'Open'}${r.actionNeeded ? ' · further action needed' : ''}</p>
+      <h2 style="margin-top:0">${esc(fullDate(r.date))}, ${esc(r.location)}</h2>
+      <dl class="psc-facts">
+        ${row('Reported by', `${esc(r.reporter)}, ${feedWhen(r.at)}`)}
+        ${row('Who was involved', r.involved.map(nmWho).join(', '))}
+        ${row('Further action needed', r.actionNeeded ? '<b>Yes</b>' : 'No')}
+      </dl>
+      <h3>What happened</h3><p class="pre-wrap">${esc(r.description)}</p>
+      <h3>Recommendations</h3><p class="pre-wrap">${r.recommendations ? esc(r.recommendations) : '<span class="muted">None given.</span>'}</p>
+      ${r.reviewNote || r.status === 'closed' ? `<h3>What was done</h3><p class="pre-wrap">${r.reviewNote ? esc(r.reviewNote) : '<span class="muted">Nothing noted.</span>'}</p>
+        ${r.reviewedBy ? `<p class="muted">${esc(r.reviewedBy)}, ${feedWhen(r.reviewedAt)}</p>` : ''}` : ''}
+      ${canReview ? `<div class="nm-review"><label>${r.status === 'closed' ? 'What was done' : 'What\'s been done about it'}<textarea id="nm-note" rows="3" maxlength="3000" placeholder="${r.actionNeeded ? 'Needed before closing it' : 'Optional'}">${esc(r.reviewNote || '')}</textarea></label>
+        <div class="row">${r.status === 'closed' ? '<button class="btn secondary" data-nm-review="open">Open it again</button><button class="btn secondary" data-nm-review="closed">Save</button>'
+          : '<button class="btn" data-nm-review="closed">Close it</button><button class="btn secondary" data-nm-review="open">Save the note</button>'}</div>
+        <div class="result" id="nm-review-result" role="status"></div></div>` : ''}
+    </section>`;
+}
+
+async function nmClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-nm-tab]')) { nmTab = t('[data-nm-tab]').dataset.nmTab; return render(); }
+  if (t('[data-nm-status]')) { nmStatus = t('[data-nm-status]').dataset.nmStatus; return render(); }
+  if (t('[data-nm-open]') && !t('a')) { nmOpenId = t('[data-nm-open]').dataset.nmOpen; window.scrollTo(0, 0); return render(); }
+  if (t('[data-nm-back]')) { nmOpenId = null; return render(); }
+  const un = t('[data-nm-unperson]');
+  if (un) { nmDraft.involved.splice(Number(un.dataset.nmUnperson), 1); nmKeep(); return render(); }
+  if (t('[data-nm-outside-cancel]')) { nmOutside = false; return render(); }
+  if (t('[data-nm-outside-add]')) {
+    const name = view.querySelector('[data-nm-outside]')?.value.trim();
+    if (!name) { toast('Give their name'); return true; }
+    nmDraft.involved.push({ outside: true, name }); nmOutside = false; nmKeep(); return render();
+  }
+  const act = t('[data-nm-action]');
+  if (act) { nmDraft.actionNeeded = act.dataset.nmAction === '1'; nmKeep(); act.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === act)); return true; }
+  const send = t('[data-nm-send]');
+  if (send) {
+    send.disabled = true;
+    try {
+      await api('/api/nearmiss/submit', { method: 'POST', body: JSON.stringify(nmDraft) });
+      toast('Thanks, your near miss has been reported');
+      nmDraft = nmBlank(); nmForget(); window.scrollTo(0, 0);
+      return render();
+    } catch (err) { const out = document.getElementById('nm-result'); out.textContent = err.message; out.className = 'result bad'; send.disabled = false; }
+    return true;
+  }
+  const rv = t('[data-nm-review]');
+  if (rv) {
+    rv.disabled = true;
+    try {
+      await api('/api/nearmiss/review', { method: 'POST', body: JSON.stringify({ id: Number(nmOpenId), status: rv.dataset.nmReview, note: document.getElementById('nm-note')?.value || '' }) });
+      toast(rv.dataset.nmReview === 'closed' ? 'Closed' : 'Saved');
+      return render();
+    } catch (err) { const out = document.getElementById('nm-review-result'); out.textContent = err.message; out.className = 'result bad'; rv.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+function nmInput(event) {
+  const f = event.target.dataset?.nmField;
+  if (!f || !nmDraft) return false;
+  nmDraft[f] = event.target.value; nmKeep();
+  return true;
+}
+
+function nmChange(event) {
+  const sel = event.target.closest('[data-nm-add]');
+  if (!sel || !sel.value) return false;
+  if (sel.value === 'outside') { nmOutside = true; render().then(() => view.querySelector('[data-nm-outside]')?.focus()); return true; }
+  const p = nmSetup.people.find((x) => x.id === sel.value);
+  if (p) { nmDraft.involved.push({ id: p.id, name: p.name }); nmKeep(); }
+  render(); return true;
 }
 
 // A new potential customer's quote put into the project they now have.
@@ -11990,6 +12144,7 @@ view.addEventListener('click', async (event) => {
     return;
   }
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesClick(event) !== false) return;
+  if (currentRoute() === '#/nearmiss' && !settingsOpen && await nmClick(event) !== false) return;
   if (currentRoute() === '#/xp' && event.target.closest('#modifiers') && await modifiersClick(event) !== false) return;
   if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
   const eloUndo = event.target.closest('button[data-elo-undo]');
@@ -12164,13 +12319,14 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump], [data-nm-open]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
+  if (currentRoute() === '#/nearmiss' && nmInput(event)) return;
   if (currentRoute() === '#/feedback' && feedbackInput(event)) return;
   if (currentRoute() === '#/invoicing' && invoicingInput(event)) return;
   if (currentRoute() === '#/condor' && condorInput(event)) return;
@@ -12283,6 +12439,7 @@ view.addEventListener('change', async (event) => {
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
   if (currentRoute() === '#/invoicing' && !settingsOpen && invoicingChange(event)) return;
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesChange(event)) return;
+  if (currentRoute() === '#/nearmiss' && !settingsOpen && nmChange(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {

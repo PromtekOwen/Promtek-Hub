@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS near_misses (id INTEGER PRIMARY KEY AUTOINCREMENT, reporter_id TEXT, reporter_name TEXT, reporter_email TEXT, incident_date TEXT NOT NULL, location TEXT NOT NULL, involved TEXT NOT NULL, description TEXT NOT NULL, action_needed INTEGER NOT NULL DEFAULT 0, recommendations TEXT, status TEXT NOT NULL DEFAULT 'open', review_note TEXT, reviewed_by TEXT, reviewed_at TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_near_misses_reporter ON near_misses(reporter_id);

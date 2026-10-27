@@ -193,7 +193,7 @@ async function devRoute(request, env, url, real) {
 // The requests that belong to one tile alone.
 const TILE_APIS = {
   condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], it: ['/api/it/'],
-  requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'],
+  requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'], nearmiss: ['/api/nearmiss'],
 };
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
@@ -803,6 +803,21 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/eotq/past-round-remove') return json(await Eotq.removePastRound(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/link') return json(await Eotq.link(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
+  }
+
+  if (pathname.startsWith('/api/nearmiss')) {
+    const N = await import('./nearmiss.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/nearmiss') return json(await N.setup(env, user));
+    if (method === 'GET' && pathname === '/api/nearmiss/mine') return json(await N.mine(env, user));
+    if (method === 'GET' && pathname === '/api/nearmiss/all') return json(await N.all(env, user, { status: url.searchParams.get('status') || 'open' }));
+    if (method === 'GET' && pathname === '/api/nearmiss/get') return json(await N.get(env, user, url.searchParams.get('id')));
+    if (method === 'POST' && pathname === '/api/nearmiss/submit') return json(await N.submit(env, user, body));
+    if (method === 'POST' && pathname === '/api/nearmiss/review') return json(await N.review(env, user, body));
+    if (method === 'GET' && pathname === '/api/nearmiss/export.csv') {
+      const { body: text, filename } = await N.csv(env, user);
+      return new Response(text, { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': `attachment; filename="${filename}"`, 'cache-control': 'no-store' } });
+    }
   }
 
   if (pathname === '/api/forms/get' && method === 'GET') return json(await (await import('./forms.js')).get(env, user, url.searchParams.get('id')));

@@ -340,6 +340,14 @@ The **Feedback** tile lets anyone send feedback or a suggestion anonymously: the
 
 **Admins** read each post under **To review** and post it, or turn it down with an optional reason that only the writer sees. Posted feedback goes on the **Board**, where everyone can agree or disagree once each (and change their mind), sorted by most agreed or newest and filtered by category. Admins can reply to the writer on any post, with their name shown; the writer replies as "the writer". Conversations show what's new on each side, and the tile shows the writer when there's something new for them. Admins can also take a posted item down.
 
+## Part 14c2b: Near misses
+
+The **Near misses** tile is for everyone. Run `schema-055.sql` in the D1 console before it's used.
+
+- **Report a near miss**: who's reporting is filled in from their sign-in. It asks the date it happened (not in the future), where, who was involved (anyone at Promtek from the list, and **Outside of Promtek**, which takes a typed name; any number of people), what happened, whether further action is needed (Yes or No), and recommendations to stop it happening again (optional). What's typed is kept on that device until it's sent. Below the form, each person sees their own reports and whether they've been closed.
+- **Reports** (people with *Near miss reports*, admins to begin with; change it under Admin, Who can use what): every report, open, closed or all, with how many are open and how many of those need action. Opening one shows it in full, with a box for what was done about it; **Close it** needs that filled in when further action was needed. **Download as CSV** gives every report.
+- The people with *Near miss reports* get an email for each new report, saying in its subject when further action is needed.
+
 ## Part 14c3: Invoicing
 
 The **Invoicing** tile replaces the old invoice board. It reads the same orders as the WIP, UK or South Africa, and shows every Invoice item on them. Two dates on each Invoice item matter:
