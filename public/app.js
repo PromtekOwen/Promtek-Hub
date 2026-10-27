@@ -490,6 +490,7 @@ const pages = {
     async render() {
       if (jobsView?.kind === 'dispute') return jobsDisputeHtml();
       if (jobsView?.kind === 'decide') return jobsDecideHtml();
+      if (jobsView?.kind === 'difficulty') return jobsDifficultyHtml();
       return jobsHomeHtml();
     },
   },
@@ -4560,6 +4561,9 @@ async function loadEloHistory(accountId = null) {
 let jobsScope = 'mine';
 let jobsView = null;        // null, { kind: 'dispute', id } or { kind: 'decide', id }
 let jobsDraft = null;       // the dispute or decision being filled in
+let jobsData = null;        // the last list loaded, for the names behind each avatar
+const jobsSubs = new Map(); // category key -> its sub-tasks
+const SUB_COLOURS = ['#2a6fdb', '#e3893a', '#2f9e6e', '#9b59b6', '#d64545', '#1aa3a3', '#b8912b', '#5d6d7e'];
 const SCORE_LABELS = [['tech', 'Technical complexity'], ['scope', 'Scope and size'], ['risk', 'Uncertainty and risk'], ['dep', 'Dependencies and coordination']];
 const SCORE_WEIGHTS = { tech: 0.4, scope: 0.3, risk: 0.2, dep: 0.1 };
 const eloFromScores = (s) => 750 + 250 * SCORE_LABELS.reduce((a, [k]) => a + (Number(s[k]) || 0) * SCORE_WEIGHTS[k], 0);
@@ -4578,9 +4582,10 @@ function jobsCategoryRow(c) {
   if (c.legacy) {
     return `<li class="job-cat${state}">
     <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(c.summary)}</span>
-      <span class="muted">Assigned to you</span></div>
+      <span class="muted">${c.mine ? 'Assigned to you' : c.assigneeName ? esc(c.assigneeName) : 'Not assigned'}</span></div>
     ${c.estimateSeconds ? `<div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>` : ''}
     <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}${c.status ? `. ${esc(c.status)}` : ''}</span></div>
+    ${jobsSubsSlot(c.key)}
   </li>`;
   }
   const label = DISCIPLINE_NAMES[c.discipline] || '';
@@ -4588,19 +4593,121 @@ function jobsCategoryRow(c) {
   const name = `${label}${extra && extra.toLowerCase() !== label.toLowerCase() ? `, ${esc(extra)}` : ''}`;
   const notes = [
     c.pendingDispute ? (c.pendingIsMine ? 'Your dispute is with the team lead' : 'A dispute is with the team lead') : '',
-    c.disputed ? `Agreed after a dispute, quoted ${n(Math.round(c.quotedElo || 0))}` : '',
+    c.disputed ? (c.quotedElo ? `Agreed after a dispute, quoted ${n(Math.round(c.quotedElo))}` : 'Difficulty set after the order was made') : '',
   ].filter(Boolean).join('. ');
   const prompt = c.mine && !c.done && !c.pendingDispute && pct >= 0.9
     ? `<p class="job-prompt">${pct >= 1 ? 'This has passed its estimate.' : 'This is close to its estimate.'} Does the difficulty still look right?</p>` : '';
-  const action = !c.done && !c.pendingDispute
-    ? `<button class="chip-btn" data-jobs-dispute="${esc(c.id)}">Dispute</button>` : '';
+  const action = c.done || c.pendingDispute ? ''
+    : c.unscored ? `<button class="chip-btn" data-jobs-difficulty="${esc(c.id)}">Work out difficulty</button>`
+      : `<button class="chip-btn" data-jobs-dispute="${esc(c.id)}">Dispute</button>`;
   return `<li class="job-cat${state}">
     <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${name}</span>
       <span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span></div>
     <div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>
-    <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.done ? '. Done' : ''}${notes ? `. ${notes}` : ''}</span>${action}</div>
+    <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.done ? '. Done' : ''}${c.unscored ? '. Difficulty not set' : ''}${notes ? `. ${notes}` : ''}</span>${action}</div>
     ${prompt}
+    ${jobsSubsSlot(c.key)}
   </li>`;
+}
+
+// ---------- each category's sub-tasks ----------
+
+function jobsSubsSlot(key) {
+  return `<div class="job-subs" data-jobs-subs="${esc(key)}">${jobsSubs.has(key) ? jobsSubsHtml(key) : ''}</div>`;
+}
+
+function jobsSubsHtml(key) {
+  const subs = jobsSubs.get(key) || [];
+  if (!subs.length) return '';
+  const allocated = subs.reduce((t, x) => t + (x.estimateSeconds || 0), 0);
+  const colour = (i) => SUB_COLOURS[i % SUB_COLOURS.length];
+  const share = (x) => (allocated ? (x.estimateSeconds || 0) / allocated : 0);
+  const strip = allocated
+    ? `<div class="job-sub-strip" role="img" aria-label="How the time allocated is split between its sub-tasks">${subs.map((x, i) => (x.estimateSeconds
+      ? `<span style="width:${(share(x) * 100).toFixed(2)}%;background:${colour(i)}" title="${esc(x.summary)}: ${Math.round(share(x) * 100)}%"></span>` : '')).join('')}</div>`
+    : '<p class="sub job-sub-none">No time allocated to its sub-tasks yet.</p>';
+  const rows = subs.map((x, i) => {
+    const over = x.estimateSeconds && x.loggedSeconds > x.estimateSeconds;
+    return `<li class="job-sub${x.statusCat === 'done' ? ' done' : ''}">
+      <span class="job-sub-dot" style="background:${allocated && x.estimateSeconds ? colour(i) : 'var(--line)'}"></span>
+      <span class="job-sub-name"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}${x.assignee ? ` <small class="muted">${esc(x.assignee)}</small>` : ''}</span>
+      <span class="job-sub-time${over ? ' over' : ''}">${allocated && x.estimateSeconds ? `<strong>${Math.round(share(x) * 100)}%</strong> ` : ''}${x.estimateSeconds ? `${hoursShort(x.loggedSeconds)} of ${hoursShort(x.estimateSeconds)}` : `${hoursShort(x.loggedSeconds)} logged`}</span>
+      <span class="job-sub-status"><button class="status-chip s-${esc(x.statusCat || 'new')}" data-jobs-sub-move="${esc(x.key)}" aria-haspopup="true">${esc(x.status || 'Status')} <span aria-hidden="true">▾</span></button></span>
+      <div class="job-sub-moves" data-jobs-moves="${esc(x.key)}" hidden></div>
+    </li>`;
+  }).join('');
+  return `<details class="job-subs-box"${subs.length <= 6 ? ' open' : ''}><summary>${subs.length} sub-task${subs.length === 1 ? '' : 's'}${allocated ? `, ${hoursShort(allocated)} allocated` : ''}</summary>${strip}<ul class="job-sub-list">${rows}</ul></details>`;
+}
+
+// Loaded after the list is drawn, so the orders show straight away.
+async function loadJobSubtasks() {
+  const slots = [...view.querySelectorAll('[data-jobs-subs]')];
+  const keys = [...new Set(slots.map((el) => el.dataset.jobsSubs).filter((k) => !jobsSubs.has(k)))];
+  if (keys.length) {
+    try {
+      const { byParent } = await api(`/api/jobs/subtasks?keys=${encodeURIComponent(keys.join(','))}`);
+      for (const k of keys) jobsSubs.set(k, byParent[k] || []);
+    } catch { return; }
+  }
+  for (const el of view.querySelectorAll('[data-jobs-subs]')) {
+    const open = el.querySelector('details')?.open;
+    el.innerHTML = jobsSubsHtml(el.dataset.jobsSubs);
+    if (open !== undefined && el.querySelector('details')) el.querySelector('details').open = open;
+  }
+}
+
+// ---------- who's on an order ----------
+
+function personAvatar(id, size) {
+  const p = jobsData?.people?.[id] || { name: '?' };
+  return `<span class="pa pa-${size}" title="${esc(p.name)}">${p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : esc(initialsOf(p.name))}</span>`;
+}
+
+function jobsPeopleHtml(o) {
+  o.people = o.people || [];
+  if (!o.assignee && !o.people.length) return '';
+  const shown = o.people.slice(0, 5);
+  const more = o.people.length - shown.length;
+  const dir = jobsData?.people || {};
+  const name = (id) => esc(dir[id]?.name || '?');
+  const label = [o.assignee ? `Assignee ${dir[o.assignee]?.name || ''}` : 'No assignee', o.people.length ? `${o.people.length} more involved` : ''].filter(Boolean).join(', ');
+  return `<div class="job-people">
+    <button class="job-people-btn" data-jobs-people="1" aria-expanded="false" aria-label="${esc(label)}">
+      ${o.assignee ? personAvatar(o.assignee, 'lg') : '<span class="pa pa-lg pa-none" title="No assignee">?</span>'}
+      ${shown.length ? `<span class="pa-stack">${shown.map((id) => personAvatar(id, 'sm')).join('')}${more > 0 ? `<span class="pa pa-sm pa-more">+${more}</span>` : ''}</span>` : ''}
+    </button>
+    <div class="job-people-pop" role="tooltip">
+      <p><span class="muted">Assignee</span><br>${o.assignee ? name(o.assignee) : 'Nobody yet'}</p>
+      ${o.people.length ? `<p><span class="muted">Promtek Staff Involved</span></p><ul>${o.people.map((id) => `<li>${name(id)}</li>`).join('')}</ul>` : ''}
+    </div></div>`;
+}
+
+// ---------- difficulty for a category quoted without it ----------
+
+async function jobsDifficultyHtml() {
+  const c = await api(`/api/jobs/category?id=${encodeURIComponent(jobsView.id)}`);
+  if (!jobsDraft || jobsDraft.difficulty !== c.id) {
+    jobsDraft = { difficulty: c.id, scores: Object.fromEntries(SCORE_LABELS.map(([k]) => [k, c.current[k] ?? null])), estimateHours: '', comment: '' };
+  }
+  const lead = Boolean(jobsData?.canSetDifficulty);
+  const ready = SCORE_LABELS.every(([k]) => jobsDraft.scores[k]);
+  return `<div class="card">
+      <p style="margin-top:0"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(DISCIPLINE_NAMES[c.discipline] || '')}</strong><br>
+        <span class="muted">${esc(c.epicKey)} ${esc(c.orderSummary)}, ${esc(c.customer || '')}</span></p>
+      <p class="muted">${hoursShort(c.loggedSeconds)} logged${c.current.estimateSeconds ? ` of ${hoursShort(c.current.estimateSeconds)} estimated` : ', no estimate yet'}.</p>
+      <h3>How hard is it?</h3>
+      <p class="help">The difficulty wasn't set when this was quoted. Score each area from 1 (simple) to 5 (very hard) for the work as a whole.</p>
+      ${SCORE_LABELS.map(([k, l]) => scoreRow(k, l, jobsDraft.scores[k])).join('')}
+      <p class="elo-change">Job ELO <strong>${ready ? n(Math.round(eloFromScores(jobsDraft.scores))) : '—'}</strong></p>
+      <label>Estimate, in hours <span class="muted">(optional)</span>
+        <input type="number" min="0" step="0.5" inputmode="decimal" data-jobs-field="estimateHours" value="${esc(jobsDraft.estimateHours)}" placeholder="${c.current.estimateSeconds ? Math.round(c.current.estimateSeconds / 360) / 10 : ''}"></label>
+      <label style="margin-top:1rem">Notes <span class="muted">(optional)</span>
+        <textarea rows="3" data-jobs-field="comment">${esc(jobsDraft.comment)}</textarea></label>
+      <p class="help">${lead ? 'It applies straight away: XP already earned on this category is recalculated at this ELO, and Jira is updated to match.' : 'Your team lead sees it and can agree, adjust or decline it. Once agreed, XP already earned on it is recalculated at the new ELO.'}</p>
+      <div class="row"><button class="btn" data-jobs-set-difficulty="1">${lead ? 'Set the difficulty' : 'Send to the team lead'}</button>
+        <button class="btn secondary" data-jobs-back="1">Back to jobs</button></div>
+      <div class="result" id="jobs-result" role="status"></div>
+    </div>`;
 }
 
 function approvalsHtml(a) {
@@ -4626,11 +4733,16 @@ function supervisedHtml(list) {
 
 async function jobsHomeHtml() {
   const [data, approvals] = await Promise.all([api(`/api/jobs?scope=${jobsScope}`), api('/api/approvals')]);
+  jobsData = data;
   const scopes = [['mine', 'Mine'], ['team', 'My team'], ['all', 'All']];
-  const orders = data.orders.map((o) => `<div class="card job-order" data-job-order>
-      <p class="job-order-head"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
-        <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}</span></p>
-      <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul></div>`).join('');
+  const orders = data.orders.map((o) => `<div class="card job-order${o.legacy ? ' legacy' : ''}" data-job-order>
+      <div class="job-order-top">
+        <p class="job-order-head"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
+          <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}${o.legacy ? '. Older order, from before categories' : ''}</span></p>
+        ${jobsPeopleHtml(o)}
+      </div>
+      <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul>
+      <span hidden>${(o.people || []).concat(o.assignee ? [o.assignee] : []).map((id) => esc(data.people?.[id]?.name || '')).join(' ')}</span></div>`).join('');
   const empty = jobsScope === 'mine'
     ? '<div class="card"><p style="margin:0">Nothing open that you\'re in Promtek Staff Involved on, or assigned to on an older order. My team and All show everything else.</p></div>'
     : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
@@ -4641,7 +4753,7 @@ async function jobsHomeHtml() {
     <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) =>
       `<button class="seg${jobsScope === k ? ' on' : ''}" data-jobs-scope="${k}">${l}</button>`).join('')}</span>
       <input type="search" id="jobs-search" placeholder="Search orders, customers or keys" aria-label="Search jobs"></div>
-    <p class="help">Each category shows its job ELO and the time logged against its estimate. If a job has turned out harder than quoted, dispute it and your team lead will take a look.</p>
+    <p class="help">Each category shows its job ELO, the time logged against its estimate and its sub-tasks, with the share of the time allocated to each. Tap a sub-task's status to move it on. If a job has turned out harder than quoted, dispute it and your team lead will take a look; if no difficulty was set when it was quoted, work it out instead.</p>
     ${orders || empty}`;
 }
 
@@ -4712,13 +4824,67 @@ async function jobsClick(event) {
   if (t('[data-jobs-scope]')) { jobsScope = t('[data-jobs-scope]').dataset.jobsScope; return render(); }
   if (t('[data-jobs-dispute]')) { jobsView = { kind: 'dispute', id: t('[data-jobs-dispute]').dataset.jobsDispute }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-jobs-decide]')) { jobsView = { kind: 'decide', id: t('[data-jobs-decide]').dataset.jobsDecide }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-jobs-difficulty]')) { jobsView = { kind: 'difficulty', id: t('[data-jobs-difficulty]').dataset.jobsDifficulty }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-jobs-back]')) { jobsView = null; jobsDraft = null; return render(); }
+  const people = t('[data-jobs-people]');
+  if (people) {
+    const box = people.parentElement;
+    const open = !box.classList.contains('open');
+    view.querySelectorAll('.job-people.open').forEach((b) => { b.classList.remove('open'); b.querySelector('[data-jobs-people]').setAttribute('aria-expanded', 'false'); });
+    box.classList.toggle('open', open);
+    people.setAttribute('aria-expanded', String(open));
+    return true;
+  }
+  const move = t('[data-jobs-sub-move]');
+  if (move) {
+    const key = move.dataset.jobsSubMove;
+    const menu = view.querySelector(`[data-jobs-moves="${CSS.escape(key)}"]`);
+    if (!menu.hidden) { menu.hidden = true; return true; }
+    view.querySelectorAll('[data-jobs-moves]').forEach((m) => { m.hidden = true; });
+    menu.hidden = false;
+    menu.innerHTML = '<span class="muted">Loading the moves from Jira…</span>';
+    try {
+      const { transitions } = await api(`/api/jobs/transitions?key=${encodeURIComponent(key)}`);
+      menu.innerHTML = transitions.length
+        ? `<span class="muted">Move to</span> ${transitions.map((x) => `<button class="chip-btn" data-jobs-sub-to="${esc(x.id)}" data-key="${esc(key)}">${esc(x.to)}</button>`).join(' ')}`
+        : '<span class="muted">Jira has no moves from here.</span>';
+    } catch (err) { menu.innerHTML = `<span class="bad">${esc(err.message)}</span>`; }
+    return true;
+  }
+  const to = t('[data-jobs-sub-to]');
+  if (to) {
+    const key = to.dataset.key;
+    to.closest('[data-jobs-moves]').querySelectorAll('button').forEach((b) => { b.disabled = true; });
+    try {
+      const r = await api('/api/jobs/transition', { method: 'POST', body: JSON.stringify({ key, id: to.dataset.jobsSubTo }) });
+      for (const list of jobsSubs.values()) for (const x of list) if (x.key === key) { x.status = r.status; x.statusCat = r.cat; }
+      const slot = to.closest('[data-jobs-subs]');
+      if (slot) { slot.innerHTML = jobsSubsHtml(slot.dataset.jobsSubs); slot.querySelector('details')?.setAttribute('open', ''); }
+      toast(`${key} moved to ${r.status}`);
+    } catch (err) { toast(err.message); to.closest('[data-jobs-moves]')?.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
+    return true;
+  }
   const seg = t('[data-jobs-score]');
   if (seg && jobsDraft) {
     jobsDraft.scores[seg.dataset.jobsScore] = Number(seg.dataset.value);
     seg.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === seg));
     const strong = view.querySelectorAll('.elo-change strong');
-    if (strong[1]) strong[1].textContent = n(Math.round(eloFromScores(jobsDraft.scores)));
+    const ready = SCORE_LABELS.every(([k]) => jobsDraft.scores[k]);
+    const last = strong[strong.length - 1];
+    if (last) last.textContent = ready ? n(Math.round(eloFromScores(jobsDraft.scores))) : '—';
+    return true;
+  }
+  const setDiff = t('[data-jobs-set-difficulty]');
+  if (setDiff && jobsDraft?.difficulty) {
+    if (!SCORE_LABELS.every(([k]) => jobsDraft.scores[k])) { document.getElementById('jobs-result').textContent = 'Score all four areas first.'; return true; }
+    setDiff.disabled = true;
+    try {
+      const r = await api('/api/jobs/difficulty', { method: 'POST', body: JSON.stringify({ categoryId: jobsDraft.difficulty, scores: jobsDraft.scores,
+        estimateHours: jobsDraft.estimateHours, comment: jobsDraft.comment }) });
+      jobsView = null; jobsDraft = null;
+      toast(r.status === 'approved' ? `Difficulty set, job ELO ${n(Math.round(r.elo))}${r.jiraSynced ? '' : '. Jira will catch up shortly'}` : 'Sent to your team lead');
+      return render();
+    } catch (err) { document.getElementById('jobs-result').textContent = err.message; setDiff.disabled = false; }
     return true;
   }
   const reason = t('[data-jobs-reason]');
@@ -10423,6 +10589,9 @@ view.addEventListener('focusin', (event) => {
 document.addEventListener('click', (event) => {
   if (settingsOpen === '#/contracts' && !event.target.closest('.con-picker')) conPicker(false);
 });
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.job-people')) document.querySelectorAll('.job-people.open').forEach((b) => b.classList.remove('open'));
+});
 view.addEventListener('keydown', (event) => {
   if (settingsOpen !== '#/contracts' || event.target.id !== 'con-person-search') return;
   if (event.key === 'Escape') conPicker(false);
@@ -12469,6 +12638,7 @@ async function render() {
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
+      if (route === '#/jobs' && !jobsView) loadJobSubtasks();
       if (route !== '#/quotes') { quotesView = null; quoteData = null; }
       if (route !== '#/wip') { wipOpen = null; wipImport = null; }
     }

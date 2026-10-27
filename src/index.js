@@ -726,6 +726,10 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/jobs/dispute') return json(await Disputes.raiseDispute(env, user, body));
     if (method === 'POST' && pathname === '/api/jobs/dispute-withdraw') return json(await Disputes.withdrawDispute(env, user, body.id));
     if (method === 'POST' && pathname === '/api/jobs/dispute-decide') return json(await Disputes.decideDispute(env, user, body));
+    if (method === 'GET' && pathname === '/api/jobs/subtasks') return json(await Disputes.subtasksOf(env, url.searchParams.get('keys')));
+    if (method === 'GET' && pathname === '/api/jobs/transitions') return json(await Disputes.transitionsOf(env, url.searchParams.get('key')));
+    if (method === 'POST' && pathname === '/api/jobs/transition') return json(await Disputes.transition(env, user, body));
+    if (method === 'POST' && pathname === '/api/jobs/difficulty') return json(await Disputes.setDifficulty(env, user, body));
     if (method === 'GET' && pathname === '/api/approvals') {
       const [disputes, modifiers, supervised, countChecks] = await Promise.all([
         Disputes.pendingDisputes(env, user), Modifiers.pending(env, user), Modifiers.supervised(env, user), Quotes.pendingCountChecks(env, user)]);

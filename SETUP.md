@@ -553,6 +553,13 @@ Each finished category is a match between the job and the people who logged time
 
 **Jobs tile.** Every open order in the customer projects, with each category's job ELO and its time logged against the estimate. Mine shows categories you've logged time on in the last six months; My team and All show the rest.
 
+- **Who's on it.** Each order shows its Assignee as a large picture (or initials) and everyone in Promtek Staff Involved on the order or its categories as smaller ones beside it, up to five then "+N". The Assignee isn't repeated among them. Hover over them, or tap on a phone, for the list of names. Searching finds orders by these names too.
+- **Sub-tasks.** Under each category, its sub-tasks with a bar showing how the time allocated (their Original Estimates) is split between them, each one's share and time logged against it, and its status. Tap a status to move it to any status Jira allows from there; the move is made in Jira as the hub's Jira account and recorded in the audit log under Jobs. Only sub-tasks in customer projects can be moved.
+- **Older orders.** Orders from before categories show on My team and All with their open items and who each is assigned to; Mine shows only the ones assigned to you.
+- **Difficulty set later.** A category quoted without a difficulty shows **Work out difficulty** instead of Dispute. Score the four areas, with an optional estimate. A team lead, Management or an admin sets it straight away; anyone else's goes to the team lead like a dispute. It is kept alongside the quote as an agreed dispute is (reason "Difficulty set after the order was made"), XP already earned on it is recalculated, and the ELO is written to the category in Jira.
+
+**New order emails.** As well as the home screen alert, each new order emails the leads of its team once: Service orders to Service leads, Projects orders to Projecting leads. An order whose division still isn't set a day after it was created goes to both. It runs hourly, and the first run only records where things stand, so nobody is emailed about orders already there.
+
 **Disputes.** Anyone can dispute a category's difficulty: their own scores for the four areas, an optional better estimate, what changed, and a comment. It goes to the team leads for the order's Promtek Team (Service or Projecting; any lead if it has none), who agree, adjust or decline it in Jobs. Nobody decides their own.
 
 Once agreed:

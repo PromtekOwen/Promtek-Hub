@@ -985,6 +985,8 @@ async function answer(p, q, method, body) {
 
   // Jobs
   if (p === '/api/jobs') return jobsList(q.get('scope') || 'mine');
+  if (p === '/api/jobs/subtasks') return { byParent: {} };
+  if (p === '/api/jobs/transitions') return { transitions: [] };
   if (p === '/api/approvals') return { disputes: world.disputes, modifiers: world.leadModifiers, countChecks: [], supervised: [] };
   if (p === '/api/jobs/category') {
     const c = allCategories().find((x) => x.id === q.get('id'));
