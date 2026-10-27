@@ -376,6 +376,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/mid-release/restart') return json(await Mes.restartReview(env, user, body.versionId));
     if (method === 'GET' && pathname === '/api/mes/rating') return json(await Mes.ratingHistory(env, user, url.searchParams.get('accountId')));
     if (method === 'GET' && pathname === '/api/mes/team') return json({ team: await Mes.team(env, user) });
+    if (method === 'GET' && pathname === '/api/mes/psc') return json(await (await import('./psc-handoff.js')).condorList(env));
     if (pathname.startsWith('/api/mes/notes')) {
       if (!Mes.canEstimate(user)) return json({ error: 'Release notes are for the Condor team.' }, 403);
       const Notes = await import('./release-notes.js');
@@ -445,6 +446,26 @@ async function route(request, env, url, user) {
       const r = await Psc.setCharge(env, user, body.key, body.chargeable);
       await Audit.record(env, user, { area: 'PSC', action: body.chargeable ? 'Marked chargeable' : 'Marked Promtek at fault', subjectType: 'psc', subjectId: body.key, label: body.key });
       return json(r);
+    }
+    if (method === 'POST' && (pathname === '/api/psc/quote' || pathname === '/api/psc/condor')) {
+      const H = await import('./psc-handoff.js');
+      const condor = pathname === '/api/psc/condor';
+      const r = condor ? await H.toCondor(env, user, body) : await H.toQuote(env, user, body);
+      await Audit.record(env, user, { area: 'PSC', action: condor ? 'Sent to Condor Dev' : 'Turned into a quote', subjectType: 'psc', subjectId: body.key, label: body.key,
+        changes: [{ label: condor ? 'MES ticket' : 'Quote', before: '', after: r.target || (r.saved ? (body.prospect ? `For ${body.prospect}` : 'Made') : 'Waiting for Jira') }] });
+      return json(r);
+    }
+    if (method === 'POST' && pathname === '/api/psc/flag-org') {
+      const r = await (await import('./psc-handoff.js')).setFlagOrg(env, user, body);
+      await Audit.record(env, user, { area: 'PSC', action: 'Organization set from an alert', subjectType: 'psc', subjectId: r.flag.ref_key, label: r.flag.ref_key,
+        changes: [{ label: 'Organization', before: '', after: r.org }] });
+      return json({ ok: true, saved: r.saved, message: r.message, org: r.org });
+    }
+    if (method === 'POST' && pathname === '/api/psc/flag-resolve') {
+      const r = await (await import('./psc-handoff.js')).resolveFlag(env, user, body.id);
+      await Audit.record(env, user, { area: 'PSC', action: 'Alert marked resolved', subjectType: 'psc', subjectId: r.flag.ref_key, label: r.flag.ref_key,
+        changes: [{ label: 'Alert', before: r.flag.detail, after: 'Resolved' }] });
+      return json({ ok: true });
     }
     if (method === 'GET' && pathname === '/api/psc/settings') return json(await Psc.getSettings(env, user));
     if (method === 'POST' && pathname === '/api/psc/settings') {
@@ -649,6 +670,12 @@ async function route(request, env, url, user) {
       return json(await customerList(env));
     }
     if (method === 'POST' && pathname === '/api/quotes/create') return json(await Quotes.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/quotes/link-project') {
+      const r = await Quotes.linkProject(env, user, body);
+      await Audit.record(env, user, { area: 'Quotes', action: 'New customer\'s quote put in their project', subjectType: 'quote', subjectId: String(body.id),
+        changes: [{ label: 'Customer', before: r.was || '', after: `${r.customer} (${r.project})` }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/quotes/team') {
       const r = await Quotes.setTeam(env, user, body);
       await Audit.record(env, user, { area: 'Quotes', action: 'Promtek Team changed', subjectType: 'quote', subjectId: String(body.id), changes: [{ label: 'Team', before: '', after: body.team }] });

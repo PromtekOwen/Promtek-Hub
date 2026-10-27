@@ -980,7 +980,7 @@ export async function overview(env, viewer) {
     .sort((a, b) => String(a.end || '9999').localeCompare(String(b.end || '9999')));
   const { results: flags } = await env.DB.prepare(
     `SELECT f.*, c.customer FROM contract_flags f LEFT JOIN contracts c ON c.issue_key = f.contract_key
-      WHERE f.resolved_at IS NULL ORDER BY f.id DESC LIMIT 100`
+      WHERE f.resolved_at IS NULL AND f.kind != 'psc-org' ORDER BY f.id DESC LIMIT 100`
   ).all();
   const today = londonDate();
   const holidays = await holidaysFor(env);

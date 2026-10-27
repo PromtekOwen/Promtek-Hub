@@ -4632,20 +4632,29 @@ async function quoteHtml() {
   quoteData = await api(`/api/quotes/get?id=${encodeURIComponent(quotesView.id)}`);
   if (quoteData.canEdit && !quotePeople) quotePeople = (await api('/api/quotes/people')).people;
   const q = quoteData.quote;
-  const status = { open: 'Being worked on', ready: 'Ready to send', won: `Became order ${q.epic_key || ''}`, lost: 'Not going ahead' }[q.status];
+  const waitingForProject = q.prospect && !q.project_key;
+  const status = { open: 'Being worked on', ready: 'Ready to send', won: `Became order ${q.epic_key || ''}`, lost: 'Not going ahead',
+    accepted: waitingForProject ? 'Accepted, waiting for their project in Jira' : 'Accepted' }[q.status];
   const jira = q.quote_key
     ? `<a href="${esc(quoteData.jiraUrl)}" target="_blank" rel="noopener">${esc(q.quote_key)}</a>`
+    : waitingForProject ? '<span class="muted">kept here until they have a project in Jira</span>'
     : `<span class="bad">Not in Jira yet</span> <button class="linklike" data-q-retry="${q.id}">Try again</button>`;
   const actions = quoteData.canEdit && !q.epic_key ? `<div class="row" style="margin-top:.75rem">
-      ${q.status !== 'ready' ? '<button class="btn" data-q-status="ready">Ready to send</button>' : '<button class="btn secondary" data-q-status="open">Back to working on it</button>'}
+      ${q.status === 'accepted' ? '' : q.status !== 'ready' ? '<button class="btn" data-q-status="ready">Ready to send</button>' : '<button class="btn secondary" data-q-status="open">Back to working on it</button>'}
+      ${q.prospect && q.status !== 'accepted' ? '<button class="btn" data-q-status="accepted">Accepted</button>' : ''}
       ${q.status !== 'lost' ? '<button class="btn secondary" data-q-status="lost">Not going ahead</button>' : ''}</div>` : '';
+  if (waitingForProject && quoteData.canEdit && !quoteCustomers) quoteCustomers = (await api('/api/quotes/customers')).customers;
+  const linkRow = waitingForProject && quoteData.canEdit ? `<div class="q-link-project"><label>They now have a project in Jira
+      <select data-q-link-project="${q.id}"><option value="">Choose their project…</option>${(quoteCustomers || []).map((c) => `<option value="${esc(c.key)}">${esc(c.name)} (${esc(c.key)})</option>`).join('')}</select></label>
+      <p class="help">The quote then goes into their Quote List in Jira. The hub also checks every hour for a new project with their name.</p></div>` : '';
   const teamRow = quoteData.canEdit && !q.epic_key
     ? `<div class="q-team-row"><span class="muted">Promtek team</span><span class="segment" role="group" aria-label="Promtek team">${(quoteData.teams || QUOTE_TEAMS).map((t) =>
         `<button class="seg${q.team === t ? ' on' : ''}" data-q-team="${t}">${t}</button>`).join('')}</span></div>`
     : q.team ? `<p class="muted" style="margin:.4rem 0 0">Promtek team: ${esc(q.team)}</p>` : '';
   return `<div class="card"><p style="margin:0"><strong>${esc(q.title)}</strong><br>
-      <span class="muted">${esc(q.customer || q.project_key)}. Quote ${jira}. ${status}.</span></p>
-      ${teamRow}
+      <span class="muted">${esc(q.customer || q.project_key)}${waitingForProject ? ' (new potential customer)' : ''}. Quote ${jira}. ${status}.</span>
+      ${q.psc_key ? `<br><span class="muted">From ${jiraLink(q.psc_key)} in PSC.</span>` : ''}</p>
+      ${teamRow}${linkRow}
       ${q.jira_error && !q.quote_key ? `<p class="help">${esc(q.jira_error)}. Everything here is saved; it goes to Jira when it can.</p>` : ''}
       ${q.handoff_error ? `<p class="help">The order's figures are waiting to go into Jira: ${esc(q.handoff_error)}</p>` : ''}
       ${actions}<div class="result" id="q-status-result" role="status"></div></div>
@@ -4669,13 +4678,18 @@ function quoteDescriptionHtml(q) {
 
 async function quoteNewHtml() {
   if (!quoteCustomers) quoteCustomers = (await api('/api/quotes/customers')).customers;
-  quoteNew = quoteNew || { projectKey: '', customer: '', title: '', disciplines: [] };
+  quoteNew = quoteNew || { projectKey: '', customer: '', title: '', disciplines: [], prospectMode: false, prospect: '' };
   const picked = quoteCustomers.find((c) => c.key === quoteNew.projectKey);
   return `<div class="card">
       <label>Customer
-        <input type="search" id="q-customer-search" placeholder="Search customers" value="${esc(picked ? picked.name : '')}"></label>
-      <ul class="list plain q-customers" ${picked ? 'hidden' : ''}>${quoteCustomers.map((c) =>
+        <input type="search" id="q-customer-search" placeholder="Search customers" value="${esc(quoteNew.prospectMode ? 'New Potential Customer' : picked ? picked.name : '')}"></label>
+      <ul class="list plain q-customers" ${picked || quoteNew.prospectMode ? 'hidden' : ''}>
+        <li class="q-prospect-row"><button class="linklike" data-q-prospect="1"><strong>New Potential Customer</strong></button> <span class="muted">No project in Jira yet</span></li>
+        ${quoteCustomers.map((c) =>
         `<li data-q-customer-row><button class="linklike" data-q-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
+      <div id="q-prospect" ${quoteNew.prospectMode ? '' : 'hidden'}>
+        <label style="margin-top:1rem">New potential customer's name<input type="text" data-q-new="prospect" value="${esc(quoteNew.prospect || '')}" placeholder="The company asking for the quote"></label>
+        <p class="help">There's no project for them in Jira yet, so the quote is kept here. Once their project is made it goes into their Quote List: the hub finds the project by name, or you can choose it on the quote.</p></div>
       <label style="margin-top:1rem">Title<input type="text" data-q-new="title" value="${esc(quoteNew.title)}" placeholder="What the customer is asking for"></label>
       <label style="margin-top:1rem">Description
         <textarea rows="6" data-q-new="description" placeholder="What the customer wants, where, any deadlines, and anything the engineers should know">${esc(quoteNew.description || '')}</textarea></label>
@@ -4722,10 +4736,10 @@ async function quotesHomeHtml() {
       <span class="sub">${esc(r.customer || '')}. Asked by ${esc(r.requested_name || 'someone')}.</span>
       <button class="btn secondary" data-q-answer-open="${r.id}" style="margin-top:.6rem">Give my estimate</button></li>`).join('')}</ul>` : '';
   const scopes = [['open', 'Open'], ['mine', 'Mine'], ['all', 'All']];
-  const status = { open: 'Being worked on', ready: 'Ready to send', won: 'Became an order', lost: 'Not going ahead' };
+  const status = { open: 'Being worked on', ready: 'Ready to send', won: 'Became an order', lost: 'Not going ahead', accepted: 'Accepted' };
   const shown = data.quotes.filter((q) => teamMatches(quotesTeam, q.team));
   const rows = shown.map((q) => `<li data-q-row><button class="linklike title" data-q-open="${q.id}">${esc(q.title)}</button>
-      <span class="sub">${esc(q.customer || q.project_key)}${q.quote_key ? `, ${esc(q.quote_key)}` : ''}. ${status[q.status]}${q.team ? ` · ${esc(q.team)}` : ''}${q.created_name ? `. ${esc(q.created_name)}` : ''}.</span></li>`).join('');
+      <span class="sub">${esc(q.customer || q.project_key)}${q.prospect && !q.project_key ? ' (new potential customer)' : ''}${q.quote_key ? `, ${esc(q.quote_key)}` : ''}. ${status[q.status]}${q.team ? ` · ${esc(q.team)}` : ''}${q.created_name ? `. ${esc(q.created_name)}` : ''}.</span></li>`).join('');
   const teamSeg = `<span class="segment" role="group" aria-label="Promtek team">${[['', 'All teams'], ...QUOTE_TEAMS.map((t) => [t, t])].map(([k, l]) =>
     `<button class="seg${quotesTeam === k ? ' on' : ''}" data-q-team-filter="${k}"${k === 'Projecting' ? ' title="Includes Condor quotes"' : ''}>${l}</button>`).join('')}</span>`;
   return `${tabs}${asks}
@@ -4817,8 +4831,17 @@ async function quotesClick(event) {
   if (t('[data-q-open]')) { quotesView = { kind: 'quote', id: t('[data-q-open]').dataset.qOpen }; window.scrollTo(0, 0); return render(); }
   if (t('[data-q-answer-open]')) { quotesView = { kind: 'answer', id: t('[data-q-answer-open]').dataset.qAnswerOpen }; answerDraft = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-q-back]')) { quotesView = null; quoteData = null; return render(); }
+  if (t('[data-q-prospect]') && quoteNew) {
+    quoteNew.prospectMode = true; quoteNew.projectKey = ''; quoteNew.customer = '';
+    document.getElementById('q-customer-search').value = 'New Potential Customer';
+    document.querySelector('.q-customers').hidden = true;
+    document.getElementById('q-prospect').hidden = false;
+    document.querySelector('[data-q-new="prospect"]')?.focus();
+    return true;
+  }
   const cust = t('[data-q-customer]');
   if (cust) {
+    if (quoteNew.prospectMode) { quoteNew.prospectMode = false; const box = document.getElementById('q-prospect'); if (box) box.hidden = true; }
     quoteNew.projectKey = cust.dataset.qCustomer; quoteNew.customer = cust.dataset.name;
     document.getElementById('q-customer-search').value = cust.dataset.name;
     document.querySelector('.q-customers').hidden = true;
@@ -4852,8 +4875,10 @@ async function quotesClick(event) {
   if (create) {
     create.disabled = true;
     try {
-      const r = await api('/api/quotes/create', { method: 'POST', body: JSON.stringify({ ...quoteNew, team: quoteNew.team || suggestTeam(quoteNew.disciplines) }) });
-      toast(r.quoteKey ? `Quote ${r.quoteKey} started` : 'Quote started. Jira will catch up');
+      const body = { ...quoteNew, team: quoteNew.team || suggestTeam(quoteNew.disciplines), prospect: quoteNew.prospectMode ? quoteNew.prospect : '' };
+      if (quoteNew.prospectMode) body.projectKey = '';
+      const r = await api('/api/quotes/create', { method: 'POST', body: JSON.stringify(body) });
+      toast(r.quoteKey ? `Quote ${r.quoteKey} started` : quoteNew.prospectMode ? `Quote started for ${quoteNew.prospect}` : 'Quote started. Jira will catch up');
       quotesView = { kind: 'quote', id: r.id }; quoteNew = null; return render();
     } catch (err) { document.getElementById('q-new-result').textContent = err.message; create.disabled = false; }
     return true;
@@ -4929,6 +4954,19 @@ async function quotesClick(event) {
   return false;
 }
 
+// A new potential customer's quote put into the project they now have.
+async function quotesChange(event) {
+  const sel = event.target.closest('[data-q-link-project]');
+  if (!sel || !sel.value) return false;
+  sel.disabled = true;
+  try {
+    const r = await api('/api/quotes/link-project', { method: 'POST', body: JSON.stringify({ id: Number(sel.dataset.qLinkProject), projectKey: sel.value }) });
+    toast(r.quoteKey ? `Quote ${r.quoteKey} made in ${r.customer}'s project` : `Moved to ${r.customer}. Jira will catch up`);
+    return render();
+  } catch (err) { sel.disabled = false; toast(err.message); }
+  return true;
+}
+
 function quotesInput(event) {
   const el = event.target;
   if (el.dataset.qo != null && quotesOpenData) {
@@ -4942,7 +4980,7 @@ function quotesInput(event) {
   if (el.id === 'q-customer-search') {
     const query = el.value.toLowerCase(); const list = document.querySelector('.q-customers');
     if (list) list.hidden = false;
-    if (quoteNew) quoteNew.projectKey = '';
+    if (quoteNew) { quoteNew.projectKey = ''; quoteNew.prospectMode = false; const box = document.getElementById('q-prospect'); if (box) box.hidden = true; }
     document.querySelectorAll('[data-q-customer-row]').forEach((row) => { row.hidden = query.length > 0 && !row.textContent.toLowerCase().includes(query); });
     return true;
   }
@@ -5189,7 +5227,7 @@ const freshTriage = (versionId, mode = null) => ({ versionId, mode, skipped: [],
 let mesRatingFor = null;
 
 function condorTabs() {
-  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.can?.condorPlan ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['notes', 'Release notes'], ['ratings', 'Ratings']];
+  const tabs = [['day', 'My day'], ['estimate', 'Estimate'], ...(me.user.can?.condorPlan ? [['triage', 'Triage']] : []), ['plan', 'Plan'], ['psc', 'PSC'], ['notes', 'Release notes'], ['ratings', 'Ratings']];
   return `<div class="tabs condor-tabs">${tabs.map(([k, l]) => `<button class="tab${condorTab === k ? ' on' : ''}" data-condor-tab="${k}">${l}</button>`).join('')}</div>`;
 }
 
@@ -5458,6 +5496,23 @@ async function mesRatingsHtml() {
     ${teamHtml}`;
 }
 
+// PSCs the service team sent over, each now a Bug in MES.
+let mesPscDone = false;
+async function mesPscHtml() {
+  const { items } = await api('/api/mes/psc');
+  const list = items.filter((x) => (mesPscDone ? x.done : !x.done));
+  const open = items.filter((x) => !x.done).length;
+  return `<div class="row con-tools"><span class="segment">${[[false, `Open (${open})`], [true, 'Done']].map(([k, l]) =>
+      `<button class="seg${mesPscDone === k ? ' on' : ''}" data-mes-psc-done="${k ? 1 : 0}">${l}</button>`).join('')}</span></div>
+    <p class="help">Service items the service team found were Condor problems. Each is copied to MES as a Bug and linked to its PSC with Sync To and Sync From.</p>
+    <ul class="list mes-psc">${list.map((x) => `<li>
+        <span class="title">${x.mes ? mesLink(x.mes) : '<span class="muted">Not in MES yet</span>'} ${esc(x.summary || '')}</span>
+        <span class="sub">${x.customer ? `${esc(x.customer)} · ` : ''}from ${mesLink(x.psc)}${x.original ? ` (${mesLink(x.original)})` : ''}, sent by ${esc(x.by || 'the service team')} ${agoText(x.at)}
+          · ${esc(x.status)}${x.assignee ? ` · ${esc(x.assignee)}` : ''}${x.error ? ` <span class="bad">${esc(x.error)}</span>` : ''}</span>
+        ${x.mes && !x.done ? `<span class="xp"><button class="btn secondary" data-mes-estimate="${esc(x.mes)}" data-from="psc">Estimate</button></span>` : ''}</li>`).join('')
+      || `<li class="muted">${mesPscDone ? 'None done yet.' : 'Nothing sent over from PSC.'}</li>`}</ul>`;
+}
+
 async function condorHtml() {
   if (!me.linked) return notLinkedCard();
   const asked = location.hash.split('?')[1];
@@ -5468,7 +5523,7 @@ async function condorHtml() {
     mesEst = { issueId: ticket[1], answers: [], tags: [], difficulty: null, timeboxHours: 4, from: null };
     history.replaceState(null, '', '#/condor');
   }
-  if (asked && ['day', 'estimate', 'triage', 'plan', 'notes', 'ratings'].includes(asked)) {
+  if (asked && ['day', 'estimate', 'triage', 'plan', 'psc', 'notes', 'ratings'].includes(asked)) {
     condorTab = asked; mesEst = null;
     if (asked === 'notes') { rn.stale = true; rn.view = 'write'; rn.mine = true; }
     history.replaceState(null, '', '#/condor');
@@ -5480,6 +5535,7 @@ async function condorHtml() {
   else if (condorTab === 'ratings') body = await mesRatingsHtml();
   else if (condorTab === 'plan') body = await mesPlanHtml();
   else if (condorTab === 'notes') body = await rnHtml();
+  else if (condorTab === 'psc') body = await mesPscHtml();
   else body = `<div id="day-drafts">${sectionLoading('Loading your days')}</div>`;
   return `${mesEst && !mesEst.embedded ? '' : condorTabs()}${body}`;
 }
@@ -5495,6 +5551,7 @@ async function condorClick(event) {
     return render();
   }
   if (t('[data-mes-filter]')) { mesFilter = t('[data-mes-filter]').dataset.mesFilter; return render(); }
+  if (t('[data-mes-psc-done]')) { mesPscDone = t('[data-mes-psc-done]').dataset.mesPscDone === '1'; return render(); }
   const est = t('[data-mes-estimate]');
   if (est) { mesEst = { issueId: est.dataset.mesEstimate, answers: [], tags: [], difficulty: null, timeboxHours: 4, from: est.dataset.from || null }; window.scrollTo(0, 0); return render(); }
   if (t('[data-mes-back]')) {
@@ -10149,7 +10206,26 @@ function pscTabsHtml(data) {
 function pscHeadLine(data) {
   return `<div class="psc-headline"><p class="help">${data.reading ? `Reading everything from Jira: ${data.reading.count} items so far. The rest follows over the next few minutes.` : `Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.`}</p>
       <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
-    ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}`;
+    ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
+    ${(data.handoffs || []).length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.handoffs.map((h) => `${esc(h.issue_key)} ${h.kind === 'condor' ? 'to Condor Dev' : 'to a quote'}${h.error ? ` (${esc(h.error)})` : ''}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
+    ${pscOrgFlagsHtml(data)}`;
+}
+
+// PSCs with time logged and no Organization, so the time can't count towards a contract.
+let pscAllFlags = false;
+function pscOrgFlagsHtml(data) {
+  const flags = data.orgFlags || [];
+  if (!flags.length) return '';
+  const shown = pscAllFlags ? flags : flags.slice(0, 4);
+  const pick = (f) => (!pscOrgs ? `<button class="btn secondary" data-psc-load-orgs="1">Set the Organization</button>`
+    : pscOrgs.error ? `<p class="muted">${esc(pscOrgs.error)}</p>`
+    : `<label class="con-flag-org">Organization for ${esc(f.ref_key)}<select data-psc-flag-org="${f.id}"><option value="">Choose the Organization…</option>
+        ${pscOrgs.orgs.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select></label>`);
+  return `<section class="card con-flags notice">
+      <h2>PSC with no Organization <span class="muted">(${flags.length})</span></h2>
+      <ul class="con-flag-list">${shown.map((f) => `<li><div><strong>${jiraLink(f.ref_key)}</strong><p>${esc(f.detail)}</p>${pick(f)}</div>
+        <button class="btn secondary" data-psc-flag-resolve="${f.id}">Mark resolved</button></li>`).join('')}</ul>
+      ${flags.length > 4 ? `<button class="linklike" data-psc-all-flags="1">${pscAllFlags ? 'Show fewer' : `Show all ${flags.length}`}</button>` : ''}</section>`;
 }
 
 async function pscHtml() {
@@ -10204,6 +10280,77 @@ async function pscPageHtml() {
     <div class="psc-list">${list.map((d) => pscCardHtml(d)).join('') || `<div class="card"><p style="margin:0">${pscShow === 'resolved' ? 'Nothing resolved in the last 30 days here.' : 'Nothing open here.'}</p></div>`}</div>`;
 }
 
+// Turning a PSC into a quote, or sending it to Condor Dev.
+let pscHand = null;       // { key, kind, disciplines, team, projectKey, customer, prospect, prospectMode }
+let pscCustomers = null;
+async function pscHandHtml(d) {
+  const h = pscHand;
+  if (h.kind === 'condor') {
+    return `<div class="psc-hand card-inset">
+        <h3>Send to Condor Dev</h3>
+        <p>A copy is made in MES as a Bug, with this summary and description, linked to ${esc(d.key)} as Sync To and Sync From. It then shows in Condor Dev's PSC tab and leaves this list.</p>
+        <div class="row"><button class="btn" data-psc-hand-go="1">Send to Condor Dev</button><button class="linklike" data-psc-hand="">Cancel</button></div></div>`;
+  }
+  const onBoard = d.project === 'PSC';
+  if (onBoard && !pscCustomers) pscCustomers = (await api('/api/quotes/customers').catch(() => ({ customers: [] }))).customers;
+  const picked = (pscCustomers || []).find((c) => c.key === h.projectKey);
+  const customer = onBoard ? `<label>Customer
+        <input type="search" id="psc-hand-search" placeholder="Search customers" value="${esc(h.prospectMode ? 'New Potential Customer' : picked ? picked.name : '')}"></label>
+      <ul class="list plain q-customers psc-hand-customers" ${picked || h.prospectMode ? 'hidden' : ''}>
+        <li class="q-prospect-row"><button class="linklike" data-psc-hand-prospect="1"><strong>New Potential Customer</strong></button> <span class="muted">No project in Jira yet</span></li>
+        ${(pscCustomers || []).map((c) => `<li data-psc-hand-row><button class="linklike" data-psc-hand-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
+      ${h.prospectMode ? `<label style="margin-top:.75rem">New potential customer's name<input type="text" data-psc-hand-field="prospect" value="${esc(h.prospect || '')}" placeholder="The company asking for the quote"></label>
+        <p class="help">Their quote is kept in the Quotes tile until they have a project in Jira, then goes into its Quote List.</p>` : ''}`
+    : `<p>It becomes a Quote in ${esc(d.customer || d.project)}'s Quote List in Jira, and joins the Quotes tile for the sales team.</p>`;
+  return `<div class="psc-hand card-inset">
+      <h3>Turn into a quote</h3>
+      ${customer}
+      <h3>Categories</h3>
+      <div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((x) => `<button class="chip${h.disciplines.includes(x) ? ' on' : ''}" data-psc-hand-disc="${x}">${qDisc(x)}</button>`).join('')}</div>
+      <h3>Promtek team</h3>
+      <span class="segment" role="group" aria-label="Promtek team">${QUOTE_TEAMS.map((x) => `<button class="seg${(h.team || suggestTeam(h.disciplines)) === x ? ' on' : ''}" data-psc-hand-team="${x}">${x}</button>`).join('')}</span>
+      <div class="row" style="margin-top:1rem"><button class="btn" data-psc-hand-go="1">Turn into a quote</button><button class="linklike" data-psc-hand="">Cancel</button></div>
+      <div class="result" id="psc-hand-result" role="status"></div></div>`;
+}
+
+async function pscHandClick(t) {
+  const open = t('[data-psc-hand]');
+  if (open) {
+    const kind = open.dataset.pscHand;
+    pscHand = kind && !(pscHand?.key === open.dataset.key && pscHand.kind === kind)
+      ? { key: open.dataset.key, kind, disciplines: [], team: null, projectKey: '', customer: '', prospect: '', prospectMode: false } : null;
+    render(); return true;
+  }
+  if (!pscHand) return false;
+  if (t('[data-psc-hand-prospect]')) { pscHand.prospectMode = true; pscHand.projectKey = ''; render(); return true; }
+  const c = t('[data-psc-hand-customer]');
+  if (c) { pscHand.prospectMode = false; pscHand.projectKey = c.dataset.pscHandCustomer; pscHand.customer = c.dataset.name; render(); return true; }
+  const disc = t('[data-psc-hand-disc]');
+  if (disc) { const x = disc.dataset.pscHandDisc; pscHand.disciplines = pscHand.disciplines.includes(x) ? pscHand.disciplines.filter((y) => y !== x) : [...pscHand.disciplines, x]; render(); return true; }
+  const team = t('[data-psc-hand-team]');
+  if (team) { pscHand.team = team.dataset.pscHandTeam; render(); return true; }
+  const go = t('[data-psc-hand-go]');
+  if (go) {
+    go.disabled = true;
+    const h = pscHand;
+    try {
+      const r = h.kind === 'condor'
+        ? await api('/api/psc/condor', { method: 'POST', body: JSON.stringify({ key: h.key }) })
+        : await api('/api/psc/quote', { method: 'POST', body: JSON.stringify({ key: h.key, disciplines: h.disciplines, team: h.team || suggestTeam(h.disciplines),
+          projectKey: h.prospectMode ? '' : h.projectKey, customer: h.customer, prospect: h.prospectMode ? h.prospect : '' }) });
+      toast(!r.saved ? r.message : h.kind === 'condor' ? `Sent to Condor Dev as ${r.target}` : r.target ? `${h.key} is now quote ${r.target}` : `Quote started for ${h.prospect}`);
+      pscHand = null; pscOpen = null; pscFetchedAt = 0;
+      return render();
+    } catch (err) {
+      go.disabled = false;
+      const box = document.getElementById('psc-hand-result');
+      if (box) box.textContent = err.message; else toast(err.message);
+    }
+    return true;
+  }
+  return false;
+}
+
 async function pscItemHtml() {
   const { item: d, timeline } = await api(`/api/psc/item?key=${encodeURIComponent(pscOpen)}`);
   await pscLoad();
@@ -10234,6 +10381,11 @@ async function pscItemHtml() {
         ${pscPeopleSelect(d)}
         ${d.project === 'PSC' ? pscOrgSelect(d) : ''}
       </div>
+      ${d.state !== 'resolved' && !d.orderWork ? `<div class="psc-actions psc-handoff-actions">
+        <span class="muted">Not support work?</span>
+        <button class="btn secondary${pscHand?.key === d.key && pscHand.kind === 'quote' ? ' on' : ''}" data-psc-hand="quote" data-key="${esc(d.key)}">Quote</button>
+        <button class="btn secondary${pscHand?.key === d.key && pscHand.kind === 'condor' ? ' on' : ''}" data-psc-hand="condor" data-key="${esc(d.key)}">Condor</button></div>
+        ${pscHand?.key === d.key ? await pscHandHtml(d) : ''}` : ''}
     </section>
     <h2>History</h2>
     <ul class="list psc-timeline">${timeline.map((e) => `<li class="${e.team ? 'team' : 'customer'}${e.internal ? ' internal' : ''}">
@@ -10303,7 +10455,15 @@ async function pscClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('a') || t('select') || t('input') || t('textarea')) return false;
   if (await pscResolveClick(t)) return true;
+  if (await pscHandClick(t)) return true;
   if (t('label')) return false;
+  if (t('[data-psc-all-flags]')) { pscAllFlags = !pscAllFlags; return render(); }
+  const fr = t('[data-psc-flag-resolve]');
+  if (fr) {
+    fr.disabled = true;
+    try { await api('/api/psc/flag-resolve', { method: 'POST', body: JSON.stringify({ id: Number(fr.dataset.pscFlagResolve) }) }); toast('Marked resolved'); } catch (err) { toast(err.message); }
+    pscFetchedAt = 0; return render();
+  }
   const tab = t('[data-psc-tab]');
   if (tab) { pscTab = tab.dataset.pscTab; pscOpen = null; return render(); }
   const who = t('[data-psc-who]');
@@ -10348,6 +10508,12 @@ async function pscChange(event) {
   };
   if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
   if (el.matches('[data-psc-org]') && el.value) { await send('/api/psc/org', { key: el.dataset.pscOrg, orgId: el.value }, 'Organization saved'); return true; }
+  if (el.matches('[data-psc-flag-org]') && el.value) {
+    el.disabled = true;
+    try { const r = await api('/api/psc/flag-org', { method: 'POST', body: JSON.stringify({ id: Number(el.dataset.pscFlagOrg), orgId: el.value }) }); toast(r.saved === false ? `${r.org} kept. ${r.message}` : `Organization set to ${r.org}`); }
+    catch (err) { toast(err.message); }
+    pscFetchedAt = 0; render(); return true;
+  }
   if (el.matches('[data-psc-charge]') && el.value) { await send('/api/psc/charge', { key: el.dataset.pscCharge, chargeable: el.value === 'yes' }, el.value === 'yes' ? 'Marked chargeable' : 'Marked Promtek at fault'); return true; }
   if (el.matches('[data-psc-customer]')) { pscCustomer = el.value; render(); return true; }
   if (el.matches('[data-psc-tier]')) { pscTier = el.value; render(); return true; }
@@ -10358,6 +10524,15 @@ async function pscChange(event) {
 }
 
 function pscInput(event) {
+  const el = event.target;
+  if (pscHand && el.dataset.pscHandField) { pscHand[el.dataset.pscHandField] = el.value; return true; }
+  if (pscHand && el.id === 'psc-hand-search') {
+    const q = el.value.toLowerCase(); const list = view.querySelector('.psc-hand-customers');
+    if (list) list.hidden = false;
+    pscHand.projectKey = '';
+    view.querySelectorAll('[data-psc-hand-row]').forEach((row) => { row.hidden = q.length > 0 && !row.textContent.toLowerCase().includes(q); });
+    return true;
+  }
   if (event.target.id !== 'psc-search') return false;
   pscQuery = event.target.value;
   const q = event.target.value.trim().toLowerCase();
@@ -10372,7 +10547,7 @@ function pscInput(event) {
 // anything has changed, which costs almost nothing, and only then reloads.
 setInterval(async () => {
   if (currentRoute() !== '#/psc' || settingsOpen || document.visibilityState !== 'visible') return;
-  if (pscResolving || document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
+  if (pscResolving || pscHand || document.activeElement?.matches?.('select, input, textarea') || document.querySelector('.tour')) return;
   const before = pscData;
   await pscLoad().catch(() => null);
   if (pscData !== before && currentRoute() === '#/psc') render();
@@ -11861,6 +12036,7 @@ view.addEventListener('change', async (event) => {
   if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
   if (currentRoute() === '#/invoicing' && !settingsOpen && invoicingChange(event)) return;
+  if (currentRoute() === '#/quotes' && !settingsOpen && await quotesChange(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {

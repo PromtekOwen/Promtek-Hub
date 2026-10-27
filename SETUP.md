@@ -399,7 +399,7 @@ The **Service contracts** tile shows each customer's Service Contract item from 
 - Dates that don't add up (not a whole number of years, a renewal date not a month before the end, or what looks like a day and month swapped) raise an alert, and that contract's status is left alone until the dates are fixed or the alert is marked resolved.
 - **Token clock.** Each contract has one running clock of the time logged to the contract item, its tokens, and the customer's PSC items (not Snags or Sub-Snags) from the day tracking started, within the contract's dates. Every 4 hours uses the next Available token: it's renamed "Token used for …", linked to the PSC that took the clock over ("implements"), and moved to Token Used. With no Available token left, an "[OVERDRAFT]" token is created instead. When a contract expires, an hour or more left on the clock uses one more token, then any tokens still Available are moved to Token Expired through Admin.
 - Each contract's Available, Tokens used and Overdraft fields are kept up to date. Tokens in Token Allocated count as used in Jira; in the hub they're shown separately.
-- Time logged to a PSC item with no Organization emails the person who logged it and the contract alert list, at most once a day per item.
+- Time logged to a PSC item with no Organization emails the person who logged it and the contract alert list, at most once a day per item. The alert for it shows in the PSC tile, where the Organization can be set or the alert marked resolved, not here.
 
 **Bank holidays.** The Contracts tab says whether today is a bank holiday in England, and which is next. The dates come from gov.uk's England and Wales list, checked weekly, so one-off holidays are included; the regular ones are worked out if gov.uk can't be reached.
 
@@ -431,6 +431,14 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 **After that.** Each item shows the team's last update (who and what), and flags when the customer has replied since the team last did anything, or when it has gone quiet for longer than the setting.
 
 **Triage** lists items with no first look, no owner, or (on the PSC board) no Organization. **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
+
+**PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira and **Mark resolved**.
+
+**Not support work: Quote and Condor.** Each open item has two buttons. Run `schema-053.sql` in the D1 console before using them.
+- **Quote** turns it into a quote, with its categories and Promtek team chosen first. In a customer's project, the item's issue type is changed to Quote and it's moved under that project's Quote List; where Jira won't change the type (a different workflow, say), a new Quote is made there instead and linked to it. Either way the quote joins the Quotes tile, with the PSC's description, for the sales team.
+- On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. A new potential customer's quote is kept in the Quotes tile, where it can be worked on and marked **Accepted**. Once they have a project in Jira, the quote is made in its Quote List: chosen on the quote, or found by the hub every hour when exactly one customer project has their name. The PSC board item gets an internal comment saying what happened.
+- **Condor** copies it to the MES project as a Bug, with its summary and description, linked to the PSC with the Sync To / Sync From link type (the PSC Syncs To the Bug). It then shows in Condor Dev's **PSC** tab, with the Bug's status, until the Bug is done.
+- Once either has gone through, the item, and its PSC board original, leave the PSC tile. If Jira refuses, the hub keeps it, tries again every few minutes, and emails admins after three tries.
 
 **Order.** Late items first, then new items due within the hour, then customers waiting on us, then other new items by when they're due; within each, Platinum, Gold, Silver, then no contract.
 
@@ -539,6 +547,8 @@ Alert emails go to each lead or supervisor's own email address through the mail 
 
 ## Part 21: Quotes
 
+**New Potential Customer.** At the top of the customer list when starting a quote, for a company with no project in Jira yet. Their quote stays in the hub, can be marked **Accepted**, and goes into their Quote List in Jira once they have a project: chosen on the quote, or found every hour by name. Until then it has no Jira key to use as the quote number in Quoter.
+
 **Who uses it.** The sales team and team leads start and edit quotes. Anyone asked for an estimate can open that quote and give theirs; nobody else sees it.
 
 **Starting a quote** creates a Quote issue in the customer's Jira project, under their Quote List, assigned to whoever started it. Its description is what the person starting the quote writes about the job, and it can be edited on the quote at any time; Jira is updated on each save. When the quote is ready to send, the hub's estimates are added under the description in Jira, and taken off again if it goes back to being worked on. Engineers asked for an estimate see the description as "About the job". Its key is the quote number in Quoter. If Jira can't be reached, the quote is kept in the hub and created in Jira on the next hourly run, or with Try again.
@@ -583,6 +593,8 @@ How the sharing works:
 Jira's own splitting automation should be off for orders created from hub quotes.
 
 ## Part 22: Condor Dev
+
+**PSC tab.** Service items the service team sent over with the Condor button in PSC: each one's Bug in MES, the customer, the PSC it came from, who sent it and the Bug's status. Open lists the ones not yet done, with Estimate to estimate them.
 
 The Condor Dev tile is shown to the Condor team and to admins.
 

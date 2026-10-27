@@ -252,7 +252,7 @@ export const version = async (env) => (await getState(env, 'psc_version')) || '0
 // it's kept. It's read afresh at least hourly to pick up contract changes.
 const CONTEXT_FOR_MS = 60 * 60 * 1000;
 let kept = null;
-async function context(env, { fresh = false } = {}) {
+export async function context(env, { fresh = false } = {}) {
   const v = await version(env);
   if (!fresh && kept && kept.version === v && Date.now() - kept.at < CONTEXT_FOR_MS) return kept.ctx;
   const ctx = await readContext(env);
@@ -412,13 +412,14 @@ async function retryWrites(env, b) {
 
 async function readContext(env) {
   const settings = await loadSettings(env);
-  const [{ results: items }, { results: actions }, { results: manual }, { results: contracts }, { results: tokens }, { results: emps }] = await Promise.all([
+  const [{ results: items }, { results: actions }, { results: manual }, { results: contracts }, { results: tokens }, { results: emps }, { results: handed }] = await Promise.all([
     env.DB.prepare('SELECT * FROM psc_items').all(),
     env.DB.prepare('SELECT * FROM psc_actions WHERE issue_id IN (SELECT issue_id FROM psc_items) ORDER BY at').all(),
     env.DB.prepare('SELECT * FROM contract_org_map').all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Requires Renewal', 'Required Renewal')").all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contract_items WHERE kind = 'token'").all().catch(() => ({ results: [] })),
     env.DB.prepare('SELECT account_id, name, email, teams, team FROM employees WHERE active = 1').all(),
+    env.DB.prepare("SELECT issue_key, source_key FROM psc_handoffs WHERE status = 'done'").all().catch(() => ({ results: [] })),
   ]);
   let projects = [];
   try { projects = await customerProjects(env); } catch { /* names fall back to keys */ }
@@ -426,7 +427,10 @@ async function readContext(env) {
   try { bankHolidays = new Set((await holidaysFor(env)).map((h) => h.date)); } catch { /* none known */ }
   const match = orgMatcher(projects, manual);
   // Items in the Admin status are kept for the contracts tile, but aren't PSC work to show here.
-  const shown = pairCopies(items, match).filter((r) => !HIDDEN_STATUSES.includes(String(r.status || '').trim().toLowerCase()));
+  // Turned into a quote or sent to Condor Dev: no longer PSC work, here or in the alerts.
+  const gone = new Set(handed.flatMap((h) => [h.issue_key, h.source_key]).filter(Boolean));
+  const shown = pairCopies(items, match).filter((r) => !HIDDEN_STATUSES.includes(String(r.status || '').trim().toLowerCase()))
+    .filter((r) => !gone.has(r.issue_key) && !gone.has(r.source?.issue_key));
   return { settings, items: shown, actions, match, projects, contracts, tokens, emps, bankHolidays };
 }
 
@@ -576,7 +580,7 @@ export function byAttention(a, b) {
 }
 
 const canSee = (viewer) => canTile(viewer, 'psc');
-function mustSee(viewer) {
+export function mustSee(viewer) {
   if (!canSee(viewer)) { const err = new Error('PSC isn\'t open to you.'); err.status = 403; throw err; }
 }
 
@@ -588,7 +592,11 @@ export async function overview(env, viewer) {
   const people = ctx.emps.filter((e) => e.account_id).map((e) => ({ id: e.account_id, name: e.name,
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
   const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
+  const { results: orgFlags } = await env.DB.prepare("SELECT id, ref_key, detail, created_at FROM contract_flags WHERE kind = 'psc-org' AND resolved_at IS NULL ORDER BY id DESC LIMIT 50").all()
+    .catch(() => ({ results: [] }));
+  const { results: handoffs } = await env.DB.prepare("SELECT issue_key, kind, status, error, target_key FROM psc_handoffs WHERE status != 'done'").all().catch(() => ({ results: [] }));
   return {
+    orgFlags, handoffs,
     version: await version(env),
     items, people, pending, settings: ctx.settings, me: viewer.accountId, tiers: TIERS, surcharge: OUT_OF_HOURS_SURCHARGE,
     reading: (await getState(env, 'psc_full_started')) ? { count: Number((await getState(env, 'psc_full_count')) || 0) } : null,
@@ -613,7 +621,7 @@ export async function item(env, viewer, key) {
 
 // ---------- actions ----------
 
-async function rowFor(env, key) {
+export async function rowFor(env, key) {
   const row = await env.DB.prepare('SELECT * FROM psc_items WHERE issue_key = ?').bind(String(key)).first();
   if (!row) throw new Error('That item isn\'t in the list any more.');
   return row;
@@ -765,6 +773,7 @@ export async function run(env, { force = false } = {}) {
   const out = {};
   try {
     if (results[0]?.n) { await setState(env, 'psc_retry_at', Date.now()); await retryWrites(env, b); }
+    await (await import('./psc-handoff.js')).retry(env, b);
     if (force || reading || Date.now() - last >= SYNC_EVERY_MS) out.read = await sync(env, b);
     // Alerts look at every item, so they're worked out once a read has finished, or at most
     // every 10 minutes during a long one, rather than after every page.

@@ -156,7 +156,8 @@ export async function setTeam(env, viewer, input) {
 
 export async function retryJira(env, id) {
   const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(id)).first();
-  if (!q || q.quote_key) return q;
+  // A new potential customer's quote waits for their project in Jira.
+  if (!q || q.quote_key || !q.project_key) return q;
   try {
     const key = await createInJira(env, q, { accountId: q.created_by });
     await env.DB.prepare('UPDATE quotes SET quote_key = ?, jira_error = NULL, updated_at = ? WHERE id = ?').bind(key, new Date().toISOString(), q.id).run();
@@ -170,30 +171,83 @@ export async function retryJira(env, id) {
 
 export async function create(env, viewer, input) {
   if (!canCreate(viewer)) throw new Error('Only the sales team and team leads can start a quote.');
+  return createFor(env, viewer, input);
+}
+
+// A quote for a customer with a project in Jira, or for a new potential customer, who has
+// none yet: theirs is kept in the hub and goes into Jira once their project exists.
+// Also used by the PSC tile, which turns a PSC into a quote (holdJira: it sees to Jira itself).
+export async function createFor(env, viewer, input) {
   const title = String(input.title || '').trim().slice(0, 200);
   if (!title) throw new Error('Give the quote a title.');
-  if (!/^[A-Z][A-Z0-9_]+$/.test(input.projectKey || '')) throw new Error('Choose the customer.');
+  const prospect = input.projectKey ? null : String(input.prospect || '').trim().slice(0, 120);
+  if (!input.projectKey && !prospect) throw new Error('Choose the customer, or give the new potential customer\'s name.');
+  if (input.projectKey && !/^[A-Z][A-Z0-9_]+$/.test(input.projectKey)) throw new Error('Choose the customer.');
   const disciplines = DISCIPLINE_ORDER.filter((d) => (input.disciplines || []).includes(d));
   if (!disciplines.length) throw new Error('Choose at least one category.');
   const team = input.team || suggestTeam(disciplines);
   if (!QUOTE_TEAMS.includes(team)) throw new Error('Choose the Promtek team: Projecting, Service or Condor.');
   const now = new Date().toISOString();
   const res = await env.DB.prepare(
-    `INSERT INTO quotes (project_key, customer, title, description, status, team, created_by, created_email, created_at, updated_at) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
-  ).bind(input.projectKey, String(input.customer || '').slice(0, 120), title, cleanDescription(input.description) || null, team, viewer.accountId, viewer.email, now, now).run();
+    `INSERT INTO quotes (project_key, customer, title, description, status, team, created_by, created_email, created_at, updated_at, prospect, psc_key) VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(input.projectKey || '', String(prospect || input.customer || '').slice(0, 120), title, cleanDescription(input.description) || null, team, viewer.accountId, viewer.email, now, now,
+    prospect, input.pscKey || null).run();
   const id = res.meta.last_row_id;
   await env.DB.batch(disciplines.map((d) => env.DB.prepare(
     'INSERT INTO quote_sections (quote_id, discipline, counts, chips, updated_at) VALUES (?, ?, ?, ?, ?)'
   ).bind(id, d, '{}', '[]', now)));
+  if (input.holdJira) return { id };
   // The hub keeps the quote even if Jira can't take it yet.
   const q = await retryJira(env, id);
   return { id, quoteKey: q.quote_key, jiraError: q.jira_error };
 }
 
+export async function syncDescriptionFor(env, id) {
+  const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(id)).first();
+  return q ? syncDescription(env, q) : null;
+}
+
+// ---------- new potential customers ----------
+
+const plainName = (s) => String(s || '').toLowerCase().replace(/&/g, ' and ').replace(/\b(ltd|limited|plc|llp|inc|uk|group|the)\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
+
+// Once the new customer has a project in Jira, their quote is put there: chosen by hand,
+// or found by name when exactly one project matches.
+export async function linkProject(env, viewer, { id, projectKey }) {
+  if (viewer && !canCreate(viewer)) throw new Error('Only the sales team and team leads can change a quote.');
+  const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(id)).first();
+  if (!q) throw new Error('That quote has gone.');
+  if (q.project_key) throw new Error(`This quote is already in ${q.project_key}.`);
+  const { customerProjects } = await import('./jira.js');
+  const p = (await customerProjects(env)).find((x) => x.key === String(projectKey || '').toUpperCase());
+  if (!p) throw new Error('Choose the customer\'s project from the list.');
+  await env.DB.prepare('UPDATE quotes SET project_key = ?, customer = ?, updated_at = ? WHERE id = ?').bind(p.key, p.name, new Date().toISOString(), q.id).run();
+  const after = await retryJira(env, q.id);
+  return { ok: true, project: p.key, customer: p.name, quoteKey: after?.quote_key || null, jiraError: after?.jira_error || null, was: q.prospect };
+}
+
+export async function matchProspects(env) {
+  const { results } = await env.DB.prepare("SELECT id, prospect FROM quotes WHERE (project_key = '' OR project_key IS NULL) AND prospect IS NOT NULL AND status != 'lost' LIMIT 50").all();
+  if (!results.length) return { matched: 0 };
+  const { customerProjects } = await import('./jira.js');
+  // Read fresh, so a project made since the last read is found.
+  const projects = (await customerProjects(env, { fresh: true }).catch(() => [])).map((p) => ({ ...p, plain: plainName(p.name) }));
+  let matched = 0;
+  for (const q of results) {
+    const want = plainName(q.prospect);
+    if (want.length < 3) continue;
+    const hits = projects.filter((p) => p.plain === want || (want.length >= 5 && p.plain.length >= 5 && (p.plain.startsWith(want) || want.startsWith(p.plain))));
+    if (hits.length !== 1) continue;
+    await linkProject(env, null, { id: q.id, projectKey: hits[0].key });
+    matched++;
+  }
+  return { matched };
+}
+
 export async function list(env, viewer, { scope = 'open' } = {}) {
   let rows;
   if (canCreate(viewer)) {
-    const where = scope === 'mine' ? 'WHERE q.created_by = ?' : scope === 'open' ? "WHERE q.status IN ('open', 'ready')" : '';
+    const where = scope === 'mine' ? 'WHERE q.created_by = ?' : scope === 'open' ? "WHERE q.status IN ('open', 'ready') OR (q.status = 'accepted' AND q.epic_key IS NULL)" : '';
     const stmt = env.DB.prepare(`SELECT q.*, COALESCE(q.team, j.team) AS team, e.name AS created_name FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by
       LEFT JOIN jira_quotes j ON j.issue_key = q.quote_key ${where} ORDER BY q.id DESC LIMIT 200`);
     rows = (scope === 'mine' ? await stmt.bind(viewer.accountId).all() : await stmt.all()).results;
@@ -281,9 +335,11 @@ export async function saveSection(env, viewer, input) {
 
 export async function setStatus(env, viewer, input) {
   if (!canCreate(viewer)) throw new Error('Only the sales team and team leads can change a quote.');
-  if (!['open', 'ready', 'lost'].includes(input.status)) throw new Error('Unknown status.');
+  if (!['open', 'ready', 'lost', 'accepted'].includes(input.status)) throw new Error('Unknown status.');
   const q = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(Number(input.id)).first();
   if (!q) throw new Error('That quote has gone.');
+  // A customer with a project says yes by their order arriving; a new potential customer's yes is marked here.
+  if (input.status === 'accepted' && !q.prospect) throw new Error('A customer\'s quote is accepted when its order is made in Jira.');
   await env.DB.prepare('UPDATE quotes SET status = ?, updated_at = ? WHERE id = ?').bind(input.status, new Date().toISOString(), q.id).run();
   // Ready adds the estimates under the description; going back takes them off again.
   const changesJira = input.status === 'ready' || q.status === 'ready';
@@ -726,9 +782,10 @@ export async function hourly(env) {
   for (const q of results) await retryJira(env, q.id);
   const { results: unsynced } = await env.DB.prepare('SELECT * FROM quotes WHERE description_synced = 0 AND quote_key IS NOT NULL LIMIT 10').all();
   for (const q of unsynced) await syncDescription(env, q);
+  const prospects = await matchProspects(env).catch(() => ({ matched: 0 }));
   const handed = await handOff(env);
   const checks = await queueCountChecks(env);
-  return { ...handed, ...checks };
+  return { ...handed, ...checks, ...prospects };
 }
 
 export async function people(env) {

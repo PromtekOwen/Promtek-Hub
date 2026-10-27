@@ -1535,3 +1535,12 @@ label.con-flag-org { display: block; max-width: 420px; }
 .inv-heat tbody th { min-width: 11rem; }
 tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; }
 .wipc + .wipc, .inv-charts + .wipc { margin-top: 1rem; }
+.psc-handoff-actions { align-items: center; border-top: 1px solid var(--line); padding-top: .75rem; margin-top: .75rem; }
+.psc-handoff-actions .btn.on { background: var(--blue-deep); color: #fff; }
+.psc-hand { margin-top: .75rem; padding: 1rem; border: 1px solid var(--line); border-radius: 12px; background: var(--card-alt, #f6f9fb); }
+.psc-hand h3 { margin: .75rem 0 .4rem; }
+.psc-hand h3:first-child { margin-top: 0; }
+.psc-hand-customers, .q-customers { max-height: 16rem; overflow: auto; }
+.q-prospect-row { border-bottom: 1px solid var(--line); padding-bottom: .4rem; margin-bottom: .2rem; }
+.q-link-project { margin-top: .75rem; }
+.mes-psc .sub .bad { display: inline; }
