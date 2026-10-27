@@ -246,6 +246,47 @@ async function syncContracts(env, b) {
   return rows.length;
 }
 
+// The visits and tokens under these contracts. A contract deleted in Jira makes the whole
+// search fail, so the keys Jira names as missing are let go (with everything under them),
+// and the search is run again without them.
+async function itemsUnder(env, b, keys, since) {
+  let part = [...keys];
+  for (let tries = 0; tries < 5 && part.length; tries++) {
+    try {
+      return await search(b, `parent in (${part.join(',')}) AND issuetype in ("Service Visit", "Calibration Visit", "Service Token")${since}`, ['summary', 'status', 'issuetype', 'parent']);
+    } catch (err) {
+      if (err instanceof OutOfCalls || err.status !== 400) throw err;
+      const bad = [...String(err.message).matchAll(/'([A-Z][A-Z0-9_]*-\d+)'/g)].map((m) => m[1]).filter((k) => part.includes(k));
+      if (!bad.length) throw err;
+      for (const k of bad) await forgetContract(env, k);
+      part = part.filter((k) => !bad.includes(k));
+    }
+  }
+  return [];
+}
+
+async function forgetContract(env, key) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM contract_items WHERE contract_key = ?').bind(key),
+    env.DB.prepare('DELETE FROM contracts WHERE issue_key = ?').bind(key),
+    env.DB.prepare("UPDATE contract_charges SET attempts = 99, error = 'The contract is no longer in Jira' WHERE contract_key = ? AND step < 3").bind(key),
+  ]);
+  await clearFlags(env, 'write', 'contract_key = ?', [key], 'Contract deleted in Jira');
+}
+
+// Items deleted in Jira. The WIP reads everything under every contract every half hour, so an
+// item it no longer has, on a contract it still has, has been deleted (or moved off it).
+async function pruneDeleted(env) {
+  const at = Number((await getState(env, 'wip_full_from')) || 0);
+  if (!at) return 0;
+  const res = await env.DB.prepare(
+    `DELETE FROM contract_items WHERE issue_id IN (
+       SELECT ci.issue_id FROM contract_items ci JOIN wip_contracts wc ON wc.issue_key = ci.contract_key AND wc.gone = 0
+        WHERE ci.synced_at < ? AND NOT EXISTS (SELECT 1 FROM wip_items wi WHERE wi.issue_id = ci.issue_id))`
+  ).bind(new Date(at - 60_000).toISOString()).run().catch(() => ({ meta: {} }));
+  return res.meta?.changes || 0;
+}
+
 async function syncItems(env, b, { full }) {
   const { results } = await env.DB.prepare(`SELECT issue_key FROM contracts WHERE status IN (${placeholders(LIVE.length)}) ORDER BY issue_key`)
     .bind(...LIVE).all();
@@ -261,8 +302,7 @@ async function syncItems(env, b, { full }) {
   for (let p = from; p < parts.length; p++) {
     const part = parts[p];
     const now = new Date().toISOString();
-    const issues = await search(b, `parent in (${part.join(',')}) AND issuetype in ("Service Visit", "Calibration Visit", "Service Token")${since}`,
-      ['summary', 'status', 'issuetype', 'parent']);
+    const issues = await itemsUnder(env, b, part, since);
     const stmts = issues.map((i) => env.DB.prepare(
       `INSERT INTO contract_items (issue_id, issue_key, contract_key, kind, summary, status, done, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, contract_key = excluded.contract_key, kind = excluded.kind,
@@ -284,6 +324,7 @@ async function syncItems(env, b, { full }) {
     await setState(env, 'contracts_full_at', Date.now());
   }
   await setState(env, 'contracts_items_at', Date.now());
+  if (await pruneDeleted(env)) await touched(env);
   return count;
 }
 

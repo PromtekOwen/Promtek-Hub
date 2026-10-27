@@ -398,6 +398,8 @@ async function retryWrites(env, b) {
       await refreshOne(env, b, w.issue_key).catch(() => {});
     } catch (err) {
       if (err instanceof OutOfCalls) break;
+      // Deleted in Jira: there's nothing left to change.
+      if (err.status === 404) { await env.DB.prepare('UPDATE psc_writes SET done_at = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), 'No longer in Jira', w.id).run(); continue; }
       const attempts = w.attempts + 1;
       await env.DB.prepare('UPDATE psc_writes SET attempts = ?, error = ? WHERE id = ?').bind(attempts, String(err.message).slice(0, 400), w.id).run();
       if (attempts === 3) {

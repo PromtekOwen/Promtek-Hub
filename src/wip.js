@@ -225,12 +225,14 @@ async function runAll(env, stmts) {
 
 export function invoiceState(item) {
   const s = lower(item.status);
-  const paid = (/\bpaid\b/.test(s) && !/\b(un|not )paid\b/.test(s)) || item.status_cat === 'done';
-  const overdue = !paid && /overdue/.test(s);
+  // Cancelled (or void) is done in Jira but was never paid, and isn't owed.
+  const cancelled = /cancel|\bvoid/.test(s);
+  const paid = !cancelled && ((/\bpaid\b/.test(s) && !/\b(un|not )paid\b/.test(s)) || item.status_cat === 'done');
+  const overdue = !paid && !cancelled && /overdue/.test(s);
   // "Ready to be Invoiced" is waiting for its invoice to be checked and sent, so it isn't invoiced yet.
-  const ready = !paid && !overdue && /ready/.test(s);
-  const invoiced = paid || overdue || (!ready && /invoiced/.test(s) && !/not invoiced/.test(s));
-  return { paid, invoiced, overdue, ready, label: paid ? 'Paid' : overdue ? 'Overdue' : invoiced ? 'Invoiced' : 'Not Invoiced' };
+  const ready = !paid && !overdue && !cancelled && /ready/.test(s);
+  const invoiced = paid || overdue || (!ready && !cancelled && /invoiced/.test(s) && !/not invoiced/.test(s));
+  return { paid, invoiced, overdue, ready, cancelled, label: cancelled ? 'Cancelled' : paid ? 'Paid' : overdue ? 'Overdue' : invoiced ? 'Invoiced' : 'Not Invoiced' };
 }
 export const isTokenInvoice = (item) => /token/i.test(item.summary || '');
 const isInvoice = (item) => /\binvoice\b/i.test(item.issuetype || '');
@@ -256,7 +258,7 @@ export function computeOrder(order, items) {
   const legacy = !level1.some((i) => CATEGORY_TYPES.includes(lower(i.issuetype)));
   const subs = level2.filter((i) => i.subtask);
   const workItems = legacy ? level1.filter((i) => !ADMIN_TYPES.includes(lower(i.issuetype))) : subs;
-  const invoices = level1.filter(isInvoice);
+  const invoices = level1.filter(isInvoice).filter((i) => !invoiceState(i).cancelled);
   const tokens = invoices.filter(isTokenInvoice);
   const money = invoices.filter((i) => !isTokenInvoice(i));
   const sum = (list, test) => list.filter(test).reduce((t, i) => t + (Number(i.share) || 0), 0);
@@ -279,7 +281,7 @@ export function computeOrder(order, items) {
   // Each category is complete once every sub-task under it is; the order moves on once every
   // category is complete. Paid? is marked Paid once every invoice is paid (or its tokens are),
   // and Documentation marked Yes once the Documentation Check Phase is done.
-  const paidEnough = tokenOnly ? tokenPaid : (paid || 0) >= 0.9999;
+  const paidEnough = tokenOnly ? tokenPaid : (paid || 0) >= 0.9999 || (money.length > 0 && money.every((i) => invoiceState(i).paid));
   const cats = level1.filter(isCategoryItem);
   const subsOf = (c) => subs.filter((x) => String(x.parent_id) === String(c.issue_id));
   const catDone = (c) => done(c) || lower(c.status) === 'complete';
@@ -382,7 +384,7 @@ async function recompute(env, ids) {
     }
   }
   for (const c of contracts) {
-    const inv = (byOrder.get(c.issue_id) || []).filter((i) => i.level === 1 && isInvoice(i));
+    const inv = (byOrder.get(c.issue_id) || []).filter((i) => i.level === 1 && isInvoice(i) && !invoiceState(i).cancelled);
     const steps = [inv.length, inv.filter((i) => invoiceState(i).invoiced).length, inv.filter((i) => invoiceState(i).paid).length];
     if (steps[0] === c.steps && steps[1] === c.steps_invoiced && steps[2] === c.steps_paid) continue;
     stmts.push(env.DB.prepare('UPDATE wip_contracts SET steps = ?, steps_invoiced = ?, steps_paid = ? WHERE issue_id = ?').bind(...steps, c.issue_id));
@@ -514,7 +516,7 @@ export async function full(env, { force = false } = {}) {
         `SELECT issue_id FROM wip_orders WHERE gone = 0 AND (status_cat IS NOT 'done' OR done_at >= ?)
          UNION ALL SELECT issue_id FROM wip_contracts WHERE gone = 0`
       ).bind(keep).all();
-      state = { ids: results.map((r) => r.issue_id), at: 0 };
+      state = { ids: results.map((r) => r.issue_id), at: 0, started: Date.now() };
       await setState(env, 'wip_full', JSON.stringify(state));
     }
     out.read = 0;
@@ -527,6 +529,8 @@ export async function full(env, { force = false } = {}) {
     }
     await setState(env, 'wip_full', '');
     await setState(env, 'wip_full_at', String(Date.now()));
+    // When the read just finished began: anything under a contract since then may not be in it yet.
+    await setState(env, 'wip_full_from', String(state.started || Date.now()));
     if (!(await getState(env, 'wip_full_done'))) {
       await setState(env, 'wip_full_done', new Date().toISOString());
       await setState(env, 'wip_quick_at', String(Date.now()));
@@ -542,14 +546,42 @@ export async function full(env, { force = false } = {}) {
 }
 
 // Reads everything under these orders and contracts, and replaces what was kept.
+// Everything under these parents. One deleted in Jira spoils the whole search, so it's halved
+// until the deleted one is found, which is then let go: marked gone, with everything under it.
+async function childrenOf(env, b, ids, gone) {
+  if (!ids.length) return [];
+  try {
+    return (await search(b, `parent in (${ids.join(',')})`, ITEM_FIELDS)).issues;
+  } catch (err) {
+    if (err instanceof OutOfCalls || err.status !== 400) throw err;
+    if (ids.length > 1) {
+      const half = Math.ceil(ids.length / 2);
+      return [...await childrenOf(env, b, ids.slice(0, half), gone), ...await childrenOf(env, b, ids.slice(half), gone)];
+    }
+    gone.add(String(ids[0]));
+    return [];
+  }
+}
+
 async function readItems(env, b, orderIds) {
   const level1 = [];
-  for (const part of chunk(orderIds, 50)) level1.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
+  const gone = new Set();
+  for (const part of chunk(orderIds, 50)) level1.push(...await childrenOf(env, b, part, gone));
+  if (gone.size) {
+    const ids = [...gone];
+    await runAll(env, [
+      env.DB.prepare(`UPDATE wip_orders SET gone = 1 WHERE issue_id IN (${marks(ids.length)})`).bind(...ids),
+      env.DB.prepare(`UPDATE wip_contracts SET gone = 1 WHERE issue_id IN (${marks(ids.length)})`).bind(...ids),
+      env.DB.prepare(`DELETE FROM wip_items WHERE order_id IN (${marks(ids.length)})`).bind(...ids),
+      env.DB.prepare(`UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE status = 'pending' AND issue_id IN (${marks(ids.length)})`).bind(new Date().toISOString(), ...ids),
+    ]);
+    orderIds = orderIds.filter((id) => !gone.has(String(id)));
+  }
   // Sub-tasks sit under the category items (and, on older orders, under ordinary tasks).
   const cats = level1.filter((i) => !ADMIN_TYPES.includes(lower(i.fields?.issuetype?.name)) && !isContract({ fields: { issuetype: i.fields?.issuetype } })
     && !/token/i.test(i.fields?.issuetype?.name || '') && (/^category\s*-/i.test(i.fields?.issuetype?.name || '') || !/visit/i.test(i.fields?.issuetype?.name || '')));
   const level2 = [];
-  for (const part of chunk(cats.map((i) => String(i.id)), 50)) level2.push(...(await search(b, `parent in (${part.join(',')})`, ITEM_FIELDS)).issues);
+  for (const part of chunk(cats.map((i) => String(i.id)), 50)) level2.push(...await childrenOf(env, b, part, new Set()));
   const orderOf = new Map(level1.map((i) => [String(i.id), String(i.fields.parent.id)]));
   const stmts = [];
   // Only items that have gone are deleted; the rest are written only if they changed.
@@ -653,6 +685,12 @@ async function processMoves(env, b, max, only = null) {
       moved++;
     } catch (err) {
       if (err instanceof OutOfCalls) throw err;
+      // Deleted in Jira: nothing to move, and nothing to keep trying.
+      if (err.status === 404) {
+        await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ?, last_error = ? WHERE issue_key = ?").bind(new Date().toISOString(), 'No longer in Jira', m.issue_key).run();
+        if (item) await env.DB.prepare('DELETE FROM wip_items WHERE issue_key = ?').bind(m.issue_key).run();
+        continue;
+      }
       const tries = (m.tries || 0) + 1;
       const wait = Math.min(MOVE_RETRY_CAP_MS, MOVE_RETRY_MS * 3 ** (tries - 1));
       await env.DB.prepare('UPDATE wip_moves SET tries = ?, next_at = ?, last_error = ? WHERE issue_key = ?').bind(tries, Date.now() + wait, String(err.message).slice(0, 300), m.issue_key).run();
@@ -1529,6 +1567,13 @@ export async function invoiceAction(env, viewer, { key, action, date } = {}) {
         label += ', and back to Invoiced';
       } catch { /* left Overdue; the date is still changed */ }
     }
+  } else if (action === 'cancel') {
+    if (s.paid) throw refuse('It\'s paid, so it can\'t be cancelled.', 400);
+    if (s.cancelled) throw refuse('It\'s already cancelled.', 400);
+    const m = await moveItem(env, item.issue_key, (to) => /cancel/.test(to));
+    after = { status: m.name, status_cat: m.cat };
+    label = `Cancelled (was ${item.status})`;
+    await env.DB.prepare("UPDATE wip_moves SET status = 'skipped', done_at = ? WHERE issue_key = ? AND status = 'pending'").bind(new Date().toISOString(), item.issue_key).run();
   } else if (action === 'paid') {
     if (!s.invoiced || s.paid) throw refuse('Only an invoiced, unpaid invoice can be marked paid.', 400);
     const on = isDay(date) ? date : today;
@@ -1591,6 +1636,29 @@ export function paymentDue(date, terms) {
   return day;
 }
 
+// When the money should come: the Invoice Due Date once invoiced, or, without one, the
+// customer's terms from the day it was invoiced. Before that, the terms from Target End
+// (or from today once Target End has passed). Nothing is expected for one with no Target
+// End, one still Ready to be Invoiced (not sent, and it may not be), or one cancelled.
+export function expectedPayment(s, { targetEnd, invoiceDue, invoicedAt, today, terms }) {
+  if (s.paid || s.cancelled || s.ready) return null;
+  if (s.invoiced) return invoiceDue || (invoicedAt ? paymentDue(invoicedAt, terms) : null);
+  return targetEnd ? paymentDue(targetEnd > today ? targetEnd : today, terms) : null;
+}
+export async function sentDates(env, ids) {
+  const out = new Map();
+  for (const part of chunk(ids.map(String), IN)) {
+    const { results } = await env.DB.prepare(`SELECT issue_id, invoiced_at FROM invoice_history WHERE invoiced_at IS NOT NULL AND issue_id IN (${marks(part.length)})`).bind(...part).all()
+      .catch(() => ({ results: [] }));
+    for (const r of results) out.set(r.issue_id, r.invoiced_at);
+  }
+  return out;
+}
+const stageOf = (s, targetEnd, invoiceDue, today) => (s.cancelled ? 'cancelled' : s.paid ? 'paid'
+  : s.invoiced ? (s.overdue || (invoiceDue && invoiceDue < today) ? 'overdue' : 'invoiced')
+  : s.ready ? 'ready'
+  : targetEnd && targetEnd < today ? 'exceeded' : 'upcoming');
+
 export async function invoicing(env, viewer, { region } = {}) {
   if (!canTile(viewer, 'invoicing')) throw refuse('Invoicing isn\'t open to you.');
   region = regionArg(region);
@@ -1600,7 +1668,9 @@ export async function invoicing(env, viewer, { region } = {}) {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const accountOf = (r) => String(r.project || r.key.split('-')[0]).toUpperCase();
   const invoices = [];
-  for (const i of rows.length ? (await itemsFor(env, [...byId.keys()])).filter((x) => x.level === 1 && isInvoice(x)) : []) {
+  const orderItems = rows.length ? (await itemsFor(env, [...byId.keys()])).filter((x) => x.level === 1 && isInvoice(x)) : [];
+  const sent = await sentDates(env, orderItems.filter((i) => !i.inv_date).map((i) => i.issue_id));
+  for (const i of orderItems) {
     const r = byId.get(i.order_id);
     const s = invoiceState(i);
     const token = isTokenInvoice(i);
@@ -1610,21 +1680,13 @@ export async function invoicing(env, viewer, { region } = {}) {
     // Invoice Due Date is when the customer should pay it, set once it's invoiced.
     const targetEnd = i.inv_due || null;
     const invoiceDue = i.inv_date || null;
-    const stage = s.paid ? 'paid'
-      : s.invoiced ? (s.overdue || (invoiceDue && invoiceDue < today) ? 'overdue' : 'invoiced')
-      : s.ready ? 'ready'
-      : targetEnd && targetEnd < today ? 'exceeded' : 'upcoming';
-    // When the money should come: the Invoice Due Date once invoiced; before that, the
-    // customer's terms from Target End, or from today if Target End has passed.
-    const from = targetEnd && targetEnd > today ? targetEnd : today;
-    const expected = s.paid ? null
-      : s.invoiced ? invoiceDue || paymentDue(targetEnd || today, t)
-      : paymentDue(from, t);
+    const stage = stageOf(s, targetEnd, invoiceDue, today);
+    const expected = expectedPayment(s, { targetEnd, invoiceDue, invoicedAt: sent.get(i.issue_id) || null, today, terms: t });
     invoices.push({
       order: r.key, org: r.org, account, key: i.issue_key, terms: String(i.summary || '').replace(/^(\s*[\d.]+%\s*)+/, '').trim() || i.summary,
       share: i.share, value: r.value === null || token ? null : r.value * (Number(i.share) || 0), token,
       status: i.status, state: s.label, stage, targetEnd, invoiceDue, paidAt: i.paid_at || null,
-      expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue,
+      expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue, sentAt: sent.get(i.issue_id) || null,
       hasTerms: Boolean(t), created: i.created,
     });
   }
@@ -1700,11 +1762,15 @@ async function contractInvoices(env, region, today, terms) {
     byContract.get(i.order_id).push(i);
   }
   const invoices = [], orders = {};
+  const sent = await sentDates(env, items.filter((i) => i.level === 1 && isInvoice(i) && !i.inv_date).map((i) => i.issue_id));
   for (const c of list) {
     if (over.get(c.issue_key)?.excluded) continue;
-    const subs = (byContract.get(c.issue_id) || [])
+    const all = (byContract.get(c.issue_id) || [])
       .sort((a, b) => String(a.created || '').localeCompare(String(b.created || '')) || a.issue_key.localeCompare(b.issue_key, 'en', { numeric: true }));
-    if (!subs.length) continue;
+    // A cancelled sub-invoice takes no share of the contract and no place in its year.
+    const subs = all.filter((i) => !invoiceState(i).cancelled);
+    const voided = all.filter((i) => invoiceState(i).cancelled);
+    if (!all.length) continue;
     const active = isActiveContract(c);
     const s0 = seed.get(c.issue_key), o = over.get(c.issue_key);
     const total = o?.upfront ?? s0?.upfront ?? c.total ?? null;
@@ -1712,7 +1778,7 @@ async function contractInvoices(env, region, today, terms) {
     const plan = contractSchedule(start, subs.length);
     const account = String(c.project_key || c.issue_key.split('-')[0]).toUpperCase();
     const t = terms[account] || null;
-    const each = total === null ? null : total / subs.length;
+    const each = total === null || !subs.length ? null : total / subs.length;
     let shown = 0;
     subs.forEach((i, n) => {
       const s = invoiceState(i);
@@ -1721,21 +1787,25 @@ async function contractInvoices(env, region, today, terms) {
       shown++;
       const targetEnd = i.inv_due || plan[n] || null;
       const invoiceDue = i.inv_date || null;
-      const stage = s.paid ? 'paid'
-        : s.invoiced ? (s.overdue || (invoiceDue && invoiceDue < today) ? 'overdue' : 'invoiced')
-        : s.ready ? 'ready'
-        : targetEnd && targetEnd < today ? 'exceeded' : 'upcoming';
-      const from = targetEnd && targetEnd > today ? targetEnd : today;
-      const expected = s.paid ? null : s.invoiced ? invoiceDue || paymentDue(targetEnd || today, t) : paymentDue(from, t);
+      const stage = stageOf(s, targetEnd, invoiceDue, today);
+      const expected = expectedPayment(s, { targetEnd, invoiceDue, invoicedAt: sent.get(i.issue_id) || null, today, terms: t });
       invoices.push({
         kind: 'contract', order: c.issue_key, org: c.tile_customer || c.org, account, key: i.issue_key,
         terms: String(i.summary || '').trim() || `Invoice ${n + 1} of ${subs.length}`, number: n + 1, of: subs.length,
         share: 1 / subs.length, value: each, token: false,
         status: i.status, state: s.label, stage, targetEnd, scheduled: !i.inv_due && Boolean(plan[n]), invoiceDue, paidAt: i.paid_at || null,
-        expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue,
+        expected, guessed: !s.paid && !(s.invoiced && invoiceDue), noDueDate: s.invoiced && !s.paid && !invoiceDue, sentAt: sent.get(i.issue_id) || null,
         hasTerms: Boolean(t), created: i.created,
       });
     });
+    if (active) {
+      for (const i of voided) {
+        shown++;
+        invoices.push({ kind: 'contract', order: c.issue_key, org: c.tile_customer || c.org, account, key: i.issue_key, terms: String(i.summary || '').trim() || 'Cancelled invoice',
+          number: null, of: subs.length, share: 0, value: null, token: false, status: i.status, state: 'Cancelled', stage: 'cancelled', targetEnd: i.inv_due || null,
+          scheduled: false, invoiceDue: i.inv_date || null, paidAt: null, expected: null, guessed: false, noDueDate: false, hasTerms: Boolean(t), created: i.created });
+      }
+    }
     if (!shown) continue;
     orders[c.issue_key] = { key: c.issue_key, title: c.summary, org: c.tile_customer || c.org, account, value: total, kind: 'contract',
       uninvoiced: each === null ? null : each * subs.filter((i) => !invoiceState(i).invoiced).length,

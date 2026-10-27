@@ -8,7 +8,7 @@
 import { londonDate } from './sync.js';
 import { canTile } from './permissions.js';
 import {
-  F, REGIONS, OutOfCalls, budget, isInvoice, isTokenInvoice, invoiceState, overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse,
+  expectedPayment, F, REGIONS, OutOfCalls, budget, isInvoice, isTokenInvoice, invoiceState, overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse,
   contractSchedule, paymentTerms, paymentDue, chunk, marks, IN, lower, regionArg, runAll, shiftMonth,
 } from './wip.js';
 
@@ -82,13 +82,25 @@ async function changesFor(b, ids, state) {
       return out;
     } catch (err) {
       if (err instanceof OutOfCalls || ![400, 404, 405].includes(err.status)) throw err;
+      // One invoice deleted in Jira spoils the whole read: halve until it's found, rather than giving up on reading in bulk.
+      if (err.status !== 405 && ids.length > 1) {
+        const half = Math.ceil(ids.length / 2);
+        const [a, c] = [await changesFor(b, ids.slice(0, half), state), await changesFor(b, ids.slice(half), state)];
+        return new Map([...a, ...c]);
+      }
+      if (err.status !== 405) { out.set(String(ids[0]), null); return out; }
       state.noBulk = true;
     }
   }
   for (const id of ids) {
     let startAt = 0;
     for (;;) {
-      const data = await b.call(`/rest/api/3/issue/${id}/changelog?startAt=${startAt}&maxResults=100`);
+      let data;
+      try { data = await b.call(`/rest/api/3/issue/${id}/changelog?startAt=${startAt}&maxResults=100`); } catch (err) {
+        if (err instanceof OutOfCalls || ![400, 404].includes(err.status)) throw err;
+        out.set(String(id), null);   // deleted in Jira
+        break;
+      }
       add(id, data?.values);
       if (data?.isLast !== false || !data?.values?.length) break;
       startAt += data.values.length;
@@ -97,8 +109,10 @@ async function changesFor(b, ids, state) {
   return out;
 }
 
+// Invoices on orders and contracts still in Jira: one whose order or contract was deleted is left alone.
 const STALE = `SELECT w.issue_id, w.issue_key, w.status, w.inv_due, w.inv_date FROM wip_items w LEFT JOIN invoice_history h ON h.issue_id = w.issue_id
   WHERE w.level = 1 AND lower(w.issuetype) LIKE '%invoice%'
+    AND (EXISTS (SELECT 1 FROM wip_orders o WHERE o.issue_id = w.order_id AND o.gone = 0) OR EXISTS (SELECT 1 FROM wip_contracts c WHERE c.issue_id = w.order_id AND c.gone = 0))
     AND (h.issue_id IS NULL OR h.read_status IS NOT w.status OR h.read_due IS NOT w.inv_due OR h.read_date IS NOT w.inv_date) LIMIT ${PER_CALL}`;
 
 // One turn of the background read. Idle for an hour once everything is read.
@@ -116,7 +130,10 @@ export async function step(env) {
       if (!results.length) { await setState(env, 'invoice_history_idle', String(Date.now())); break; }
       const logs = await changesFor(b, results.map((r) => r.issue_id), state);
       const now = new Date().toISOString();
-      await runAll(env, results.map((r) => {
+      // Deleted in Jira since the WIP last read it: gone from the hub too.
+      const deleted = results.filter((r) => logs.get(String(r.issue_id)) === null).map((r) => r.issue_id);
+      if (deleted.length) await env.DB.prepare(`DELETE FROM wip_items WHERE issue_id IN (${marks(deleted.length)})`).bind(...deleted).run();
+      await runAll(env, results.filter((r) => !deleted.includes(r.issue_id)).map((r) => {
         const d = fromChanges(logs.get(String(r.issue_id)) || [], r);
         return env.DB.prepare(
           `INSERT INTO invoice_history (issue_id, issue_key, read_status, read_due, read_date, read_at, ready_at, invoiced_at, overdue_at, paid_at, first_due, due_moves, first_date, date_moves)
@@ -195,13 +212,15 @@ async function invoiceRecords(env, region, today, terms) {
   const out = [];
   for (const [id, p] of rows) {
     const subs = (byParent.get(id) || []).sort((a, b) => String(a.created || '').localeCompare(String(b.created || '')) || String(a.issue_key).localeCompare(String(b.issue_key), 'en', { numeric: true }));
-    const plan = p.kind === 'contract' ? contractSchedule(p.start, subs.length) : [];
+    // Cancelled invoices aren't owed, and take no share of a contract.
+    const live = subs.filter((i) => !invoiceState(i).cancelled);
+    const plan = p.kind === 'contract' ? contractSchedule(p.start, live.length) : [];
     const t = terms[p.account] || null;
-    subs.forEach((i, n) => {
+    live.forEach((i, n) => {
       if (p.kind === 'order' && isTokenInvoice(i)) return;
       const h = hist.get(i.issue_id) || null;
       const s = invoiceState(i);
-      const value = p.value === null ? null : p.kind === 'contract' ? p.value / subs.length : p.value * (Number(i.share) || 0);
+      const value = p.value === null ? null : p.kind === 'contract' ? p.value / live.length : p.value * (Number(i.share) || 0);
       const target = i.inv_due || plan[n] || null;
       const firstTarget = h?.first_due || target;
       const paidAt = s.paid ? i.paid_at || h?.paid_at || null : null;
@@ -215,7 +234,7 @@ async function invoiceRecords(env, region, today, terms) {
         stage: s.paid ? 'paid' : s.overdue || (s.invoiced && dueDate && dueDate < today) ? 'overdue' : s.invoiced ? 'invoiced' : s.ready ? 'ready' : 'new',
         target, firstTarget, targetMoves: h?.due_moves || 0, readyAt: h?.ready_at || null, invoicedAt, sentGuessed, doneAt: s.ready || s.invoiced ? doneAt : null,
         overdueAt: h?.overdue_at || null, paidAt, dueDate, dueMoves: h?.date_moves || 0, read: Boolean(h),
-        expected: s.paid ? null : s.invoiced ? dueDate || paymentDue(target || today, t) : paymentDue(target && target > today ? target : today, t),
+        expected: expectedPayment(s, { targetEnd: target, invoiceDue: dueDate, invoicedAt: h?.invoiced_at || null, today, terms: t }),
       });
     });
   }

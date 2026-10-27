@@ -8728,6 +8728,7 @@ const INV_GROUPS = [
   ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
   ['upcoming', 'Not invoiced yet', 'Still New: the work for the milestone is under way, due to finish by its Target End.'],
   ['paid', 'Paid', 'Paid in full.'],
+  ['cancelled', 'Cancelled', 'Cancelled in Jira: not owed, and not expected.'],
 ];
 const INV_CONTRACT_GROUPS = [
   ['overdue', 'Overdue', 'Invoiced, and the Invoice Due Date has passed without payment.'],
@@ -8737,12 +8738,13 @@ const INV_CONTRACT_GROUPS = [
   ['invoiced', 'Invoiced, waiting for payment', 'Sent to the customer, and not yet due.'],
   ['upcoming', 'Not invoiced yet', 'Still New, and due to be invoiced on its date.'],
   ['paid', 'Paid', 'Paid in full.'],
+  ['cancelled', 'Cancelled', 'Cancelled in Jira: no share of the contract, and not expected.'],
 ];
 // New with no Target End has its own group, so the dates can be filled in.
 const invStage = (i) => (i.stage === 'upcoming' && !i.targetEnd ? 'nodate' : i.stage);
 
 // The groups someone has folded away, kept for next time on this browser.
-let invShut = (() => { try { return new Set(JSON.parse(localStorage.getItem('inv-shut') || '["order:paid","contract:paid"]')); } catch { return new Set(['order:paid', 'contract:paid']); } })();
+let invShut = (() => { try { return new Set(JSON.parse(localStorage.getItem('inv-shut') || '["order:paid","contract:paid","order:cancelled","contract:cancelled"]')); } catch { return new Set(['order:paid', 'contract:paid', 'order:cancelled', 'contract:cancelled']); } })();
 const invShutSave = () => { try { localStorage.setItem('inv-shut', JSON.stringify([...invShut])); } catch { /* kept for this visit only */ } };
 
 let invTab = 'invoices';        // invoices, insights
@@ -8783,14 +8785,14 @@ async function invoicingHtml() {
       ${stat('Paid this month', invMoney(sum(paidThisMonth)), count(paidThisMonth.length, 'invoice', 'invoices'))}
     </dl>
     ${noDue.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>${count(noDue.length, 'invoice has', 'invoices have')} no Invoice Due Date:</strong>
-      ${noDue.map((i) => jiraLink(i.key)).join(', ')}. Until it's set, payment is expected on the customer's terms from Target End.</p></div>` : ''}
+      ${noDue.map((i) => jiraLink(i.key)).join(', ')}. Until it's set, payment is expected on the customer's terms from the day it was invoiced, where the hub knows it.</p></div>` : ''}
     ${invForecastHtml(d)}
     ${[['order', 'Orders', INV_GROUPS], ['contract', 'Service contracts', INV_CONTRACT_GROUPS]].map(([kind, name, groups]) => {
       const all = ofKind(kind);
       return `<details class="inv-part"${invShut.has(kind) ? '' : ' open'}><summary data-inv-fold="${kind}"><h2 class="inv-part-head">${name} <span class="muted">${n(all.length)}, ${invMoney(sum(all.filter((i) => i.stage !== 'paid')))} not yet paid</span></h2></summary>
         ${groups.map(([stage, title, help]) => invGroupHtml(d, stage, title, help, by(stage, kind), kind)).join('')}</details>`;
     }).join('')}
-    <p class="help">Order milestones are each order's Invoice items in Jira; tokens are left out. Target End is when the work for a milestone should be finished and invoiced; Invoice Due Date is when the customer should pay. Until there's an Invoice Due Date, payment is expected on the customer's terms from Target End, or from today once Target End has passed.</p>
+    <p class="help">Order milestones are each order's Invoice items in Jira; tokens are left out. Target End is when the work for a milestone should be finished and invoiced; Invoice Due Date is when the customer should pay. Before it's invoiced, payment is expected on the customer's terms from Target End, or from today once Target End has passed; nothing is expected for one with no Target End, or one still Ready to be invoiced. Once invoiced, it's expected on its Invoice Due Date, or without one, on the customer's terms from the day it was invoiced. Cancelled invoices aren't counted.</p>
     <p class="help">Service contract invoices are the Invoice items under each active contract. They share the contract's value equally and are spread evenly over its year from the start date: 12 is one a month, 6 every 2 months, 4 a quarter, 2 twice a year and 1 all upfront. A Target End set on one in Jira is used in place of its date in the spread. Once a contract has ended, only its invoices still waiting to be paid are shown.</p>`;
 }
 
@@ -8832,9 +8834,10 @@ function invGroupHtml(d, stage, title, help, list, kind = 'order') {
       const date = contract && ['ready', 'exceeded', 'upcoming', 'nodate'].includes(state) ? (!te ? 'no start date to place it' : state === 'exceeded' ? `was to be invoiced ${te}` : `invoice date ${te}`) : {
         paid: i.paidAt ? `paid ${fullDate(i.paidAt)}` : 'paid',
         overdue: i.invoiceDue ? `was due ${fullDate(i.invoiceDue)}` : 'overdue in Jira',
-        invoiced: i.invoiceDue ? `due ${fullDate(i.invoiceDue)}` : 'no Invoice Due Date yet',
+        invoiced: i.invoiceDue ? `due ${fullDate(i.invoiceDue)}` : i.sentAt ? `invoiced ${fullDate(i.sentAt)}, no Invoice Due Date yet` : 'no Invoice Due Date yet',
         ready: te ? `Target End ${te}` : 'no Target End',
         nodate: 'no Target End yet',
+        cancelled: 'cancelled',
         exceeded: `Target End was ${te}`,
         upcoming: te ? `Target End ${te}` : 'no Target End yet',
       }[state];
@@ -8877,7 +8880,22 @@ function invDueFrom(day, t) {
 let invSending = null;   // the invoice being marked sent, or having its due date changed
 let invPaying = null;    // the invoice being marked paid
 
+let invCancelling = null;   // the invoice being cancelled
 function invActionsHtml(d, i, state, account) {
+  if (state === 'paid' || state === 'cancelled') return '';
+  const k = esc(i.key);
+  if (d.canUpdate && invCancelling === i.key) {
+    return `<div class="inv-acts inv-confirm inv-cancel">
+        <span>Cancel ${k}? It moves to Cancelled in Jira, and is no longer owed or expected.</span>
+        <div class="row"><button class="btn danger" data-inv-act="cancel" data-key="${k}">Cancel the invoice</button><button class="linklike" data-inv-cancel-open="">Keep it</button></div></div>`;
+  }
+  const core = invActionsCore(d, i, state, account);
+  const cancel = d.canUpdate && invSending !== i.key ? `<button class="linklike inv-cancel-link" data-inv-cancel-open="${k}">Cancel invoice</button>` : '';
+  if (!cancel) return core;
+  return core ? core.replace(/<\/div>\s*$/, `${cancel}</div>`) : `<div class="inv-acts">${cancel}</div>`;
+}
+
+function invActionsCore(d, i, state, account) {
   const k = esc(i.key);
   const open = invSending === i.key;
   if (state === 'upcoming' || state === 'exceeded' || state === 'nodate') {
@@ -8915,7 +8933,7 @@ function invActionsHtml(d, i, state, account) {
   return '';
 }
 
-const INV_ACT_DONE = { targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed', paid: 'Marked as paid' };
+const INV_ACT_DONE = { cancel: 'Cancelled', targetEnd: 'Target End saved', draft: 'Draft created: it\'s now Ready to be Invoiced', sent: 'Marked as sent', dueDate: 'Invoice Due Date changed', paid: 'Marked as paid' };
 
 async function invoicingClick(event) {
   const t = (sel) => event.target.closest(sel);
@@ -8931,6 +8949,8 @@ async function invoicingClick(event) {
   }
   const opener = t('[data-inv-open]');
   if (opener) { invSending = opener.dataset.invOpen || null; invPaying = null; invKeep = true; return render(); }
+  const canceller = t('[data-inv-cancel-open]');
+  if (canceller) { invCancelling = canceller.dataset.invCancelOpen || null; invSending = null; invPaying = null; invKeep = true; return render(); }
   const payer = t('[data-inv-pay]');
   if (payer) { invPaying = payer.dataset.invPay || null; invSending = null; invKeep = true; return render(); }
   const act = t('[data-inv-act]');
@@ -8942,7 +8962,7 @@ async function invoicingClick(event) {
     act.disabled = true;
     try {
       await api('/api/invoicing/action', { method: 'POST', body: JSON.stringify({ key, action, date }) });
-      invSending = null; invPaying = null;
+      invSending = null; invPaying = null; invCancelling = null;
       toast(`${key}: ${INV_ACT_DONE[action]}`);
       return render();
     } catch (err) { toast(err.message); act.disabled = false; }

@@ -198,7 +198,8 @@ async function attempt(env, h) {
     await changed(env);
     return { ok: true, saved: true, target };
   } catch (err) {
-    const attempts = (h.attempts || 0) + 1;
+    // The PSC itself deleted in Jira: nothing to hand over, so it isn't tried again.
+    const attempts = err.status === 404 && /\/issue\/[^/]+(\?|$)/.test(String(err.message)) ? MAX_TRIES : (h.attempts || 0) + 1;
     await env.DB.prepare('UPDATE psc_handoffs SET attempts = ?, error = ? WHERE issue_key = ?').bind(attempts, String(err.message).slice(0, 400), h.issue_key).run();
     if (attempts === ALERT_AFTER) {
       await raiseAlert(env, { kind: 'psc-handoff', dedupe: `psc-handoff:${h.issue_key}`, subject: `${h.issue_key} couldn't be ${h.kind === 'condor' ? 'sent to Condor Dev' : 'turned into a quote'}`,

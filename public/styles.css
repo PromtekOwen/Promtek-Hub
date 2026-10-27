@@ -1546,3 +1546,5 @@ tr.total th, tr.total td { border-top: 2px solid var(--line); font-weight: 600; 
 .q-link-project { margin-top: .75rem; }
 .mes-psc .sub .bad { display: inline; }
 .psc-flag-buttons { display: flex; flex-direction: column; gap: .4rem; }
+.inv-cancel-link { color: var(--danger); font-size: .85rem; }
+.inv-cancel span { font-size: .9rem; }
