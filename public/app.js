@@ -181,7 +181,7 @@ function notLinkedCard() {
   </div>`;
 }
 
-function xpList(entries, emptyText) {
+function xpList(entries, emptyText, { editable = false } = {}) {
   if (!entries.length) return `<div class="card"><p class="muted">${emptyText}</p></div>`;
   return `<ul class="list">${entries.map((e) => {
     const how = e.job_elo
@@ -195,7 +195,8 @@ function xpList(entries, emptyText) {
     return `<li>
       <span class="title">${issue}${esc(e.summary || e.description || 'Time logged')}</span>
       <span class="xp">+${n(e.xp)}<small>${duration(e.seconds)}</small></span>
-      <span class="sub">${shortDate(e.work_date)}${e.rate != null ? `. ${how}${override}${rate}` : e.description && e.summary ? `. ${esc(e.description)}` : ''}${e.overtime_seconds ? `. ${duration(e.overtime_seconds)} over contracted hours at 1.5× XP` : ''}</span>
+      <span class="sub">${shortDate(e.work_date)}${e.start_time ? `, from ${esc(e.start_time.slice(0, 5))}` : ''}${e.rate != null ? `. ${how}${override}${rate}` : e.description && e.summary ? `. ${esc(e.description)}` : ''}${e.overtime_seconds ? `. ${duration(e.overtime_seconds)} over contracted hours at 1.5× XP` : ''}</span>
+      ${editable ? `<button class="chip-btn xp-edit" data-time-edit="${esc(e.worklog_id)}">Change</button>` : ''}
     </li>`;
   }).join('')}</ul>`;
 }
@@ -285,8 +286,10 @@ const pages = {
     band: () => `<h1>My time</h1><p>Your Tempo time logs, week by week.</p>`,
     async render() {
       if (!me.linked) return notLinkedCard();
+      if (timeEdit) return timeEditHtml();
       const monday = addDays(mondayOf(todayIso()), weekOffset * 7);
-      const data = await api(`/api/time?week=${monday}`);
+      const [data, toil] = await Promise.all([api(`/api/time?week=${monday}`), api('/api/toil').catch(() => null)]);
+      timeWeek = data;
       // The days they work, plus any other day with time logged on it.
       const week = Array.from({ length: 7 }, (_, i) => addDays(monday, i));
       const byDay = Object.fromEntries(week.map((d) => [d, []]));
@@ -300,16 +303,20 @@ const pages = {
       const today = todayIso();
       const arrow = (d) => svgIcon(d);
 
+      // Each day's bar is made of its time logs, each one tappable to change it.
       const chart = days.map((d, i) => `<div class="col${d === today ? ' today' : ''}">
           <span class="h">${secs[i] ? duration(secs[i]) : ''}</span>
-          <span class="fill${secs[i] ? '' : ' none'}" style="height:${Math.max(2, (secs[i] / scale) * 100).toFixed(1)}%"></span>
+          ${secs[i] ? `<span class="fill stack" style="height:${Math.max(2, (secs[i] / scale) * 100).toFixed(1)}%">${byDay[d].map((e, j) =>
+            `<button class="seg-log s${j % 4}" data-time-edit="${esc(e.worklog_id)}" style="flex-grow:${e.seconds}" title="${esc(`${e.issue_key || ''} ${e.summary || e.description || ''}`.trim())}, ${duration(e.seconds)}${e.start_time ? ` from ${e.start_time.slice(0, 5)}` : ''}" aria-label="Change ${esc(e.issue_key || 'this time log')}, ${duration(e.seconds)}"></button>`).join('')}</span>`
+            : '<span class="fill none" style="height:2%"></span>'}
           <span class="d">${dateOf(d).toLocaleDateString('en-GB', { weekday: 'short' })}</span>
         </div>`).join('');
 
       const listByDay = days.filter((d) => byDay[d].length).reverse().map((d) =>
-        `<p class="day-label">${longDate(d)}, ${duration(secs[days.indexOf(d)])}</p>${xpList(byDay[d], '')}`).join('');
+        `<p class="day-label">${longDate(d)}, ${duration(secs[days.indexOf(d)])}</p>${xpList(byDay[d], '', { editable: true })}`).join('');
 
       return `
+        ${toilCardHtml(toil)}
         <div class="card">
           <div class="week-nav">
             <button class="icon-btn" data-week="-1" aria-label="Previous week">${arrow('<path d="M15 5l-7 7 7 7"/>')}</button>
@@ -321,6 +328,7 @@ const pages = {
             <button class="icon-btn" data-week="1" aria-label="Next week" ${weekOffset >= 0 ? 'disabled' : ''}>${arrow('<path d="M9 5l7 7-7 7"/>')}</button>
           </div>
           <div class="chart" style="grid-template-columns:repeat(${days.length}, minmax(0, 1fr))">${chart}</div>
+          ${data.entries.length ? '<p class="help" style="margin:.6rem 0 0;text-align:center">Tap a piece of a bar to change that time log.</p>' : ''}
         </div>
         <div class="row" style="margin-top:1rem">
           <a class="btn" href="#/log">Log time</a>
@@ -553,6 +561,9 @@ const pages = {
         ${xpStartHtml(backdate)}
 
         ${accessAdminHtml(accessInfo)}
+
+        <h2>Overtime and TOIL</h2>
+        <div id="toil-admin">${sectionLoading()}</div>
 
         <h2>Home screen messages</h2>
         <p class="muted">Alerts and news for the strip at the top of everyone's home screen.</p>
@@ -3990,6 +4001,7 @@ function logFormHtml() {
         <label>Date <input id="log-date" type="date" value="${today}" max="${today}"></label>
         <label>Started <input id="log-start" type="time" value="09:00"></label>
       </div>
+      <div id="log-day" class="log-day"></div>
       <p class="muted" style="margin:1rem 0 .35rem">How long?</p>
       <div class="row quick">${[15, 30, 60, 90, 120, 240, 450].map((m) =>
         `<button class="chip-btn" data-mins="${m}">${m < 60 ? `${m}m` : `${m / 60}h`.replace('.5', '½')}</button>`).join('')}</div>
@@ -3998,6 +4010,7 @@ function logFormHtml() {
         <label>Minutes <input id="log-minutes" type="number" min="0" max="59" step="5" value="${Math.round(((prefill?.seconds || 3600) % 3600) / 60)}" inputmode="numeric"></label>
       </div>
       <label style="margin-top:.75rem">What did you do? <input id="log-note" value="${esc(prefill?.description || '')}" placeholder="Optional" autocomplete="off"></label>
+      <div id="log-next" class="log-next"></div>
       <p id="log-xp" class="xp-preview"></p>
       <div class="row">
         <button class="btn" data-action="save-log">Log this time</button>
@@ -4026,6 +4039,7 @@ function pscFormHtml(projectKey) {
 }
 
 function updateXpPreview() {
+  drawLogDay();
   const el = document.getElementById('log-xp');
   if (!el) return;
   const mins = (Number(document.getElementById('log-hours')?.value) || 0) * 60
@@ -4034,12 +4048,316 @@ function updateXpPreview() {
 }
 
 async function loadStageHint() {
+  loadLogDay();
+  loadLogNext();
   const el = document.getElementById('log-hint');
   if (!el || !logChosen?.label) return;
   try {
     const hint = await api(`/api/log/hint?issueKey=${encodeURIComponent(logChosen.label)}`);
     if (hint.times) el.textContent = `This kind of stage has taken ${hint.typicalHours.toFixed(1)} hours on average, across ${hint.times} jobs.`;
   } catch { /* a hint is optional */ }
+}
+
+// ---------- the day being logged to ----------
+
+let logDay = null;      // { date, entries, workDay, dailySeconds } for the day in the form
+let logNext = null;     // { issueId, key, status, next, transitions } for moving the item on
+let logMove = '';       // the move chosen, or '' to leave it
+let timeEdit = null;    // the time log being changed on My time
+let timeWeek = null;    // the week shown on My time
+let toilOpen = false;
+
+const clockOf = (mins) => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(Math.round(mins % 60)).padStart(2, '0')}`;
+const minsOfTime = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const signedDuration = (s) => (Math.round(s / 60) === 0 ? '0h' : `${s < 0 ? '−' : '+'}${duration(Math.abs(s))}`);
+
+function logDraft() {
+  const start = minsOfTime(document.getElementById('log-start')?.value);
+  const mins = (Number(document.getElementById('log-hours')?.value) || 0) * 60 + (Number(document.getElementById('log-minutes')?.value) || 0);
+  return start == null ? null : { start, mins };
+}
+
+async function loadLogDay() {
+  const host = document.getElementById('log-day');
+  const date = document.getElementById('log-date')?.value;
+  if (!host || !date) return;
+  if (!logDay || logDay.date !== date) {
+    host.innerHTML = '<p class="muted log-day-loading">Loading what\'s logged on this day…</p>';
+    try { logDay = await api(`/api/log/day?date=${encodeURIComponent(date)}`); }
+    catch { host.innerHTML = ''; return; }
+    if (document.getElementById('log-date')?.value !== date) return;
+    // A new log starts where the day's time so far ends, unless a start was chosen.
+    const start = document.getElementById('log-start');
+    if (!timeEdit && start && !start.dataset.touched) {
+      const ends = logDay.entries.map((e) => (minsOfTime(e.start_time) ?? 540) + Math.round(e.seconds / 60));
+      if (ends.length) start.value = clockOf(Math.min(23 * 60 + 59, Math.max(...ends)));
+    }
+  }
+  drawLogDay();
+}
+
+function drawLogDay() {
+  const host = document.getElementById('log-day');
+  if (!host || !logDay || logDay.date !== document.getElementById('log-date')?.value) return;
+  host.innerHTML = dayTimelineHtml(logDay, logDraft(), timeEdit?.worklog_id || null);
+}
+
+// The day as a strip of time: what's already logged, the gaps between, and the time being logged now.
+function dayTimelineHtml(day, draft, exclude) {
+  const entries = day.entries.filter((e) => String(e.worklog_id) !== String(exclude))
+    .map((e) => ({ id: e.worklog_id, start: minsOfTime(e.start_time) ?? 540, mins: Math.max(1, Math.round(e.seconds / 60)), key: e.issue_key || '', what: e.summary || e.description || 'Time logged' }))
+    .sort((a, b) => a.start - b.start);
+  const logged = entries.reduce((t, e) => t + e.mins, 0);
+  const daily = Math.round((day.dailySeconds || 0) / 60);
+  const ends = entries.map((e) => e.start + e.mins);
+  const lo = Math.max(0, Math.floor(Math.min(8 * 60, ...entries.map((e) => e.start), draft ? draft.start : 1440) / 60) * 60);
+  const hi = Math.min(1440, Math.ceil(Math.max(18 * 60, ...ends, draft ? draft.start + draft.mins : 0) / 60) * 60);
+  const pos = (m) => `${(((Math.max(lo, Math.min(hi, m)) - lo) / (hi - lo)) * 100).toFixed(2)}%`;
+  const width = (a, b) => `${(((Math.min(hi, b) - Math.max(lo, a)) / (hi - lo)) * 100).toFixed(2)}%`;
+  // Gaps between the logged stretches, of five minutes or more.
+  const merged = [];
+  for (const e of entries) {
+    const last = merged[merged.length - 1];
+    if (last && e.start <= last.end) last.end = Math.max(last.end, e.start + e.mins);
+    else merged.push({ start: e.start, end: e.start + e.mins });
+  }
+  const gaps = [];
+  for (let i = 1; i < merged.length; i++) if (merged[i].start - merged[i - 1].end >= 5) gaps.push({ start: merged[i - 1].end, mins: merged[i].start - merged[i - 1].end });
+  const left = daily - logged;
+  const lastEnd = merged.length ? merged[merged.length - 1].end : null;
+  const clash = draft && draft.mins ? entries.filter((e) => draft.start < e.start + e.mins && e.start < draft.start + draft.mins) : [];
+  const step = hi - lo > 12 * 60 ? 3 : hi - lo > 8 * 60 ? 2 : 1;
+  const ticks = [];
+  for (let h = lo / 60; h <= hi / 60; h += step) ticks.push(`<span class="dt-tick" style="left:${pos(h * 60)}">${String(h).padStart(2, '0')}</span>`);
+  const summary = entries.length
+    ? `${duration(logged * 60)} logged ${day.date === todayIso() ? 'today' : `on ${longDate(day.date)}`}${day.workDay && daily ? `, of your ${duration(daily * 60)} day` : day.workDay ? '' : ', not one of your working days'}.`
+    : `Nothing logged ${day.date === todayIso() ? 'today' : `on ${longDate(day.date)}`} yet.`;
+  const chips = [
+    ...gaps.map((g) => `<button class="chip-btn dt-gap-btn" data-day-gap-start="${g.start}" data-day-gap-mins="${g.mins}">Gap ${clockOf(g.start)} to ${clockOf(g.start + g.mins)}, ${duration(g.mins * 60)}</button>`),
+    ...(day.workDay && left > 0 && lastEnd != null ? [`<button class="chip-btn dt-gap-btn" data-day-gap-start="${lastEnd}" data-day-gap-mins="${Math.min(left, 1440 - lastEnd)}">From ${clockOf(lastEnd)}, ${duration(left * 60)} left of your day</button>`] : []),
+  ];
+  return `<div class="day-time">
+    <p class="dt-summary">${summary}</p>
+    <div class="dt-track" role="img" aria-label="${esc(summary)}">
+      ${gaps.map((g) => `<span class="dt-gap" style="left:${pos(g.start)};width:${width(g.start, g.start + g.mins)}" title="Gap ${clockOf(g.start)} to ${clockOf(g.start + g.mins)}"></span>`).join('')}
+      ${entries.map((e, i) => `<span class="dt-block s${i % 4}" style="left:${pos(e.start)};width:${width(e.start, e.start + e.mins)}" title="${esc(`${clockOf(e.start)} to ${clockOf(e.start + e.mins)}, ${e.key} ${e.what}`)}"><span>${esc(e.key)}</span></span>`).join('')}
+      ${draft && draft.mins ? `<span class="dt-draft${clash.length ? ' clash' : ''}" style="left:${pos(draft.start)};width:${width(draft.start, draft.start + draft.mins)}" title="${timeEdit ? 'This time log' : 'This time'}, ${clockOf(draft.start)} to ${clockOf(draft.start + draft.mins)}"></span>` : ''}
+    </div>
+    <div class="dt-ticks">${ticks.join('')}</div>
+    ${clash.length ? `<p class="dt-clash">This overlaps ${clash.map((e) => `${esc(e.key || 'a time log')} (${clockOf(e.start)} to ${clockOf(e.start + e.mins)})`).join(', ')}.</p>` : ''}
+    ${chips.length ? `<div class="row dt-gaps">${chips.join('')}</div>` : ''}
+    ${entries.length ? `<details class="dt-list"><summary>What's logged</summary><ul>${entries.map((e) => `<li><span class="dt-when">${clockOf(e.start)} to ${clockOf(e.start + e.mins)}</span> ${esc(e.key)} ${esc(e.what)}</li>`).join('')}</ul></details>` : ''}
+  </div>`;
+}
+
+async function loadLogNext() {
+  const host = document.getElementById('log-next');
+  if (!host || !logChosen?.issueId) return;
+  if (/^PMB-/i.test(logChosen.label || '')) { host.innerHTML = ''; return; }
+  if (!logNext || logNext.issueId !== logChosen.issueId) {
+    logMove = '';
+    try { logNext = { issueId: logChosen.issueId, ...(await api(`/api/log/next?issueId=${encodeURIComponent(logChosen.issueId)}`)) }; }
+    catch { host.innerHTML = ''; return; }
+  }
+  drawLogNext();
+}
+
+function drawLogNext() {
+  const host = document.getElementById('log-next');
+  if (!host || !logNext || logNext.issueId !== logChosen?.issueId) return;
+  if (!logNext.next) { host.innerHTML = ''; return; }
+  const others = logNext.transitions.filter((t) => t.id !== logNext.next.id);
+  host.innerHTML = `<p class="log-next-q">Move ${esc(logNext.key)} on${logNext.status ? ` from <strong>${esc(logNext.status)}</strong>` : ''} once this is logged?</p>
+    <div class="chips">
+      <button class="chip${logMove === '' ? ' on' : ''}" data-log-move="" aria-pressed="${logMove === ''}">No, leave it</button>
+      <button class="chip${logMove === logNext.next.id ? ' on' : ''}" data-log-move="${esc(logNext.next.id)}" aria-pressed="${logMove === logNext.next.id}">Yes, to ${esc(logNext.next.to)}</button>
+      ${others.map((t) => `<button class="chip subtle${logMove === t.id ? ' on' : ''}" data-log-move="${esc(t.id)}" aria-pressed="${logMove === t.id}">${esc(t.to)}</button>`).join('')}
+    </div>`;
+}
+
+// ---------- changing a time log ----------
+
+function timeEditHtml() {
+  const e = timeEdit;
+  const today = todayIso();
+  const h = Math.floor(e.seconds / 3600);
+  const m = Math.round((e.seconds % 3600) / 60);
+  return `<div class="card">
+      <p class="muted" style="margin:0 0 .35rem">Changing time logged against</p>
+      <h3 style="margin:0">${e.issue_key ? `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(e.issue_key)}" target="_blank" rel="noopener">${esc(e.issue_key)}</a> ` : ''}${esc(e.summary || '')}</h3>
+    </div>
+    <div class="card" style="margin-top:1rem">
+      <div class="row">
+        <label>Date <input id="log-date" type="date" value="${esc(e.work_date)}" max="${today}"></label>
+        <label>Started <input id="log-start" type="time" value="${esc((e.start_time || '09:00').slice(0, 5))}" data-touched="1"></label>
+      </div>
+      <div id="log-day" class="log-day"></div>
+      <p class="muted" style="margin:1rem 0 .35rem">How long?</p>
+      <div class="row quick">${[15, 30, 60, 90, 120, 240, 450].map((x) =>
+        `<button class="chip-btn" data-mins="${x}">${x < 60 ? `${x}m` : `${x / 60}h`.replace('.5', '½')}</button>`).join('')}</div>
+      <div class="row" style="margin-top:.75rem">
+        <label>Hours <input id="log-hours" type="number" min="0" max="16" step="1" value="${h}" inputmode="numeric"></label>
+        <label>Minutes <input id="log-minutes" type="number" min="0" max="59" step="5" value="${m}" inputmode="numeric"></label>
+      </div>
+      <label style="margin-top:.75rem">What did you do? <input id="log-note" value="${esc(e.description || '')}" placeholder="Optional" autocomplete="off"></label>
+      <p class="help">Saved straight to Tempo. XP and overtime are worked out again to match.</p>
+      <div class="row">
+        <button class="btn" data-time-save="1">Save changes</button>
+        <button class="btn secondary" data-time-cancel="1">Cancel</button>
+        <button class="btn danger-outline" data-time-delete="1">Delete it</button>
+      </div>
+      <div class="result" id="time-result" role="status"></div>
+    </div>`;
+}
+
+// ---------- overtime and TOIL ----------
+
+function toilCardHtml(t) {
+  if (!t || !t.linked) return '';
+  const tone = t.seconds > 0 ? ' up' : t.seconds < 0 ? ' down' : '';
+  const weeks = (t.weeks || []).slice(0, 26).map((w) => `<tr><td>${shortDate(w.monday)}</td><td class="num">${duration(w.logged)}</td>
+      <td class="num">${w.toil ? duration(w.toil) : '—'}</td><td class="num ${w.change < 0 ? 'bad' : w.change > 0 ? 'good' : ''}">${w.change ? signedDuration(w.change) : '0'}</td></tr>`).join('');
+  const adjustments = (t.adjustments || []).filter((a) => a.counted).map((a) => `<li><strong>${signedDuration(a.seconds)}</strong> ${shortDate(a.date)}, ${esc(a.note || '')}<small class="muted"> ${esc(a.by || '')}</small></li>`).join('');
+  return `<div class="card toil-card">
+      <div class="toil-head">
+        <div><p class="muted" style="margin:0">Overtime balance</p>
+          <p class="toil-total${tone}">${signedDuration(t.seconds)}</p></div>
+        <p class="muted toil-since">Since ${longDate(t.start)}${t.toilSeconds ? `<br>${duration(t.toilSeconds)} taken as TOIL` : ''}${t.adjustedSeconds ? `<br>${signedDuration(t.adjustedSeconds)} adjusted by an admin` : ''}</p>
+      </div>
+      <details class="toil-more"${toilOpen ? ' open' : ''} data-toil-more>
+        <summary>How it's worked out</summary>
+        <p class="help">Time over your ${duration(t.weekSeconds)} a week adds to it. A working day with less than ${duration(t.dailySeconds)} logged takes the difference off, as does time logged to ${esc(t.toilKey)} (time off in lieu). Today only counts once it's past ${duration(t.dailySeconds)}. It runs from the day after the last working day before this week with nothing logged.</p>
+        ${weeks ? `<div class="table-wrap"><table><thead><tr><th>Week of</th><th class="num">Logged</th><th class="num">TOIL</th><th class="num">Change</th></tr></thead><tbody>${weeks}</tbody></table></div>` : ''}
+        ${adjustments ? `<p class="muted" style="margin:.75rem 0 .25rem">Adjustments</p><ul class="toil-adj">${adjustments}</ul>` : ''}
+      </details>
+    </div>`;
+}
+
+let toilAdmin = null;      // the overview for Admin
+let toilPerson = null;     // one person's balance, being adjusted
+
+async function loadToilAdmin() {
+  const host = document.getElementById('toil-admin');
+  if (!host) return;
+  try { toilAdmin = await api('/api/admin/toil'); host.innerHTML = toilAdminHtml(); }
+  catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; }
+}
+
+function toilAdminHtml() {
+  if (!toilAdmin) return sectionLoading();
+  const rows = toilAdmin.people.map((p) => `<li class="toil-row${toilPerson?.accountId === p.accountId ? ' open' : ''}">
+      <button class="toil-who" data-toil-person="${esc(p.accountId)}" aria-expanded="${toilPerson?.accountId === p.accountId}">
+        <span class="title">${esc(p.name)}</span>
+        <span class="toil-num ${p.seconds < 0 ? 'bad' : p.seconds > 0 ? 'good' : 'muted'}">${signedDuration(p.seconds)}</span>
+        <span class="sub">Since ${shortDate(p.start)}${p.toilSeconds ? `. ${duration(p.toilSeconds)} TOIL taken` : ''}${p.adjustedSeconds ? `. ${signedDuration(p.adjustedSeconds)} adjusted` : ''}</span>
+      </button>
+      ${toilPerson?.accountId === p.accountId ? toilPersonHtml() : ''}
+    </li>`).join('');
+  return `<div class="card"><p class="muted" style="margin-top:0">Each person's running overtime balance. Time logged to ${esc(toilAdmin.toilKey)} is TOIL taken. Open someone to add or take off hours, for a balance kept somewhere else or to put one right.</p>
+    <ul class="list plain toil-list">${rows || '<li class="muted">Nobody yet.</li>'}</ul></div>`;
+}
+
+function toilPersonHtml() {
+  const t = toilPerson;
+  const list = (t.adjustments || []).map((a) => `<li${a.counted ? '' : ' class="muted"'}><strong>${signedDuration(a.seconds)}</strong> ${shortDate(a.date)}, ${esc(a.note || '')}
+      <small class="muted"> ${esc(a.by || '')}${a.counted ? '' : ', from before the balance started so not counted'}</small>
+      <button class="linklike" data-toil-remove="${a.id}">Remove</button></li>`).join('');
+  return `<div class="toil-adjust">
+    <div class="row">
+      <label>Hours <input id="toil-hours" type="number" step="0.25" inputmode="decimal" placeholder="7.5 or -3"></label>
+      <label>Date <input id="toil-date" type="date" value="${todayIso()}" max="${todayIso()}" min="${esc(t.start)}"></label>
+    </div>
+    <label style="margin-top:.6rem">What it's for <input id="toil-note" maxlength="300" placeholder="Balance carried over from the TOIL spreadsheet"></label>
+    <div class="row" style="margin-top:.6rem"><button class="btn" data-toil-add="1">Add it</button></div>
+    <div class="result" id="toil-result" role="status"></div>
+    ${list ? `<ul class="toil-adj">${list}</ul>` : ''}
+  </div>`;
+}
+
+async function timeClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const gap = t('[data-day-gap-start]');
+  if (gap) {
+    const start = document.getElementById('log-start');
+    if (start) { start.value = clockOf(Number(gap.dataset.dayGapStart)); start.dataset.touched = '1'; }
+    const mins = Math.max(1, Number(gap.dataset.dayGapMins));
+    const hours = document.getElementById('log-hours');
+    if (hours) { hours.value = Math.floor(mins / 60); document.getElementById('log-minutes').value = mins % 60; }
+    updateXpPreview();
+    return true;
+  }
+  const move = t('[data-log-move]');
+  if (move) { logMove = move.dataset.logMove; drawLogNext(); return true; }
+  const edit = t('[data-time-edit]');
+  if (edit && currentRoute() === '#/time') {
+    const entry = timeWeek?.entries.find((e) => String(e.worklog_id) === edit.dataset.timeEdit);
+    if (!entry) return true;
+    timeEdit = { ...entry };
+    logDay = null;
+    await render();
+    window.scrollTo(0, 0);
+    loadLogDay();
+    return true;
+  }
+  if (t('[data-time-cancel]')) { timeEdit = null; logDay = null; render(); return true; }
+  const save = t('[data-time-save]');
+  if (save && timeEdit) {
+    const seconds = ((Number(document.getElementById('log-hours').value) || 0) * 60 + (Number(document.getElementById('log-minutes').value) || 0)) * 60;
+    save.disabled = true;
+    try {
+      await api('/api/log/worklog-edit', { method: 'POST', body: JSON.stringify({ worklogId: timeEdit.worklog_id, seconds,
+        date: document.getElementById('log-date').value, startTime: document.getElementById('log-start').value, description: document.getElementById('log-note').value }) });
+      toast('Saved to Tempo');
+      timeEdit = null; logDay = null;
+      me = await api('/api/me');
+      render();
+    } catch (err) { document.getElementById('time-result').textContent = err.message; save.disabled = false; }
+    return true;
+  }
+  const del = t('[data-time-delete]');
+  if (del && timeEdit) {
+    if (!confirm(`Delete ${duration(timeEdit.seconds)} logged on ${longDate(timeEdit.work_date)} from Tempo?`)) return true;
+    del.disabled = true;
+    try {
+      await api('/api/log/worklog-delete', { method: 'POST', body: JSON.stringify({ worklogId: timeEdit.worklog_id }) });
+      toast('Deleted from Tempo');
+      timeEdit = null; logDay = null;
+      me = await api('/api/me');
+      render();
+    } catch (err) { document.getElementById('time-result').textContent = err.message; del.disabled = false; }
+    return true;
+  }
+  const who = t('[data-toil-person]');
+  if (who) {
+    const id = who.dataset.toilPerson;
+    if (toilPerson?.accountId === id) { toilPerson = null; document.getElementById('toil-admin').innerHTML = toilAdminHtml(); return true; }
+    try { toilPerson = await api(`/api/admin/toil/person?id=${encodeURIComponent(id)}`); } catch (err) { toast(err.message); return true; }
+    document.getElementById('toil-admin').innerHTML = toilAdminHtml();
+    return true;
+  }
+  const add = t('[data-toil-add]');
+  if (add && toilPerson) {
+    add.disabled = true;
+    try {
+      toilPerson = await api('/api/admin/toil/adjust', { method: 'POST', body: JSON.stringify({ accountId: toilPerson.accountId,
+        hours: document.getElementById('toil-hours').value, date: document.getElementById('toil-date').value, note: document.getElementById('toil-note').value }) });
+      toast('Added');
+      toilAdmin = await api('/api/admin/toil');
+      document.getElementById('toil-admin').innerHTML = toilAdminHtml();
+    } catch (err) { document.getElementById('toil-result').textContent = err.message; add.disabled = false; }
+    return true;
+  }
+  const rm = t('[data-toil-remove]');
+  if (rm && toilPerson) {
+    if (!confirm('Remove this adjustment?')) return true;
+    try {
+      toilPerson = await api('/api/admin/toil/remove', { method: 'POST', body: JSON.stringify({ id: Number(rm.dataset.toilRemove) }) });
+      toilAdmin = await api('/api/admin/toil');
+      document.getElementById('toil-admin').innerHTML = toilAdminHtml();
+    } catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
 }
 
 // ---------- reports ----------
@@ -11926,9 +12244,12 @@ async function logAction(action, button) {
           startTime: document.getElementById('log-start').value,
           description: document.getElementById('log-note').value,
           ...(typeof logChosen.chargeable === 'boolean' ? { chargeable: logChosen.chargeable } : {}),
+          ...(logMove && logNext?.issueId === logChosen.issueId ? { transitionId: logMove } : {}),
         }),
       });
-      toast(`${duration(result.seconds)} logged against ${result.issueKey}`);
+      toast(`${duration(result.seconds)} logged against ${result.issueKey}${result.moved ? `, moved to ${result.moved.status}` : ''}`);
+      if (result.moveError) setTimeout(() => toast(`The time is logged, but ${result.issueKey} couldn't be moved on: ${result.moveError}`), 2600);
+      logDay = null; logNext = null; logMove = '';
       if (pendingCall) {
         await api('/api/calls/handled', {
           method: 'POST',
@@ -12184,6 +12505,7 @@ view.addEventListener('click', async (event) => {
   }
   const pscBtn = event.target.closest('[data-psc]');
   if (pscBtn) { logPscProject = pscBtn.dataset.psc; return render(); }
+  if (await timeClick(event)) return;
   const minsBtn = event.target.closest('[data-mins]');
   if (minsBtn) {
     const mins = Number(minsBtn.dataset.mins);
@@ -12633,7 +12955,9 @@ async function render() {
       reapplySearch();
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
-      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); }
+      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); loadToilAdmin(); }
+      if (route === '#/time' && timeEdit) loadLogDay();
+      if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
@@ -12731,6 +13055,8 @@ view.addEventListener('input', (event) => {
     return;
   }
   if (['log-hours', 'log-minutes'].includes(event.target.id)) return updateXpPreview();
+  if (event.target.id === 'log-start') { event.target.dataset.touched = '1'; return drawLogDay(); }
+  if (event.target.id === 'log-date') return loadLogDay();
   if (event.target.id === 'log-search') {
     logSearch = event.target.value;
     clearTimeout(searchTimer);

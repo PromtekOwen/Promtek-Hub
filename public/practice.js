@@ -66,6 +66,7 @@ let idSeq = 5000;
 const nextId = () => String(++idSeq);
 const issueIds = new Map();
 const idOf = (key) => { if (!issueIds.has(key)) issueIds.set(key, nextId()); return issueIds.get(key); };
+const keyOfId = (id) => [...issueIds].find(([, v]) => String(v) === String(id))?.[0] || null;
 
 function stageOption(key, title, orderKey) {
   const o = ORDERS.find((x) => x.key === orderKey);
@@ -89,8 +90,9 @@ function initWorld(real) {
   me = { id: myId, name: employee.name, first: String(employee.name).split(' ')[0], user: real.user };
   const day = today(), monday = mondayOf(day);
   const weekDays = Array.from({ length: 7 }, (_, i) => addDays(monday, i)).filter((d) => d <= day);
-  const entry = (key, date, mins, description = '') => ({
-    worklog_id: nextId(), issue_key: key, summary: issueTitle(key), work_date: date, seconds: mins * 60, description,
+  const at = (mins) => `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}:00`;
+  const entry = (key, date, mins, description = '', start = 510) => ({
+    worklog_id: nextId(), issue_key: key, summary: issueTitle(key), work_date: date, start_time: at(start), seconds: mins * 60, description,
     job_elo: key.startsWith('PMB') ? null : 1180, engineer_elo: employee.elo ?? 1150, rate: key.startsWith('PMB') ? null : 1.03, override: null, xp: Math.round(mins * 1.03),
   });
   const worklogs = [];
@@ -98,12 +100,12 @@ function initWorld(real) {
   weekDays.forEach((d, i) => {
     if (i > 4) return;
     worklogs.push(entry(['NGB-122', 'HBM-209', 'ASF-73', 'NGB-123', 'HBM-208'][i], d, 240 + i * 15));
-    worklogs.push(entry(i % 2 ? 'PMB-18' : 'ASF-73', d, i % 2 ? 60 : 150));
+    worklogs.push(entry(i % 2 ? 'PMB-18' : 'ASF-73', d, i % 2 ? 60 : 150, '', 510 + 240 + i * 15 + 30));
   });
   for (let i = 0; i < 5; i++) {
     const d = addDays(monday, i - 7);
     worklogs.push(entry(['HBM-208', 'HBM-208', 'NGB-121', 'NGB-122', 'PMB-12'][i], d, 300 + (i % 3) * 30));
-    worklogs.push(entry(['NGB-123', 'ASF-73', 'HBM-209', 'PMB-18', 'ASF-73'][i], d, 150 + (i % 2) * 30));
+    worklogs.push(entry(['NGB-123', 'ASF-73', 'HBM-209', 'PMB-18', 'ASF-73'][i], d, 150 + (i % 2) * 30, '', 510 + 300 + (i % 3) * 30 + 30));
   }
   world = {
     real, employee: clone(employee), worklogs,
@@ -218,12 +220,12 @@ function search(q) {
   return pool.filter((o) => words.every((w) => `${o.label} ${o.title} ${o.sublabel}`.toLowerCase().includes(w))).slice(0, 12);
 }
 
-function logWorklog({ issueKey, seconds, date, description }) {
+function logWorklog({ issueKey, seconds, date, description, startTime }) {
   if (!seconds || seconds < 60) throw new Error('Say how long it took.');
   const mins = Math.round(seconds / 60);
   const internal = issueKey.startsWith('PMB');
   const w = {
-    worklog_id: nextId(), issue_key: issueKey, summary: issueTitle(issueKey), work_date: date || today(), seconds, description: description || '',
+    worklog_id: nextId(), issue_key: issueKey, summary: issueTitle(issueKey), work_date: date || today(), start_time: startTime ? `${startTime.slice(0, 5)}:00` : '09:00:00', seconds, description: description || '',
     job_elo: internal ? null : 1180, engineer_elo: world.employee.elo ?? 1150, rate: internal ? null : 1.03, override: null, xp: Math.round(mins * 1.03),
   };
   world.worklogs.push(w);
@@ -949,7 +951,31 @@ async function answer(p, q, method, body) {
   if (p === '/api/log/browse') return browse(q.get('node') || 'root');
   if (p === '/api/log/search') return { options: search(q.get('q') || '') };
   if (p === '/api/log/hint') return { times: 14, typicalHours: 6.5 };
-  if (p === '/api/log/worklog') return logWorklog(body);
+  if (p === '/api/log/worklog') return { ...logWorklog(body), ...(body.transitionId ? { moved: { key: body.issueKey, status: 'Review' } } : {}) };
+  if (p === '/api/log/day') {
+    const d = q.get('date') || today();
+    return { date: d, workDay: [1, 2, 3, 4, 5].includes(new Date(`${d}T12:00:00Z`).getUTCDay()), dailySeconds: 27000,
+      entries: world.worklogs.filter((w) => w.work_date === d).sort((a, b) => String(a.start_time).localeCompare(String(b.start_time))) };
+  }
+  if (p === '/api/log/next') {
+    const key = keyOfId(q.get('issueId'));
+    return key && !key.startsWith('PMB') ? { key, status: 'In Progress', statusCat: 'indeterminate', next: { id: '31', to: 'Review', cat: 'indeterminate' },
+      transitions: [{ id: '31', to: 'Review', cat: 'indeterminate' }, { id: '41', to: 'Done', cat: 'done' }] } : { transitions: [] };
+  }
+  if (p === '/api/log/worklog-edit') {
+    const w = world.worklogs.find((x) => String(x.worklog_id) === String(body.worklogId));
+    if (!w) throw new Error('That time log could not be found.');
+    Object.assign(w, { seconds: Number(body.seconds), work_date: body.date || w.work_date, start_time: body.startTime ? `${body.startTime.slice(0, 5)}:00` : w.start_time, description: body.description ?? w.description,
+      xp: Math.round((Number(body.seconds) / 60) * (w.rate || 1)) });
+    return { ok: true };
+  }
+  if (p === '/api/log/worklog-delete') { world.worklogs = world.worklogs.filter((x) => String(x.worklog_id) !== String(body.worklogId)); return { ok: true }; }
+  if (p === '/api/toil') {
+    const start = addDays(mondayOf(today()), -21);
+    return { linked: true, start, today: today(), dailySeconds: 27000, weekSeconds: 135000, workDays: '12345', seconds: 4 * 3600 + 15 * 60, overtimeSeconds: 4 * 3600 + 15 * 60, toilSeconds: 0, adjustedSeconds: 0,
+      weeks: [0, -7, -14, -21].map((o, i) => ({ monday: addDays(mondayOf(today()), o), logged: 135000 + [900, 3600, 7200, 3600][i], toil: 0, change: [900, 3600, 7200, 3600][i] - (i === 3 ? 0 : 0) })),
+      adjustments: [], toilKey: 'PMB-25' };
+  }
   if (p === '/api/log/flag-stage') return { ok: true };
   if (p === '/api/log/psc') {
     const key = `${body.projectKey}-${150 + world.psc.length}`;

@@ -1645,3 +1645,65 @@ button.tile.folder-tile:hover { transform: translateY(-2px); }
 .folder-sheet { max-width: 46rem; max-height: 85vh; overflow-y: auto; }
 .folder-tiles { margin: .75rem 0 1rem; }
 .folder-edit { margin: .75rem 0; }
+
+/* My time: each day's bar made of its time logs */
+.chart .fill.stack { display: flex; flex-direction: column-reverse; gap: 2px; background: none; overflow: hidden; }
+.chart .seg-log { display: block; width: 100%; min-height: 3px; flex-basis: 0; border: 0; padding: 0; cursor: pointer; background: linear-gradient(rgb(14,98,147), rgb(0,141,198)); }
+.chart .seg-log.s1 { background: linear-gradient(#2f86b8, #44a9d6); }
+.chart .seg-log.s2 { background: linear-gradient(#0b5684, #0479ab); }
+.chart .seg-log.s3 { background: linear-gradient(#3a9ac9, #5cbbe3); }
+.chart .seg-log:first-child { border-radius: 0 0 3px 3px; }
+.chart .seg-log:last-child { border-radius: 8px 8px 0 0; }
+.chart .seg-log:only-child { border-radius: 8px 8px 3px 3px; }
+.chart .seg-log:hover, .chart .seg-log:focus-visible { filter: brightness(1.18); outline: 2px solid var(--gold); outline-offset: -2px; }
+.list .xp-edit { grid-column: 1 / -1; justify-self: start; margin-top: .35rem; }
+.btn.danger-outline { background: #fff; color: var(--danger); border: 1px solid #e6b8b5; }
+
+/* The day being logged to */
+.log-day { margin-top: .85rem; }
+.log-day-loading { margin: 0; font-size: .9rem; }
+.day-time { background: var(--bg); border-radius: 12px; padding: .7rem .8rem .55rem; }
+.dt-summary { margin: 0 0 .5rem; font-size: .92rem; color: var(--ink); }
+.dt-track { position: relative; height: 34px; border-radius: 8px; background: #fff; border: 1px solid var(--line); overflow: hidden; }
+.dt-block { position: absolute; top: 3px; bottom: 3px; border-radius: 5px; background: var(--blue-deep); color: #fff; font-size: .68rem; font-weight: 700; overflow: hidden; display: flex; align-items: center; }
+.dt-block span { padding: 0 .3rem; white-space: nowrap; }
+.dt-block.s1 { background: #2f86b8; } .dt-block.s2 { background: #0b5684; } .dt-block.s3 { background: #3a9ac9; }
+.dt-gap { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, rgba(232,163,23,.22) 0 6px, transparent 6px 12px); }
+.dt-draft { position: absolute; top: 1px; bottom: 1px; border: 2px dashed var(--ok); border-radius: 6px; background: rgba(31,122,77,.12); }
+.dt-draft.clash { border-color: var(--danger); background: rgba(179,38,30,.12); }
+.dt-ticks { position: relative; height: 1.1rem; margin-top: 2px; }
+.dt-tick { position: absolute; transform: translateX(-50%); font-size: .7rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.dt-tick:first-child { transform: none; }
+.dt-tick:last-child { transform: translateX(-100%); }
+.dt-clash { margin: .35rem 0 0; color: var(--danger); font-size: .88rem; font-weight: 600; }
+.dt-gaps { margin-top: .45rem; gap: .35rem; }
+.dt-gap-btn { font-size: .82rem; padding: .25rem .6rem; }
+.dt-list { margin-top: .45rem; font-size: .88rem; }
+.dt-list summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+.dt-list ul { margin: .3rem 0 0; padding-left: 1.1rem; }
+.dt-when { font-variant-numeric: tabular-nums; color: var(--muted); }
+.log-next { margin-top: .85rem; }
+.log-next:empty { display: none; }
+.log-next-q { margin: 0 0 .4rem; }
+.chip.subtle { color: var(--muted); }
+
+/* Overtime and TOIL */
+.toil-card { margin-bottom: 1rem; }
+.toil-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; }
+.toil-total { margin: 0; font-size: 2rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--ink); }
+.toil-total.up { color: var(--ok); }
+.toil-total.down { color: var(--danger); }
+.toil-since { margin: 0; text-align: right; font-size: .9rem; }
+.toil-more { margin-top: .75rem; }
+.toil-more summary { cursor: pointer; color: var(--blue-deep); font-weight: 600; }
+td.good, .toil-num.good { color: var(--ok); }
+td.bad, .toil-num.bad { color: var(--danger); }
+.toil-adj { margin: .25rem 0 0; padding-left: 1.1rem; }
+.toil-adj li { margin: .2rem 0; }
+.toil-list li.toil-row { display: block; padding: 0; }
+.toil-who { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .1rem 1rem; width: 100%; text-align: left; background: none; border: 0; font: inherit; color: inherit; padding: .75rem .25rem; cursor: pointer; }
+.toil-who .toil-num { grid-row: 1 / span 2; grid-column: 2; align-self: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+.toil-adjust { padding: 0 .25rem 1rem; }
+@media (max-width: 560px) { .toil-since { text-align: left; } }
+.toil-more th, .toil-more td { padding: .45rem .55rem; }
+@media (max-width: 560px) { .toil-more th, .toil-more td { padding: .4rem .35rem; font-size: .88rem; } }

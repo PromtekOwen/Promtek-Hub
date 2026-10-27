@@ -2,7 +2,7 @@
 const TEMPO = 'https://api.tempo.io/4';
 const MAX_PAGES = 20;
 
-function normalise(wl) {
+export function normalise(wl) {
   return {
     id: String(wl.tempoWorklogId),
     accountId: wl.author?.accountId || wl.worker?.accountId || null,

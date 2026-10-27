@@ -320,6 +320,26 @@ If live calls aren't available, the call records are checked every few minutes i
 
 **Reminders.** At 5pm, anyone with a timer still running is emailed. A timer running more than 10 hours asks when it actually stopped. Engineers can turn on browser notifications so call pop-ups reach them when the hub isn't the window in front.
 
+## Part 14b2: Logging and changing time, overtime and TOIL
+
+Run `schema-057.sql` in the D1 console first (for admin adjustments to overtime balances).
+
+**The day being logged to.** Under the date and start time on the Log time form, a strip shows what's already logged on that day, the gaps between, and the time being logged now as a dashed box, red if it overlaps something. Tapping a gap fills in its start and length; a last chip offers the rest of their day from where their time ends. A new log's start time begins where the day's time so far ends. The day's share is their weekly hours split across the days they work.
+
+**Moving the item on.** When logging to anything outside PMB, the form asks whether to move the item on once the time is in: **No, leave it** (the default), **Yes, to** the next status (the first move Jira offers that doesn't go back a stage), or any other move Jira offers. The move is made after the time is logged, by the hub's Jira account; if Jira refuses it, the time is still logged and the person is told. PMB items are never moved, as they're filed by status.
+
+**Changing time logs.** On My time, each day's bar is made of its time logs; tapping a piece, or **Change** on a log, opens it to change its date, start, length and note, or delete it. Changes go straight to Tempo (anything else on the worklog, such as Tempo work attributes, is kept), and XP and overtime are worked out again. Only the person who logged it can change it from the hub. Each change is in the audit log under My time.
+
+**Overtime balance (TOIL).** At the top of My time, a running balance carried from week to week:
+- time logged over their contracted hours adds to it, and time on a day they don't work counts in full;
+- a working day with less than their daily share logged takes the difference off;
+- time logged to PMB-25 (time off in lieu) isn't counted as worked, so it comes off the balance;
+- today only counts once it's past the daily share, though TOIL taken today comes off straight away.
+
+It runs from the working day after the latest working day, before this week, with nothing logged at all, so it starts from when they began logging consistently. A working day left completely empty later starts it again from the day after, so holidays and bank holidays need logging (to their PMB items) to keep a balance going. "How it's worked out" lists each week's change.
+
+**Admin, Overtime and TOIL** lists everyone's balance. Opening someone adds or takes off hours (a minus number takes off), with a date and what it's for, to bring in a balance kept elsewhere or put one right; adjustments can be removed. An adjustment dated before their balance's start doesn't count. Every adjustment is in the audit log under TOIL.
+
 ## Part 14c: Requests
 
 The **Requests** tile lets anyone ask for a new tile or a change to one, or report something that isn't working: what kind it is, which part of the hub, a title and the details. People see their own requests with their status and any reply.

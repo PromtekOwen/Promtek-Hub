@@ -1,6 +1,10 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
-import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
-import { raiseAlert, londonDate } from './sync.js';
+import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue, getIssue, blockedForLookup } from './jira.js';
+import { raiseAlert, londonDate, processWorklogs, ledgerChanged } from './sync.js';
+import { normalise } from './tempo.js';
+import { applyOvertime, mondayOfDay } from './overtime.js';
+import { record } from './audit.js';
+import { weekHoursOf, workDaysOf, weekdayOf } from './hours.js';
 import { stageNameOf } from './jobs.js';
 
 const TEMPO = 'https://api.tempo.io/4';
@@ -367,4 +371,125 @@ export async function flagMissingStage(env, viewer, { issueKey, summary, note })
       + 'Worth checking whether the quote missed a stage.',
   });
   return { ok: true };
+}
+
+// ---------- A day's time, and changing what's logged ----------
+
+const refuse = (message, status = 400) => Object.assign(new Error(message), { status });
+const isDay = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
+const timeOf = (t) => (/^\d{2}:\d{2}(:\d{2})?$/.test(t || '') ? (t.length === 5 ? `${t}:00` : t) : null);
+const tempoHeaders = (env) => ({ Authorization: `Bearer ${env.TEMPO_API_TOKEN}`, 'Content-Type': 'application/json', Accept: 'application/json' });
+
+// Everything someone has logged on one day, in the order it happened.
+export async function dayLogs(env, viewer, date) {
+  const day = isDay(date) ? date : londonDate();
+  if (!viewer.accountId) return { date: day, entries: [] };
+  const { results } = await env.DB.prepare(
+    `SELECT l.worklog_id, l.work_date, l.start_time, l.seconds, l.description, j.issue_key, j.summary
+       FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
+      WHERE l.account_id = ? AND l.work_date = ? ORDER BY COALESCE(l.start_time, '99:99'), l.logged_at`
+  ).bind(viewer.accountId, day).all();
+  const emp = await env.DB.prepare('SELECT weekly_hours, work_days FROM employees WHERE account_id = ?').bind(viewer.accountId).first();
+  const days = workDaysOf(emp?.work_days);
+  return { date: day, entries: results, workDay: days.includes(weekdayOf(day)), dailySeconds: Math.round((weekHoursOf(emp) * 3600) / days.length) };
+}
+
+// Only the person who logged it can change it, from the hub.
+async function ownWorklog(env, viewer, worklogId) {
+  if (!viewer.accountId) throw refuse("Your account isn't linked to an employee record yet.");
+  const id = String(worklogId || '');
+  if (!/^\d{1,20}$/.test(id)) throw refuse('That time log could not be found.', 404);
+  const row = await env.DB.prepare('SELECT * FROM xp_ledger WHERE worklog_id = ?').bind(id).first();
+  if (!row || row.account_id !== viewer.accountId) throw refuse('That time log isn\'t yours to change.', 403);
+  const res = await fetch(`${TEMPO}/worklogs/${id}`, { headers: tempoHeaders(env) });
+  if (res.status === 404) {
+    await env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id).run();
+    throw refuse('That time log has already gone from Tempo.', 404);
+  }
+  if (!res.ok) throw new Error(`Tempo ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const wl = await res.json();
+  if ((wl.author?.accountId || wl.worker?.accountId) !== viewer.accountId) throw refuse('That time log isn\'t yours to change.', 403);
+  return { id, row, wl };
+}
+
+export async function updateWorklog(env, viewer, { worklogId, seconds, date, startTime, description }) {
+  const { id, row, wl } = await ownWorklog(env, viewer, worklogId);
+  const secs = Math.round(Number(seconds));
+  if (!Number.isFinite(secs) || secs < 60) throw refuse('Log at least a minute.');
+  if (secs > 16 * 3600) throw refuse('That is more than 16 hours. Split it across days instead.');
+  const day = isDay(date) ? date : row.work_date;
+  if (day > londonDate()) throw refuse("You can't log time in the future.");
+  const body = {
+    issueId: Number(wl.issue?.id ?? row.issue_id),
+    authorAccountId: viewer.accountId,
+    timeSpentSeconds: secs,
+    startDate: day,
+    startTime: timeOf(startTime) || wl.startTime || '09:00:00',
+    description: (description === undefined ? wl.description : String(description || '').slice(0, 500)) || 'Logged from Promtek Hub',
+  };
+  // Tempo replaces the whole worklog, so anything else on it is sent back unchanged.
+  if (wl.billableSeconds != null) body.billableSeconds = wl.billableSeconds === wl.timeSpentSeconds ? secs : Math.min(wl.billableSeconds, secs);
+  const attrs = wl.attributes?.values || [];
+  if (attrs.length) body.attributes = attrs.map((a) => ({ key: a.key, value: a.value }));
+  const res = await fetch(`${TEMPO}/worklogs/${id}`, { method: 'PUT', headers: tempoHeaders(env), body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`Tempo wouldn't accept that (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const saved = normalise(await res.json());
+  await processWorklogs(env, [saved]);
+  // Moved out of today or before: the week it left is worked out again too.
+  if (mondayOfDay(row.work_date) !== mondayOfDay(day)) await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
+  await record(env, viewer, { area: 'My time', action: 'changed a time log', subjectType: 'worklog', subjectId: id, label: row.description || id,
+    changes: [
+      ...(row.seconds !== secs ? [{ label: 'Time', before: `${Math.round(row.seconds / 60)}m`, after: `${Math.round(secs / 60)}m` }] : []),
+      ...(row.work_date !== day ? [{ label: 'Date', before: row.work_date, after: day }] : []),
+      ...((row.start_time || '').slice(0, 5) !== body.startTime.slice(0, 5) ? [{ label: 'Started', before: (row.start_time || '').slice(0, 5), after: body.startTime.slice(0, 5) }] : []),
+    ] }).catch(() => {});
+  return { ok: true, worklogId: id, seconds: secs, date: day };
+}
+
+export async function deleteWorklog(env, viewer, worklogId) {
+  const { id, row } = await ownWorklog(env, viewer, worklogId);
+  const res = await fetch(`${TEMPO}/worklogs/${id}`, { method: 'DELETE', headers: tempoHeaders(env) });
+  if (!res.ok && res.status !== 404) throw new Error(`Tempo wouldn't remove it (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(id),
+  ]);
+  await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
+  await ledgerChanged(env);
+  await record(env, viewer, { area: 'My time', action: 'removed a time log', subjectType: 'worklog', subjectId: id, label: row.description || id,
+    changes: [{ label: 'Time', before: `${Math.round(row.seconds / 60)}m on ${row.work_date}`, after: '' }] }).catch(() => {});
+  return { ok: true };
+}
+
+// ---------- Moving the item on after logging ----------
+
+const CAT_ORDER = { new: 0, indeterminate: 1, done: 2 };
+
+// The statuses an item can move to, with the one that comes next in its workflow
+// first. Items in PMB are filed by status, so they're never moved from here.
+export async function nextStatus(env, issueId) {
+  const id = String(issueId || '');
+  if (!/^\d{1,20}$/.test(id)) return { transitions: [] };
+  const issue = await getIssue(env, id, ['status', 'project', 'issuetype']);
+  const project = String(issue?.fields?.project?.key || '').toUpperCase();
+  if (!issue || !project || project === 'PMB' || blockedForLookup(project)) return { transitions: [] };
+  const current = issue.fields?.status || {};
+  const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(issue.key)}/transitions`)) || {};
+  const rank = (c) => CAT_ORDER[c] ?? 1;
+  const here = rank(current.statusCategory?.key);
+  const list = transitions.map((t) => ({ id: String(t.id), to: t.to?.name || t.name, cat: t.to?.statusCategory?.key || null }))
+    .filter((t) => t.to !== current.name);
+  // Next: the first move Jira offers that doesn't go back a stage. Jira lists them in workflow order.
+  const next = here < 2 ? list.find((t) => rank(t.cat) >= here) || null : null;
+  return { key: issue.key, status: current.name || null, statusCat: current.statusCategory?.key || null,
+    next: next || null, transitions: next ? [next, ...list.filter((t) => t !== next)] : list };
+}
+
+export async function moveAfterLog(env, viewer, { issueId, transitionId }) {
+  const { key, transitions } = await nextStatus(env, issueId);
+  const t = transitions.find((x) => x.id === String(transitionId));
+  if (!t) throw refuse('Jira doesn\'t offer that move from where it is now.');
+  await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });
+  await record(env, viewer, { area: 'Log time', action: 'moved an item on', subjectType: 'jira', subjectId: key, label: key, changes: [{ label: 'Status', before: '', after: t.to }] }).catch(() => {});
+  return { key, status: t.to };
 }

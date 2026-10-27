@@ -23,7 +23,7 @@ import * as People from './people.js';
 import * as Home from './home.js';
 import * as Eotq from './eotq.js';
 import { workDaysOf, weekHoursOf } from './hours.js';
-import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite } from './logging.js';
+import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite, dayLogs, updateWorklog, deleteWorklog, nextStatus, moveAfterLog } from './logging.js';
 import { metered, addReads, readsReport, queryName, readOnly, utcMonth as utcMonthOfUsage } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -225,6 +225,7 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/time') return json(await getTime(env, user, url));
+  if (method === 'GET' && pathname === '/api/toil') return json(await (await import('./toil.js')).mine(env, user));
 
   if (method === 'POST' && pathname === '/api/sync') {
     try {
@@ -242,11 +243,20 @@ async function route(request, env, url, user) {
     }
     if (method === 'GET' && pathname === '/api/log/search') return json(await search(env, url.searchParams.get('q')));
     if (method === 'GET' && pathname === '/api/log/hint') return json(await stageHint(env, url.searchParams.get('issueKey')) || {});
+    if (method === 'GET' && pathname === '/api/log/day') return json(await dayLogs(env, user, url.searchParams.get('date')));
+    if (method === 'GET' && pathname === '/api/log/next') return json(await nextStatus(env, url.searchParams.get('issueId')));
     if (method === 'POST' && pathname === '/api/log/worklog') {
       const result = await createWorklog(env, user, body);
       try { await pollRecent(env, { force: true }); } catch (err) { console.warn('Post-log sync failed:', err.message); }
+      // The time is in; moving the item on is a second step that can fail on its own.
+      if (body.transitionId) {
+        try { result.moved = await moveAfterLog(env, user, { issueId: body.issueId, transitionId: body.transitionId }); }
+        catch (err) { result.moveError = err.message; }
+      }
       return json(result);
     }
+    if (method === 'POST' && pathname === '/api/log/worklog-edit') return json(await updateWorklog(env, user, body));
+    if (method === 'POST' && pathname === '/api/log/worklog-delete') return json(await deleteWorklog(env, user, body.worklogId));
     if (method === 'POST' && pathname === '/api/log/psc') return json(await createPsc(env, user, body));
     if (method === 'POST' && pathname === '/api/log/flag-stage') return json(await flagMissingStage(env, user, body));
   }
@@ -935,6 +945,13 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on this month', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
       return json({ ok: true });
     }
+    if (pathname.startsWith('/api/admin/toil')) {
+      const Toil = await import('./toil.js');
+      if (method === 'GET' && pathname === '/api/admin/toil') return json(await Toil.overview(env));
+      if (method === 'GET' && pathname === '/api/admin/toil/person') return json(await Toil.personFor(env, url.searchParams.get('id')));
+      if (method === 'POST' && pathname === '/api/admin/toil/adjust') return json(await Toil.adjust(env, user, body));
+      if (method === 'POST' && pathname === '/api/admin/toil/remove') return json(await Toil.removeAdjustment(env, user, body.id));
+    }
     if (method === 'GET' && pathname === '/api/admin/home-messages') return json(await Home.adminList(env));
     if (method === 'POST' && pathname === '/api/admin/home-messages') return json(await Home.send(env, user, body));
     if (method === 'POST' && pathname === '/api/admin/home-messages/end') return json(await Home.end(env, user, body.id));
@@ -1228,10 +1245,10 @@ async function getTime(env, user, url) {
   const sunday = londonDate(Date.parse(`${monday}T12:00:00Z`) + 6 * 86_400_000);
   const today = londonDate();
   const { results } = await env.DB.prepare(
-    `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.xp, l.overtime_seconds, j.issue_key, j.summary
+    `SELECT l.worklog_id, l.work_date, l.start_time, l.seconds, l.description, l.xp, l.overtime_seconds, j.issue_key, j.summary
        FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id
       WHERE l.account_id = ? AND l.work_date BETWEEN ? AND ?
-      ORDER BY l.work_date, l.created_at`
+      ORDER BY l.work_date, COALESCE(l.start_time, '99:99'), l.created_at`
   ).bind(emp.account_id, monday, sunday < today ? sunday : today).all();
   return { linked: true, week: monday, entries: results, jiraBaseUrl: env.JIRA_BASE_URL,
     workDays: workDaysOf(emp.work_days), weekSeconds: weekHoursOf(emp) * 3600 };
