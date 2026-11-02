@@ -284,6 +284,25 @@ export async function search(env, query) {
   }
 }
 
+// The Jira items that were on someone's screen when they went to log time, ready to log against.
+// Orders (epics) aren't logged to, so they're left out, as are projects the hub doesn't use.
+export async function itemsByKey(env, keys) {
+  const list = [...new Set(String(keys || '').split(',').map((k) => k.trim().toUpperCase()).filter((k) => /^[A-Z][A-Z0-9_]*-\d+$/.test(k)))]
+    .filter((k) => !blockedForLookup(k.split('-')[0])).slice(0, 15);
+  if (!list.length) return { options: [] };
+  const fields = LIST_FIELDS;
+  let issues;
+  try {
+    issues = await searchJql(env, `key in (${list.join(',')})`, fields, { limit: 20 });
+  } catch {
+    // One key that's gone makes the whole search fail, so each is looked up on its own.
+    issues = [];
+    for (const k of list) { try { issues.push(...await searchJql(env, `key = ${k}`, fields, { limit: 1 })); } catch { /* gone or hidden */ } }
+  }
+  const byKey = new Map(issues.filter((i) => String(i.fields?.issuetype?.name || '').toLowerCase() !== 'epic').map((i) => [i.key, asOption(i)]));
+  return { options: list.map((k) => byKey.get(k)).filter(Boolean) };
+}
+
 // What this kind of stage usually takes, from finished work.
 export async function stageHint(env, issueKey) {
   if (!issueKey) return null;

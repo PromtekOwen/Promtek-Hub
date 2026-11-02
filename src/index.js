@@ -23,7 +23,7 @@ import * as People from './people.js';
 import * as Home from './home.js';
 import * as Eotq from './eotq.js';
 import { workDaysOf, weekHoursOf } from './hours.js';
-import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite, dayLogs, updateWorklog, deleteWorklog, nextStatus, moveAfterLog } from './logging.js';
+import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite, itemsByKey, dayLogs, updateWorklog, deleteWorklog, nextStatus, moveAfterLog } from './logging.js';
 import { metered, addReads, readsReport, queryName, readOnly, utcMonth as utcMonthOfUsage } from './d1-meter.js';
 import { scanCompleted, scanCategories, backfillStep, startBackfill, quotingSummary, backfillStatus, stageLibrary, difficultyAnalysis, recomputeStages } from './jobs.js';
 
@@ -243,6 +243,7 @@ async function route(request, env, url, user) {
     }
     if (method === 'GET' && pathname === '/api/log/search') return json(await search(env, url.searchParams.get('q')));
     if (method === 'GET' && pathname === '/api/log/hint') return json(await stageHint(env, url.searchParams.get('issueKey')) || {});
+    if (method === 'GET' && pathname === '/api/log/keys') return json(await itemsByKey(env, url.searchParams.get('keys')));
     if (method === 'GET' && pathname === '/api/log/day') return json(await dayLogs(env, user, url.searchParams.get('date')));
     if (method === 'GET' && pathname === '/api/log/next') return json(await nextStatus(env, url.searchParams.get('issueId')));
     if (method === 'POST' && pathname === '/api/log/worklog') {

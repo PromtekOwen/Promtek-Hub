@@ -3945,10 +3945,12 @@ async function logPickerHtml() {
   }
 
   const { recent = [], assigned = [] } = logShortcuts;
+  const onScreen = await screenItemsHtml();
   const group = (title, options, empty) => `<h2>${title}</h2>
     <div class="options">${options.length ? options.map(logOptionRow).join('') : `<div class="card"><p class="muted">${empty}</p></div>`}</div>`;
 
   return layout(`
+    ${onScreen}
     <div class="card">
       <label>Search by Jira key or words from the summary
         <input id="log-search" type="search" placeholder="WYNNL-704, or graphics" value="${esc(logSearch)}" autocomplete="off">
@@ -4893,16 +4895,36 @@ function scoreRow(key, label, value, { quoted, name = 'jobs-score' } = {}) {
       `<button class="seg${Number(value) === v ? ' on' : ''}" data-${name}="${key}" data-value="${v}">${v}</button>`).join('')}</span></div>`;
 }
 
+const jobsCatInfo = new Map();   // category key -> what its sub-tasks need: discipline, estimate, older order or not
+let jobsWeights = null;           // the agreed weightings for sharing a category's time across its sub-tasks
+let jobsFilter = { customer: '', assignee: '', status: '' };
+let jobsReuse = false;            // a filter changed: draw from the list already loaded
+let jobsLoadedAt = 0;
+const EPIC_ICON = '<svg class="epic-icon" viewBox="0 0 16 16" role="img" aria-label="Epic"><rect width="16" height="16" rx="3" fill="#904ee2"/><path d="M9.6 2.6 4.4 9h3.2l-1.2 4.4L11.6 7H8.4l1.2-4.4z" fill="#fff"/></svg>';
+const catIcon = (discipline) => (DISCIPLINE_NAMES[discipline] ? `<img class="cat-icon" src="/icons/cat-${esc(discipline)}.png" alt="${esc(DISCIPLINE_NAMES[discipline])}" width="18" height="23">` : '');
+const statusClass = (c) => (c.done || /^(done|closed|complete)/i.test(c.status || '') ? 'done' : /^(to do|open|new|backlog)/i.test(c.status || '') ? 'new' : 'indeterminate');
+
+function subCount(key) {
+  const subs = jobsSubs.get(key);
+  if (!subs?.length) return '';
+  const done = subs.filter((x) => x.statusCat === 'done').length;
+  return `${done} of ${subs.length} sub-task${subs.length === 1 ? '' : 's'} done`;
+}
+
 function jobsCategoryRow(c) {
   const pct = c.pct ?? 0;
   const state = pct >= 1 ? ' over' : pct >= 0.9 ? ' near' : '';
-  // An item on an order from before categories: no difficulty to show or dispute.
+  jobsCatInfo.set(c.key, { discipline: c.legacy ? null : c.discipline, estimateSeconds: c.estimateSeconds, legacy: Boolean(c.legacy), jobElo: c.jobElo ?? null });
+  const status = c.status ? `<span class="cat-status s-${statusClass(c)}">${esc(c.status)}</span>` : '';
+  const count = `<span class="cat-count" data-cat-count="${esc(c.key)}">${esc(subCount(c.key))}</span>`;
+  // An item on an order from before categories: no difficulty to show or dispute, and it can be logged to.
   if (c.legacy) {
-    return `<li class="job-cat${state}">
+    return `<li class="job-cat legacy-item${state}" data-log-key="${esc(c.key)}">
     <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(c.summary)}</span>
-      <span class="muted">${c.mine ? 'Assigned to you' : c.assigneeName ? esc(c.assigneeName) : 'Not assigned'}</span></div>
+      <span class="cat-meta">${status}</span></div>
     ${c.estimateSeconds ? `<div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>` : ''}
-    <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}${c.status ? `. ${esc(c.status)}` : ''}</span></div>
+    <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}. ${c.mine ? 'Assigned to you' : c.assigneeName ? esc(c.assigneeName) : 'Not assigned'}</span>
+      <span class="cat-foot-actions">${count}<button class="chip-btn job-sub-log" data-jobs-log='${esc(JSON.stringify({ issueId: c.id, key: c.key, title: c.summary, sublabel: c.status || '' }))}'>Log time</button></span></div>
     ${jobsSubsSlot(c.key)}
   </li>`;
   }
@@ -4919,10 +4941,11 @@ function jobsCategoryRow(c) {
     : c.unscored ? `<button class="chip-btn" data-jobs-difficulty="${esc(c.id)}">Work out difficulty</button>`
       : `<button class="chip-btn" data-jobs-dispute="${esc(c.id)}">Dispute</button>`;
   return `<li class="job-cat${state}">
-    <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${name}</span>
-      <span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span></div>
+    <div class="job-cat-head"><span class="title">${catIcon(c.discipline)}<a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${name}</span>
+      <span class="cat-meta">${status}<span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span></span></div>
     <div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>
-    <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.done ? '. Done' : ''}${c.unscored ? '. Difficulty not set' : ''}${notes ? `. ${notes}` : ''}</span>${action}</div>
+    <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.unscored ? '. Difficulty not set' : ''}${notes ? `. ${notes}` : ''}</span>
+      <span class="cat-foot-actions">${count}${action}</span></div>
     ${prompt}
     ${jobsSubsSlot(c.key)}
   </li>`;
@@ -4934,27 +4957,42 @@ function jobsSubsSlot(key) {
   return `<div class="job-subs" data-jobs-subs="${esc(key)}">${jobsSubs.has(key) ? jobsSubsHtml(key) : ''}</div>`;
 }
 
+// A rough guide to each sub-task's time: the category's estimate shared out by the agreed
+// weightings for its kind of sub-task. Only the category as a whole counts towards ELO.
+function subGuides(key, subs) {
+  const info = jobsCatInfo.get(key) || {};
+  const table = (info.discipline && jobsWeights?.[info.discipline]) || {};
+  const weights = subs.map((x) => table[x.type] ?? 1);
+  const sum = weights.reduce((a, w) => a + w, 0) || 1;
+  return subs.map((x, i) => ({ share: weights[i] / sum, seconds: info.estimateSeconds ? Math.round((info.estimateSeconds * weights[i]) / sum / 900) * 900 : null }));
+}
+
 function jobsSubsHtml(key) {
   const subs = jobsSubs.get(key) || [];
   if (!subs.length) return '';
-  const allocated = subs.reduce((t, x) => t + (x.estimateSeconds || 0), 0);
+  const info = jobsCatInfo.get(key) || {};
+  const guides = subGuides(key, subs);
   const colour = (i) => SUB_COLOURS[i % SUB_COLOURS.length];
-  const share = (x) => (allocated ? (x.estimateSeconds || 0) / allocated : 0);
-  const strip = allocated
-    ? `<div class="job-sub-strip" role="img" aria-label="How the time allocated is split between its sub-tasks">${subs.map((x, i) => (x.estimateSeconds
-      ? `<span style="width:${(share(x) * 100).toFixed(2)}%;background:${colour(i)}" title="${esc(x.summary)}: ${Math.round(share(x) * 100)}%"></span>` : '')).join('')}</div>`
-    : '<p class="sub job-sub-none">No time allocated to its sub-tasks yet.</p>';
+  const strip = `<div class="job-sub-strip" role="img" aria-label="How the time is shared between its sub-tasks">${subs.map((x, i) =>
+    `<span style="width:${(guides[i].share * 100).toFixed(2)}%;background:${colour(i)}" title="${esc(x.summary)}: ${Math.round(guides[i].share * 100)}%"></span>`).join('')}</div>`;
   const rows = subs.map((x, i) => {
-    const over = x.estimateSeconds && x.loggedSeconds > x.estimateSeconds;
-    return `<li class="job-sub${x.statusCat === 'done' ? ' done' : ''}">
-      <span class="job-sub-dot" style="background:${allocated && x.estimateSeconds ? colour(i) : 'var(--line)'}"></span>
+    const g = guides[i];
+    const over = g.seconds && x.loggedSeconds > g.seconds;
+    const log = { issueId: x.id, key: x.key, title: x.summary, sublabel: [x.type, x.status].filter(Boolean).join(', '), jobElo: info.jobElo };
+    return `<li class="job-sub${x.statusCat === 'done' ? ' done' : ''}" data-log-key="${esc(x.key)}">
+      <span class="job-sub-dot" style="background:${colour(i)}"></span>
       <span class="job-sub-name"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}${x.assignee ? ` <small class="muted">${esc(x.assignee)}</small>` : ''}</span>
-      <span class="job-sub-time${over ? ' over' : ''}">${allocated && x.estimateSeconds ? `<strong>${Math.round(share(x) * 100)}%</strong> ` : ''}${x.estimateSeconds ? `${hoursShort(x.loggedSeconds)} of ${hoursShort(x.estimateSeconds)}` : `${hoursShort(x.loggedSeconds)} logged`}</span>
-      <span class="job-sub-status"><button class="status-chip s-${esc(x.statusCat || 'new')}" data-jobs-sub-move="${esc(x.key)}" aria-haspopup="true">${esc(x.status || 'Status')} <span aria-hidden="true">▾</span></button></span>
+      <span class="job-sub-time${over ? ' over' : ''}"><strong>${Math.round(g.share * 100)}%</strong> ${g.seconds ? `${hoursShort(x.loggedSeconds)} of about ${hoursShort(g.seconds)}` : `${hoursShort(x.loggedSeconds)} logged`}</span>
+      <span class="job-sub-status"><button class="status-chip s-${esc(x.statusCat || 'new')}" data-jobs-sub-move="${esc(x.key)}" aria-haspopup="true">${esc(x.status || 'Status')} <span aria-hidden="true">▾</span></button>
+        <button class="chip-btn job-sub-log" data-jobs-log='${esc(JSON.stringify(log))}'>Log time</button></span>
       <div class="job-sub-moves" data-jobs-moves="${esc(x.key)}" hidden></div>
     </li>`;
   }).join('');
-  return `<details class="job-subs-box"${subs.length <= 6 ? ' open' : ''}><summary>${subs.length} sub-task${subs.length === 1 ? '' : 's'}${allocated ? `, ${hoursShort(allocated)} allocated` : ''}</summary>${strip}<ul class="job-sub-list">${rows}</ul></details>`;
+  const head = `${subs.length} sub-task${subs.length === 1 ? '' : 's'}${info.estimateSeconds ? `. A rough guide to how its ${hoursShort(info.estimateSeconds)} shares out, from the agreed weightings` : ''}`;
+  // On older orders they start tucked away; under categories they always show.
+  return info.legacy
+    ? `<details class="job-subs-box"><summary>${head}</summary>${strip}<ul class="job-sub-list">${rows}</ul></details>`
+    : `<div class="job-subs-box"><p class="job-subs-head">${head}</p>${strip}<ul class="job-sub-list">${rows}</ul></div>`;
 }
 
 // Loaded after the list is drawn, so the orders show straight away.
@@ -4963,15 +5001,23 @@ async function loadJobSubtasks() {
   const keys = [...new Set(slots.map((el) => el.dataset.jobsSubs).filter((k) => !jobsSubs.has(k)))];
   if (keys.length) {
     try {
-      const { byParent } = await api(`/api/jobs/subtasks?keys=${encodeURIComponent(keys.join(','))}`);
+      const { byParent, weights } = await api(`/api/jobs/subtasks?keys=${encodeURIComponent(keys.join(','))}`);
+      if (weights) jobsWeights = weights;
       for (const k of keys) jobsSubs.set(k, byParent[k] || []);
     } catch { return; }
+    // Someone picked by Assignee may only be on a sub-task, so the list is drawn again with them in.
+    if (jobsFilter.assignee && currentRoute() === '#/jobs' && !jobsView) { jobsReuse = true; return render(); }
   }
   for (const el of view.querySelectorAll('[data-jobs-subs]')) {
     const open = el.querySelector('details')?.open;
     el.innerHTML = jobsSubsHtml(el.dataset.jobsSubs);
-    if (open !== undefined && el.querySelector('details')) el.querySelector('details').open = open;
+    if (open && el.querySelector('details')) el.querySelector('details').open = true;
   }
+  for (const el of view.querySelectorAll('[data-cat-count]')) el.textContent = subCount(el.dataset.catCount);
+  // People assigned only a sub-task join the Assignee list now their sub-tasks are in.
+  const pick = view.querySelector('[data-jobs-filter="assignee"]');
+  if (pick && jobsData) pick.innerHTML = `<option value="">Anyone</option>${jobsAssigneeOptions(jobsData).map(([v, l]) => `<option value="${esc(v)}"${jobsFilter.assignee === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}`;
+  logFab();
 }
 
 // ---------- who's on an order ----------
@@ -5049,29 +5095,73 @@ function supervisedHtml(list) {
     <span class="sub">Since ${shortDate(m.start_date)}${m.end_date ? `, until ${shortDate(m.end_date)}` : ''}. <button class="linklike" data-mod-end="${m.id}">End it</button></span></li>`).join('')}</ul>`;
 }
 
+let jobsApprovals = null;
+
+// Who an order is down to: its assignee, and whoever is assigned its categories, items and sub-tasks.
+function jobsAssignees(o) {
+  const ids = new Set([o.assignee, ...o.categories.map((c) => c.assignee)].filter(Boolean));
+  for (const c of o.categories) for (const x of jobsSubs.get(c.key) || []) if (x.assigneeId) ids.add(x.assigneeId);
+  return ids;
+}
+
+// Names for everyone on the list, including anyone assigned only a sub-task.
+function jobsNames(data) {
+  const names = Object.fromEntries(Object.entries(data?.people || {}).map(([id, p]) => [id, p.name]));
+  for (const subs of jobsSubs.values()) for (const x of subs) if (x.assigneeId && !names[x.assigneeId]) names[x.assigneeId] = x.assignee;
+  return names;
+}
+function jobsAssigneeOptions(data, names = jobsNames(data)) {
+  return [...new Set(data.orders.flatMap((o) => [...jobsAssignees(o)]))].filter((id) => names[id]).sort((a, b) => names[a].localeCompare(names[b]))
+    .map((id) => [id, id === me.employee?.accountId ? `${names[id]} (you)` : names[id]]);
+}
+
 async function jobsHomeHtml() {
-  const [data, approvals] = await Promise.all([api(`/api/jobs?scope=${jobsScope}`), api('/api/approvals')]);
-  jobsData = data;
+  let data = jobsData;
+  let approvals = jobsApprovals;
+  if (!jobsReuse || !data || data.scope !== jobsScope || Date.now() - jobsLoadedAt > 5 * 60_000) {
+    [data, approvals] = await Promise.all([api(`/api/jobs?scope=${jobsScope}`), api('/api/approvals')]);
+    jobsData = data; jobsApprovals = approvals; jobsLoadedAt = Date.now();
+  }
+  jobsReuse = false;
   const scopes = [['mine', 'Mine'], ['team', 'My team'], ['all', 'All']];
-  const orders = data.orders.map((o) => `<div class="card job-order${o.legacy ? ' legacy' : ''}" data-job-order>
+  const names = jobsNames(data);
+  const customers = [...new Set(data.orders.map((o) => o.customer || 'No customer'))].sort();
+  const statuses = [...new Set(data.orders.flatMap((o) => o.categories.map((c) => c.status).filter(Boolean)))].sort();
+  const assignees = jobsAssigneeOptions(data, names);
+  if (jobsFilter.customer && !customers.includes(jobsFilter.customer)) jobsFilter.customer = '';
+  if (jobsFilter.status && !statuses.includes(jobsFilter.status)) jobsFilter.status = '';
+  const shown = data.orders
+    .filter((o) => !jobsFilter.customer || (o.customer || 'No customer') === jobsFilter.customer)
+    .filter((o) => !jobsFilter.assignee || jobsAssignees(o).has(jobsFilter.assignee))
+    .map((o) => (jobsFilter.status ? { ...o, categories: o.categories.filter((c) => c.status === jobsFilter.status) } : o))
+    .filter((o) => o.categories.length);
+  const orders = shown.map((o) => `<div class="card job-order${o.legacy ? ' legacy' : ''}" data-job-order>
       <div class="job-order-top">
-        <p class="job-order-head"><strong><a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
+        <p class="job-order-head"><strong>${EPIC_ICON}<a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
           <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}${o.legacy ? '. Older order, from before categories' : ''}</span></p>
         ${jobsPeopleHtml(o)}
       </div>
       <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul>
       <span hidden>${(o.people || []).concat(o.assignee ? [o.assignee] : []).map((id) => esc(data.people?.[id]?.name || '')).join(' ')}</span></div>`).join('');
-  const empty = jobsScope === 'mine'
-    ? '<div class="card"><p style="margin:0">Nothing open that you\'re in Promtek Staff Involved on, or assigned to on an older order. My team and All show everything else.</p></div>'
-    : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
+  const filtered = jobsFilter.customer || jobsFilter.assignee || jobsFilter.status;
+  const empty = filtered
+    ? '<div class="card"><p style="margin:0">Nothing open matches these filters.</p></div>'
+    : jobsScope === 'mine'
+      ? '<div class="card"><p style="margin:0">Nothing open that you\'re in Promtek Staff Involved on, or assigned to on an older order. My team and All show everything else.</p></div>'
+      : '<div class="card"><p style="margin:0">No open orders here.</p></div>';
+  const select = (key, label, all, options) => `<label class="con-tier">${label} <select data-jobs-filter="${key}"><option value="">${all}</option>${options.map(([v, l]) =>
+    `<option value="${esc(v)}"${jobsFilter[key] === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
   return `${approvalsHtml(approvals)}
     ${countChecksHtml(approvals.countChecks)}
     ${supervisedHtml(approvals.supervised)}
     <h2>Open jobs</h2>
     <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) =>
       `<button class="seg${jobsScope === k ? ' on' : ''}" data-jobs-scope="${k}">${l}</button>`).join('')}</span>
+      ${select('customer', 'Customer', 'All customers', customers.map((c) => [c, c]))}
+      ${select('assignee', 'Assignee', 'Anyone', assignees)}
+      ${select('status', 'Status', 'Any status', statuses.map((x) => [x, x]))}
       <input type="search" id="jobs-search" placeholder="Search orders, customers or keys" aria-label="Search jobs"></div>
-    <p class="help">Each category shows its job ELO, the time logged against its estimate and its sub-tasks, with the share of the time allocated to each. Tap a sub-task's status to move it on. If a job has turned out harder than quoted, dispute it and your team lead will take a look; if no difficulty was set when it was quoted, work it out instead.</p>
+    <p class="help">Each category shows its status, job ELO and the time logged against its estimate. Under it are its sub-tasks, each with a rough guide to its share of that time; only the category as a whole counts towards ELO. Tap a sub-task's status to move it on, or Log time to log to it. If a job has turned out harder than quoted, dispute it and your team lead will take a look; if no difficulty was set when it was quoted, work it out instead.</p>
     ${orders || empty}`;
 }
 
@@ -5142,6 +5232,8 @@ async function jobsClick(event) {
   if (t('[data-jobs-scope]')) { jobsScope = t('[data-jobs-scope]').dataset.jobsScope; return render(); }
   if (t('[data-jobs-dispute]')) { jobsView = { kind: 'dispute', id: t('[data-jobs-dispute]').dataset.jobsDispute }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-jobs-decide]')) { jobsView = { kind: 'decide', id: t('[data-jobs-decide]').dataset.jobsDecide }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
+  const logBtn = t('[data-jobs-log]');
+  if (logBtn) { await logToItem(JSON.parse(logBtn.dataset.jobsLog)); return true; }
   if (t('[data-jobs-difficulty]')) { jobsView = { kind: 'difficulty', id: t('[data-jobs-difficulty]').dataset.jobsDifficulty }; jobsDraft = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-jobs-back]')) { jobsView = null; jobsDraft = null; return render(); }
   const people = t('[data-jobs-people]');
@@ -5177,7 +5269,11 @@ async function jobsClick(event) {
       const r = await api('/api/jobs/transition', { method: 'POST', body: JSON.stringify({ key, id: to.dataset.jobsSubTo }) });
       for (const list of jobsSubs.values()) for (const x of list) if (x.key === key) { x.status = r.status; x.statusCat = r.cat; }
       const slot = to.closest('[data-jobs-subs]');
-      if (slot) { slot.innerHTML = jobsSubsHtml(slot.dataset.jobsSubs); slot.querySelector('details')?.setAttribute('open', ''); }
+      if (slot) {
+        slot.innerHTML = jobsSubsHtml(slot.dataset.jobsSubs); slot.querySelector('details')?.setAttribute('open', '');
+        const count = view.querySelector(`[data-cat-count="${CSS.escape(slot.dataset.jobsSubs)}"]`);
+        if (count) count.textContent = subCount(slot.dataset.jobsSubs);
+      }
       toast(`${key} moved to ${r.status}`);
     } catch (err) { toast(err.message); to.closest('[data-jobs-moves]')?.querySelectorAll('button').forEach((b) => { b.disabled = false; }); }
     return true;
@@ -8107,10 +8203,66 @@ function logChoiceHtml() {
     <div class="row" style="margin-top:1rem"><button class="btn secondary" data-action="cancel-log">Pick something else</button></div>`;
 }
 
-// The Log time button on the home screen. While a timer runs it shows the job and clock instead.
+// ---------- logging to what's on the screen ----------
+
+let logScreen = null;     // { keys, at, from } captured when Log time was tapped
+let logScreenItems = null; // { keys, options } looked up for the picker
+
+// The Jira items on the page: on Jobs only the ones that take time (sub-tasks and items on
+// older orders), elsewhere any linked item. Those in view come first.
+function screenItems({ inView = true } = {}) {
+  const jobs = currentRoute() === '#/jobs';
+  const els = [...view.querySelectorAll(jobs ? '[data-log-key]' : '[data-log-key], a[href*="/browse/"]')];
+  const found = [];
+  for (const el of els) {
+    if (el.closest('[data-no-log]') || !el.getClientRects().length) continue;
+    const key = el.dataset.logKey || (/\/browse\/([A-Z][A-Z0-9_]*-\d+)/.exec(el.getAttribute('href') || '') || [])[1];
+    if (!key) continue;
+    const r = el.getBoundingClientRect();
+    found.push({ key, top: r.top, shown: r.bottom > 0 && r.top < window.innerHeight });
+  }
+  const pick = inView && found.some((f) => f.shown) ? found.filter((f) => f.shown) : found;
+  return [...new Set(pick.sort((a, b) => a.top - b.top).map((f) => f.key))].slice(0, 15);
+}
+
+// Log time from Jobs (and anything else that knows the item): straight to the form for it.
+async function logToItem(x) {
+  logChosen = { id: x.key, label: x.key, issueId: String(x.issueId), title: x.title || '', sublabel: x.sublabel || '', rate: 1, jobElo: x.jobElo ?? null, loggable: true, next: null };
+  logMode = null; logNode = null; logTrail = [];
+  await contractCheck();
+  if (currentRoute() === '#/log') return render();
+  location.hash = '#/log';
+}
+
+// Going to Log time from a page keeps a note of the Jira items that were on the screen.
+document.addEventListener('click', (event) => {
+  const to = event.target.closest?.('a[href="#/log"]');
+  if (!to || currentRoute() === '#/log') return;
+  const keys = screenItems();
+  logScreen = keys.length ? { keys, at: Date.now(), from: currentRoute() } : null;
+}, true);
+
+async function screenItemsHtml() {
+  if (!logScreen || Date.now() - logScreen.at > 15 * 60_000) return '';
+  const want = logScreen.keys.join(',');
+  if (logScreenItems?.keys !== want) {
+    try { logScreenItems = { keys: want, options: (await api(`/api/log/keys?keys=${encodeURIComponent(want)}`)).options }; }
+    catch { return ''; }
+  }
+  if (!logScreenItems.options.length) return '';
+  return `<h2 style="margin-top:0">Items on your screen</h2>
+    <div class="options log-screen">${logScreenItems.options.map(logOptionRow).join('')}</div>
+    <div style="height:1rem"></div>`;
+}
+
+// The Log time button: on the home screen, and on any page showing Jira items. While a timer
+// runs it shows the job and clock instead; away from home, the timer's own bar takes its place.
 function logFab() {
   let fab = document.getElementById('log-fab');
-  if (currentRoute() !== '#/') { if (fab) fab.remove(); document.body.classList.remove('has-log-fab'); return; }
+  const route = currentRoute();
+  const home = route === '#/';
+  const show = home || (route !== '#/log' && !tracker?.timer?.current && screenItems({ inView: false }).length > 0);
+  if (!show) { if (fab) fab.remove(); document.body.classList.remove('has-log-fab'); return; }
   if (!fab) { fab = document.createElement('a'); fab.id = 'log-fab'; fab.href = '#/log'; document.body.appendChild(fab); }
   document.body.classList.add('has-log-fab');
   const cur = tracker?.timer?.current;
@@ -11019,7 +11171,7 @@ async function contractWarnClick(event) {
 let pscTab = 'open';            // triage, open, insights
 let pscOpen = null;             // the item opened, by key
 let pscCustomer = '';
-let pscWho = 'all';             // all, mine, unassigned
+let pscWho = 'all';             // all, mine, unassigned, or id:<account> for one person
 let pscShow = 'open';           // open, resolved
 let pscSnags = false;
 let pscSort = 'attention';
@@ -11283,7 +11435,8 @@ async function pscPageHtml() {
   const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
   let list = base.filter((d) => !pscCustomer || (d.customer || 'No customer') === pscCustomer)
     .filter((d) => !pscTier || d.tier === pscTier)
-    .filter((d) => pscWho === 'all' || (pscWho === 'mine' ? d.assigneeId === data.me : !d.assigneeId));
+    .filter((d) => pscWho === 'all' || (pscWho.startsWith('id:') ? d.assigneeId === pscWho.slice(3) : pscWho === 'mine' ? d.assigneeId === data.me : !d.assigneeId));
+  const people = [...new Map(base.filter((d) => d.assigneeId).map((d) => [d.assigneeId, d.assignee || 'Someone'])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
   const order = {
     attention: null,                   // the order the hub works out: late, waiting, then due soonest, higher contracts first
     oldest: (a, b) => Date.parse(a.created) - Date.parse(b.created),
@@ -11302,6 +11455,7 @@ async function pscPageHtml() {
     </dl>
     <div class="row con-tools psc-tools">
       <span class="segment">${[['all', 'Everyone\'s'], ['mine', 'Mine'], ['unassigned', 'Unassigned']].map(([k, l]) => `<button class="seg${pscWho === k ? ' on' : ''}" data-psc-who="${k}">${l}</button>`).join('')}</span>
+      <label class="con-tier">Assignee <select data-psc-assignee><option value="">Anyone</option>${people.map(([id, name]) => `<option value="${esc(id)}"${pscWho === `id:${id}` ? ' selected' : ''}>${esc(name)}${id === data.me ? ' (you)' : ''}</option>`).join('')}</select></label>
       <label class="con-tier">Contract <select data-psc-tier><option value="">All</option>${Object.entries(data.tiers).map(([k, t]) => `<option value="${k}"${pscTier === k ? ' selected' : ''}>${esc(t.name)}</option>`).join('')}</select></label>
       <label class="con-tier">Customer <select data-psc-customer><option value="">All customers</option>${customers.map((c) => `<option${c === pscCustomer ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
       <label class="con-tier">Sort <select data-psc-sort>${[['attention', 'Needs attention'], ['oldest', 'Oldest first'], ['quiet', 'Longest without an update'], ['customer', 'Customer']].map(([k, l]) => `<option value="${k}"${pscSort === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
@@ -12957,6 +13111,7 @@ async function render() {
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
       if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); loadToilAdmin(); }
       if (route === '#/time' && timeEdit) loadLogDay();
+      logFab();
       if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
       if (route !== '#/condor') mesEst = null;
@@ -13071,6 +13226,8 @@ view.addEventListener('input', (event) => {
 });
 
 view.addEventListener('change', async (event) => {
+  if (event.target.matches?.('[data-jobs-filter]')) { jobsFilter[event.target.dataset.jobsFilter] = event.target.value; jobsReuse = true; render(); return; }
+  if (event.target.matches?.('[data-psc-assignee]')) { pscWho = event.target.value ? `id:${event.target.value}` : 'all'; render(); return; }
   if (event.target.dataset?.obsField !== undefined && obsSurvey) {
     obsFieldChanged(event.target.dataset.obsField, obsIsPick(event.target));
     return;
@@ -13196,7 +13353,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
-  if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; }
+  if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; logScreen = null; }
   if (accountDialog.open) accountDialog.close();
   render();
   window.scrollTo({ top: 0 });

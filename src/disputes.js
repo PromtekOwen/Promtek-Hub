@@ -3,6 +3,7 @@
 // can learn where jobs turned out harder than they looked.
 import { searchJql, getIssue, jira, BLOCKED_PROJECTS } from './jira.js';
 import { record } from './audit.js';
+import { STAGE_WEIGHTS } from './quotes.js';
 import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone, teamOf } from './jobs.js';
 import { raiseAlert, recalcIssues, getState, setState, sendAlerts } from './sync.js';
 import { weightedScore, jobEloFromScore } from './progression.js';
@@ -147,6 +148,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
       pendingDispute: pendingBy.has(c.issue_id), pendingIsMine: pendingBy.get(c.issue_id) === viewer.accountId,
       // No difficulty was set when it was quoted: it can be worked out now.
       unscored: !o && c.job_elo == null && c.weighted_score == null,
+      assignee: c.assignee || null,
     });
   }
   // Orders from before categories: on their own list, the open items assigned to them;
@@ -174,7 +176,10 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
   };
   const list = [...orders.values()].map((o) => {
     const p = people.get(o.key) || { assignee: null, staff: new Set() };
-    for (const c of o.categories) if (c.legacy) c.assigneeName = c.assignee ? byId.get(c.assignee)?.name || null : null;
+    for (const c of o.categories) {
+      if (c.legacy) c.assigneeName = c.assignee ? byId.get(c.assignee)?.name || null : null;
+      if (c.assignee) ref(c.assignee);
+    }
     const others = [...p.staff].filter((id) => id !== p.assignee).map(ref);
     others.sort((a, b) => directory[a].name.localeCompare(directory[b].name));
     return { ...o, assignee: ref(p.assignee), people: others };
@@ -198,10 +203,11 @@ export async function subtasksOf(env, keys) {
       if (!parent) continue;
       (byParent[parent] ||= []).push({ id: String(i.id), key: i.key, summary: f.summary || '', type: f.issuetype?.name || '', status: f.status?.name || '',
         statusCat: f.status?.statusCategory?.key || null, estimateSeconds: num(f.timeoriginalestimate), loggedSeconds: num(f.timespent) || 0,
-        assignee: f.assignee?.displayName || null });
+        assignee: f.assignee?.displayName || null, assigneeId: f.assignee?.accountId || null });
     }
   }
-  return { byParent };
+  // The weights agreed for sharing a category's time across its sub-tasks, as a guide.
+  return { byParent, weights: STAGE_WEIGHTS };
 }
 
 // Only sub-tasks in the customer projects are moved from here.

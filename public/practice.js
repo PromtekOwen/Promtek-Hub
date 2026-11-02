@@ -950,6 +950,7 @@ async function answer(p, q, method, body) {
   }
   if (p === '/api/log/browse') return browse(q.get('node') || 'root');
   if (p === '/api/log/search') return { options: search(q.get('q') || '') };
+  if (p === '/api/log/keys') return { options: String(q.get('keys') || '').split(',').map((k) => search(k).find((o) => o.label === k)).filter(Boolean) };
   if (p === '/api/log/hint') return { times: 14, typicalHours: 6.5 };
   if (p === '/api/log/worklog') return { ...logWorklog(body), ...(body.transitionId ? { moved: { key: body.issueKey, status: 'Review' } } : {}) };
   if (p === '/api/log/day') {

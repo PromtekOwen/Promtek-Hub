@@ -340,6 +340,8 @@ It runs from the working day after the latest working day, before this week, wit
 
 **Admin, Overtime and TOIL** lists everyone's balance. Opening someone adds or takes off hours (a minus number takes off), with a date and what it's for, to bring in a balance kept elsewhere or put one right; adjustments can be removed. An adjustment dated before their balance's start doesn't count. Every adjustment is in the audit log under TOIL.
 
+**Logging what's on the screen.** The Log time button shows on any page with Jira items on it, as well as the home screen (while a timer runs, its bar takes the button's place away from home). Going to Log time from a page lists **Items on your screen** first: the Jira items in view when it was tapped, top to bottom (all of them on the page if none were in view), ready to pick. On Jobs, only sub-tasks and items on older orders are suggested, not orders or categories. Orders (epics) aren't suggested anywhere.
+
 ## Part 14c: Requests
 
 The **Requests** tile lets anyone ask for a new tile or a change to one, or report something that isn't working: what kind it is, which part of the hub, a title and the details. People see their own requests with their status and any reply.
@@ -471,6 +473,8 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 **After that.** Each item shows the team's last update (who and what), and flags when the customer has replied since the team last did anything, or when it has gone quiet for longer than the setting.
 
+**Filters.** Everyone's, Mine or Unassigned, and an **Assignee** list to pick one person; Contract, Customer and Sort lists; search; Resolved; and Include Snags.
+
 **Triage** lists items with no first look, no owner, or (on the PSC board) no Organization. **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
 
 **PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira, **New Customer**, which opens the item ready to turn into a quote for a New Potential Customer (see below), and **Mark resolved**. Turning an item into a quote, or sending it to Condor Dev, resolves its alert.
@@ -574,7 +578,9 @@ Each finished category is a match between the job and the people who logged time
 **Jobs tile.** Every open order in the customer projects, with each category's job ELO and its time logged against the estimate. Mine shows categories you've logged time on in the last six months; My team and All show the rest.
 
 - **Who's on it.** Each order shows its Assignee as a large picture (or initials) and everyone in Promtek Staff Involved on the order or its categories as smaller ones beside it, up to five then "+N". The Assignee isn't repeated among them. Hover over them, or tap on a phone, for the list of names. Searching finds orders by these names too.
-- **Sub-tasks.** Under each category, its sub-tasks with a bar showing how the time allocated (their Original Estimates) is split between them, each one's share and time logged against it, and its status. Tap a status to move it to any status Jira allows from there; the move is made in Jira as the hub's Jira account and recorded in the audit log under Jobs. Only sub-tasks in customer projects can be moved.
+- **Icons and status.** Each order has the purple Epic icon before its key, and each category its discipline's icon (Software, Hardware, Site visit, Condor, from `public/icons/`). Each category shows its Jira status and how many of its sub-tasks are done.
+- **Sub-tasks.** Under each category its sub-tasks always show; on older orders they start folded away. Each has a rough guide to its time: the category's estimate shared out by the agreed weightings for its kind of sub-task (the same ones quoting uses, a weight of 1 for any kind not listed; on older orders, equal shares of the item's estimate). It's only a guide while there's little data: only the category as a whole going over its estimate counts towards ELO or estimate alerts. Each shows its time logged, its status and **Log time**, which opens the Log time form for it. Tap a status to move it to any status Jira allows from there; the move is made in Jira as the hub's Jira account and recorded in the audit log under Jobs. Only sub-tasks in customer projects can be moved.
+- **Filters.** Customer, Assignee and Status, as well as the search. Assignee finds orders where someone is the assignee of the order, a category, an item or a sub-task. Status shows only the categories and items in that status.
 - **Older orders.** Orders from before categories show on My team and All with their open items and who each is assigned to; Mine shows only the ones assigned to you.
 - **Difficulty set later.** A category quoted without a difficulty shows **Work out difficulty** instead of Dispute. Score the four areas, with an optional estimate. A team lead, Management or an admin sets it straight away; anyone else's goes to the team lead like a dispute. It is kept alongside the quote as an agreed dispute is (reason "Difficulty set after the order was made"), XP already earned on it is recalculated, and the ELO is written to the category in Jira.
 
