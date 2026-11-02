@@ -4883,7 +4883,6 @@ let jobsView = null;        // null, { kind: 'dispute', id } or { kind: 'decide'
 let jobsDraft = null;       // the dispute or decision being filled in
 let jobsData = null;        // the last list loaded, for the names behind each avatar
 const jobsSubs = new Map(); // category key -> its sub-tasks
-const SUB_COLOURS = ['#2a6fdb', '#e3893a', '#2f9e6e', '#9b59b6', '#d64545', '#1aa3a3', '#b8912b', '#5d6d7e'];
 const SCORE_LABELS = [['tech', 'Technical complexity'], ['scope', 'Scope and size'], ['risk', 'Uncertainty and risk'], ['dep', 'Dependencies and coordination']];
 const SCORE_WEIGHTS = { tech: 0.4, scope: 0.3, risk: 0.2, dep: 0.1 };
 const eloFromScores = (s) => 750 + 250 * SCORE_LABELS.reduce((a, [k]) => a + (Number(s[k]) || 0) * SCORE_WEIGHTS[k], 0);
@@ -4972,27 +4971,23 @@ function jobsSubsHtml(key) {
   if (!subs.length) return '';
   const info = jobsCatInfo.get(key) || {};
   const guides = subGuides(key, subs);
-  const colour = (i) => SUB_COLOURS[i % SUB_COLOURS.length];
-  const strip = `<div class="job-sub-strip" role="img" aria-label="How the time is shared between its sub-tasks">${subs.map((x, i) =>
-    `<span style="width:${(guides[i].share * 100).toFixed(2)}%;background:${colour(i)}" title="${esc(x.summary)}: ${Math.round(guides[i].share * 100)}%"></span>`).join('')}</div>`;
   const rows = subs.map((x, i) => {
     const g = guides[i];
     const over = g.seconds && x.loggedSeconds > g.seconds;
     const log = { issueId: x.id, key: x.key, title: x.summary, sublabel: [x.type, x.status].filter(Boolean).join(', '), jobElo: info.jobElo };
     return `<li class="job-sub${x.statusCat === 'done' ? ' done' : ''}" data-log-key="${esc(x.key)}">
-      <span class="job-sub-dot" style="background:${colour(i)}"></span>
       <span class="job-sub-name"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}${x.assignee ? ` <small class="muted">${esc(x.assignee)}</small>` : ''}</span>
-      <span class="job-sub-time${over ? ' over' : ''}"><strong>${Math.round(g.share * 100)}%</strong> ${g.seconds ? `${hoursShort(x.loggedSeconds)} of about ${hoursShort(g.seconds)}` : `${hoursShort(x.loggedSeconds)} logged`}</span>
+      <span class="job-sub-time${over ? ' over' : ''}">${g.seconds ? `Estimate about <strong>${hoursShort(g.seconds)}</strong>, ` : ''}${hoursShort(x.loggedSeconds)} logged</span>
       <span class="job-sub-status"><button class="status-chip s-${esc(x.statusCat || 'new')}" data-jobs-sub-move="${esc(x.key)}" aria-haspopup="true">${esc(x.status || 'Status')} <span aria-hidden="true">▾</span></button>
         <button class="chip-btn job-sub-log" data-jobs-log='${esc(JSON.stringify(log))}'>Log time</button></span>
       <div class="job-sub-moves" data-jobs-moves="${esc(x.key)}" hidden></div>
     </li>`;
   }).join('');
-  const head = `${subs.length} sub-task${subs.length === 1 ? '' : 's'}${info.estimateSeconds ? `. A rough guide to how its ${hoursShort(info.estimateSeconds)} shares out, from the agreed weightings` : ''}`;
+  const head = `${subs.length} sub-task${subs.length === 1 ? '' : 's'}${info.estimateSeconds ? `. Estimates are a rough guide${info.legacy ? ', shared equally' : ' from the agreed weightings'}, and their time counts in the total above` : ''}`;
   // On older orders they start tucked away; under categories they always show.
   return info.legacy
-    ? `<details class="job-subs-box"><summary>${head}</summary>${strip}<ul class="job-sub-list">${rows}</ul></details>`
-    : `<div class="job-subs-box"><p class="job-subs-head">${head}</p>${strip}<ul class="job-sub-list">${rows}</ul></div>`;
+    ? `<details class="job-subs-box"><summary>${head}</summary><ul class="job-sub-list">${rows}</ul></details>`
+    : `<div class="job-subs-box"><p class="job-subs-head">${head}</p><ul class="job-sub-list">${rows}</ul></div>`;
 }
 
 // Loaded after the list is drawn, so the orders show straight away.
@@ -12250,6 +12245,7 @@ function renderAccount() {
       <section class="acct-section">
         <h4>Settings</h4>
         <ul class="menu">
+          ${themeItemHtml()}
           ${notifyItemHtml()}
           <li><button data-account="refresh">${svgIcon('<path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/>')}Refresh my XP</button></li>
           ${installItem}
@@ -12274,6 +12270,15 @@ band.addEventListener('click', (event) => {
   settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
   render();
 });
+
+// Light, dark, or whatever the device is set to. Kept on this device.
+function themeItemHtml() {
+  if (!window.hubTheme) return '';
+  const now = window.hubTheme.choice();
+  return `<li class="theme-item"><span class="theme-label">${svgIcon('<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>')}Appearance</span>
+    <span class="segment theme-seg" role="group" aria-label="Appearance">${[['light', 'Light'], ['dark', 'Dark'], ['system', 'Device']].map(([k, l]) =>
+      `<button class="seg${now === k ? ' on' : ''}" data-account="theme" data-value="${k}" aria-pressed="${now === k}">${l}</button>`).join('')}</span></li>`;
+}
 
 document.getElementById('account-btn').addEventListener('click', () => {
   if (!me) return;
@@ -12306,6 +12311,7 @@ accountDialog.addEventListener('click', async (event) => {
     return;
   }
   if (action === 'notify-test') { notifyTest(); return; }
+  if (action === 'theme') { window.hubTheme?.set(item.dataset.value); renderAccount(); return; }
   if (action === 'viewas') return viewAsPicker();
   if (action === 'viewas-back') return renderAccount();
   if (action === 'viewas-pick') {

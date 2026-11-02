@@ -1,8 +1,8 @@
 // Promtek Hub service worker: lets the hub install as an app and open with a
 // cached shell when the connection drops. API data is never cached.
-const CACHE = 'promtek-hub-v1';
+const CACHE = 'promtek-hub-v2';
 const SHELL = [
-  '/', '/index.html', '/styles.css', '/app.js', '/dropdown.js', '/modules.js', '/tours.js', '/practice.js', '/manifest.webmanifest',
+  '/', '/index.html', '/styles.css', '/theme.js', '/app.js', '/dropdown.js', '/modules.js', '/tours.js', '/practice.js', '/manifest.webmanifest',
   '/logo-white.png', '/icon-192.png', '/icon-512.png', '/favicon-32.png',
 ];
 
