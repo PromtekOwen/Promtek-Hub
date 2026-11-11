@@ -548,6 +548,7 @@ const pages = {
           </dl>
           <div class="row">
             <button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
+            <button class="btn secondary" data-action="xp-rate-check">Check XP rates</button>
           </div>
           <div class="result" id="sync-result" role="status"></div>
         </div>
@@ -561,6 +562,9 @@ const pages = {
         ${xpStartHtml(backdate)}
 
         ${accessAdminHtml(accessInfo)}
+
+        <h2>XP rates</h2>
+        <div id="xprates-admin">${sectionLoading()}</div>
 
         <h2>Overtime and TOIL</h2>
         <div id="toil-admin">${sectionLoading()}</div>
@@ -3914,7 +3918,7 @@ function optionRow(option) {
         <strong>${esc(option.title ? `${option.label} ${option.title}` : option.label)}</strong>
         ${option.sublabel ? `<span class="muted">${esc(option.sublabel)}</span>` : ''}
       </span>
-      ${option.note ? `<span class="badge">${esc(option.note)}</span>` : ''}
+      ${option.note ? `<span class="badge${option.rate > 1 ? ' bonus' : ''}">${option.rate > 1 ? '★ ' : ''}${esc(option.note)}</span>` : ''}
       ${option.next ? '<span class="chev">›</span>' : ''}
     </button>`;
 }
@@ -3946,11 +3950,13 @@ async function logPickerHtml() {
 
   const { recent = [], assigned = [] } = logShortcuts;
   const onScreen = await screenItemsHtml();
+  const bonus = await bonusItemsHtml();
   const group = (title, options, empty) => `<h2>${title}</h2>
     <div class="options">${options.length ? options.map(logOptionRow).join('') : `<div class="card"><p class="muted">${empty}</p></div>`}</div>`;
 
   return layout(`
     ${onScreen}
+    ${bonus}
     <div class="card">
       <label>Search by Jira key or words from the summary
         <input id="log-search" type="search" placeholder="WYNNL-704, or graphics" value="${esc(logSearch)}" autocomplete="off">
@@ -4235,6 +4241,61 @@ function toilCardHtml(t) {
     </div>`;
 }
 
+// ---------- XP rates on Jira items ----------
+
+let xprData = null;        // items not at 100%, and recent changes
+let xprFound = null;       // search results
+let xprPick = null;        // the item being changed
+let xprTimer = null;
+const ratePct = (rate) => `${Math.round((rate ?? 1) * 100)}%`;
+
+async function loadXpRatesAdmin() {
+  const host = document.getElementById('xprates-admin');
+  if (!host) return;
+  try { xprData = await api('/api/admin/xp-rates'); } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; return; }
+  drawXpRates();
+}
+
+function drawXpRates() {
+  const host = document.getElementById('xprates-admin');
+  if (!host || !xprData) return;
+  const row = (i) => `<li class="xpr-row"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(i.key)}" target="_blank" rel="noopener">${esc(i.key)}</a> ${esc(i.summary)}</span>
+      <span class="badge${i.rate > 1 ? ' bonus' : ' less'}">${ratePct(i.rate)}</span>
+      <button class="chip-btn" data-xpr-pick='${esc(JSON.stringify(i))}'>Change</button>
+      <span class="sub">${esc([i.type, i.status].filter(Boolean).join(', '))}</span></li>`;
+  const found = xprFound ? (xprFound.items.length ? `<ul class="list plain xpr-list">${xprFound.items.map(row).join('')}</ul>` : `<p class="muted">${esc(xprFound.error || 'No match.')}</p>`) : '';
+  const p = xprPick;
+  const editor = p ? `<div class="card xpr-edit">
+      <p style="margin-top:0"><strong>${esc(p.key)} ${esc(p.summary)}</strong><br><span class="muted">Now ${ratePct(p.rate)} of the usual XP</span></p>
+      <div class="row quick">${[0, 50, 100, 125, 150, 200].map((v) => `<button class="chip-btn" data-xpr-quick="${v}">${v}%</button>`).join('')}</div>
+      <div class="row" style="margin-top:.6rem"><label>XP rate, as a % of the usual <input id="xpr-percent" type="number" min="0" max="500" step="5" value="${Math.round((p.rate ?? 1) * 100)}" inputmode="numeric"></label></div>
+      <label style="margin-top:.6rem">Why <span class="muted">(optional)</span> <input id="xpr-note" maxlength="300" placeholder="Nobody is doing the dishes"></label>
+      <label class="inline-check" style="margin-top:.6rem"><input type="checkbox" id="xpr-past"> Also apply to time already logged on it</label>
+      <p class="help">From today otherwise: time already logged keeps the XP it earned. Above 100%, it's listed under Bonus XP on Log time for everyone. The rate is saved to the item's XP Rate in Jira.</p>
+      <div class="row"><button class="btn" data-xpr-save="1">Save</button><button class="btn secondary" data-xpr-cancel="1">Cancel</button></div>
+      <div class="result" id="xpr-result" role="status"></div></div>` : '';
+  const current = xprData.items.length ? `<ul class="list plain xpr-list">${xprData.items.map(row).join('')}</ul>` : '<p class="muted">Every open item is at the usual rate.</p>';
+  const recent = xprData.recent?.length ? `<h3>Recent changes</h3><ul class="list plain xpr-recent">${xprData.recent.map((r) => `<li><span class="title">${esc(r.key)} ${esc(r.summary || '')}</span>
+      <span class="sub">${ratePct(r.previous)} to ${ratePct(r.rate)}${r.from === '0000-01-01' ? ', including time already logged' : `, from ${shortDate(r.from)}`}. ${esc(r.by || '')}${r.note ? `: ${esc(r.note)}` : ''}</span></li>`).join('')}</ul>` : '';
+  host.innerHTML = `<div class="card">
+      <p class="muted" style="margin-top:0">Make an item worth more XP to encourage a job nobody picks up, such as the dishes or housekeeping, or less for time that shouldn't count as much. 100% is the usual.</p>
+      <input type="search" id="xpr-search" placeholder="Search by Jira key or words from the summary" aria-label="Find a Jira item" value="${esc(xprFound?.q || '')}">
+      ${found}
+    </div>
+    ${editor}
+    <h3>Not at the usual rate</h3>
+    ${xprData.error ? `<p class="bad">${esc(xprData.error)}</p>` : current}
+    ${recent}`;
+}
+
+async function xprSearch(q) {
+  if (q.trim().length < 2) { xprFound = null; drawXpRates(); return; }
+  try { xprFound = { q, ...(await api(`/api/admin/xp-rates/search?q=${encodeURIComponent(q)}`)) }; } catch (err) { xprFound = { q, items: [], error: err.message }; }
+  const had = document.activeElement?.id === 'xpr-search';
+  drawXpRates();
+  if (had) { const el = document.getElementById('xpr-search'); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+}
+
 let toilAdmin = null;      // the overview for Admin
 let toilPerson = null;     // one person's balance, being adjusted
 
@@ -4327,6 +4388,25 @@ async function timeClick(event) {
       me = await api('/api/me');
       render();
     } catch (err) { document.getElementById('time-result').textContent = err.message; del.disabled = false; }
+    return true;
+  }
+  const xpr = t('[data-xpr-pick]');
+  if (xpr) { xprPick = JSON.parse(xpr.dataset.xprPick); drawXpRates(); document.querySelector('.xpr-edit')?.scrollIntoView({ block: 'nearest' }); return true; }
+  const quick = t('[data-xpr-quick]');
+  if (quick) { document.getElementById('xpr-percent').value = quick.dataset.xprQuick; return true; }
+  if (t('[data-xpr-cancel]')) { xprPick = null; drawXpRates(); return true; }
+  const xprSave = t('[data-xpr-save]');
+  if (xprSave && xprPick) {
+    const past = document.getElementById('xpr-past').checked;
+    const percent = Number(document.getElementById('xpr-percent').value);
+    if (past && !confirm(`Change ${xprPick.key} to ${percent}% for all time already logged on it too? Everyone's XP for that time is worked out again.`)) return true;
+    xprSave.disabled = true;
+    try {
+      const r = await api('/api/admin/xp-rates/set', { method: 'POST', body: JSON.stringify({ issueId: xprPick.issueId, percent, note: document.getElementById('xpr-note').value, past }) });
+      toast(r.unchanged ? `${xprPick.key} is already at ${percent}%` : `${r.key} is now at ${ratePct(r.rate)}${r.recalculated ? `, ${r.recalculated} time logs worked out again` : ''}`);
+      xprPick = null; xprFound = null; bonusCache = null;
+      await loadXpRatesAdmin();
+    } catch (err) { document.getElementById('xpr-result').textContent = err.message; xprSave.disabled = false; }
     return true;
   }
   const who = t('[data-toil-person]');
@@ -7911,7 +7991,8 @@ async function developerAdminHtml() {
         <dt>Last background run</dt><dd>${when(s.last_scheduled_run)}</dd>
         <dt>Ledger started</dt><dd>${esc(s.ledger_start || 'Not started')}</dd>
       </dl>
-      <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button></div>
+      <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
+        <button class="btn secondary" data-action="xp-rate-check">Check XP rates</button></div>
       <div class="result" id="sync-result" role="status"></div></div>
     ${bitbucketAdminHtml(bitbucket)}
     ${readsHtml(reads)}`;
@@ -8236,6 +8317,19 @@ document.addEventListener('click', (event) => {
   const keys = screenItems();
   logScreen = keys.length ? { keys, at: Date.now(), from: currentRoute() } : null;
 }, true);
+
+// Items paying more XP than usual, for everyone to see when logging time.
+let bonusCache = null;
+async function bonusItemsHtml() {
+  if (!bonusCache || Date.now() - bonusCache.at > 5 * 60_000) {
+    try { bonusCache = { at: Date.now(), items: (await api('/api/log/bonus')).items || [] }; } catch { return ''; }
+  }
+  if (!bonusCache.items.length) return '';
+  return `<div class="bonus-box"><h2 style="margin-top:0">★ Bonus XP</h2>
+    <p class="muted" style="margin:-.25rem 0 .6rem">These earn more XP than usual right now.</p>
+    <div class="options">${bonusCache.items.map(logOptionRow).join('')}</div></div>
+    <div style="height:1rem"></div>`;
+}
 
 async function screenItemsHtml() {
   if (!logScreen || Date.now() - logScreen.at > 15 * 60_000) return '';
@@ -12532,6 +12626,10 @@ async function adminAction(action, button) {
     } else if (action === 'sync-now') {
       const r = await api('/api/admin/sync-now', { method: 'POST' });
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
+    } else if (action === 'xp-rate-check') {
+      const r = await api('/api/admin/xp-rate-check', { method: 'POST' });
+      out(target, r.fixed ? `Checked ${r.checked} items. ${r.items} had a different XP Rate in Jira, and ${r.fixed} time logs were worked out again.`
+        : `Checked ${r.checked} items. Every time log matches its XP Rate in Jira.`);
     } else if (action === 'snapshot') {
       const r = await api('/api/admin/snapshot', { method: 'POST', body: JSON.stringify({}) });
       out(target, r.skipped ? r.skipped : `Recorded ${r.engineers} ${r.engineers === 1 ? 'person' : 'people'} for the week of ${r.week}.`);
@@ -13115,7 +13213,7 @@ async function render() {
       reapplySearch();
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
-      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); loadToilAdmin(); }
+      if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); loadToilAdmin(); loadXpRatesAdmin(); }
       if (route === '#/time' && timeEdit) loadLogDay();
       logFab();
       if (route !== '#/time') timeEdit = null;
@@ -13217,6 +13315,7 @@ view.addEventListener('input', (event) => {
   }
   if (['log-hours', 'log-minutes'].includes(event.target.id)) return updateXpPreview();
   if (event.target.id === 'log-start') { event.target.dataset.touched = '1'; return drawLogDay(); }
+  if (event.target.id === 'xpr-search') { clearTimeout(xprTimer); const q = event.target.value; xprTimer = setTimeout(() => xprSearch(q), 350); return; }
   if (event.target.id === 'log-date') return loadLogDay();
   if (event.target.id === 'log-search') {
     logSearch = event.target.value;

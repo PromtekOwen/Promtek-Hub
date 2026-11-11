@@ -1753,6 +1753,19 @@ td.bad, .toil-num.bad { color: var(--danger); }
 :root[data-theme="dark"] input::placeholder, :root[data-theme="dark"] textarea::placeholder { color: #6f8494; }
 :root[data-theme="dark"] input[type="date"], :root[data-theme="dark"] input[type="time"], :root[data-theme="dark"] input[type="datetime-local"] { color-scheme: dark; }
 
+/* XP rates and Bonus XP */
+.badge.bonus { background: #E3F5EA; color: #1F7A4D; }
+.badge.less { background: #EEF2F5; color: #5B7385; }
+.bonus-box { border: 2px solid #9fd9b8; border-radius: 16px; padding: 1rem; background: #f3fbf6; }
+.xpr-list li.xpr-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .2rem .6rem; }
+.xpr-list li.xpr-row .sub { grid-column: 1 / -1; }
+.xpr-list li.xpr-row .badge { margin: 0; }
+.xpr-edit { margin-top: 1rem; border: 2px solid var(--blue); }
+#xpr-search { margin-top: .25rem; width: 100%; }
+:where(:root[data-theme="dark"]) .badge.bonus { background: #173d2a; color: #8fe0b4; }
+:where(:root[data-theme="dark"]) .badge.less { background: #22303b; color: #95aab9; }
+:where(:root[data-theme="dark"]) .bonus-box { border-color: #2d6b4b; background: #12261c; }
+
 /* ---------- Dark mode: generated from the colours above ---------- */
 :where(:root[data-theme="dark"]) :focus-visible { outline: 3px solid #326173; }
 :where(:root[data-theme="dark"]) .skip:focus { background: var(--surface); }

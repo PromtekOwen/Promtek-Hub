@@ -243,6 +243,7 @@ async function route(request, env, url, user) {
     }
     if (method === 'GET' && pathname === '/api/log/search') return json(await search(env, url.searchParams.get('q')));
     if (method === 'GET' && pathname === '/api/log/hint') return json(await stageHint(env, url.searchParams.get('issueKey')) || {});
+    if (method === 'GET' && pathname === '/api/log/bonus') return json(await (await import('./xprates.js')).bonusItems(env));
     if (method === 'GET' && pathname === '/api/log/keys') return json(await itemsByKey(env, url.searchParams.get('keys')));
     if (method === 'GET' && pathname === '/api/log/day') return json(await dayLogs(env, user, url.searchParams.get('date')));
     if (method === 'GET' && pathname === '/api/log/next') return json(await nextStatus(env, url.searchParams.get('issueId')));
@@ -946,6 +947,12 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'Admin', action: 'Let background jobs carry on this month', subjectType: 'sync', subjectId: 'd1', label: 'Database reads' });
       return json({ ok: true });
     }
+    if (pathname.startsWith('/api/admin/xp-rates')) {
+      const Rates = await import('./xprates.js');
+      if (method === 'GET' && pathname === '/api/admin/xp-rates') return json(await Rates.list(env));
+      if (method === 'GET' && pathname === '/api/admin/xp-rates/search') return json(await Rates.lookup(env, url.searchParams.get('q')));
+      if (method === 'POST' && pathname === '/api/admin/xp-rates/set') return json(await Rates.setRate(env, user, body));
+    }
     if (pathname.startsWith('/api/admin/toil')) {
       const Toil = await import('./toil.js');
       if (method === 'GET' && pathname === '/api/admin/toil') return json(await Toil.overview(env));
@@ -1135,6 +1142,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
 
     if (method === 'POST' && pathname === '/api/admin/sync-now') return json(await pollRecent(env, { force: true }));
+    if (method === 'POST' && pathname === '/api/admin/xp-rate-check') return json(await (await import('./sync.js')).checkXpRates(env, { force: true }));
     if (method === 'GET' && pathname === '/api/admin/usage') {
       if (!user.isAdmin) return json({ error: 'Admins only.' }, 403);
       return json(await (await import('./usage.js')).report(env, { days: url.searchParams.get('days') }));

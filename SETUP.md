@@ -113,6 +113,10 @@ The **Admin** tile holds the things that span the whole hub: sync and the XP led
 
 Employees are managed in the hub, under **Admin, Employees**. Each person has one page covering everything the apps use: name, email, pronouns, job title, team, who they report to, their order on the chart, their role in the hub, XP rate, ELO, Jira account ID, 8x8 extension, chart badges and notes.
 
+**XP Rate on Jira items.** An item's XP Rate field in Jira (0 for no XP, 0.5 for half, and so on) scales the XP its time earns. If `FIELD_XP_OVERRIDE` or `FIELD_ELO` isn't set for the Worker, Promtek's own fields are used (`customfield_16566` and `customfield_15378`). Every morning, each item with time logged in the last 90 days has its XP Rate read again, and any time that earned at a different rate is worked out again, so a rate set or changed in Jira after the time went in still applies. **Check XP rates** under Admin, Sync does the same straight away.
+
+**Setting XP Rates from the hub.** Run `schema-058.sql` in the D1 console first. Under **Admin, XP rates**, search for any Jira item, choose **Change** and set its XP Rate as a percentage of the usual (0% to 500%; 100% is the usual and clears the field). It's saved to the item's XP Rate field in Jira, with who changed it and why in the audit log under XP rates. A change starts today, so time already logged keeps the XP it earned, unless **Also apply to time already logged on it** is ticked, in which case everyone's time on it is worked out again. The section lists every open item not at 100% and the recent changes. Items above 100% show to everyone at the top of **Log time** under **Bonus XP**, and with a green ★ badge wherever they appear in the picker, so a job nobody picks up (the dishes, housekeeping) can be made worth doing.
+
 **XP rate** is the base XP per hour. Engineers are on 60, and their rate rises and falls with the difficulty of the job against their own ELO. Admin staff are on 75, since they get no ELO adjustment.
 
 **Pictures** are added on the same page and appear on the company chart. They are squared off and shrunk in the browser before saving, so a phone photo is fine.

@@ -2,6 +2,7 @@
 import { fetchWorklogs } from './tempo.js';
 import { metered, addReads, readsToday, monthSoFar, overBudget, tidyReads, utcDay, utcMonth, daysInMonth, queryName, MONTHLY_READ_LIMIT, MONTHLY_WRITE_LIMIT, BACKGROUND_SHARE, PACE_ALERT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
+import { rateFor, historyFor } from './xprates.js';
 import { noteStatements } from './staff.js';
 import { xpRate, levelFromXp, DEFAULT_ELO, DEFAULT_BASELINE } from './progression.js';
 import { xpWith, applyOvertime, mondayOfDay } from './overtime.js';
@@ -55,13 +56,17 @@ async function runBatches(env, statements) {
 
 // ---------- Jobs (the Jira issues time is logged against) ----------
 
+// The Jira fields for a job's ELO and its XP Rate, as set for the Worker, or the ones Promtek uses.
+const eloField = (env) => env.FIELD_ELO || 'customfield_15378';
+const xpRateField = (env) => env.FIELD_XP_OVERRIDE || 'customfield_16566';
+
 function jobFromIssue(env, issue) {
   return {
     issue_id: String(issue.id),
     issue_key: issue.key,
     summary: issue.fields?.summary || '',
-    job_elo: num(issue.fields?.[env.FIELD_ELO]),
-    xp_override: num(issue.fields?.[env.FIELD_XP_OVERRIDE]),
+    job_elo: num(issue.fields?.[eloField(env)]),
+    xp_override: num(issue.fields?.[xpRateField(env)]),
     parent_id: issue.fields?.parent?.id ? String(issue.fields.parent.id) : null,
     fetched_at: Date.now(),
   };
@@ -80,7 +85,7 @@ async function loadJobs(env, issueIds) {
   }
 
   const missing = ids.filter((id) => !jobs.has(id));
-  const fields = ['summary', 'parent', env.FIELD_ELO, env.FIELD_XP_OVERRIDE];
+  const fields = ['summary', 'parent', eloField(env), xpRateField(env)];
   for (const part of chunk(missing, CHUNK)) {
     let issues;
     try {
@@ -125,6 +130,8 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
   const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, condor_elo, condor_elo_week, baseline FROM employees').all();
   const employees = new Map(empRows.map((e) => [e.account_id, e]));
   const jobs = await loadJobs(env, wls.map((w) => w.issueId));
+  // XP Rates changed in the hub start on their day, so time keeps the rate it was logged at.
+  const rateHistory = await historyFor(env, wls.map((w) => w.issueId));
   // An approved dispute sets the category's ELO here, covering its stages too.
   const { results: overrideRows } = await env.DB.prepare('SELECT category_id, job_elo FROM job_overrides').all();
   const overrides = new Map(overrideRows.map((o) => [o.category_id, o.job_elo]));
@@ -170,7 +177,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
     const isMes = /^MES-/i.test(job.issue_key || '');
     const engineerElo = prev?.engineer_elo
       ?? (isMes ? emp.condor_elo_week ?? emp.condor_elo : emp.elo_week ?? emp.elo) ?? DEFAULT_ELO;
-    const override = job.xp_override ?? 1;
+    const override = rateFor(rateHistory.get(String(wl.issueId)), wl.startDate, job.xp_override ?? 1) ?? 1;
     const jobElo = overrides.get(String(wl.issueId)) ?? (job.parent_id ? overrides.get(job.parent_id) : undefined) ?? job.job_elo;
     const rate = xpRate({ jobElo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
     // Overtime keeps its share until the week is worked out again below.
@@ -220,6 +227,60 @@ export async function raiseAlert(env, { kind, dedupe, subject, body, recipient =
     `INSERT INTO alerts (kind, dedupe, subject, body, recipient, created_at) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(dedupe) DO NOTHING`
   ).bind(kind, dedupe, subject, body, recipient, new Date().toISOString()).run();
+}
+
+// Once a day, every item with time logged in the last 90 days has its XP Rate read again
+// from Jira. Where it no longer matches what the time on it earned with (set or changed in
+// Jira after the time went in, say), that time's XP is worked out again.
+const RATE_CHECK_DAYS = 90;
+const RATE_CHECK_CALLS = 10;
+export async function checkXpRates(env, { force = false } = {}) {
+  const today = londonDate();
+  if (!force && (await getState(env, 'xp_rate_check')) === today) return { idle: true };
+  await setState(env, 'xp_rate_check', today);
+  const from = londonDate(Date.now() - RATE_CHECK_DAYS * 86_400_000);
+  const { results } = await env.DB.prepare(
+    'SELECT issue_id, work_date, COALESCE(override, 1) AS override FROM xp_ledger WHERE work_date >= ? GROUP BY issue_id, work_date, COALESCE(override, 1)'
+  ).bind(from).all();
+  const earned = new Map();
+  for (const r of results) (earned.get(String(r.issue_id)) || earned.set(String(r.issue_id), []).get(String(r.issue_id))).push(r);
+  const ids = [...earned.keys()];
+  const history = await historyFor(env, ids);
+  const fields = ['summary', 'parent', eloField(env), xpRateField(env)];
+  const stale = [];
+  let calls = 0;
+  for (const part of chunk(ids, CHUNK)) {
+    if (calls++ >= RATE_CHECK_CALLS) break;
+    let issues;
+    try { issues = await searchJql(env, `id in (${part.join(',')})`, fields); } catch { continue; }
+    const stmts = [];
+    for (const issue of issues) {
+      const job = jobFromIssue(env, issue);
+      const had = earned.get(job.issue_id) || [];
+      if (had.some((r) => Number(r.override) !== (rateFor(history.get(job.issue_id), r.work_date, job.xp_override ?? 1) ?? 1))) stale.push(job.issue_id);
+      stmts.push(env.DB.prepare(
+        `INSERT INTO jobs (issue_id, issue_key, summary, job_elo, xp_override, parent_id, fetched_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, summary = excluded.summary,
+           job_elo = excluded.job_elo, xp_override = excluded.xp_override, parent_id = excluded.parent_id,
+           fetched_at = excluded.fetched_at`
+      ).bind(job.issue_id, job.issue_key, job.summary, job.job_elo, job.xp_override, job.parent_id, job.fetched_at));
+    }
+    await runBatches(env, stmts);
+  }
+  if (!stale.length) return { checked: ids.length, fixed: 0 };
+  // The jobs were just read, so the time on them is worked out again without asking Jira twice.
+  let changed = 0;
+  for (const part of chunk(stale, CHUNK)) {
+    const { results: rows } = await env.DB.prepare(
+      `SELECT worklog_id, account_id, issue_id, work_date, seconds, description, logged_at, start_time FROM xp_ledger
+        WHERE issue_id IN (${placeholders(part.length)})`
+    ).bind(...part).all();
+    const wls = rows.map((r) => ({ id: r.worklog_id, accountId: r.account_id, issueId: r.issue_id, startDate: r.work_date,
+      seconds: r.seconds, description: r.description || '', loggedAt: r.logged_at, startTime: r.start_time }));
+    if (wls.length) changed += (await processWorklogs(env, wls, { backfill: true })).changed;
+  }
+  return { checked: ids.length, items: stale.length, fixed: changed };
 }
 
 // Recalculates XP already earned on these issues, keeping each worklog's
@@ -565,6 +626,7 @@ export async function runScheduled(rawEnv) {
       await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
       if (new Date().getUTCHours() === 5) await attempt('Jira lists retry', async () => (await import('./customer-lists.js')).daily(env));
+      if (new Date().getUTCHours() === 4) await attempt('XP rate check', () => checkXpRates(env));
     }),
     tracker: async () => {
       const r = await attempt('Timer stretches', async () => (await import('./tracker.js')).retry(env));
