@@ -11867,7 +11867,7 @@ async function pscItemHtml() {
   await pscLoad();
   if (d.project === 'PSC' && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
   const when = (iso) => (iso ? `${new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} (${agoText(iso)})` : '—');
-  const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub' };
+  const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub', description: 'Description' };
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-back="1">All items</button></div>
     <section class="card psc-detail">
       <div class="psc-top"><span class="psc-key">${jiraLink(d.key)}</span><span class="muted">${esc(d.type)}${d.priority ? ` · ${esc(d.priority)}` : ''}${d.copyOf ? ` · copied from ${jiraLink(d.copyOf)}` : ''}</span>${pscStatePill(d)}</div>

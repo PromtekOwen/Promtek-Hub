@@ -198,7 +198,11 @@ function statusLook(issue) {
 export function deriveItem(issue, now = new Date().toISOString(), staff = null) {
   const f = issue.fields || {};
   const created = f.created;
-  const isTeam = staff?.size ? (u) => Boolean(u?.accountId) && staff.has(String(u.accountId)) : isJiraUser;
+  // On the PSC board customers have service desk accounts, so anyone with a Jira account
+  // is the team. On a customer's own project they can have Jira accounts too, so there
+  // it's the people in the hub.
+  const onBoard = (f.project?.key || issue.key.split('-')[0]) === PSC_PROJECT;
+  const isTeam = staff?.size ? (u) => (onBoard && isJiraUser(u)) || (Boolean(u?.accountId) && staff.has(String(u.accountId))) : isJiraUser;
   const reporterTeam = isTeam(f.reporter);
   const events = [{ at: created, by: f.reporter?.displayName || 'Unknown', team: reporterTeam, kind: 'created', text: 'Raised' }];
   for (const c of f.comment?.comments || []) {
@@ -211,6 +215,7 @@ export function deriveItem(issue, now = new Date().toISOString(), staff = null) 
     for (const item of h.items || []) {
       const field = String(item.field || '').toLowerCase();
       if (field === 'status') events.push({ at: h.created, by: h.author?.displayName || 'Unknown', team: isTeam(h.author), kind: 'status', text: `${item.fromString || '?'} → ${item.toString || '?'}` });
+      else if (field === 'description') events.push({ at: h.created, by: h.author?.displayName || 'Unknown', team: isTeam(h.author), kind: 'description', text: 'Updated the description' });
       else if (field === 'assignee') events.push({ at: h.created, by: h.author?.displayName || 'Unknown', team: isTeam(h.author), kind: 'assignee', text: item.toString ? `Assigned to ${item.toString}` : 'Unassigned' });
     }
   }
@@ -548,7 +553,15 @@ export function describe(original, ctx, now = new Date().toISOString()) {
   const ids = row.ids || [row.issue_id];
   const { settings } = ctx;
   const acts = ctx.actions.filter((a) => ids.includes(a.issue_id));
-  const first = row.team_first_at ? { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how } : null;
+  // The first look as read from Jira, or the first comment or description change by the
+  // team in its history, if that's earlier (on either the copy or the original).
+  let first = row.team_first_at ? { at: row.team_first_at, by: row.team_first_by, how: row.team_first_how } : null;
+  try {
+    const looked = JSON.parse(row.timeline || '[]').filter((e) => e.team && (e.kind === 'comment' || e.kind === 'description')).sort((a, b) => ms(a.at) - ms(b.at))[0];
+    if (looked && (!first || ms(looked.at) < ms(first.at))) {
+      first = { at: looked.at, by: looked.by, how: looked.kind === 'description' ? 'updated the description' : looked.internal ? 'added an internal note' : 'commented' };
+    }
+  } catch { /* as read */ }
   const lastCandidates = [
     row.team_last_at && { at: row.team_last_at, by: row.team_last_by, what: row.team_last_what },
     acts.length && { at: acts[acts.length - 1].at, by: acts[acts.length - 1].name, what: 'picked it up' },
