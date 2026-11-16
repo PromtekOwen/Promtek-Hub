@@ -6,7 +6,7 @@ import { suggestionsFor, closeDropdown } from './dropdown.js';
 // page itself is served for any address, so the link is turned into the page's own here.
 {
   const linked = /^\/estimate\/([A-Za-z][A-Za-z0-9]*-\d+)\/?$/.exec(location.pathname);
-  if (linked) history.replaceState(null, '', `/${location.search}#/condor?estimate=${linked[1].toUpperCase()}`);
+  if (linked) history.replaceState(history.state, '', `/${location.search}#/condor?estimate=${linked[1].toUpperCase()}`);
 }
 
 const view = document.getElementById('view');
@@ -6638,12 +6638,12 @@ async function condorHtml() {
   if (ticket) {
     condorTab = 'estimate';
     mesEst = { issueId: ticket[1], answers: [], tags: [], difficulty: null, timeboxHours: 4, from: null };
-    history.replaceState(null, '', '#/condor');
+    history.replaceState(history.state, '', '#/condor');
   }
   if (asked && ['day', 'estimate', 'triage', 'plan', 'psc', 'notes', 'ratings'].includes(asked)) {
     condorTab = asked; mesEst = null;
     if (asked === 'notes') { rn.stale = true; rn.view = 'write'; rn.mine = true; }
-    history.replaceState(null, '', '#/condor');
+    history.replaceState(history.state, '', '#/condor');
   }
   let body;
   if (mesEst && !mesEst.embedded) body = await mesEstimateHtml();
@@ -8949,7 +8949,7 @@ async function eotqHtml() {
   if (!me.linked) return notLinkedCard();
   // A link can open a tab, as #/eotq?about from the alert.
   const tab = location.hash.split('?')[1];
-  if (EOTQ_VIEWS.includes(tab)) { eotqView = tab; history.replaceState(null, '', `${location.pathname}${location.search}#/eotq`); }
+  if (EOTQ_VIEWS.includes(tab)) { eotqView = tab; history.replaceState(history.state, '', `${location.pathname}${location.search}#/eotq`); }
   const d = await api('/api/eotq');
   // History and Management are for the management team and admins only.
   if (['history', 'manage'].includes(eotqView) && !d.canManage) eotqView = 'nominate';
@@ -11711,7 +11711,7 @@ function pscOrgFlagsHtml(data) {
 async function pscHtml() {
   // A link can open one item, as #/psc?item=PSC-12 from the alert.
   const asked = /^item=([A-Z][A-Z0-9]+-\d+)$/.exec(location.hash.split('?')[1] || '');
-  if (asked) { pscOpen = asked[1]; history.replaceState(null, '', `${location.pathname}${location.search}#/psc`); }
+  if (asked) { pscOpen = asked[1]; history.replaceState(history.state, '', `${location.pathname}${location.search}#/psc`); }
   return `${await pscPageHtml()}${pscResolveModal()}`;
 }
 
@@ -13806,6 +13806,23 @@ function notePage() {
   fetch('/api/prefs/usage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ page }) }).catch(() => {});
 }
 
+// How many pages into the hub this tab is, kept on each history entry, so the back arrow
+// returns to the page before; with nothing before it (a page opened from a link), it goes home.
+const navDepth = () => Number(history.state?.hubDepth) || 0;
+let lastDepth = navDepth();
+window.addEventListener('hashchange', () => {
+  // A new page has no depth yet; going back or forward lands on one that has.
+  if (history.state?.hubDepth === undefined) history.replaceState({ ...(history.state || {}), hubDepth: lastDepth + 1 }, '');
+  lastDepth = navDepth();
+});
+window.addEventListener('popstate', () => { if (history.state?.hubDepth !== undefined) lastDepth = navDepth(); });
+back.addEventListener('click', (event) => {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.button) return;
+  event.preventDefault();
+  if (navDepth() > 0) history.back();
+  else location.hash = '#/';
+});
+
 window.addEventListener('hashchange', () => {
   notePage();
   if (!tour?.practice) endTour(false);     // a walkthrough can lead from one page to the next
@@ -13850,7 +13867,7 @@ async function syncAndRefresh(announce = false) {
 async function start() {
   if (PRACTICE) {
     // A walkthrough always starts on its own page, even after a reload part-way through.
-    if (location.hash.replace(/\/$/, '') !== PRACTICE_ROUTE.replace(/\/$/, '')) history.replaceState(null, '', `${location.pathname}${location.search}${PRACTICE_ROUTE}`);
+    if (location.hash.replace(/\/$/, '') !== PRACTICE_ROUTE.replace(/\/$/, '')) history.replaceState(history.state, '', `${location.pathname}${location.search}${PRACTICE_ROUTE}`);
     document.body.classList.add('practice');
     practiceBar();
   }
