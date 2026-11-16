@@ -451,11 +451,26 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/mes/make-sprints') return json(await Plan.makeSprints(env, user, body.versionId));
   }
 
+  // A PSC or customer project item, shown in the hub instead of Jira.
+  if (pathname.startsWith('/api/jira/')) {
+    const View = await import('./jiraview.js');
+    const Psc = await import('./psc.js');
+    Psc.mustSee(user);
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/jira/projects') return json({ projects: await View.viewableProjects(env) });
+    if (method === 'GET' && pathname === '/api/jira/view') return json(await View.view(env, user, url.searchParams.get('key')));
+    if (method === 'GET' && pathname === '/api/jira/attachment') return View.attachment(env, user, url.searchParams.get('key'), url.searchParams.get('id'));
+    if (method === 'POST' && pathname === '/api/jira/comment') return json(await View.comment(env, user, body));
+  }
   if (pathname.startsWith('/api/psc')) {
     const Psc = await import('./psc.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/psc') return json(await Psc.overview(env, user));
     if (method === 'GET' && pathname === '/api/psc/version') return json({ version: await Psc.version(env) });
+    if (method === 'POST' && pathname === '/api/psc/copy') return json(await Psc.copyNow(env, user, body.key));
+    if (method === 'GET' && pathname === '/api/psc/copy-settings') return json(await Psc.copySettings(env, user));
+    if (method === 'POST' && pathname === '/api/psc/copy-settings') return json(await Psc.setCopyOn(env, user, Boolean(body.on)));
+    if (method === 'POST' && pathname === '/api/psc/unlink') return json(await Psc.unlinkStart(env, user, { limit: body.limit }));
     if (method === 'GET' && pathname === '/api/psc/item') return json(await Psc.item(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/psc/insights') return json(await Psc.insights(env, user));
     if (method === 'GET' && pathname === '/api/psc/orgs') return json(await Psc.orgOptions(env, user));

@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS psc_copy_requests (issue_key TEXT PRIMARY KEY, org TEXT, project_key TEXT, status TEXT NOT NULL, copy_key TEXT, error TEXT, requested_by TEXT, requested_at TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 1);

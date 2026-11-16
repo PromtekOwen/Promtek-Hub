@@ -1997,7 +1997,10 @@ async function renderSettings(route) {
   if (route === '#/quotes') settingsData.quoteConfig = await api('/api/admin/quote-config');
   if (route === '#/condor') settingsData.bitbucket = await api('/api/admin/bitbucket').catch(() => ({ configured: false, last: null, week: null }));
   if (route === '#/org') settingsData.org = await api('/api/admin/org');
-  if (route === '#/psc') settingsData.psc = await api('/api/psc/settings').catch((err) => ({ error: err.message }));
+  if (route === '#/psc') {
+    settingsData.psc = await api('/api/psc/settings').catch((err) => ({ error: err.message }));
+    settingsData.pscCopy = await api('/api/psc/copy-settings').catch((err) => ({ error: err.message }));
+  }
   if (route === '#/contracts') settingsData.contracts = await api('/api/contracts/settings').catch((err) => ({ error: err.message }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
   if (route === '#/eotq') settingsData.eotq = await api('/api/eotq/settings').catch((err) => ({ error: err.message }));
@@ -10748,6 +10751,169 @@ const FLAG_TITLES = {
 const fullDate = (iso) => (iso ? dateOf(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
 const whenText = (isoTime) => (isoTime ? new Date(isoTime).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'not yet');
 const jiraLink = (key, label = key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+
+// ---------- Jira items shown in the hub ----------
+// Links to PSC and customer project items open here rather than in Jira: the description,
+// comments, attachments and who raised it, with a box to comment. Anything else, and a
+// Ctrl or Cmd click, still goes to Jira.
+const jvCache = new Map();          // key -> what Jira sent, for the item page and the panel
+let jvProjects = null;              // project keys that open in the hub, or [] if PSC isn't open to them
+let jvOpenKey = null;
+const jvDraft = {};                 // key -> { text, vis }
+
+async function jvLoadProjects() {
+  if (jvProjects) return jvProjects;
+  try { jvProjects = (await api('/api/jira/projects')).projects || []; } catch { jvProjects = []; }
+  return jvProjects;
+}
+
+async function jvFetch(key, { fresh = false } = {}) {
+  if (!fresh && jvCache.has(key)) return jvCache.get(key);
+  const data = await api(`/api/jira/view?key=${encodeURIComponent(key)}`);
+  jvCache.set(key, data);
+  return data;
+}
+
+const fileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
+
+function jiraViewBody(v) {
+  const draft = jvDraft[v.key] || { text: '', vis: v.canComment.customer ? 'customer' : 'internal' };
+  const who = v.reporter ? `${esc(v.reporter.name)}${v.reporter.email ? ` <a href="mailto:${esc(v.reporter.email)}">${esc(v.reporter.email)}</a>` : ''}` : 'Unknown';
+  const sugg = v.suggestions?.length ? `<div class="jv-suggest"><p style="margin:0 0 .4rem"><strong>Which customer?</strong> <span class="muted">No Organization is set. These look likely:</span></p>
+      ${v.suggestions.map((o) => `<div class="jv-sugg-row"><span><strong>${esc(o.name)}</strong> <small class="muted">${esc(o.why)}</small></span>
+        <button class="chip-btn" data-jv-set-org="${esc(o.id)}" data-key="${esc(v.key)}">Set</button></div>`).join('')}</div>`
+    : v.project === 'PSC' && !v.orgs.length ? `<div class="jv-suggest"><p style="margin:0"><strong>No Organization is set</strong> <span class="muted">and nothing points to one. The reporter's email and the description are the best clues.</span></p></div>` : '';
+  const comments = v.comments.length ? v.comments.map((c) => `<li class="jv-comment${c.internal ? ' internal' : ''}">
+      <div class="jv-c-head"><strong>${esc(c.by)}</strong>${c.team || c.app ? '' : ' <span class="psc-chip plain">customer</span>'}
+        ${c.internal ? `<span class="psc-chip plain">${c.restricted ? `Only ${esc(c.restricted)}` : 'Internal'}</span>` : '<span class="psc-chip plain customer-seen">Customer can see</span>'}
+        <small class="muted">${agoText(c.at)}</small></div>
+      <div class="jv-rich">${c.html}</div></li>`).join('') : '<li class="muted">No comments yet.</li>';
+  const vis = (k, label) => `<button type="button" class="seg${draft.vis === k ? ' on' : ''}" data-jv-vis="${k}" data-key="${esc(v.key)}"${k === 'customer' && !v.canComment.customer ? ' disabled' : ''}>${label}</button>`;
+  return `<div class="card jv">
+      <div class="jv-facts">
+        <div><span class="muted">Raised by</span><br>${who}</div>
+        <div><span class="muted">Organization</span><br>${v.orgs.length ? esc(v.orgs.join(', ')) : '<b class="con-late">Not set</b>'}</div>
+        <div><span class="muted">Status</span><br>${esc(v.status)}</div>
+        <div><span class="muted">Assignee</span><br>${v.assignee ? esc(v.assignee.name) : 'Unassigned'}</div>
+        ${v.copy ? `<div><span class="muted">Customer copy</span><br>${jiraLink(v.copy.key)}</div>` : ''}
+        ${v.original ? `<div><span class="muted">Customer's ticket</span><br>${jiraLink(v.original.key)}</div>` : ''}
+      </div>
+      ${sugg}
+      <h3>Description</h3>
+      <div class="jv-rich jv-desc">${v.descriptionHtml || '<p class="muted">No description.</p>'}</div>
+      ${v.attachments.length ? `<h3>Attachments</h3><ul class="jv-files">${v.attachments.map((a) => `<li><a href="/api/jira/attachment?key=${encodeURIComponent(v.key)}&id=${encodeURIComponent(a.id)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a> <small class="muted">${fileSize(a.size || 0)} · ${esc(a.by)} · ${agoText(a.at)}</small></li>`).join('')}</ul>` : ''}
+      ${v.links.length ? `<h3>Linked</h3><ul class="jv-links">${v.links.map((l) => `<li><span class="muted">${esc(l.how || '')}</span> ${jiraLink(l.key)} ${esc(l.summary)} <small class="muted">${esc(l.status)}</small></li>`).join('')}</ul>` : ''}
+      <h3>Comments</h3>
+      <ul class="jv-comments">${comments}</ul>
+      <div class="jv-compose">
+        <div class="segment" role="group" aria-label="Who sees it">${vis('internal', 'Internal')}${vis('customer', 'Customer visible')}</div>
+        <textarea rows="3" data-jv-text="${esc(v.key)}" placeholder="${draft.vis === 'customer' ? 'The customer sees this' : `Only ${esc(v.internalGroup)} see this`}">${esc(draft.text)}</textarea>
+        <p class="help">${draft.vis === 'customer' ? 'Goes on this copy and across to the customer\'s ticket, with your name at the top.'
+          : v.project === 'PSC' ? 'An internal note on the ticket. The customer never sees it.' : `Kept to ${esc(v.internalGroup)}, so it stays off the customer's ticket.`}${v.canComment.customer ? '' : ' Customers hear from the copy in their project, once it has one.'}</p>
+        <div class="row"><button class="btn" data-jv-send="${esc(v.key)}">Add comment</button><a class="btn secondary" href="${esc(v.url)}" target="_blank" rel="noopener" data-jv-out="1">Open in Jira</a></div>
+      </div>
+    </div>`;
+}
+
+function jvPanel() {
+  let el = document.getElementById('jira-viewer');
+  if (!jvOpenKey) { if (el) el.remove(); document.body.classList.remove('jv-open'); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'jira-viewer';
+    el.className = 'jv-backdrop';
+    el.addEventListener('click', jvClick);
+    el.addEventListener('input', (e) => { const k = e.target.dataset.jvText; if (k) jvDraft[k] = { ...(jvDraft[k] || { vis: 'internal' }), text: e.target.value }; });
+    document.body.appendChild(el);
+    document.body.classList.add('jv-open');
+  }
+  const v = jvCache.get(jvOpenKey);
+  el.innerHTML = `<div class="jv-sheet" role="dialog" aria-modal="true" aria-label="${esc(jvOpenKey)}">
+    <div class="jv-sheet-head"><div><strong>${esc(jvOpenKey)}</strong>${v ? ` <span class="muted">${esc(v.type)} · ${esc(v.projectName)}</span><h2>${esc(v.summary)}</h2>` : ''}</div>
+      <button class="icon-btn" data-jv-close="1" aria-label="Close">✕</button></div>
+    ${v?.error ? `<div class="card"><p class="bad">${esc(v.error)}</p><a class="btn secondary" href="${esc(me.jiraBaseUrl)}/browse/${esc(jvOpenKey)}" target="_blank" rel="noopener">Open in Jira</a></div>`
+      : v ? jiraViewBody(v) : '<div class="card"><p class="muted">Loading from Jira…</p></div>'}
+  </div>`;
+}
+
+async function openJiraViewer(key) {
+  jvOpenKey = key;
+  jvPanel();
+  try { await jvFetch(key, { fresh: true }); } catch (err) { jvCache.set(key, { key, error: err.message }); }
+  if (jvOpenKey === key) jvPanel();
+}
+
+// Draws the item page's own copy once Jira has answered.
+async function jvFillInline() {
+  const host = view.querySelector('[data-jv-inline]');
+  if (!host) return;
+  const key = host.dataset.jvInline;
+  try { await jvFetch(key, { fresh: !jvCache.has(key) }); } catch (err) { host.innerHTML = `<div class="card"><p class="bad">${esc(err.message)}</p></div>`; return; }
+  const now = view.querySelector(`[data-jv-inline="${CSS.escape(key)}"]`);
+  if (now) now.innerHTML = jiraViewBody(jvCache.get(key));
+}
+
+async function jvClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (event.currentTarget?.id === 'jira-viewer' && event.target === event.currentTarget) { jvOpenKey = null; jvPanel(); return true; }
+  if (t('[data-jv-close]')) { jvOpenKey = null; jvPanel(); return true; }
+  const vis = t('[data-jv-vis]');
+  if (vis) {
+    const k = vis.dataset.key;
+    const box = document.querySelector(`[data-jv-text="${CSS.escape(k)}"]`);
+    jvDraft[k] = { text: box?.value || '', vis: vis.dataset.jvVis };
+    jvRedraw(k); return true;
+  }
+  const send = t('[data-jv-send]');
+  if (send) {
+    const k = send.dataset.jvSend;
+    const box = document.querySelector(`[data-jv-text="${CSS.escape(k)}"]`);
+    const d = { ...(jvDraft[k] || { vis: jvCache.get(k)?.canComment.customer ? 'customer' : 'internal' }), text: box?.value || '' };
+    if (d.text.trim().length < 2) { toast('Write the comment first'); return true; }
+    if (d.vis === 'customer' && !confirm('The customer will see this comment. Send it?')) return true;
+    send.disabled = true;
+    try {
+      await api('/api/jira/comment', { method: 'POST', body: JSON.stringify({ key: k, text: d.text, visibility: d.vis }) });
+      toast(d.vis === 'customer' ? 'Sent; the customer sees it once it syncs' : 'Internal comment added');
+      jvDraft[k] = { text: '', vis: d.vis };
+      await jvFetch(k, { fresh: true });
+      jvRedraw(k);
+    } catch (err) { toast(err.message); send.disabled = false; }
+    return true;
+  }
+  const org = t('[data-jv-set-org]');
+  if (org) {
+    org.disabled = true;
+    try { const r = await api('/api/psc/org', { method: 'POST', body: JSON.stringify({ key: org.dataset.key, orgId: org.dataset.jvSetOrg }) }); toast(r.saved ? 'Organization set' : r.message); } catch (err) { toast(err.message); }
+    try { await jvFetch(org.dataset.key, { fresh: true }); } catch { /* shown as it was */ }
+    pscFetchedAt = 0;
+    jvRedraw(org.dataset.key);
+    if (currentRoute() === '#/psc') render();
+    return true;
+  }
+  return false;
+}
+
+function jvRedraw(key) {
+  if (jvOpenKey === key) jvPanel();
+  const host = view.querySelector(`[data-jv-inline="${CSS.escape(key)}"]`);
+  if (host && jvCache.get(key)) host.innerHTML = jiraViewBody(jvCache.get(key));
+}
+
+// Links to Jira items open in the hub when they can.
+document.addEventListener('click', async (event) => {
+  const a = event.target.closest?.('a[href*="/browse/"]');
+  if (!a || a.dataset.jvOut || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+  const m = /\/browse\/([A-Z][A-Z0-9_]*)-(\d+)(?:[?#]|$)/.exec(a.getAttribute('href') || '');
+  if (!m || !me?.jiraBaseUrl || !a.href.startsWith(me.jiraBaseUrl)) return;
+  if (!jvProjects) { event.preventDefault(); await jvLoadProjects(); if (!jvProjects.includes(m[1])) { window.open(a.href, '_blank', 'noopener'); return; } openJiraViewer(`${m[1]}-${m[2]}`); return; }
+  if (!jvProjects.includes(m[1])) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openJiraViewer(`${m[1]}-${m[2]}`);
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && jvOpenKey) { jvOpenKey = null; jvPanel(); } });
+
 const bankHolidayIcon = () => `<span class="con-bh" title="Covers bank holidays">${svgIcon('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><path d="M12 12.5l1 2 2.2.3-1.6 1.5.4 2.2-2-1.1-2 1.1.4-2.2-1.6-1.5 2.2-.3z"/>')}<span class="visually-hidden">Covers bank holidays</span></span>`;
 
 function conStatus(status) {
@@ -11641,6 +11807,18 @@ async function pscHandClick(t) {
   return false;
 }
 
+// A PSC ticket's customer copy: found, asked for, or to be made.
+function pscCopyBlock(d) {
+  if (!d.org && !d.customer) return '';
+  if (!d.uncopied) return '';
+  const c = d.copyRequest;
+  const text = !c ? `No copy in ${esc(d.customer || 'the customer')}'s project yet.`
+    : c.status === 'requested' ? `Copy asked for ${agoText(c.requested_at)}; it shows here once Copy & Sync has made it.`
+      : c.status === 'failed' || c.status === 'no-project' ? `<b class="con-late">Copying failed:</b> ${esc(c.error || '')}` : esc(c.error || c.status);
+  return `<div class="card psc-copy-block"><p style="margin:0">${text}</p>
+    <div class="row" style="margin-top:.6rem"><button class="btn secondary" data-psc-copy="${esc(d.key)}">${c ? 'Ask again' : 'Copy to the customer\'s project'}</button></div></div>`;
+}
+
 async function pscItemHtml() {
   const { item: d, timeline } = await api(`/api/psc/item?key=${encodeURIComponent(pscOpen)}`);
   await pscLoad();
@@ -11677,6 +11855,8 @@ async function pscItemHtml() {
         <button class="btn secondary${pscHand?.key === d.key && pscHand.kind === 'condor' ? ' on' : ''}" data-psc-hand="condor" data-key="${esc(d.key)}">Condor</button></div>
         ${pscHand?.key === d.key ? await pscHandHtml(d) : ''}` : ''}
     </section>
+    ${d.project === 'PSC' ? pscCopyBlock(d) : ''}
+    <section class="jv-inline" data-jv-inline="${esc(d.key)}">${jvCache.get(d.key) ? jiraViewBody(jvCache.get(d.key)) : `<div class="card"><p class="muted">Loading the ticket from Jira…</p></div>`}</section>
     <h2>History</h2>
     <ul class="list psc-timeline">${timeline.map((e) => `<li class="${e.team ? 'team' : 'customer'}${e.internal ? ' internal' : ''}">
         <span class="title"><span class="psc-kind k-${esc(e.kind)}">${kindText[e.kind] || ''}</span> ${esc(e.by || '')}${e.team ? '' : ' <span class="psc-chip plain">customer</span>'}${e.internal ? ' <span class="psc-chip plain">internal note</span>' : ''}</span>
@@ -11743,6 +11923,7 @@ async function pscInsightsHtml() {
 
 async function pscClick(event) {
   const t = (sel) => event.target.closest(sel);
+  if (t('.jv') && await jvClick(event)) return true;
   if (t('a') || t('select') || t('input') || t('textarea')) return false;
   if (await pscResolveClick(t)) return true;
   if (await pscHandClick(t)) return true;
@@ -11785,6 +11966,15 @@ async function pscClick(event) {
     try { const r = await api('/api/psc/pickup', { method: 'POST', body: JSON.stringify({ key: pick.dataset.pscPickup }) }); toast(r.saved ? 'It\'s yours' : r.message); } catch (err) { toast(err.message); }
     pscFetchedAt = 0;
     return render();
+  }
+  const cp = t('[data-psc-copy]');
+  if (cp) {
+    cp.disabled = true;
+    try {
+      const r = await api('/api/psc/copy', { method: 'POST', body: JSON.stringify({ key: cp.dataset.pscCopy }) });
+      toast(r.already ? `Already copied: ${r.already}` : r.skipped ? 'Not one that gets copied' : `Asked Copy & Sync to copy it to ${r.requested}`);
+    } catch (err) { toast(err.message); }
+    pscFetchedAt = 0; return render();
   }
   const log = t('[data-psc-log]');
   if (log) {
@@ -11881,10 +12071,52 @@ function settingsPscHtml() {
       <p><button class="btn" data-psc-save-settings="1">Save</button></p>
       <p class="muted">Read from Jira ${s.syncedAt ? whenText(new Date(s.syncedAt).toISOString()) : 'not yet'}.</p>
       ${s.error ? `<div class="notice error"><p>${esc(s.error)}</p></div>` : ''}
+    </section>
+    ${pscCopySettingsHtml()}`;
+}
+
+// Customer copies: the hub sets the Automation field and asks Copy & Sync to copy each PSC
+// ticket with an Organization into the customer's project, in place of the two Jira automations.
+function pscCopySettingsHtml() {
+  const c = settingsData.pscCopy;
+  if (!c) return '';
+  if (c.error) return `<section class="card"><p class="bad">${esc(c.error)}</p></section>`;
+  const statusText = { requested: 'Asked for', copied: 'Copy found', failed: 'Failed', skipped: 'Not copied', 'no-project': 'No matching project' };
+  const u = c.unlink;
+  return `<section class="card">
+      <h2 style="margin-top:0">Customer copies</h2>
+      <p class="muted">When on, each PSC ticket with an Organization is copied into the customer's project (the project with exactly the Organization's name) by Copy & Sync, once. It replaces the Jira automations "SERVICE - PSC to Customer Board on Creation" and "on Edit": turn those off in Jira when this goes on, or tickets are copied twice. Tickets with "quote" in the summary are left for the quote recipe.</p>
+      ${c.tokenSet ? '' : '<p class="bad">The Copy & Sync token isn\'t set for the hub yet (COPYSYNC_TOKEN), so nothing can be copied.</p>'}
+      <div class="segment" role="group" aria-label="Customer copies"><button class="seg${c.on ? ' on' : ''}" data-psc-copy-on="1">On</button><button class="seg${c.on ? '' : ' on'}" data-psc-copy-on="0">Off</button></div>
+      <p class="muted">${c.on ? `On since ${whenText(c.since)}. Only tickets changed since then are copied without asking; older ones have a Copy button on the ticket.` : 'Off: the Jira automations do it.'} ${c.waiting} open ticket${c.waiting === 1 ? '' : 's'} with an Organization have no copy found. Recipe ${esc(c.recipe)}.</p>
+      ${c.recent.length ? `<div class="table-wrap"><table><thead><tr><th>Ticket</th><th>Project</th><th>Result</th><th>When</th></tr></thead><tbody>${c.recent.map((r) => `<tr>
+        <td>${jiraLink(r.issue_key)}</td><td>${esc(r.project_key || r.org || '')}</td>
+        <td>${esc(statusText[r.status] || r.status)}${r.copy_key ? ` ${jiraLink(r.copy_key)}` : ''}${r.error ? `<br><small class="muted">${esc(r.error)}</small>` : ''}</td>
+        <td><small>${whenText(r.requested_at)} · ${esc(r.requested_by || '')}</small></td></tr>`).join('')}</tbody></table></div>` : ''}
+      <h2>Tickets synced twice</h2>
+      <p class="muted">Some PSC tickets and their copies are joined by a Sync From / Sync To link as well as the copy link, so two recipes sync them at once. This takes the Sync link off between a PSC ticket and its customer copy, leaving the copy link. Pairs joined only by a Sync link keep it. Try one first and check the pair still syncs as it should.</p>
+      <div class="row"><button class="btn secondary" data-psc-unlink="1">Remove from one ticket</button><button class="btn secondary" data-psc-unlink="all">Remove from all</button></div>
+      ${u ? `<p class="muted">${u.done ? 'Finished' : 'Working through them, a few each run'}: ${u.removed} link${u.removed === 1 ? '' : 's'} removed from ${u.checked} ticket${u.checked === 1 ? '' : 's'}${u.kept ? `, ${u.kept} kept as they have no copy link` : ''}${u.error ? `. <span class="bad">${esc(u.error)}</span>` : ''}${u.pairs?.length ? `<br><small>${u.pairs.slice(-10).map(esc).join(', ')}</small>` : ''}</p>` : ''}
     </section>`;
 }
 
 async function pscSettingsClick(event) {
+  const on = event.target.closest('[data-psc-copy-on]');
+  if (on) {
+    const want = on.dataset.pscCopyOn === '1';
+    if (want && !confirm('Turn on customer copies from the hub? Turn off the two Jira automations straight after, or new tickets are copied twice.')) return true;
+    try { settingsData.pscCopy = await api('/api/psc/copy-settings', { method: 'POST', body: JSON.stringify({ on: want }) }); toast(want ? 'The hub makes customer copies now' : 'Customer copies off'); } catch (err) { toast(err.message); }
+    render(); return true;
+  }
+  const un = event.target.closest('[data-psc-unlink]');
+  if (un) {
+    const all = un.dataset.pscUnlink === 'all';
+    if (all && !confirm('Remove the Sync From / Sync To link between every PSC ticket and its customer copy?')) return true;
+    un.disabled = true;
+    try { const r = await api('/api/psc/unlink', { method: 'POST', body: JSON.stringify({ limit: all ? null : 1 }) }); toast(`${r.removed} removed${r.done ? '' : ', more to follow'}`); } catch (err) { toast(err.message); }
+    settingsData.pscCopy = await api('/api/psc/copy-settings').catch((err) => ({ error: err.message }));
+    render(); return true;
+  }
   if (!event.target.closest('[data-psc-save-settings]')) return false;
   const body = { targets: {} };
   for (const i of view.querySelectorAll('[data-psc-setting]')) {
@@ -13232,6 +13464,7 @@ async function render() {
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
       if (route === '#/admin' && !settingsOpen && me.user.isAdmin) { loadAudit(); loadHomeAdmin(); loadToilAdmin(); loadXpRatesAdmin(); }
       if (route === '#/time' && timeEdit) loadLogDay();
+      if (route === '#/psc') { jvFillInline(); jvLoadProjects(); }
       logFab();
       if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
@@ -13332,6 +13565,7 @@ view.addEventListener('input', (event) => {
   }
   if (['log-hours', 'log-minutes'].includes(event.target.id)) return updateXpPreview();
   if (event.target.id === 'log-start') { event.target.dataset.touched = '1'; return drawLogDay(); }
+  if (event.target.dataset?.jvText) { const k = event.target.dataset.jvText; jvDraft[k] = { ...(jvDraft[k] || { vis: 'internal' }), text: event.target.value }; return; }
   if (event.target.id === 'xpr-search') { clearTimeout(xprTimer); const q = event.target.value; xprTimer = setTimeout(() => xprSearch(q), 350); return; }
   if (event.target.id === 'log-date') return loadLogDay();
   if (event.target.id === 'log-search') {

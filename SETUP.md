@@ -532,7 +532,7 @@ Each ticket is asked for once. Its state (asked for, copied, failed, no project)
 
 1. Run `schema-059.sql` in the D1 console.
 2. Add the secret `COPYSYNC_TOKEN` with the Copy & Sync API token: `npx wrangler secret put COPYSYNC_TOKEN`. It's never kept in the code.
-3. New copies use Copy & Sync Work Items v2. To use a different recipe, add `COPYSYNC_RECIPE` as a variable with its ID (see The Copy & Sync recipes below). Optional: `COPYSYNC_URL` if Elements ever moves the endpoint, `PSC_INTERNAL_GROUP` if the internal group is renamed.
+3. If the recipe is re-imported (below) its ID may change: add `COPYSYNC_RECIPE` as a variable with the new ID (the recipe's ID is in its URL in Copy & Sync). Optional: `COPYSYNC_URL` if Elements ever moves the endpoint, `PSC_INTERNAL_GROUP` if the internal group is renamed.
 4. PSC tile → cog → **Customer copies** → **On**. Only tickets changed from that moment are copied automatically.
 5. In Jira, disable automation rules 2178201 and 2177983 straight after, so tickets aren't copied twice.
 
@@ -540,18 +540,23 @@ Each ticket is asked for once. Its state (asked for, copied, failed, no project)
 
 ### The Copy & Sync recipes
 
-Copy & Sync keeps each synced pair against the recipe that made it, so deactivating a recipe stops every pair it made from syncing. Old recipes stay active for their existing pairs; fixes apply to pairs made from now on.
+`Promtek-CopySync-recipes-fixed.json` (sent separately, not part of the hub) holds fixed copies of two recipes, named **v2**, for **Copy & Sync → Import**:
 
-**Copy & Sync Work Items v2** (`RECIPE_e3e97e4e-2f15-44fb-8eec-76f427acd9f1`) makes the hub's new copies. Set `COPYSYNC_RECIPE` only if that changes. It's only run when called (by the hub, or by hand in Jira), never by a link being added, so it and the original **Copy & Sync Work Items** can both stay active without syncing anything twice: the original keeps the pairs it already made. Compared with the original:
+**Copy & Sync Work Items v2**
 - Status changes go both ways (the workflows match across projects).
-- Customer-visible comments made on the customer copy are public on the PSC ticket.
+- Customer-visible comments made on the customer copy are public on the PSC ticket, so the customer is emailed.
 - No longer maps: Reporter, Issue Type, Status category, Resolution, Sprint, Creation Date, Progress, Summary → Key and Summary → IMS Origin Item. These either can't be set on a copy, are set by Jira, or overwrote other fields with the summary.
 
-Before activating it, in its Comments tab set **Restrictions** → **Synchronise public comments**, so internal notes and Promtek Members comments never cross, and **Visibility in JSM** → **Always public**, which needs a Synchronisation Author with a service desk agent licence. Without one, a customer-visible comment from someone with no agent licence lands as internal on PSC.
+**Sync Work Items v2**
+- 44 mappings to fields that no longer exist are removed.
+- Status changes go both ways.
 
-**Sync Work Items** stays as it is. It runs whenever a Sync From / Sync To link is added (the hub's Condor button adds one between a PSC ticket and its MES Bug), so a second recipe on the same link would sync every new pair twice. Its "Entity not found" mappings are to fields that no longer exist and do nothing.
+**Before activating** (imports arrive as drafts):
 
-Copy one test PSC ticket from the tile afterwards and check the copy, a comment each way and a status change.
+1. Open **Copy & Sync Work Items v2** → Comments → **Restrictions** → **Synchronise public comments**, so internal notes and Promtek Members comments never cross. Under **Synchronisation to JSM**, choose **Always public** if the recipe has a Synchronisation Author with a JSM licence. If not, Copy & Sync can only post as the original author's permission allows, so a customer-visible comment from someone without an agent licence lands as internal on PSC. In that case set a Synchronisation Author with an agent licence.
+2. Check the Target tab still uses the **Automation** project picker and the **is cloned by** link.
+3. Deactivate the old recipe, then activate v2. Copy the v2 recipe's ID into `COPYSYNC_RECIPE`. Do the same for Sync Work Items.
+4. Copy one test PSC ticket from the tile and check the copy, a comment each way and a status change.
 
 ## Part 14f: Which Jira projects the hub uses
 

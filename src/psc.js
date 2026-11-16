@@ -886,7 +886,7 @@ export async function saveSettings(env, viewer, input) {
 const AUTOMATION_FIELD = 'customfield_14981';
 const SKIP_TYPE_IDS = ['13031'];
 const COPY_PER_RUN = 5;
-export const COPY_RECIPE = (env) => env.COPYSYNC_RECIPE || 'RECIPE_e3e97e4e-2f15-44fb-8eec-76f427acd9f1';
+export const COPY_RECIPE = (env) => env.COPYSYNC_RECIPE || 'RECIPE_86901517-66df-45c2-b1e4-fe341068f37e';
 const COPY_URL = (env) => env.COPYSYNC_URL || 'https://de-copyandsync.elements-apps.com/api/public/copy';
 
 export async function copyOnSince(env) { return (await getState(env, 'psc_copy_on')) || ''; }
