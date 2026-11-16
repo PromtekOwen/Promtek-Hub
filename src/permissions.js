@@ -65,6 +65,7 @@ export const TILES = {
   obsolescence: { name: 'Obsolescence' },
   pow: { name: 'Point of work' },
   psc: { name: 'PSC', groups: ['management', 'lead'], teams: ['Service'] },
+  ims: { name: 'IMS', groups: ['management'] },
   contracts: { name: 'Service contracts', groups: ['management', 'lead'], teams: ['Service'] },
   capacity: { name: 'Capacity', groups: ['management', 'lead'] },
   wip: { name: 'WIP', groups: ['management'] },

@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS ims_items (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, project_key TEXT NOT NULL, issuetype TEXT, subtask INTEGER NOT NULL DEFAULT 0, status TEXT, status_cat TEXT, summary TEXT, parent_key TEXT, assignee_id TEXT, assignee_name TEXT, created_at TEXT, updated_at TEXT, resolved_at TEXT, ims_type TEXT, sub_types TEXT, categories TEXT, root_cause TEXT, root_required TEXT, start_date TEXT, target_end TEXT, priority TEXT, labels TEXT, links TEXT, origin_key TEXT, vals TEXT, group_key TEXT, sync_seen INTEGER NOT NULL DEFAULT 0, synced_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ims_items_key ON ims_items (issue_key);
+CREATE INDEX IF NOT EXISTS ims_items_group ON ims_items (group_key);
+CREATE TABLE IF NOT EXISTS ims_sync (group_key TEXT NOT NULL, field TEXT NOT NULL, value TEXT, conflict INTEGER NOT NULL DEFAULT 0, at TEXT NOT NULL, PRIMARY KEY (group_key, field));
+CREATE TABLE IF NOT EXISTS ims_writes (id INTEGER PRIMARY KEY AUTOINCREMENT, group_key TEXT, kind TEXT NOT NULL, source_key TEXT, target_key TEXT NOT NULL, payload TEXT, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, created_at TEXT NOT NULL, done_at TEXT);

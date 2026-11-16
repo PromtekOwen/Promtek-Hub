@@ -448,6 +448,11 @@ const pages = {
     render: () => pscHtml(),
   },
 
+  '#/ims': {
+    band: () => '<h1>IMS</h1><p>Internal management across every area: items, how each area is doing, and the management meetings.</p>',
+    render: () => imsHtml(),
+  },
+
   '#/contracts': {
     band: () => '<h1>Service contracts</h1><p>Each customer\'s contract: its dates, visits and tokens.</p>',
     render: () => contractsHtml(),
@@ -11882,6 +11887,376 @@ view.addEventListener('drop', (e) => {
   if (e.dataTransfer?.files?.length) pscNewAddFiles(e.dataTransfer.files);
 });
 
+// ---------- IMS ----------
+// The internal management projects as one: each item once, wherever its copies are,
+// with the numbers, the management meetings, and new items.
+let imsTab = 'items';
+let imsData = null;
+let imsDone = false;
+const imsFilter = { area: '', type: '', who: '', q: '', differ: false };
+let imsOpen = null;          // the item opened, by key
+let imsItemData = null;
+let imsEdit = null;          // the item's fields while being changed
+let imsNew = null;           // the new item form
+let imsOptions = null;
+let imsMeetingOpen = null;
+let imsNewMeeting = null;
+const imsStats = { area: '', month: '' };
+const IMS_AREA_SHORT = { GOALS: 'Goals', LEGAL: 'Legal', HEALTH: 'H&S', COMPLIANCE: 'Compliance', FINANCE: 'Finance', INNOV: 'Innovation', IS: 'InfoSec', MARKETING: 'Marketing', SUGGEST: 'Improvements', QA: 'QA' };
+const imsAreaChip = (k) => `<span class="ims-area ims-a-${esc(k)}" title="${esc(imsData?.areas.find((a) => a.key === k)?.name || k)}">${esc(IMS_AREA_SHORT[k] || k)}</span>`;
+const imsMonthName = (m) => new Date(`${m}-01T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+
+async function imsLoad(force = false) {
+  if (!imsData || force || imsData.doneLoaded !== imsDone) {
+    imsData = await api(`/api/ims${imsDone ? '?done=1' : ''}`);
+    imsData.doneLoaded = imsDone;
+  }
+  return imsData;
+}
+async function imsLoadOptions() {
+  if (!imsOptions) imsOptions = await api('/api/ims/options');
+  return imsOptions;
+}
+
+function imsTabsHtml() {
+  return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings']].map(([k, l]) =>
+    `<button class="tab${imsTab === k ? ' on' : ''}" data-ims-tab="${k}">${l}</button>`).join('')}</div>
+    <button class="btn psc-new-btn" data-ims-new="1">＋ New IMS item</button></div>`;
+}
+
+async function imsHtml() {
+  if (imsNew) return imsNewHtml();
+  if (imsOpen) return imsItemHtml();
+  if (imsMeetingOpen) return imsMeetingHtml();
+  const data = await imsLoad();
+  const head = `${imsTabsHtml()}<div class="psc-headline"><p class="help">${data.reading ? 'Reading everything from Jira; the rest follows over the next few minutes.' : `Read from Jira ${data.readAt ? agoText(new Date(data.readAt).toISOString()) : 'not yet'}.`}${data.pending ? ` ${data.pending} change${data.pending === 1 ? '' : 's'} waiting to go to the other copies${data.failing ? `, ${data.failing} that Jira refused` : ''}.` : ''}</p>
+    <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>`;
+  if (imsTab === 'stats') return head + await imsStatsHtml();
+  if (imsTab === 'meetings') return head + await imsMeetingsHtml();
+  return head + imsItemsHtml(data);
+}
+
+function imsItemsHtml(data) {
+  const q = imsFilter.q.trim().toLowerCase();
+  const items = data.items.filter((i) => (!imsFilter.area || i.areas.includes(imsFilter.area)) && (!imsFilter.type || (i.imsType || 'Not set') === imsFilter.type)
+    && (!imsFilter.who || (imsFilter.who === 'none' ? !i.assigneeId : i.assigneeId === imsFilter.who))
+    && (!imsFilter.differ || i.conflicts)
+    && (!q || `${i.key} ${i.summary} ${i.assignee || ''} ${i.copies.map((c) => c.key).join(' ')}`.toLowerCase().includes(q)))
+    .sort((a, b) => Number(a.done) - Number(b.done) || String(b.updated).localeCompare(String(a.updated)));
+  const types = [...new Set(data.items.map((i) => i.imsType || 'Not set'))].sort();
+  const people = [...new Map(data.items.filter((i) => i.assigneeId).map((i) => [i.assigneeId, i.assignee])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  const today = new Date().toISOString().slice(0, 10);
+  return `<div class="ims-areas-bar">${[['', 'All areas'], ...data.areas.map((a) => [a.key, a.name])].map(([k, n]) =>
+      `<button class="chip${imsFilter.area === k ? ' on' : ''}" data-ims-area="${esc(k)}">${esc(n)}${k ? ` <small>${data.items.filter((i) => i.areas.includes(k) && !i.done).length}</small>` : ''}</button>`).join('')}</div>
+    <div class="row con-tools psc-tools">
+      <label class="con-tier">Type <select data-ims-filter="type"><option value="">All</option>${types.map((t) => `<option${imsFilter.type === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+      <label class="con-tier">Assignee <select data-ims-filter="who"><option value="">Anyone</option><option value="none"${imsFilter.who === 'none' ? ' selected' : ''}>Unassigned</option>${people.map(([id, n]) => `<option value="${esc(id)}"${imsFilter.who === id ? ' selected' : ''}>${esc(n)}${id === data.me ? ' (you)' : ''}</option>`).join('')}</select></label>
+      <input type="search" id="ims-search" data-ims-filter="q" value="${esc(imsFilter.q)}" placeholder="Search keys, summaries or people" aria-label="Search IMS items">
+      <label class="inline-check psc-check"><input type="checkbox" data-ims-done${imsDone ? ' checked' : ''}> Include complete</label>
+      ${data.disagreeing ? `<label class="inline-check psc-check"><input type="checkbox" data-ims-differ${imsFilter.differ ? ' checked' : ''}> Copies differ</label>` : ''}
+    </div>
+    ${data.disagreeing ? `<div class="jv-note" style="margin-bottom:.8rem"><p style="margin:0 0 .4rem"><strong>${data.disagreeing} item${data.disagreeing === 1 ? '\'s' : 's\''} copies disagree</strong>, mostly copies left at New while the original moved on. The hub won't guess which is right: open one to choose, or make every copy match its original (the first one made).</p>
+      <button class="btn secondary" data-ims-resolve-all="1">Make every copy match its original</button></div>` : ''}
+    <p class="muted"><small>${items.length} item${items.length === 1 ? '' : 's'}</small></p>
+    <div class="psc-list">${items.slice(0, 300).map((i) => `<article class="card ims-card${i.done ? ' done' : ''}" data-ims-open="${esc(i.key)}" tabindex="0" role="button">
+        <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}${i.imsType ? ` · ${esc(i.imsType)}` : ''}</span>
+          <span class="psc-chip plain">${esc(i.status)}</span>${i.conflicts ? `<span class="psc-chip warn" title="Its copies disagree">Copies differ</span>` : ''}</div>
+        <h3 class="psc-title">${esc(i.summary)}</h3>
+        <div class="ims-meta">${i.areas.map(imsAreaChip).join('')}
+          <span class="muted">${i.assignee ? esc(i.assignee) : 'Unassigned'}${i.folder ? ` · ${esc(i.folder)}` : ''}${i.subtasks.all ? ` · ${i.subtasks.done} of ${i.subtasks.all} sub-tasks done` : ''}</span>
+          ${i.target && !i.done ? `<span class="${i.target < today ? 'con-late' : 'muted'}">Due ${shortDate(i.target)}</span>` : ''}</div>
+      </article>`).join('') || '<div class="card"><p style="margin:0">Nothing here.</p></div>'}
+      ${items.length > 300 ? `<p class="muted">Showing the first 300. Search or filter to find the rest.</p>` : ''}</div>`;
+}
+
+// ---------- one item ----------
+
+async function imsItemHtml() {
+  if (!imsItemData || imsItemData.item.key !== imsOpen && !imsItemData.copies.some((c) => c.key === imsOpen)) imsItemData = await api(`/api/ims/item?key=${encodeURIComponent(imsOpen)}`);
+  const o = await imsLoadOptions();
+  await imsLoad();
+  const d = imsItemData;
+  const i = d.item;
+  const v = d.view;
+  // An item with no areas set is shown in the areas it has copies in.
+  const areaNames = (x) => (x.categories.length ? x.categories : x.areas.map((k) => imsData?.areas.find((a) => a.key === k)?.name).filter(Boolean));
+  imsEdit ||= { summary: i.summary, status: i.status, assignee: i.assigneeId || '', imsType: i.imsType || '', subTypes: [...i.subTypes], categories: [...areaNames(i)],
+    rootCause: [...i.rootCause], rootRequired: i.rootRequired || '', start: i.start || '', target: i.target || '' };
+  const e = imsEdit;
+  const checks = (name, all) => `<div class="ims-checks">${all.map((x) => `<label class="inline-check"><input type="checkbox" data-ims-check="${name}" value="${esc(x)}"${e[name].includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')}</div>`;
+  const sel = (name, all, empty) => `<select data-ims-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${e[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
+  const statuses = [...new Set([i.status, ...o.statuses])];
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-back="1">All items</button></div>
+    <section class="card">
+      <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}</span><span class="psc-chip plain">${esc(i.status)}</span></div>
+      <h2 style="margin:.3rem 0 .6rem">${esc(i.summary)}</h2>
+      <div class="ims-copies">${d.copies.map((c) => `<span class="ims-copy">${imsAreaChip(c.project)} ${jiraLink(c.key)} <small class="muted">${esc(c.status)}</small></span>`).join('')}</div>
+      ${d.copies.length > 1 ? `<p class="help">A copy in each of ${d.copies.length} areas. Changes here are made to them all; changes made in Jira reach the others within about 10 minutes.</p>` : ''}
+      ${d.waiting.length ? `<div class="notice"><p style="margin:0"><strong>Waiting:</strong> ${d.waiting.map((w) => `${w.kind === 'copy' ? `a copy in ${esc(w.target_key)}` : `changes to ${esc(w.target_key)}`}${w.error ? ` <span class="bad">(${esc(w.error)})</span>` : ''}`).join('; ')}.</p></div>` : ''}
+      ${d.conflicts.length ? `<div class="jv-note"><p style="margin:0 0 .4rem"><strong>These copies disagree.</strong> Choose the one that's right and the others follow it.</p>
+        ${d.conflicts.map((c) => `<div class="ims-conflict"><strong>${esc(c.label)}</strong>${c.values.map((x) => `<div class="jv-sugg-row"><span>${imsAreaChip(x.project)} ${esc(x.key)}: ${esc(Array.isArray(x.value) ? x.value.join(', ') || 'none' : String(x.value ?? 'none').startsWith('#') ? 'its own text' : x.value ?? 'none')}</span>
+          <button class="chip-btn" data-ims-resolve="${esc(c.field)}" data-from="${esc(x.key)}">Use this</button></div>`).join('')}</div>`).join('')}</div>` : ''}
+    </section>
+    <section class="card ims-form">
+      <h3 style="margin-top:0">Details</h3>
+      <label>Summary<input type="text" data-ims-field="summary" maxlength="250" value="${esc(e.summary)}"></label>
+      <div class="psc-new-row">
+        <label>Status${sel('status', statuses, 'Status')}</label>
+        <label>Assignee${sel('assignee', o.people.map((p) => [p.id, p.name]), 'Unassigned')}</label>
+        <label>IMS Task Type${sel('imsType', o.allowed.imsType, 'Not set')}</label>
+        <label>Root cause required${sel('rootRequired', o.allowed.rootRequired, 'Not set')}</label>
+        <label>Start date<input type="date" data-ims-field="start" value="${esc(e.start)}"></label>
+        <label>Target end<input type="date" data-ims-field="target" value="${esc(e.target)}"></label>
+      </div>
+      <fieldset><legend>Areas</legend>${checks('categories', o.allowed.categories)}<p class="help">Adding an area makes a copy in its project. Taking one away leaves its copy where it is.</p></fieldset>
+      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
+      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>
+      <div class="row"><button class="btn" data-ims-save="1">Save to every copy</button><button class="linklike" data-ims-reset="1">Undo changes</button></div>
+    </section>
+    ${d.subtasks.length ? `<section class="card"><h3 style="margin-top:0">Sub-tasks</h3><ul class="jv-links">${d.subtasks.map((s) => `<li>${jiraLink(s.issue_key)} ${esc(s.summary)} <small class="muted">${esc(s.status)}${s.assignee_name ? ` · ${esc(s.assignee_name)}` : ''}</small></li>`).join('')}</ul></section>` : ''}
+    <section class="card jv">
+      ${d.meetings.length ? `<p style="margin-top:0"><span class="muted">From the meeting</span> ${d.meetings.map((m) => `<button class="linklike" data-ims-meeting="${esc(m.key)}">${esc(m.key)}</button>`).join(', ')}</p>` : ''}
+      <h3 style="margin-top:0">Description</h3>
+      <div class="jv-rich jv-desc">${v.descriptionHtml || '<p class="muted">No description.</p>'}</div>
+      ${v.attachments.length ? `<h3>Attachments</h3><ul class="jv-files">${v.attachments.map((a) => `<li><a href="/api/ims/attachment?key=${encodeURIComponent(i.key)}&id=${encodeURIComponent(a.id)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a> <small class="muted">${esc(a.by)} · ${agoText(a.at)}</small></li>`).join('')}</ul>` : ''}
+      <h3>Comments <small class="muted">on ${esc(i.key)}</small></h3>
+      <ul class="jv-comments">${v.comments.map((c) => `<li class="jv-comment"><div class="jv-c-head"><strong>${esc(c.by)}</strong><small class="muted">${agoText(c.at)}</small></div><div class="jv-rich">${c.html}</div></li>`).join('') || '<li class="muted">No comments yet.</li>'}</ul>
+      <div class="jv-compose"><textarea rows="3" id="ims-comment" placeholder="Add a comment"></textarea>
+        <div class="row"><button class="btn" data-ims-comment="1">Add comment</button><a class="btn secondary" href="${esc(v.url)}" target="_blank" rel="noopener" data-jv-out="1">Open in Jira</a></div></div>
+    </section>`;
+}
+
+// ---------- the numbers ----------
+
+function imsBars(rows, { max = null, total = null } = {}) {
+  if (!rows.length) return '<p class="muted">None.</p>';
+  const top = max || Math.max(...rows.map((r) => r.n));
+  return `<ul class="ims-bars">${rows.map((r) => `<li><span class="ims-bar-name">${esc(r.name)}</span><span class="ims-bar"><i style="width:${Math.max(2, Math.round((r.n / top) * 100))}%"></i></span><span class="ims-bar-n">${r.n}${total ? ` <small class="muted">${Math.round((r.n / total) * 100)}%</small>` : ''}</span></li>`).join('')}</ul>`;
+}
+
+async function imsStatsHtml() {
+  const s = await api(`/api/ims/stats?${new URLSearchParams({ ...(imsStats.area ? { area: imsStats.area } : {}), ...(imsStats.month ? { month: imsStats.month } : {}) })}`);
+  const top = Math.max(1, ...s.months.map((m) => Math.max(m.created, m.resolved)));
+  const period = imsStats.month ? imsMonthName(imsStats.month) : 'the last 12 months';
+  const t = s.totals;
+  const openTotal = s.openByType.reduce((a, b) => a + b.n, 0);
+  return `<div class="row con-tools psc-tools">
+      <label class="con-tier">Area <select data-ims-stats="area"><option value="">The whole IMS</option>${imsData.areas.map((a) => `<option value="${esc(a.key)}"${imsStats.area === a.key ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+      <label class="con-tier">Period <select data-ims-stats="month"><option value="">Last 12 months</option>${[...s.months].reverse().map((m) => `<option value="${m.month}"${imsStats.month === m.month ? ' selected' : ''}>${imsMonthName(m.month)}</option>`).join('')}</select></label>
+    </div>
+    <dl class="stats con-stats">
+      <div><dt>Open</dt><dd>${t.open}<small>${t.overdue} past their target</small></dd></div>
+      <div><dt>Raised in ${esc(period)}</dt><dd>${t.created}<small>${t.resolved} closed</small></dd></div>
+      <div><dt>Non-conformities over 30 days</dt><dd class="${t.oldNonConformities ? 'con-late' : ''}">${t.oldNonConformities}</dd></div>
+      <div><dt>Root cause still needed</dt><dd class="${t.rootCauseMissing ? 'con-late' : ''}">${t.rootCauseMissing}<small>${t.medianDaysToClose != null ? `Typically closed in ${t.medianDaysToClose} days` : ''}</small></dd></div>
+    </dl>
+    <section class="card"><h3 style="margin-top:0">Raised and closed each month</h3>
+      <div class="ims-months">${s.months.map((m) => `<button class="ims-month${imsStats.month === m.month ? ' on' : ''}" data-ims-month="${m.month}" title="${imsMonthName(m.month)}: ${m.created} raised, ${m.resolved} closed">
+        <span class="ims-col"><i class="c" style="height:${Math.round((m.created / top) * 100)}%"></i><i class="r" style="height:${Math.round((m.resolved / top) * 100)}%"></i></span><small>${imsMonthName(m.month)}</small></button>`).join('')}</div>
+      <p class="help"><span class="ims-key c"></span> Raised <span class="ims-key r"></span> Closed. Choose a month to see its numbers.</p></section>
+    ${imsStats.area ? '' : `<section class="card"><h3 style="margin-top:0">Each area</h3><div class="table-wrap"><table><thead><tr><th>Area</th><th>Open</th><th>Incidents and non-conformities open</th><th></th></tr></thead><tbody>
+      ${s.openByArea.map((a) => `<tr><td>${imsAreaChip(a.key)} ${esc(a.name)}</td><td>${a.n}</td><td>${a.incidents}</td><td><span class="ims-rag ${a.incidents ? 'red' : a.n ? 'amber' : 'green'}">${a.incidents ? 'Active incidents' : a.n ? 'Active tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div></section>`}
+    <div class="ims-grid">
+      <section class="card"><h3 style="margin-top:0">Open by IMS Task Type</h3>${imsBars(s.openByType, { total: openTotal })}</section>
+      <section class="card"><h3 style="margin-top:0">Raised in ${esc(period)} by type</h3>${imsBars(s.createdByType)}</section>
+      <section class="card"><h3 style="margin-top:0">Root causes, raised in ${esc(period)}</h3>${imsBars(s.rootCauses)}</section>
+      <section class="card"><h3 style="margin-top:0">Root causes, all time</h3>${imsBars(s.rootCausesAll.slice(0, 10))}</section>
+      <section class="card"><h3 style="margin-top:0">Open by assignee</h3>${imsBars(s.openByAssignee.slice(0, 12))}</section>
+      <section class="card"><h3 style="margin-top:0">Open by sub-type</h3>${imsBars(s.subTypes.slice(0, 12))}</section>
+    </div>
+    <section class="card"><h3 style="margin-top:0">Open non-conformities</h3>${s.openNonConformities.length ? `<ul class="jv-links">${s.openNonConformities.map((n) => `<li><button class="linklike" data-ims-open="${esc(n.key)}">${esc(n.key)}</button> ${esc(n.summary)} ${n.areas.map(imsAreaChip).join('')} <small class="muted">raised ${agoText(n.created)}</small></li>`).join('')}</ul>` : '<p class="muted">None open.</p>'}</section>`;
+}
+
+// ---------- meetings ----------
+
+async function imsMeetingsHtml() {
+  const { meetings } = await api('/api/ims/meetings');
+  const m = imsNewMeeting;
+  return `<section class="card"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">Management meetings</h3>${m ? '' : '<button class="btn secondary" data-ims-meeting-new="1">New meeting</button>'}</div>
+      ${m ? `<div class="ims-form" style="margin-top:.8rem"><div class="psc-new-row"><label>Name<input type="text" id="ims-meeting-name" value="${esc(m.summary)}"></label><label>Date<input type="date" id="ims-meeting-date" value="${esc(m.date)}"></label></div>
+        <div class="row"><button class="btn" data-ims-meeting-add="1">Add meeting</button><button class="linklike" data-ims-meeting-cancel="1">Cancel</button></div></div>` : ''}
+      <ul class="ims-meetings">${meetings.map((x) => `<li data-ims-meeting="${esc(x.key)}" tabindex="0" role="button"><span><strong>${esc(x.summary)}</strong><br><small class="muted">${x.date ? new Date(`${x.date}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : ''} · ${esc(x.key)}</small></span>
+        <span>${x.done ? '<span class="psc-chip plain">Minutes in</span>' : '<span class="psc-chip warn">To be held</span>'}${x.raised ? ` <small class="muted">${x.raised} item${x.raised === 1 ? '' : 's'} raised</small>` : ''}</span></li>`).join('') || '<li class="muted">No meetings yet.</li>'}</ul></section>`;
+}
+
+async function imsMeetingHtml() {
+  const d = await api(`/api/ims/meeting?key=${encodeURIComponent(imsMeetingOpen)}`);
+  const v = d.view;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-meeting-back="1">All meetings</button></div>
+    <section class="card jv"><div class="psc-top"><span class="psc-key">${esc(d.meeting.key)}</span><span class="psc-chip plain">${esc(d.meeting.status)}</span></div>
+      <h2 style="margin:.3rem 0">${esc(d.meeting.summary)}</h2>
+      <p class="muted" style="margin-top:0">${d.meeting.date ? new Date(`${d.meeting.date}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : ''}</p>
+      <h3>Minutes</h3>
+      ${v.attachments.length ? `<ul class="jv-files">${v.attachments.map((a) => `<li><a href="/api/ims/attachment?key=${encodeURIComponent(d.meeting.key)}&id=${encodeURIComponent(a.id)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a> <small class="muted">${esc(a.by)} · ${agoText(a.at)}</small></li>`).join('')}</ul>` : '<p class="muted">No minutes uploaded yet.</p>'}
+      <div class="ims-upload"><label class="btn secondary">Upload minutes<input type="file" id="ims-minutes" multiple hidden></label>
+        <label class="inline-check"><input type="checkbox" id="ims-minutes-held"${d.meeting.done ? '' : ' checked'}> The meeting has been held (mark it For Reference)</label></div>
+      ${v.descriptionHtml ? `<h3>Notes</h3><div class="jv-rich">${v.descriptionHtml}</div>` : ''}
+      <h3>Items raised</h3>
+      ${d.items.length ? `<ul class="jv-links">${d.items.map((i) => `<li><button class="linklike" data-ims-open="${esc(i.key)}">${esc(i.key)}</button> ${esc(i.summary)} ${i.areas.map(imsAreaChip).join('')} <small class="muted">${esc(i.status)}</small></li>`).join('')}</ul>` : '<p class="muted">None linked to this meeting.</p>'}
+      <div class="row" style="margin-top:.8rem"><button class="btn secondary" data-ims-new="1" data-meeting="${esc(d.meeting.key)}">＋ Raise an item from this meeting</button><a class="btn secondary" href="${esc(v.url)}" target="_blank" rel="noopener" data-jv-out="1">Open in Jira</a></div>
+    </section>`;
+}
+
+// ---------- a new item ----------
+
+async function imsNewHtml() {
+  const o = await imsLoadOptions();
+  const n = imsNew;
+  const folders = o.folders.filter((f) => f.project === n.home);
+  const sel = (name, all, empty) => `<select data-ims-new-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${n[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
+  const checks = (name, all) => `<div class="ims-checks">${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<label class="inline-check"><input type="checkbox" data-ims-new-check="${name}" value="${esc(val)}"${n[name].includes(val) ? ' checked' : ''}> ${esc(label)}</label>`; }).join('')}</div>`;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-new-cancel="1">Back</button></div>
+    <section class="card ims-form">
+      <h2 style="margin-top:0">New IMS item</h2>
+      <fieldset><legend>Areas it belongs to</legend>${checks('areas', o.areas.map((a) => [a.key, a.name]))}</fieldset>
+      ${n.areas.length > 1 ? `<label>Main area <small class="muted">where it's raised; the others get a copy</small>${sel('home', o.areas.filter((a) => n.areas.includes(a.key)).map((a) => [a.key, a.name]), 'Choose')}</label>` : ''}
+      <div class="psc-new-row">
+        <label>Kind${sel('type', ['IMS Task', '8D Report', 'Change Management'], 'IMS Task')}</label>
+        <label>Folder${sel('folder', folders.map((f) => [f.key, f.name]), n.home ? 'No folder' : 'Choose an area first')}</label>
+        <label>IMS Task Type${sel('imsType', o.allowed.imsType, 'Not set')}</label>
+        <label>Assignee${sel('assigneeId', o.people.map((p) => [p.id, p.name]), 'Unassigned')}</label>
+        <label>Start date<input type="date" data-ims-new-field="start" value="${esc(n.start)}"></label>
+        <label>Target end<input type="date" data-ims-new-field="target" value="${esc(n.target)}"></label>
+        <label>Root cause required${sel('rootRequired', o.allowed.rootRequired, 'Not set')}</label>
+        <label>From a meeting${sel('meeting', o.meetings.map((m) => [m.key, `${m.summary}${m.date ? ` (${m.date})` : ''}`]), 'Not from a meeting')}</label>
+      </div>
+      <label>Summary<input type="text" data-ims-new-field="summary" maxlength="250" value="${esc(n.summary)}" placeholder="What needs doing, in a line"></label>
+      <label>Description<textarea rows="6" data-ims-new-field="description" placeholder="What was found, why it matters, what's proposed">${esc(n.description)}</textarea></label>
+      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
+      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>
+      <div class="row"><button class="btn" data-ims-create="1">Raise in Jira</button><button class="linklike" data-ims-new-cancel="1">Cancel</button></div>
+    </section>`;
+}
+
+function imsCapture() {
+  const box = view.querySelector('.ims-form');
+  if (!box) return;
+  const target = imsNew || imsEdit;
+  if (!target) return;
+  const attr = imsNew ? 'imsNewField' : 'imsField';
+  for (const el of box.querySelectorAll(imsNew ? '[data-ims-new-field]' : '[data-ims-field]')) target[el.dataset[attr]] = el.value;
+  const checkAttr = imsNew ? 'data-ims-new-check' : 'data-ims-check';
+  const groups = new Set([...box.querySelectorAll(`[${checkAttr}]`)].map((el) => el.getAttribute(checkAttr)));
+  for (const g of groups) target[g] = [...box.querySelectorAll(`[${checkAttr}="${g}"]:checked`)].map((el) => el.value);
+}
+
+async function imsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('.jv-comment a, .jv-rich a')) return false;
+  const tab = t('[data-ims-tab]');
+  if (tab) { imsTab = tab.dataset.imsTab; imsOpen = null; imsMeetingOpen = null; return render(); }
+  const area = t('[data-ims-area]');
+  if (area) { imsFilter.area = area.dataset.imsArea; return render(); }
+  if (t('[data-ims-refresh]')) {
+    const b = t('[data-ims-refresh]'); b.disabled = true;
+    try { await api('/api/ims/refresh', { method: 'POST' }); } catch (err) { toast(err.message); }
+    await imsLoad(true); return render();
+  }
+  const newBtn = t('[data-ims-new]');
+  if (newBtn) {
+    imsNew = { areas: [], home: '', type: '', folder: '', imsType: '', assigneeId: me.user.accountId || '', start: '', target: '', rootRequired: '', meeting: newBtn.dataset.meeting || '', summary: '', description: '', subTypes: [], rootCause: [] };
+    imsMeetingOpen = null; window.scrollTo(0, 0); return render();
+  }
+  if (t('[data-ims-new-cancel]')) { imsCapture(); if ((imsNew?.summary || imsNew?.description) && !confirm('Throw away this item?')) return true; imsNew = null; return render(); }
+  if (t('[data-ims-create]')) {
+    imsCapture();
+    const n = imsNew;
+    if (!n.areas.length) { toast('Choose at least one area'); return true; }
+    if (n.summary.trim().length < 3) { toast('Give it a summary'); return true; }
+    const b = t('[data-ims-create]'); b.disabled = true; b.textContent = 'Raising…';
+    try {
+      const r = await api('/api/ims/create', { method: 'POST', body: JSON.stringify({ ...n, home: n.home || n.areas[0], type: n.type || 'IMS Task' }) });
+      toast(`${r.key} raised${r.copies ? `, with ${r.copies} cop${r.copies === 1 ? 'y' : 'ies'}` : ''}`);
+      imsNew = null; imsData = null; imsTab = 'items';
+      return render();
+    } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Raise in Jira'; return true; }
+  }
+  const open = t('[data-ims-open]');
+  if (open) { imsOpen = open.dataset.imsOpen; imsItemData = null; imsEdit = null; imsMeetingOpen = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-ims-back]')) { imsOpen = null; imsItemData = null; imsEdit = null; return render(); }
+  if (t('[data-ims-reset]')) { imsEdit = null; return render(); }
+  if (t('[data-ims-save]')) {
+    imsCapture();
+    const i = imsItemData.item;
+    const was = { summary: i.summary, status: i.status, assignee: i.assigneeId || '', imsType: i.imsType || '', subTypes: i.subTypes,
+      categories: i.categories.length ? i.categories : i.areas.map((k) => imsData?.areas.find((a) => a.key === k)?.name).filter(Boolean), rootCause: i.rootCause, rootRequired: i.rootRequired || '', start: i.start || '', target: i.target || '' };
+    const changes = {};
+    for (const [k, v] of Object.entries(imsEdit)) if (JSON.stringify(Array.isArray(v) ? [...v].sort() : v) !== JSON.stringify(Array.isArray(was[k]) ? [...was[k]].sort() : was[k])) changes[k] = v;
+    if (!Object.keys(changes).length) { toast('Nothing has changed'); return true; }
+    const b = t('[data-ims-save]'); b.disabled = true;
+    try {
+      const r = await api('/api/ims/edit', { method: 'POST', body: JSON.stringify({ key: i.key, changes }) });
+      toast(r.failed.length ? `Saved, but Jira refused ${r.failed.length}; the hub tries again` : r.copies > 1 ? `Saved to all ${r.copies} copies` : 'Saved');
+      imsItemData = null; imsEdit = null; imsData = null;
+    } catch (err) { toast(err.message); }
+    return render();
+  }
+  if (t('[data-ims-resolve-all]')) {
+    if (!confirm(`Make every copy match its original, for all ${imsData.disagreeing} items? Copies are changed in Jira over the next while.`)) return true;
+    try { const r = await api('/api/ims/resolve-all', { method: 'POST', body: '{}' }); toast(`${r.settled} settled; the copies follow over the next while`); } catch (err) { toast(err.message); }
+    await imsLoad(true); return render();
+  }
+  const res = t('[data-ims-resolve]');
+  if (res) {
+    try { await api('/api/ims/resolve', { method: 'POST', body: JSON.stringify({ group: imsItemData.item.key, field: res.dataset.imsResolve, from: res.dataset.from }) }); toast('The others follow it within a few minutes'); } catch (err) { toast(err.message); }
+    imsItemData = null; return render();
+  }
+  if (t('[data-ims-comment]')) {
+    const text = view.querySelector('#ims-comment')?.value || '';
+    try { await api('/api/ims/comment', { method: 'POST', body: JSON.stringify({ key: imsItemData.item.key, text }) }); toast('Comment added'); imsItemData = null; return render(); } catch (err) { toast(err.message); return true; }
+  }
+  const month = t('[data-ims-month]');
+  if (month) { imsStats.month = imsStats.month === month.dataset.imsMonth ? '' : month.dataset.imsMonth; return render(); }
+  if (t('[data-ims-meeting-new]')) {
+    const d = new Date();
+    imsNewMeeting = { summary: `Management Meeting ${String(d.getMonth() + 1).padStart(2, '0')} ${d.getFullYear()}`, date: '' };
+    return render();
+  }
+  if (t('[data-ims-meeting-cancel]')) { imsNewMeeting = null; return render(); }
+  if (t('[data-ims-meeting-add]')) {
+    const summary = view.querySelector('#ims-meeting-name')?.value || '';
+    const date = view.querySelector('#ims-meeting-date')?.value || '';
+    try { const r = await api('/api/ims/meeting', { method: 'POST', body: JSON.stringify({ summary, date }) }); toast(`${r.key} added`); imsNewMeeting = null; } catch (err) { toast(err.message); return true; }
+    return render();
+  }
+  if (t('[data-ims-meeting-back]')) { imsMeetingOpen = null; return render(); }
+  const meet = t('[data-ims-meeting]');
+  if (meet) { imsMeetingOpen = meet.dataset.imsMeeting; imsOpen = null; imsTab = 'meetings'; window.scrollTo(0, 0); return render(); }
+  return false;
+}
+
+async function imsChange(event) {
+  const el = event.target;
+  if (el.matches('[data-ims-filter]') && el.dataset.imsFilter !== 'q') { imsFilter[el.dataset.imsFilter] = el.value; render(); return true; }
+  if (el.matches('[data-ims-done]')) { imsDone = el.checked; render(); return true; }
+  if (el.matches('[data-ims-differ]')) { imsFilter.differ = el.checked; if (el.checked) imsDone = true; render(); return true; }
+  if (el.matches('[data-ims-stats]')) { imsStats[el.dataset.imsStats] = el.value; render(); return true; }
+  if (imsNew && (el.matches('[data-ims-new-check="areas"]') || el.matches('[data-ims-new-field="home"]'))) {
+    imsCapture();
+    if (!imsNew.areas.includes(imsNew.home)) imsNew.home = imsNew.areas[0] || '';
+    imsNew.folder = '';
+    render(); return true;
+  }
+  if (el.id === 'ims-minutes' && el.files?.length) {
+    const fd = new FormData();
+    fd.append('key', imsMeetingOpen);
+    for (const f of el.files) fd.append('files', f, f.name);
+    if (view.querySelector('#ims-minutes-held')?.checked) fd.append('complete', '1');
+    toast('Uploading…');
+    try { const r = await api('/api/ims/minutes', { method: 'POST', body: fd, headers: {} }); toast(`${r.files} file${r.files === 1 ? '' : 's'} uploaded${r.moved ? ', and marked For Reference' : ''}`); } catch (err) { toast(err.message); }
+    render(); return true;
+  }
+  return false;
+}
+
+view.addEventListener('input', (event) => {
+  if (event.target.id === 'ims-search') {
+    imsFilter.q = event.target.value;
+    const pos = event.target.selectionStart;
+    render().then(() => { const box = view.querySelector('#ims-search'); if (box) { box.focus(); box.setSelectionRange(pos, pos); } });
+  }
+});
+
 // Turning a PSC into a quote, or sending it to Condor Dev.
 let pscHand = null;       // { key, kind, disciplines, team, projectKey, customer, prospect, prospectMode }
 let pscCustomers = null;
@@ -13484,6 +13859,7 @@ view.addEventListener('click', async (event) => {
   if (event.target.closest('.day-card') && await dayClick(event) !== false) return;
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
+  if (currentRoute() === '#/ims' && !settingsOpen && await imsClick(event) !== false) return;
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (event.target.closest('[data-acc-rule]') && await accessClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
@@ -13593,6 +13969,7 @@ const WAITING_FOR = {
   '#/calls': () => 'Loading',
   '#/contracts': () => (conOpen ? 'Loading the contract' : 'Loading contracts'),
   '#/psc': () => (pscOpen ? 'Loading the PSC' : 'Loading PSCs'),
+  '#/ims': () => (imsOpen ? 'Loading the item from Jira' : imsTab === 'stats' ? 'Working out the numbers' : 'Loading the IMS'),
   '#/wip': () => (wipOpen ? 'Loading the order' : 'Loading the WIP'),
   '#/capacity': () => 'Loading everyone\'s work',
 };
@@ -13843,6 +14220,7 @@ view.addEventListener('change', async (event) => {
   if (currentRoute() === '#/nearmiss' && !settingsOpen && nmChange(event)) return;
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
+  if (currentRoute() === '#/ims' && !settingsOpen && await imsChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -13930,6 +14308,8 @@ let cameByNav = false;          // the next draw follows going to a page, not so
 const SUB_VIEWS = {
   '#/psc': { open: () => pscOpen || (pscNew ? 'new' : null), close: () => { pscOpen = null; pscNew = null; },
     reopen: (v) => { if (v === 'new') pscNew = { orgName: '', type: '', summary: '', description: '', assigneeId: null, condor: false, files: [] }; else pscOpen = v; } },
+  '#/ims': { open: () => imsOpen || imsMeetingOpen || (imsNew ? 'new' : null), close: () => { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; },
+    reopen: (v) => { if (/^PROMTEK-/.test(v)) imsMeetingOpen = v; else if (v !== 'new') { imsOpen = v; imsItemData = null; imsEdit = null; } } },
   '#/contracts': { open: () => conOpen, close: () => { conOpen = null; }, reopen: (v) => { conOpen = v; } },
   '#/wip': { open: () => wipOpen, close: () => { wipOpen = null; }, reopen: (v) => { wipOpen = v; } },
   '#/nearmiss': { open: () => nmOpenId, close: () => { nmOpenId = null; }, reopen: (v) => { nmOpenId = v; } },
@@ -14001,6 +14381,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
   if (currentRoute() !== '#/psc') { pscOpen = null; pscNew = null; }
+  if (currentRoute() !== '#/ims') { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; }
   if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }

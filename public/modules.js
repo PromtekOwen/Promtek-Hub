@@ -100,6 +100,13 @@ export const MODULES = [
     detail: () => 'Who has what on, and who has room',
   },
   {
+    id: 'ims',
+    name: 'IMS',
+    route: '#/ims',
+    icon: icon('<path d="M12 3.5l7.5 3v5.5c0 4.2-3.1 7.5-7.5 8.5-4.4-1-7.5-4.3-7.5-8.5V6.5z"/><path d="M8.5 12l2.4 2.4 4.6-4.9"/>'),
+    detail: () => 'Internal management: items, meetings and how each area is doing',
+  },
+  {
     id: 'wip',
     name: 'WIP',
     route: '#/wip',

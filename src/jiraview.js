@@ -110,6 +110,11 @@ const person = (u) => (u ? { name: u.displayName || 'Someone', email: u.emailAdd
 
 export async function view(env, viewer, rawKey) {
   const { key, project } = await checkKey(env, viewer, rawKey);
+  return viewItem(env, key, project);
+}
+
+// The item itself, for a caller that has already checked who may see it (the IMS tile, say).
+export async function viewItem(env, key, project = key.split('-')[0]) {
   const issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}?fields=${FIELDS.join(',')}`);
   if (!issue) throw refuse('That item has gone from Jira.', 404);
   const f = issue.fields || {};
@@ -230,6 +235,10 @@ export async function suggestOrgs(env, issue, reporter) {
 
 export async function attachment(env, viewer, rawKey, id) {
   const { key } = await checkKey(env, viewer, rawKey);
+  return attachmentOf(env, key, id);
+}
+
+export async function attachmentOf(env, key, id) {
   const issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}?fields=attachment`);
   const a = (issue?.fields?.attachment || []).find((x) => String(x.id) === String(id));
   if (!a) throw refuse('That attachment isn\'t on this item.', 404);

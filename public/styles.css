@@ -1922,3 +1922,51 @@ body.jv-open { overflow: hidden; }
 .psc-tabs-row { display: flex; justify-content: space-between; align-items: stretch; gap: .75rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .psc-tabs-row .con-tabs { margin-bottom: 0; }
 .psc-new-btn { padding: .55rem 1.35rem; min-height: 48px; font-size: 1rem; font-weight: 600; border-radius: 12px; line-height: 1.25; }
+
+/* IMS */
+.ims-areas-bar { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; }
+.ims-areas-bar .chip small { opacity: .7; margin-left: .2rem; }
+.ims-area { display: inline-block; padding: .08rem .5rem; border-radius: 999px; font-size: .78rem; font-weight: 600; color: #fff; background: var(--muted); white-space: nowrap; }
+.ims-a-GOALS { background: #3b6fd8; } .ims-a-LEGAL { background: #6b4fc8; } .ims-a-HEALTH { background: #d4502f; } .ims-a-COMPLIANCE { background: #1f8a5b; }
+.ims-a-FINANCE { background: #8a6d12; } .ims-a-INNOV { background: #b2398f; } .ims-a-IS { background: #0e7a8a; } .ims-a-MARKETING { background: #c2410c; }
+.ims-a-SUGGEST { background: #4d7c0f; } .ims-a-QA { background: #475569; }
+.ims-card { cursor: pointer; }
+.ims-card.done { opacity: .7; }
+.ims-meta { display: flex; flex-wrap: wrap; gap: .35rem .5rem; align-items: center; font-size: .9rem; }
+.ims-copies { display: flex; flex-wrap: wrap; gap: .4rem .9rem; }
+.ims-copy { display: inline-flex; gap: .35rem; align-items: center; }
+.ims-form { display: grid; gap: .8rem; }
+.ims-form label { display: grid; gap: .3rem; }
+.ims-form label.inline-check { display: flex; }
+.ims-form fieldset { border: 1px solid var(--line); border-radius: 12px; padding: .6rem .8rem; margin: 0; }
+.ims-form legend { font-weight: 600; padding: 0 .3rem; }
+.ims-checks { display: flex; flex-wrap: wrap; gap: .3rem 1rem; }
+.ims-conflict { padding: .4rem 0; border-top: 1px solid var(--line); }
+.ims-conflict:first-of-type { border-top: 0; }
+.ims-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.ims-grid .card { margin: 0; }
+.ims-bars { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+.ims-bars li { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(60px, 1fr) auto; gap: .5rem; align-items: center; font-size: .9rem; }
+.ims-bar-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ims-bar { height: .7rem; background: var(--tint); border-radius: 999px; overflow: hidden; }
+.ims-bar i { display: block; height: 100%; background: var(--blue); border-radius: 999px; }
+.ims-bar-n { font-variant-numeric: tabular-nums; text-align: right; min-width: 2.5rem; }
+.ims-months { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: .3rem; align-items: end; }
+.ims-month { border: 0; background: none; padding: .2rem 0; display: grid; gap: .3rem; justify-items: center; cursor: pointer; border-radius: 8px; color: inherit; }
+.ims-month.on { background: var(--tint); }
+.ims-month small { font-size: .7rem; color: var(--muted); white-space: nowrap; }
+.ims-col { height: 140px; width: 100%; display: flex; gap: 2px; align-items: flex-end; justify-content: center; }
+.ims-col i { display: block; width: 38%; max-width: 16px; border-radius: 4px 4px 0 0; min-height: 1px; }
+.ims-col i.c, .ims-key.c { background: #d4502f; }
+.ims-col i.r, .ims-key.r { background: #1f8a5b; }
+.ims-key { display: inline-block; width: .7rem; height: .7rem; border-radius: 3px; vertical-align: middle; margin: 0 .2rem 0 .6rem; }
+.ims-rag { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+.ims-rag.red { background: #fde2dd; color: #9b2c1a; } .ims-rag.amber { background: #fff1d1; color: #8a5a00; } .ims-rag.green { background: #dcf3e6; color: #1f6b45; }
+.ims-meetings { list-style: none; margin: .6rem 0 0; padding: 0; }
+.ims-meetings li { display: flex; justify-content: space-between; align-items: center; gap: .6rem; flex-wrap: wrap; padding: .65rem .2rem; border-top: 1px solid var(--line); cursor: pointer; }
+.ims-meetings li:hover { background: var(--tint); }
+.ims-upload { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; margin: .5rem 0; }
+:where(:root[data-theme="dark"]) .ims-rag.red { background: #4a1f18; color: #ffb4a6; }
+:where(:root[data-theme="dark"]) .ims-rag.amber { background: #46370f; color: #ffd27a; }
+:where(:root[data-theme="dark"]) .ims-rag.green { background: #163a28; color: #8fe0b2; }
+@media (max-width: 600px) { .ims-months small { font-size: .6rem; } .ims-col { height: 100px; } }

@@ -49,7 +49,7 @@ async function existing(env, key) {
 // ---------- Condor ----------
 
 // The link type that reads "Sync To" one way and "Sync From" the other.
-async function syncLinkType(env) {
+export async function syncLinkType(env) {
   try { const saved = JSON.parse((await getState(env, LINK_KEY)) || 'null'); if (saved?.id) return saved; } catch { /* found again */ }
   const { issueLinkTypes = [] } = (await jira(env, '/rest/api/3/issueLinkType')) || {};
   const t = issueLinkTypes.find((x) => /sync to/i.test(`${x.inward} ${x.outward}`) && /sync from/i.test(`${x.inward} ${x.outward}`))

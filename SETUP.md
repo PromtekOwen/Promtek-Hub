@@ -584,6 +584,38 @@ Before activating it, in its Comments tab set **Restrictions** → **Synchronise
 
 Copy one test PSC ticket from the tile afterwards and check the copy, a comment each way and a status change.
 
+## Part 14g: IMS
+
+The **IMS** tile treats the ten IMS projects (GOALS, LEGAL, HEALTH, COMPLIANCE, FINANCE, INNOV, IS, MARKETING, SUGGEST, QA) and the IMS Main Board (PROMTEK) as one. Management and admins see it (change it under Admin, Access). Run `schema-061.sql` in the D1 console first.
+
+**How it's read.** Everything in those projects is read once a day, a few pages a run, and what changed every 10 minutes (**Refresh** reads now). Fields are found by name: IMS Task Type, IMS Task Sub-Type(s), Included IMS Categories, Root Cause, Is Root Cause Required?, IMS Origin Item, Start date, Target end and the 8D fields.
+
+**One item, many copies.** Copies of an item in several areas are joined by Sync (or clone) links, or name the same item in IMS Origin Item. The tile shows each such item once, with a chip for each area it's in. Filter by area to see one area's items, as in its own project.
+
+**Keeping copies in step.** The hub remembers, for each item, the value of each of these fields that all its copies had: summary, description, status, assignee, priority, labels, IMS Task Type, sub-type, areas, root cause, root cause required, start date, target end, and the 8D text fields.
+- A change made to one copy, in Jira or the hub, is made to the others: from the hub straight away; from Jira at the next read (within about 10 minutes). The hub records what it wrote, so nothing bounces back.
+- Copies that already disagreed when the hub first looked are left alone, marked **Copies differ**, and the item shows each copy's value with **Use this**. **Make every copy match its original** (Items tab) settles them all in favour of each item's first copy. On today's data that's about 105 items, mostly copies left at New while the original was completed.
+- A copy the hub hasn't seen before (one just made, say) is brought in line with the others.
+- Status changes use the copy's own workflow. Where a copy can't go straight to the new status, Jira's refusal is shown on the item and in the count at the top of the tile, and the hub tries again a few times.
+- Comments and attachments stay on the copy they were added to.
+
+**Adding an area.** Ticking an area on an item (in the hub, or in Included IMS Categories in Jira) makes a copy in that area's project: same fields, in a folder of the same name if there is one, linked Sync To from the original, with IMS Origin Item set to the original. Taking an area off leaves its copy where it is. Areas already missing a copy when the hub first looked are left as they are.
+
+**Stats.** For the whole IMS or one area, over the last 12 months or one month (choose a month on the chart): open, past target, raised and closed, non-conformities open over 30 days, items needing a root cause that have none, typical time to close, raised and closed each month, each area's open items and incidents (red: incidents or non-conformities open; amber: open tasks; green: clear), open by IMS Task Type, raised by type, root causes (the period and all time), open by assignee and sub-type, and the open non-conformities. Folders, legacy items and the IMS Main Board's own items aren't counted; an item with copies counts once overall and once in each of its areas.
+
+**Meetings.** The meetings under the Management Meeting List (PROMTEK-21), newest first, with how many items each raised. A meeting shows its minutes (attachments, opened through the hub) and the items linked to it. **New meeting** adds one under the list with its date. **Upload minutes** attaches them and, if ticked, moves the meeting to For Reference.
+
+**New IMS item.** Choose the areas it belongs to and its main area (where it's raised), then kind (IMS Task, 8D Report or Change Management), folder, IMS Task Type, assignee, dates, root cause required, the meeting it came from, summary, description, sub-type and root cause. It's raised in the main area with IMS Origin Item set to itself, copied to the other areas straight away, and linked to the meeting with the Active/Legacy link. An 8D Report starts with its tables, as Jira's "8D Set up" rule does.
+
+**Jira rules to turn off** once the tile is in use:
+- **IMS - Clone to Other Category on Creation** and **on Edit**: the hub makes the copies now. Left on, items raised in Jira would be copied twice. (Items raised in the hub name themselves as origin, which those rules skip.)
+- The eleven **Task Counter** rules and **IMS - Total Task Counter**: about 130 searches an hour for numbers the Stats tab works out.
+- **IMS - Task Status Transition 1/2 and 2/2**: the area status is on the Stats tab.
+- **IMS - Number of Items Needing Action** and **Number of Sub-task Requiring Action**: the tile shows these.
+- Keep the Onboarding, Leaver, 8D set up and training gap rules for now.
+
+Copies made before the tile are also still synced with their original by Copy & Sync (the original Copy & Sync Work Items recipe). That does no harm alongside the hub, but keep the IMS on that original recipe: the v2 recipe made for PSC doesn't fill IMS Origin Item. Copies the hub makes aren't Copy & Sync copies.
+
 ## Part 14f: Which Jira projects the hub uses
 
 The hub only lists and searches customer projects, the ones in the **Promtek UK Customers** and **Promtek SA Customers** categories, plus its own working projects: MES (Condor Dev), PSC (service items), PMB (general tasks and assisting), PROMTEKIT and ASSET (IT support) and the ten IMS projects (internal time). Any other project, such as CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST or TPB, is left out without needing to be listed, so a new testing project stays out as long as it isn't put in a customer category. CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST and TPB are also blocked outright, in case one is ever put in a customer category by mistake. Both lists are at the top of `src/jira.js`.

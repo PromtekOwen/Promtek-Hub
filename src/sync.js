@@ -562,7 +562,7 @@ export async function snapshotWeek(env, weekStart) {
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
 const RECONCILE_EVERY_MS = 10 * 60 * 1000;
-const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'staff', 'lists', 'wip', 'wip-history', 'invoice-history', 'capacity', 'alerts'];
+const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'ims', 'staff', 'lists', 'wip', 'wip-history', 'invoice-history', 'capacity', 'alerts'];
 
 export async function runScheduled(rawEnv) {
   if (!(await getState(rawEnv, 'ledger_start'))) return;
@@ -721,6 +721,10 @@ export async function runScheduled(rawEnv) {
       const r = await attempt('Service items', async () => (await import('./psc.js')).run(env));
       return r?.idle ? { idle: true } : r;
     },
+    ims: async () => {
+      const r = await attempt('IMS', async () => (await import('./ims.js')).run(env));
+      return r?.idle ? { idle: true } : r;
+    },
     staff: async () => {
       const r = await attempt('Staff involved', async () => (await import('./staff.js')).run(env, { raiseAlert, londonDate }));
       return r?.idle ? { idle: true } : r;
@@ -776,5 +780,5 @@ const SLOT_NAMES = {
   orders: 'Job backfill', categories: 'Finished categories', elo: 'ELO ratings', bitbucket: 'Bitbucket', mes: 'Condor Dev tickets',
   'mes-sync': 'Condor Dev to Jira', 'stage-split': 'Stage estimates', 'stage-types': 'Stage types', tracker: 'Timer stretches',
   'hourly-scan': 'Hourly: profiles and reminders', 'hourly-jobs': 'Hourly: estimates and disputes', 'hourly-quotes': 'Hourly: quotes and chart',
-  contracts: 'Service contracts', psc: 'PSC items', staff: 'Staff involved', lists: 'Customer lists', wip: 'WIP full read', 'wip-history': 'WIP history from Jira', 'invoice-history': 'Invoice history', capacity: 'Capacity', alerts: 'Alert email',
+  contracts: 'Service contracts', psc: 'PSC items', ims: 'IMS', staff: 'Staff involved', lists: 'Customer lists', wip: 'WIP full read', 'wip-history': 'WIP history from Jira', 'invoice-history': 'Invoice history', capacity: 'Capacity', alerts: 'Alert email',
 };

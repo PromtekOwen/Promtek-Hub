@@ -462,6 +462,33 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/jira/attachment') return View.attachment(env, user, url.searchParams.get('key'), url.searchParams.get('id'));
     if (method === 'POST' && pathname === '/api/jira/comment') return json(await View.comment(env, user, body));
   }
+  // The IMS tile. Meeting minutes come as a form, the rest as JSON.
+  if (pathname.startsWith('/api/ims')) {
+    const Ims = await import('./ims.js');
+    if (method === 'POST' && pathname === '/api/ims/minutes') {
+      const form = await request.formData().catch(() => null);
+      if (!form) return json({ error: 'That upload didn\'t come through. Try again.' }, 400);
+      return json(await Ims.minutes(env, user, form.get('key'), form));
+    }
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    const q = (k) => url.searchParams.get(k);
+    if (method === 'GET' && pathname === '/api/ims') return json(await Ims.list(env, user, { done: q('done') === '1' }));
+    if (method === 'GET' && pathname === '/api/ims/stats') return json(await Ims.stats(env, user, { area: q('area') || null, month: q('month') || null }));
+    if (method === 'GET' && pathname === '/api/ims/item') return json(await Ims.item(env, user, q('key')));
+    if (method === 'GET' && pathname === '/api/ims/options') return json(await Ims.options(env, user));
+    if (method === 'GET' && pathname === '/api/ims/meetings') return json(await Ims.meetings(env, user));
+    if (method === 'GET' && pathname === '/api/ims/meeting') return json(await Ims.meeting(env, user, q('key')));
+    if (method === 'GET' && pathname === '/api/ims/attachment') return Ims.attachment(env, user, q('key'), q('id'));
+    if (method === 'POST' && pathname === '/api/ims/edit') return json(await Ims.edit(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/resolve') return json(await Ims.resolveConflict(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/resolve-all') return json(await Ims.resolveAll(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/comment') return json(await Ims.comment(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/create') return json(await Ims.create(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/meeting') return json(await Ims.newMeeting(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/link-meeting') return json(await Ims.linkToMeeting(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/refresh') return json(await Ims.refresh(env, user));
+  }
+
   // Raising a PSC, with pictures, so the form comes as it was sent rather than as JSON.
   if (pathname === '/api/psc/create' || pathname === '/api/psc/create-options') {
     const Create = await import('./psc-create.js');
