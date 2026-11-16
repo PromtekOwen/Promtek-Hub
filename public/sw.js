@@ -51,7 +51,7 @@ self.addEventListener('notificationclick', (event) => {
   const link = event.notification.data?.link || '/';
   event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
     const open = wins.find((w) => new URL(w.url).origin === location.origin);
-    if (open) return open.focus();
+    if (open) { open.postMessage({ hubLink: link }); return open.focus(); }
     return self.clients.openWindow(link);
   }));
 });

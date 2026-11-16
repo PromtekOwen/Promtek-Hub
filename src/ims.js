@@ -162,8 +162,19 @@ const COLS = ['issue_id', 'issue_key', 'project_key', 'issuetype', 'subtask', 's
 async function saveRows(env, rows) {
   const sql = `INSERT INTO ims_items (${COLS.join(', ')}) VALUES (${ph(COLS.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${COLS.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
+  const prev = new Map();
+  try {
+    for (let i = 0; i < rows.length; i += 90) {
+      const part = rows.slice(i, i + 90).map((r) => r.issue_id);
+      const { results } = await env.DB.prepare(`SELECT issue_id, assignee_id FROM ims_items WHERE issue_id IN (${ph(part.length)})`).bind(...part).all();
+      for (const r of results) prev.set(String(r.issue_id), r);
+    }
+  } catch { prev.clear(); }
   for (let i = 0; i < rows.length; i += 40) await env.DB.batch(rows.slice(i, i + 40).map((r) => env.DB.prepare(sql).bind(...COLS.map((c) => r[c] ?? null))));
   if (rows.length) await changed(env);
+  if (rows.length && (prev.size || await env.DB.prepare('SELECT 1 FROM ims_items LIMIT 1 OFFSET ?').bind(rows.length).first().catch(() => null))) {
+    try { await (await import('./notify.js')).imsChanges(env, prev, rows); } catch (err) { console.warn('IMS notifications:', err.message); }
+  }
 }
 
 export async function changed(env) { await setState(env, 'ims_version', String(Date.now())); kept = null; }

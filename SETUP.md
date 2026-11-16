@@ -567,8 +567,6 @@ Each ticket is asked for once. Its state (asked for, copied, failed, no project)
 4. PSC tile → cog → **Customer copies** → **On**. Only tickets changed from that moment are copied automatically.
 5. In Jira, disable automation rules 2178201 and 2177983 straight after, so tickets aren't copied twice.
 
-**Tickets synced twice.** 385 PSC tickets are joined to their copy by both the copy link (is cloned by) and a Sync From / Sync To link, so both the Copy & Sync Work Items and Sync Work Items recipes update the pair and every change goes across twice. **Tickets synced twice** (PSC tile → cog → Customer copies) takes the Sync From / Sync To link off those pairs, 15 tickets at a time in the background. It only removes it where the copy link joins the same two tickets, so pairs joined only by a Sync link, and links to MES or other non-customer projects, are left alone. Try **Remove from one ticket** first and check that pair in Jira, then **Remove from all**.
-
 ### The Copy & Sync recipes
 
 Copy & Sync keeps each synced pair against the recipe that made it, so deactivating a recipe stops every pair it made from syncing. Old recipes stay active for their existing pairs; fixes apply to pairs made from now on.
@@ -615,6 +613,18 @@ The **IMS** tile treats the ten IMS projects (GOALS, LEGAL, HEALTH, COMPLIANCE, 
 - Keep the Onboarding, Leaver, 8D set up and training gap rules for now.
 
 Copies made before the tile are also still synced with their original by Copy & Sync (the original Copy & Sync Work Items recipe). That does no harm alongside the hub, but keep the IMS on that original recipe: the v2 recipe made for PSC doesn't fill IMS Origin Item. Copies the hub makes aren't Copy & Sync copies.
+
+## Part 14h: Notifications
+
+Run `schema-062.sql` in the D1 console first. Until it's run, alerts are emailed exactly as before.
+
+**The bell.** The bell at the top of every page shows how many notifications are new; press it for the list. Pressing one opens the page it's about, with the PSC, IMS item, contract or near miss open. It checks for new ones every minute. On a device that allows notifications, new ones also show on screen while the hub is open in the background. Browsers only show them while the hub is open somewhere; with it fully closed, email is the way to hear.
+
+**Choosing.** Each tile has a bell button at the top right of its page. Everyone chooses, for each thing that tile can tell them about, whether it shows in the hub, is emailed, both or neither; and for PSC and IMS whether it's every item or only those assigned to them. PSC also lets you untick customers (wherever their tickets are raised) and pick priorities. IMS lets you untick areas. Emails can come one at a time or as one email at 8am, and can be held outside 8am to 6pm, Monday to Friday. "Everything else" (from the bell or the home page) covers messages for everyone and any other alert.
+
+**What PSC tells you about.** New PSCs, assigned to you, customer comments, team comments and internal notes, status or owner changes, resolved, first look overdue, and customers waiting. The hub sees these as it reads Jira (every ten minutes), so they come a few minutes after the change. A customer's copy of a PSC ticket isn't counted twice. Nobody is told about what they did themselves.
+
+**Every other alert** the hub sends to a person (estimate requests, new orders, timers left running, near misses, renewals and the rest) now follows that person's choices. Alerts to the hub's own alert address, and to people not in the hub, are emailed as before.
 
 ## Part 14f: Which Jira projects the hub uses
 

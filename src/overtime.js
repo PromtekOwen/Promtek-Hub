@@ -75,12 +75,10 @@ async function tellLeads(env, emp, monday, total, limit) {
   const to = leads.length ? leads.map((l) => l.email) : [null];
   const first = String(emp.name || 'Someone').split(' ')[0];
   for (const r of to) {
-    await env.DB.prepare(
-      `INSERT INTO alerts (kind, dedupe, subject, body, recipient, created_at) VALUES ('overtime', ?, ?, ?, ?, ?) ON CONFLICT(dedupe) DO NOTHING`
-    ).bind(`overtime:${emp.account_id}:${monday}:${r || 'admins'}`, `${emp.name} has gone over their contracted hours`,
-      `${emp.name} has logged ${hoursText(total)} for the week starting ${monday}, over their contracted ${hoursText(limit)}.`
-      + `\n\nTime over their contracted hours earns ${first} 1.5x XP. The hub's home screen lists anyone in your team who is over this week.`,
-      r, new Date().toISOString()).run();
+    await (await import('./sync.js')).raiseAlert(env, { kind: 'overtime', dedupe: `overtime:${emp.account_id}:${monday}:${r || 'admins'}`, recipient: r, link: '#/',
+      subject: `${emp.name} has gone over their contracted hours`,
+      body: `${emp.name} has logged ${hoursText(total)} for the week starting ${monday}, over their contracted ${hoursText(limit)}.`
+        + `\n\nTime over their contracted hours earns ${first} 1.5x XP. The hub's home screen lists anyone in your team who is over this week.` });
   }
 }
 

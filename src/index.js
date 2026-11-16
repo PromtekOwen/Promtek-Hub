@@ -499,6 +499,20 @@ async function route(request, env, url, user) {
       return json(await Create.create(env, user, form));
     }
   }
+  if (pathname.startsWith('/api/notifications')) {
+    const Notify = await import('./notify.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/notifications') return json(await Notify.list(env, user, { before: url.searchParams.get('before') }));
+    if (method === 'GET' && pathname === '/api/notifications/count') return json(await Notify.count(env, user).catch(() => ({ unread: 0, latest: 0 })));
+    if (method === 'POST' && pathname === '/api/notifications/read') return json(await Notify.markRead(env, user, body));
+    if (method === 'GET' && pathname === '/api/notifications/tiles') return json({ tiles: Notify.tilesFor(user) });
+    const m = pathname.match(/^\/api\/notifications\/settings\/([a-z]+)$/);
+    if (m) {
+      if (!Notify.tilesFor(user).includes(m[1])) return json({ error: 'You can\'t open that tile.' }, 403);
+      if (method === 'GET') return json(await Notify.getPrefs(env, user, m[1]));
+      if (method === 'POST') return json(await Notify.savePrefs(env, user, m[1], body));
+    }
+  }
   if (pathname.startsWith('/api/psc')) {
     const Psc = await import('./psc.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
@@ -507,7 +521,6 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/psc/copy') return json(await Psc.copyNow(env, user, body.key));
     if (method === 'GET' && pathname === '/api/psc/copy-settings') return json(await Psc.copySettings(env, user));
     if (method === 'POST' && pathname === '/api/psc/copy-settings') return json(await Psc.setCopyOn(env, user, Boolean(body.on)));
-    if (method === 'POST' && pathname === '/api/psc/unlink') return json(await Psc.unlinkStart(env, user, { limit: body.limit }));
     if (pathname.startsWith('/api/psc/contacts')) {
       const Contacts = await import('./psccontacts.js');
       const orgs = await Psc.organizations(env);

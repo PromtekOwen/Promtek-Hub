@@ -276,8 +276,20 @@ async function saveItems(env, rows) {
   if (await hasReporterId(env)) cols.push('reporter_id');
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
+  // How they were, so whoever wants to hear about a new PSC, a comment or a change does.
+  const prev = new Map();
+  try {
+    for (const part of chunk(rows.map((r) => r.issue_id), 90)) {
+      const { results } = await env.DB.prepare(`SELECT issue_id, status, done, assignee_id, assignee_name, timeline FROM psc_items WHERE issue_id IN (${placeholders(part.length)})`).bind(...part).all();
+      for (const r of results) prev.set(String(r.issue_id), r);
+    }
+  } catch { prev.clear(); }
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
   if (rows.length) await changed(env);
+  // Nothing to compare with on the very first read, so nobody hears about every ticket at once.
+  if (rows.length && (prev.size || await env.DB.prepare('SELECT 1 FROM psc_items LIMIT 1 OFFSET ?').bind(rows.length).first().catch(() => null))) {
+    try { await (await import('./notify.js')).pscChanges(env, prev, rows); } catch (err) { console.warn('PSC notifications:', err.message); }
+  }
 }
 
 // ---------- what the list is built from, kept between page loads ----------
@@ -798,7 +810,7 @@ async function serviceLeads(env) {
   return leads.length ? leads : [null];
 }
 
-const hoursText = (msv) => { const m = Math.round(msv / 60000); return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`; };
+const hoursText = (msv) => { const m = Math.round(msv / 60000); if (m >= 2880) return `${Math.round(m / 1440)} days`; return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`; };
 
 async function alerts(env, ctx) {
   const now = new Date().toISOString();
@@ -808,6 +820,7 @@ async function alerts(env, ctx) {
     if (d.state === 'late') {
       for (const to of await serviceLeads(env)) {
         await raiseAlert(env, { kind: 'psc-response', dedupe: `psc-response:${d.key}:${to || 'default'}`, recipient: to,
+          link: `#/psc?open=${encodeURIComponent(d.key)}`, ref: { key: d.key, customer: d.customerKey || null, priority: d.priority || null },
           subject: `${d.tier !== 'none' ? `${d.tierName}: ` : ''}${d.key} has waited ${hoursText(d.response.waitMs)} for a first response`,
           body: `${d.key}: ${d.summary}\nCustomer: ${d.customer || 'not set'} (${d.tierName}${d.tier !== 'none' ? `, callout ${TIERS[d.tier].callout.toLowerCase()}` : ', chargeable'})\nRaised by ${d.reporter || 'unknown'} at ${new Date(d.created).toLocaleString('en-GB', { timeZone: 'Europe/London' })}.\n\nNo one from the team has looked at it yet. Open PSC in the hub to pick it up.` });
       }
@@ -816,6 +829,7 @@ async function alerts(env, ctx) {
       const owner = d.assigneeId ? ctx.emps.find((e) => e.account_id === d.assigneeId)?.email : null;
       for (const to of owner ? [owner] : await serviceLeads(env)) {
         await raiseAlert(env, { kind: 'psc-waiting', dedupe: `psc-waiting:${d.key}:${d.customerLast.at}:${to || 'default'}`, recipient: to,
+          link: `#/psc?open=${encodeURIComponent(d.key)}`, ref: { key: d.key, customer: d.customerKey || null, priority: d.priority || null },
           subject: `${d.customer || 'A customer'} is waiting on ${d.key}`,
           body: `${d.customerLast.by} replied on ${d.key} (${d.summary}) ${hoursText(d.customerWaitMs)} ago, and the team hasn't answered since.\n\nOpen PSC in the hub to see it.` });
       }
@@ -851,7 +865,6 @@ export async function run(env, { force = false } = {}) {
       try { out.contacts = await Contacts.run(env, b, (await context(env)).items, await organizations(env)); }
       catch (err) { if (err instanceof OutOfCalls) throw err; out.contactsError = err.message; }
     }
-    if ((await getState(env, 'psc_unlink'))?.includes('"done":false') && b.left() > 4) out.unlink = await unlinkStep(env, budget(env, Math.min(20, b.left())));
     if (alertsDue) {
       await alerts(env, await context(env));
       await setState(env, 'psc_alerts_at', Date.now());
@@ -1039,55 +1052,11 @@ export async function copySettings(env, viewer) {
   const ctx = await context(env);
   const waiting = ctx.items.filter((r) => r.project_key === PSC_PROJECT && r.org && r.uncopied && !r.done).length;
   return { on: Boolean(await copyOnSince(env)), since: (await copyOnSince(env)) || null, tokenSet: Boolean(env.COPYSYNC_TOKEN), recipe: COPY_RECIPE(env),
-    recent: results, waiting, unlink: JSON.parse((await getState(env, 'psc_unlink')) || 'null') };
+    recent: results, waiting };
 }
 
 export async function setCopyOn(env, viewer, on) {
   if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
   await setState(env, 'psc_copy_on', on ? new Date().toISOString() : '');
   return copySettings(env, viewer);
-}
-
-// ---------- stopping PSC tickets being synced twice ----------
-// Some PSC tickets and their copies are joined by a "Sync From / Sync To" link as well as
-// the copy link, so two Copy & Sync recipes keep them in step at once and changes go
-// across twice. This takes those Sync links off, a few each run.
-const SYNC_LINK_TYPE = '10303';
-export async function unlinkStart(env, viewer, { limit = null } = {}) {
-  if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
-  const job = { started: new Date().toISOString(), removed: 0, checked: 0, limit: limit ? Number(limit) : null, done: false, pairs: [] };
-  await setState(env, 'psc_unlink', JSON.stringify(job));
-  return unlinkStep(env);
-}
-
-export async function unlinkStep(env, b = budget(env, 20)) {
-  const job = JSON.parse((await getState(env, 'psc_unlink')) || 'null');
-  if (!job || job.done) return job || { idle: true };
-  const projects = new Set((await customerProjects(env).catch(() => [])).map((p) => p.key));
-  try {
-    const after = job.last ? ` AND key > ${job.last}` : '';
-    const page = await b.call(`/rest/api/3/search/jql?jql=${encodeURIComponent(`project = PSC AND issueLinkType in ("Sync From", "Sync To")${after} ORDER BY key ASC`)}&fields=issuelinks&maxResults=15`);
-    const issues = page?.issues || [];
-    let stopped = false;
-    for (const issue of issues) {
-      for (const l of issue.fields?.issuelinks || []) {
-        const other = l.outwardIssue || l.inwardIssue;
-        if (String(l.type?.id) !== SYNC_LINK_TYPE || !other || !projects.has(other.key.split('-')[0])) continue;
-        // Only where the copy link is there too, so the pair stays in step through the copy recipe.
-        const copied = (issue.fields.issuelinks || []).some((x) => String(x.type?.id) !== SYNC_LINK_TYPE && (x.outwardIssue || x.inwardIssue)?.key === other.key);
-        if (!copied) { job.kept = (job.kept || 0) + 1; continue; }
-        if ((job.limit && job.removed >= job.limit) || b.left() < 2) { stopped = true; break; }
-        await b.call(`/rest/api/3/issueLink/${encodeURIComponent(l.id)}`, { method: 'DELETE' });
-        job.removed++;
-        if (job.pairs.length < 50) job.pairs.push(`${issue.key} ↔ ${other.key}`);
-      }
-      if (stopped) break;
-      job.checked++; job.last = issue.key;
-    }
-    if (!issues.length || (job.limit && job.removed >= job.limit)) { job.done = true; job.finished = new Date().toISOString(); }
-  } catch (err) {
-    if (!(err instanceof OutOfCalls)) { job.error = String(err.message).slice(0, 300); job.done = true; }
-  }
-  await setState(env, 'psc_unlink', JSON.stringify(job));
-  return job;
 }

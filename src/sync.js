@@ -222,7 +222,13 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
 
 // ---------- Alerts ----------
 
-export async function raiseAlert(env, { kind, dedupe, subject, body, recipient = null }) {
+// An alert for a person goes as they've chosen in their notification settings (in the hub,
+// by email, both or neither); one for the hub's own address goes out as it always has.
+export async function raiseAlert(env, { kind, dedupe, subject, body, recipient = null, link = null, ref = {} }) {
+  if (recipient) {
+    try { if (await (await import('./notify.js')).routeAlert(env, { kind, dedupe, subject, body, recipient, link, ref })) return; }
+    catch (err) { console.warn('Notification settings not applied:', err.message); }
+  }
   await env.DB.prepare(
     `INSERT INTO alerts (kind, dedupe, subject, body, recipient, created_at) VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(dedupe) DO NOTHING`
@@ -425,8 +431,8 @@ async function raiseUnmatchedAlert(env, accountIds) {
 export async function sendAlerts(env) {
   if (!env.ALERT_WEBHOOK_URL) return { skipped: 'No mail relay configured' };
   const { results } = await env.DB.prepare(
-    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 15'
-  ).all();
+    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 15'
+  ).bind(new Date().toISOString()).all().catch(() => env.DB.prepare('SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 15').all());
   if (!results.length) return { sent: 0 };
   const now = new Date().toISOString();
   let sent = 0;
@@ -685,6 +691,7 @@ export async function runScheduled(rawEnv) {
       await attempt('Timer reminders', async () => (await import('./tracker.js')).eveningReminder(env));
       await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));
       await attempt('Feedback round-up', async () => (await import('./feedback.js')).roundUp(env));
+      await attempt('Notification emails', async () => (await import('./notify.js')).digest(env));
     }),
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {

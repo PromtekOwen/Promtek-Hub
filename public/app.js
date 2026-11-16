@@ -8139,7 +8139,7 @@ async function showHubNotification(title, options) {
   const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration().catch(() => null) : null;
   if (reg?.showNotification) return reg.showNotification(title, opts);
   const n = new Notification(title, opts);
-  n.onclick = () => { window.focus(); n.close(); };
+  n.onclick = () => { window.focus(); if (opts.data?.link) openHubLink(opts.data.link); n.close(); };
 }
 
 async function notifyTest() {
@@ -11527,23 +11527,34 @@ function pscTierBadge(d) {
   return `<span class="psc-tier t-${d.tier}" title="${esc(d.contract?.key || '')}">${esc(d.tierName)}</span>${d.contract?.tokensFree != null ? `<span class="psc-chip plain">${d.contract.tokensFree} ${d.contract.tokensFree === 1 ? 'token' : 'tokens'} free</span>` : ''}${d.contract?.bankHoliday ? bankHolidayIcon() : ''}`;
 }
 
+// A full date and time, so there's no guessing which Friday: "Fri 14 Nov, 20:44", with the
+// year when it isn't this year.
 const timeOf = (iso) => {
   const t = new Date(iso);
-  const sameDay = t.toDateString() === new Date().toDateString();
-  return t.toLocaleString('en-GB', sameDay ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
+  if (t.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+  return t.toLocaleString('en-GB', opts);
+};
+// Time the clock has run inside cover. Long spells read in days, not thousands of hours.
+const coverText = (msv) => {
+  const h = (msv || 0) / 3600000;
+  if (h < 48) return workText(msv);
+  const d = Math.round(h / 24);
+  return `${d} days`;
 };
 
 function pscResponseChip(d) {
   if (d.state === 'resolved') return '';
   const r = d.response;
   const clock = svgIcon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9 2h6"/>');
-  if (!r.at && r.late) return `<span class="psc-chip bad">${clock} First look was due ${timeOf(r.dueAt)}, waiting ${workText(r.waitMs)}</span>`;
+  const cover = d.cover.raisedInCover ? 'since it was raised' : `in ${esc(d.tierName)} cover`;
+  if (!r.at && r.late) return `<span class="psc-chip bad" title="${coverText(r.waitMs)} ${cover} without a first look">${clock} First look overdue: due ${timeOf(r.dueAt)} (${agoText(r.dueAt)})</span>`;
   if (!r.at) {
-    const out = `<span class="psc-chip ${r.leftMs < 3600000 ? 'warn' : 'plain'}">${clock} First look due ${timeOf(r.dueAt)} (${workText(Math.max(0, r.leftMs))} left)</span>`;
+    const out = `<span class="psc-chip ${r.leftMs < 3600000 ? 'warn' : 'plain'}">${clock} First look due by ${timeOf(r.dueAt)} (${coverText(Math.max(0, r.leftMs))} of cover left)</span>`;
     return out + (d.cover.raisedInCover ? '' : `<span class="psc-chip plain" title="Raised outside ${esc(d.tierName)} cover; the clock started when cover began">Raised outside cover</span>`);
   }
   if (r.how === 'raised by the team') return `<span class="psc-chip">Raised by ${esc((r.by || 'the team').split(' ')[0])}</span>`;
-  return `<span class="psc-chip${r.late ? ' bad' : ''}">First look ${r.late ? 'took' : 'in'} ${workText(r.waitMs)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}</span>`;
+  return `<span class="psc-chip${r.late ? ' bad' : ''}" title="${coverText(r.waitMs)} ${cover}">First look ${timeOf(r.at)}${r.by ? ` by ${esc(r.by.split(' ')[0])}` : ''}${r.late ? `, after the ${timeOf(r.dueAt)} due time` : ', in time'}</span>`;
 }
 
 const PSC_IN_PROGRESS = /in progress/i;
@@ -11874,6 +11885,15 @@ async function pscNewClick(t) {
 }
 
 // Pictures: chosen, dropped on the form, or pasted.
+view.addEventListener('change', (e) => { if (notifyOpen) notifyChange(e); });
+view.addEventListener('input', (e) => {
+  if (!notifyOpen || e.target.id !== 'nt-find') return;
+  notifyFind = e.target.value;
+  const at = e.target.selectionStart;
+  view.innerHTML = notifySettingsHtml();
+  const f = view.querySelector('#nt-find');
+  if (f) { f.focus(); f.setSelectionRange(at, at); }
+});
 view.addEventListener('change', (e) => { if (e.target.id === 'psc-new-files' && e.target.files?.length) pscNewAddFiles(e.target.files); });
 view.addEventListener('paste', (e) => {
   if (!pscNew || !e.target.closest?.('.psc-new')) return;
@@ -12357,8 +12377,8 @@ async function pscItemHtml() {
       <p class="psc-meta">${pscTierBadge(d)}<span>${d.customer ? esc(d.customer) : '<b class="con-late">No customer</b>'}</span><span class="muted">· ${esc(d.status)}</span></p>
       <dl class="psc-facts">
         <div><dt>Raised</dt><dd>${when(d.created)}${d.reporter ? ` by ${esc(d.reporter)}` : ''}</dd></div>
-        <div><dt>First look</dt><dd>${d.response.at ? `${when(d.response.at)} by ${esc(d.response.by || 'the team')}, who ${HOW_TEXT[d.response.how] || d.response.how}, ${workText(d.response.waitMs)} after it was raised.`
-          : `<b class="${d.response.late ? 'con-late' : ''}">Not yet: waiting ${workText(d.response.waitMs)}.</b>`}</dd></div>
+        <div><dt>First look</dt><dd>${d.response.at ? `${when(d.response.at)} by ${esc(d.response.by || 'the team')}, who ${HOW_TEXT[d.response.how] || d.response.how}, ${coverText(d.response.waitMs)} of cover after it was raised.`
+          : `<b class="${d.response.late ? 'con-late' : ''}">Not yet${d.response.late ? `: overdue since ${timeOf(d.response.dueAt)}` : ''}.</b>`}</dd></div>
         <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
         <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
         <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
@@ -12680,7 +12700,6 @@ function pscCopySettingsHtml() {
   if (!c) return '';
   if (c.error) return `<section class="card"><p class="bad">${esc(c.error)}</p></section>`;
   const statusText = { requested: 'Asked for', copied: 'Copy found', failed: 'Failed', skipped: 'Not copied', 'no-project': 'No matching project' };
-  const u = c.unlink;
   return `<section class="card">
       <h2 style="margin-top:0">Customer copies</h2>
       <p class="muted">When on, each PSC ticket with an Organization is copied into the customer's project (the project with exactly the Organization's name) by Copy & Sync, once. It replaces the Jira automations "SERVICE - PSC to Customer Board on Creation" and "on Edit": turn those off in Jira when this goes on, or tickets are copied twice. Tickets with "quote" in the summary are left for the quote recipe.</p>
@@ -12691,10 +12710,6 @@ function pscCopySettingsHtml() {
         <td>${jiraLink(r.issue_key)}</td><td>${esc(r.project_key || r.org || '')}</td>
         <td>${esc(statusText[r.status] || r.status)}${r.copy_key ? ` ${jiraLink(r.copy_key)}` : ''}${r.error ? `<br><small class="muted">${esc(r.error)}</small>` : ''}</td>
         <td><small>${whenText(r.requested_at)} · ${esc(r.requested_by || '')}</small></td></tr>`).join('')}</tbody></table></div>` : ''}
-      <h2>Tickets synced twice</h2>
-      <p class="muted">Some PSC tickets and their copies are joined by a Sync From / Sync To link as well as the copy link, so two recipes sync them at once. This takes the Sync link off between a PSC ticket and its customer copy, leaving the copy link. Pairs joined only by a Sync link keep it. Try one first and check the pair still syncs as it should.</p>
-      <div class="row"><button class="btn secondary" data-psc-unlink="1">Remove from one ticket</button><button class="btn secondary" data-psc-unlink="all">Remove from all</button></div>
-      ${u ? `<p class="muted">${u.done ? 'Finished' : 'Working through them, a few each run'}: ${u.removed} link${u.removed === 1 ? '' : 's'} removed from ${u.checked} ticket${u.checked === 1 ? '' : 's'}${u.kept ? `, ${u.kept} kept as they have no copy link` : ''}${u.error ? `. <span class="bad">${esc(u.error)}</span>` : ''}${u.pairs?.length ? `<br><small>${u.pairs.slice(-10).map(esc).join(', ')}</small>` : ''}</p>` : ''}
     </section>`;
 }
 
@@ -12705,15 +12720,6 @@ async function pscSettingsClick(event) {
     const want = on.dataset.pscCopyOn === '1';
     if (want && !confirm('Turn on customer copies from the hub? Turn off the two Jira automations straight after, or new tickets are copied twice.')) return true;
     try { settingsData.pscCopy = await api('/api/psc/copy-settings', { method: 'POST', body: JSON.stringify({ on: want }) }); toast(want ? 'The hub makes customer copies now' : 'Customer copies off'); } catch (err) { toast(err.message); }
-    render(); return true;
-  }
-  const un = event.target.closest('[data-psc-unlink]');
-  if (un) {
-    const all = un.dataset.pscUnlink === 'all';
-    if (all && !confirm('Remove the Sync From / Sync To link between every PSC ticket and its customer copy?')) return true;
-    un.disabled = true;
-    try { const r = await api('/api/psc/unlink', { method: 'POST', body: JSON.stringify({ limit: all ? null : 1 }) }); toast(`${r.removed} removed${r.done ? '' : ', more to follow'}`); } catch (err) { toast(err.message); }
-    settingsData.pscCopy = await api('/api/psc/copy-settings').catch((err) => ({ error: err.message }));
     render(); return true;
   }
   if (!event.target.closest('[data-psc-save-settings]')) return false;
@@ -13200,9 +13206,17 @@ function renderAccount() {
 band.addEventListener('click', (event) => {
   const tourBtn = event.target.closest('[data-tour]');
   if (tourBtn) return offerTour(tourBtn.dataset.tour);
+  const bellBand = event.target.closest('[data-notify-settings]');
+  if (bellBand) {
+    const r = bellBand.dataset.notifySettings;
+    notifyOpen = notifyOpen === r || r === 'close' ? null : r;
+    notifyData = null; notifyDraft = null; settingsOpen = null;
+    return render();
+  }
   const settingsBtn = event.target.closest('[data-settings]');
   if (!settingsBtn) return;
   settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
+  notifyOpen = null; notifyData = null; notifyDraft = null;
   render();
 });
 
@@ -13565,6 +13579,11 @@ async function adminAction(action, button) {
 }
 
 view.addEventListener('click', async (event) => {
+  if (notifyOpen) {
+    const close = event.target.closest('[data-notify-settings="close"]');
+    if (close) { notifyOpen = null; notifyData = null; notifyDraft = null; return render(); }
+    if (await notifyClick(event)) return;
+  }
   if (currentRoute() === '#/admin' && await homeAdminClick(event)) return;
   const onPow = currentRoute() === '#/pow';
   if (currentRoute() === '#/log' && await contractWarnClick(event)) return;
@@ -14034,15 +14053,18 @@ function pageLoader(label) {
 async function render() {
   const token = ++renderToken;
   const route = currentRoute();
-  const viewKey = `${route}|${settingsOpen || ''}`;
+  const viewKey = `${route}|${settingsOpen || ''}|${notifyOpen || ''}`;
   const samePage = lastView === viewKey;
   const keepY = samePage ? scrollY : 0;
   const page = pages[route];
   back.hidden = route === '#/';
   avatar.textContent = initials();
+  if (notifyOpen && notifyOpen !== route) { notifyOpen = null; notifyData = null; notifyDraft = null; }
   band.innerHTML = settingsOpen === route
     ? `<h1>${esc(TILE_SETTINGS[route].label)}</h1><p>${esc(TILE_SETTINGS[route].who || 'Admin only.')}</p>`
-    : page.band() + tourButton(route) + cogButton(route);
+    : notifyOpen === route
+      ? `<h1>${esc(notifyTileName(NOTIFY_TILES[route]))} notifications</h1><p>Choose what you hear about, and how.</p>${bandTools(route)}`
+      : page.band() + bandTools(route);
 
   // Anything slow gets a spinner, but only while it is still the newest render.
   // On the same page the content stays put, dimmed, so the scroll position isn't lost.
@@ -14053,14 +14075,15 @@ async function render() {
   }, 160);
 
   try {
-    let html = settingsOpen === route ? await renderSettings(route) : await page.render();
+    if (notifyOpen === route && !notifyData) await notifyLoad(route);
+    let html = settingsOpen === route ? await renderSettings(route) : notifyOpen === route ? notifySettingsHtml() : await page.render();
     if (route === '#/admin' && settingsOpen !== route && me.user.isAdmin) html = adminSections(html);
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
       lastView = viewKey;
       noteSubView(route);
       scrollTo(0, samePage ? keepY : 0);
-      if (!settingsOpen) maybeTour(route);
+      if (!settingsOpen && !notifyOpen) maybeTour(route);
       reapplySearch();
       if (route === '#/xp') { loadLeaderboard(); loadEloHistory(); loadModifiers(); }
       if (route === '#/condor' && condorTab === 'day' && !mesEst) loadDayDrafts();
@@ -14319,6 +14342,7 @@ const SUB_VIEWS = {
 };
 function subViewKey(route) {
   if (settingsOpen === route) return 'settings';
+  if (notifyOpen === route) return 'notify';
   const v = SUB_VIEWS[route]?.open();
   return v ? JSON.stringify(v) : null;
 }
@@ -14353,8 +14377,10 @@ window.addEventListener('popstate', () => {
   const want = history.state?.hubSub || null;
   if (want === subViewKey(route)) return;
   if (settingsOpen === route) settingsOpen = null;
+  if (notifyOpen) { notifyOpen = null; notifyData = null; notifyDraft = null; }
   SUB_VIEWS[route]?.close();
   if (want === 'settings' && TILE_SETTINGS[route]) settingsOpen = route;
+  else if (want === 'notify' && NOTIFY_TILES[route]) notifyOpen = route;
   else if (want && SUB_VIEWS[route]?.reopen) { try { SUB_VIEWS[route].reopen(JSON.parse(want)); } catch { /* left closed */ } }
   else if (want) history.replaceState({ ...history.state, hubSub: null }, '');
   render();
@@ -14387,6 +14413,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; logScreen = null; }
   if (accountDialog.open) accountDialog.close();
+  notifyOnPage();
   render();
   window.scrollTo({ top: 0 });
   view.focus({ preventScroll: true });
@@ -14407,6 +14434,286 @@ async function syncAndRefresh(announce = false) {
     if (announce) toast(err.message);
   }
 }
+
+// ---------- Notifications: the bell, and what each tile tells you about ----------
+
+// Tiles with something to tell you about, by page. Home holds "everything else".
+const NOTIFY_TILES = { '#/': 'hub', '#/psc': 'psc', '#/ims': 'ims', '#/quotes': 'quotes', '#/jobs': 'jobs', '#/xp': 'xp', '#/time': 'time',
+  '#/condor': 'condor', '#/contracts': 'contracts', '#/nearmiss': 'nearmiss', '#/feedback': 'feedback', '#/vehicles': 'vehicles', '#/requests': 'requests' };
+const NOTIFY_ROUTE = Object.fromEntries(Object.entries(NOTIFY_TILES).map(([r, t]) => [t, r]));
+const notifyTileName = (tile) => (tile === 'hub' ? 'Everything else' : MODULES.find((m) => m.id === tile)?.name || tile.toUpperCase());
+let notifyOpen = null;            // the page whose notification settings are open
+let notifyData = null;            // what the server sent for it
+let notifyDraft = null;           // the choices being made
+let notifyFind = '';
+
+function notifyButton(route) {
+  const tile = NOTIFY_TILES[route];
+  if (PRACTICE || !tile || !me?.linked || settingsOpen === route) return '';
+  const label = `${notifyTileName(tile)} notifications`;
+  return `<button class="cog band-bell${notifyOpen === route ? ' on' : ''}" data-notify-settings="${route}" aria-label="${esc(label)}" title="${esc(label)}">${svgIcon(BELL)}</button>`;
+}
+
+// The buttons at the top right of a page, side by side.
+function bandTools(route) {
+  const tools = [notifyButton(route), notifyOpen === route ? '' : tourButton(route), cogButton(route)].filter(Boolean);
+  return tools.length ? `<div class="band-tools" style="--tools:${tools.length}">${tools.join('')}</div>` : '';
+}
+
+async function notifyLoad(route) {
+  const tile = NOTIFY_TILES[route];
+  notifyData = await api(`/api/notifications/settings/${tile}`);
+  notifyDraft = JSON.parse(JSON.stringify(notifyData.prefs));
+  notifyFind = '';
+}
+
+function notifySettingsHtml() {
+  const d = notifyData;
+  const p = notifyDraft;
+  if (!d || !p) return spinner('Loading');
+  const scopeText = { all: 'All items', mine: 'Only ones assigned to me' };
+  const rows = d.events.map((e) => {
+    const c = p.events[e.id] || {};
+    const scopes = e.scope ? (e.scopes || ['all', 'mine']) : [];
+    return `<tr>
+      <td><strong>${esc(e.label)}</strong><br><small class="muted">${esc(e.about)}</small></td>
+      <td class="nt-tog"><label class="switch" title="In the hub"><input type="checkbox" data-nt-event="${e.id}" data-nt-how="app"${c.app ? ' checked' : ''}><span></span><em>Hub</em></label></td>
+      <td class="nt-tog"><label class="switch" title="By email"><input type="checkbox" data-nt-event="${e.id}" data-nt-how="email"${c.email ? ' checked' : ''}><span></span><em>Email</em></label></td>
+      <td>${scopes.length > 1 ? `<select data-nt-scope="${e.id}" aria-label="Which ${esc(e.label)}">${scopes.map((s) => `<option value="${s}"${c.scope === s ? ' selected' : ''}>${scopeText[s]}</option>`).join('')}</select>`
+        : e.scope ? `<small class="muted">${scopeText[e.scope]}</small>` : e.id.endsWith('assigned') ? '<small class="muted">Yours</small>' : ''}</td>
+    </tr>`;
+  }).join('');
+  const listBox = (title, help, items, key) => {
+    const q = notifyFind.trim().toLowerCase();
+    const shown = items.filter((x) => !q || x.name.toLowerCase().includes(q) || x.key.toLowerCase().includes(q));
+    const off = new Set(p.exclude);
+    return `<section class="card nt-section">
+      <h2>${title}</h2>
+      <p class="muted">${help} ${off.size ? `<strong>${off.size} turned off.</strong>` : 'All on.'}</p>
+      <div class="row nt-list-tools">
+        ${items.length > 12 ? `<input type="search" id="nt-find" placeholder="Find a ${key === 'customers' ? 'customer' : 'area'}" value="${esc(notifyFind)}" autocomplete="off">` : ''}
+        <button class="btn secondary small" data-nt-all="on">All on</button><button class="btn secondary small" data-nt-all="off">All off</button>
+      </div>
+      <div class="nt-checks">${shown.map((x) => `<label class="nt-check"><input type="checkbox" data-nt-include="${esc(x.key)}"${off.has(x.key) ? '' : ' checked'}> ${esc(x.name)}${x.name !== x.key ? ` <small class="muted">${esc(x.key)}</small>` : ''}</label>`).join('') || '<p class="muted">None match.</p>'}</div>
+    </section>`;
+  };
+  const prio = d.priorities?.length ? `<section class="card nt-section">
+      <h2>Priority</h2>
+      <p class="muted">Only PSCs with these priorities. None ticked means every priority.</p>
+      <div class="nt-checks inline">${d.priorities.map((x) => `<label class="nt-check"><input type="checkbox" data-nt-priority="${esc(x)}"${p.priorities.includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')}</div>
+    </section>` : '';
+  const anyEmail = Object.values(p.events).some((c) => c.email);
+  const device = !('Notification' in window) ? ''
+    : Notification.permission === 'granted' ? '<p class="muted">This device shows new ones on screen while the hub is open in the background.</p>'
+    : Notification.permission === 'denied' ? '<p class="muted">This device blocks notifications from the hub, so they only show under the bell. Allow them in the browser\'s site settings to see them on screen.</p>'
+    : '<p><button class="btn secondary" data-nt-device="1">Show them on this device\'s screen too</button></p>';
+  return `<section class="card">
+      <h2 style="margin-top:0">What you hear about</h2>
+      <p class="muted">Hub puts it under the bell at the top of every page. Email sends it to ${esc(d.email || 'you')}.</p>
+      <div class="table-wrap"><table class="nt-table"><thead><tr><th>When</th><th>Hub</th><th>Email</th><th>Which</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${device}
+    </section>
+    ${d.filters.includes('customers') && d.customers?.length ? listBox('Customers', 'Notifications from the customers ticked here. Untick a customer to stop hearing about their PSCs, wherever they come from.', d.customers, 'customers') : ''}
+    ${d.filters.includes('priorities') ? prio : ''}
+    ${d.filters.includes('areas') && d.areas?.length ? listBox('Areas', 'Notifications from the areas ticked here.', d.areas, 'areas') : ''}
+    <section class="card nt-section">
+      <h2>Emails</h2>
+      ${d.emailOn ? '' : '<p class="bad">The hub has no mail relay set up, so emails wait until one is.</p>'}
+      <div class="segment" role="group" aria-label="How emails come">
+        <button class="seg${p.emailMode === 'instant' ? ' on' : ''}" data-nt-mode="instant">Each one as it happens</button>
+        <button class="seg${p.emailMode === 'digest' ? ' on' : ''}" data-nt-mode="digest">One email each morning</button>
+      </div>
+      <p class="muted">${p.emailMode === 'digest' ? 'Everything ticked for email comes together in one email at 8am.' : 'Each one is emailed as soon as the hub sees it.'}</p>
+      <label class="nt-check"><input type="checkbox" data-nt-hours="1"${p.workingHours ? ' checked' : ''}${p.emailMode === 'digest' ? ' disabled' : ''}> Hold emails outside working hours (8am to 6pm, Monday to Friday) until the next working morning</label>
+      ${anyEmail ? '' : '<p class="muted">Nothing here is ticked for email.</p>'}
+    </section>
+    <div class="row nt-save"><button class="btn" data-nt-save="1">Save</button><button class="btn secondary" data-notify-settings="close">Cancel</button></div>`;
+}
+
+async function notifyClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (!notifyDraft) return false;
+  const p = notifyDraft;
+  const mode = t('[data-nt-mode]');
+  if (mode) { p.emailMode = mode.dataset.ntMode; render(); return true; }
+  const all = t('[data-nt-all]');
+  if (all) {
+    const items = (notifyData.customers || notifyData.areas || []).map((x) => x.key);
+    p.exclude = all.dataset.ntAll === 'on' ? [] : items;
+    render(); return true;
+  }
+  if (t('[data-nt-device]')) {
+    try { await Notification.requestPermission(); } catch { /* older browsers */ }
+    render(); return true;
+  }
+  if (t('[data-nt-save]')) {
+    const btn = t('[data-nt-save]');
+    btn.disabled = true;
+    try {
+      notifyData = await api(`/api/notifications/settings/${notifyData.tile}`, { method: 'POST', body: JSON.stringify(p) });
+      notifyDraft = JSON.parse(JSON.stringify(notifyData.prefs));
+      toast('Saved');
+      notifyOpen = null; notifyData = null; notifyDraft = null;
+      render();
+    } catch (err) { toast(err.message); btn.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+function notifyChange(event) {
+  const p = notifyDraft;
+  if (!p) return false;
+  const el = event.target;
+  if (el.dataset.ntEvent) { p.events[el.dataset.ntEvent][el.dataset.ntHow] = el.checked; return true; }
+  if (el.dataset.ntScope) { p.events[el.dataset.ntScope].scope = el.value; return true; }
+  if (el.dataset.ntInclude) {
+    const k = el.dataset.ntInclude;
+    p.exclude = el.checked ? p.exclude.filter((x) => x !== k) : [...new Set([...p.exclude, k])];
+    const note = el.closest('.nt-section')?.querySelector('p.muted strong, p.muted');
+    if (note) note.closest('p').innerHTML = note.closest('p').innerHTML.replace(/(<strong>\d+ turned off\.<\/strong>|All on\.)$/, p.exclude.length ? `<strong>${p.exclude.length} turned off.</strong>` : 'All on.');
+    return true;
+  }
+  if (el.dataset.ntPriority) {
+    const k = el.dataset.ntPriority;
+    p.priorities = el.checked ? [...new Set([...p.priorities, k])] : p.priorities.filter((x) => x !== k);
+    return true;
+  }
+  if (el.dataset.ntHours) { p.workingHours = el.checked; return true; }
+  return false;
+}
+
+// The bell at the top: how many are waiting, and the list.
+const bellBtn = document.getElementById('bell-btn');
+const bellCount = document.getElementById('bell-count');
+const bellDialog = document.getElementById('bell');
+let bellState = { unread: 0, latest: 0 };
+let bellItems = null;
+
+function bellBadge() {
+  if (!bellBtn) return;
+  bellBtn.hidden = !me?.linked;
+  bellCount.hidden = !bellState.unread;
+  bellCount.textContent = bellState.unread > 99 ? '99+' : String(bellState.unread);
+  bellBtn.setAttribute('aria-label', bellState.unread ? `Notifications, ${bellState.unread} new` : 'Notifications');
+}
+
+async function bellPoll() {
+  if (!me?.linked || me.viewingAs) return;
+  let r;
+  try { r = await api('/api/notifications/count'); } catch { return; }
+  const before = bellState.latest;
+  bellState = r;
+  bellBadge();
+  // New ones while the hub is in the background show on the device's screen.
+  if (before && r.latest > before && document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const list = await api('/api/notifications');
+      for (const n of list.items.filter((x) => x.id > before && !x.read_at).slice(0, 3).reverse()) {
+        showHubNotification(n.subject, { body: String(n.body || '').split('\n')[0], tag: `hub-n-${n.id}`, data: { link: `/${n.link || '#/'}` } }).catch(() => {});
+      }
+    } catch { /* the bell still shows them */ }
+  }
+}
+
+function bellHtml() {
+  const items = bellItems?.items || [];
+  const tiles = (bellItems?.tiles || []).filter((t) => NOTIFY_ROUTE[t]);
+  return `<div class="acct-head bell-head">
+      <button class="close" data-bell="close" aria-label="Close">${svgIcon('<path d="M6 6l12 12M18 6L6 18"/>')}</button>
+      <strong>Notifications</strong>
+      <span>${bellState.unread ? `${bellState.unread} new` : 'Nothing new'}</span>
+    </div>
+    <div class="acct-body">
+      ${bellState.unread ? '<p style="margin:0 0 .75rem;text-align:right"><button class="linklike" data-bell="all-read">Mark all as read</button></p>' : ''}
+      ${!bellItems ? spinner('Loading') : items.length ? `<ul class="bell-list">${items.map((n) => `<li class="${n.read_at ? '' : 'unread'}">
+          <button data-bell="open" data-id="${n.id}" data-link="${esc(n.link || '')}">
+            <span class="bell-tile">${esc(notifyTileName(n.tile))} · ${esc(agoText(n.created_at))}</span>
+            <strong>${esc(n.subject)}</strong>
+            ${n.body ? `<span class="bell-body">${esc(String(n.body).split('\n').filter(Boolean).slice(0, 2).join(' · ').slice(0, 200))}</span>` : ''}
+          </button></li>`).join('')}</ul>` : '<p class="muted">Nothing yet. What you choose to hear about shows here.</p>'}
+      ${tiles.length ? `<section class="acct-section" style="margin-top:1.25rem"><h4>Choose what you hear about</h4>
+        <ul class="menu">${tiles.map((t) => `<li><button data-bell="settings" data-tile="${t}">${svgIcon(BELL)}${esc(notifyTileName(t))}</button></li>`).join('')}</ul></section>` : ''}
+    </div>`;
+}
+
+async function bellOpen() {
+  if (!bellDialog) return;
+  bellItems = null;
+  bellDialog.innerHTML = bellHtml();
+  bellDialog.showModal();
+  try {
+    const [list, t] = await Promise.all([api('/api/notifications'), api('/api/notifications/tiles')]);
+    bellItems = { ...list, tiles: t.tiles };
+    bellState.unread = list.unread;
+    bellBadge();
+  } catch (err) { bellItems = { items: [], tiles: [] }; toast(err.message); }
+  bellDialog.innerHTML = bellHtml();
+}
+
+// A notification's link: the page, with the item on it open.
+const NOTIFY_OPENERS = {
+  '#/psc': (k) => { pscNew = null; pscOpen = k; },
+  '#/ims': (k) => { imsNew = null; imsMeetingOpen = null; imsOpen = k; imsItemData = null; imsEdit = null; },
+  '#/contracts': (k) => { conOpen = k; },
+  '#/nearmiss': (k) => { nmOpenId = k; },
+};
+let pendingOpen = null;
+function openHubLink(link) {
+  const [route, q] = String(link || '#/').replace(/^\//, '').split('?');
+  const key = new URLSearchParams(q || '').get('open');
+  const r = pages[route] ? route : '#/';
+  if (currentRoute() === r) {
+    settingsOpen = null; notifyOpen = null;
+    if (key) NOTIFY_OPENERS[r]?.(key);
+    render();
+  } else {
+    pendingOpen = key ? { route: r, key } : null;
+    location.hash = r;
+  }
+}
+// Called as a new page opens, before it's drawn.
+function notifyOnPage() {
+  notifyOpen = null; notifyData = null; notifyDraft = null;
+  if (pendingOpen && currentRoute() === pendingOpen.route) {
+    if (pendingOpen.key) NOTIFY_OPENERS[pendingOpen.route]?.(pendingOpen.key);
+    if (pendingOpen.notify) notifyOpen = pendingOpen.route;
+  }
+  pendingOpen = null;
+}
+navigator.serviceWorker?.addEventListener('message', (e) => { if (e.data?.hubLink) openHubLink(e.data.hubLink); });
+
+bellBtn?.addEventListener('click', () => { if (me) bellOpen(); });
+bellDialog?.addEventListener('click', async (event) => {
+  if (event.target === bellDialog) return bellDialog.close();
+  const b = event.target.closest('[data-bell]');
+  if (!b) return;
+  const what = b.dataset.bell;
+  if (what === 'close') return bellDialog.close();
+  if (what === 'all-read') {
+    try { bellState = { ...bellState, ...(await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) })) }; } catch (err) { toast(err.message); }
+    for (const n of bellItems?.items || []) n.read_at = n.read_at || new Date().toISOString();
+    bellBadge();
+    bellDialog.innerHTML = bellHtml();
+    return;
+  }
+  if (what === 'open') {
+    bellDialog.close();
+    api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids: [Number(b.dataset.id)] }) })
+      .then((r) => { bellState = { ...bellState, ...r }; bellBadge(); }).catch(() => {});
+    openHubLink(b.dataset.link);
+    return;
+  }
+  if (what === 'settings') {
+    bellDialog.close();
+    const route = NOTIFY_ROUTE[b.dataset.tile];
+    if (currentRoute() !== route) { pendingOpen = { route, notify: true }; location.hash = route; return; }
+    settingsOpen = null;
+    notifyOpen = route;
+    notifyData = null; notifyDraft = null;
+    render();
+  }
+});
 
 async function start() {
   if (PRACTICE) {
@@ -14432,13 +14739,16 @@ async function start() {
   // Viewing as someone else only looks: their time isn't synced and nothing queued is sent.
   if (me.viewingAs) return;
   syncAndRefresh();
+  bellBadge();
+  bellPoll();
+  setInterval(bellPoll, 60000);
   trackerInit();
   powFlushQueue();
   window.addEventListener('online', () => powFlushQueue());
 
   // Refresh when the app comes back to the foreground.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { syncAndRefresh(); trackerPoll(); }
+    if (document.visibilityState === 'visible') { syncAndRefresh(); trackerPoll(); bellPoll(); }
   });
 }
 
