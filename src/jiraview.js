@@ -7,7 +7,7 @@
 import { jira, searchJql, customerProjects, BLOCKED_PROJECTS } from './jira.js';
 import { mustSee, organizations, rowFor } from './psc.js';
 import { record } from './audit.js';
-import { allowedDomains } from './auth.js';
+import * as Contacts from './psccontacts.js';
 
 const ORG_FIELD = 'customfield_12900';
 const PSC = 'PSC';
@@ -132,7 +132,8 @@ export async function view(env, viewer, rawKey) {
     const other = l.outwardIssue || l.inwardIssue;
     return other ? { how: l.outwardIssue ? l.type?.outward : l.type?.inward, key: other.key, summary: other.fields?.summary || '', status: other.fields?.status?.name || '' } : null;
   }).filter(Boolean);
-  const orgs = (Array.isArray(f[ORG_FIELD]) ? f[ORG_FIELD] : []).map((o) => o.name).filter(Boolean);
+  const orgList = (Array.isArray(f[ORG_FIELD]) ? f[ORG_FIELD] : f[ORG_FIELD] ? [f[ORG_FIELD]] : []).filter((o) => o && typeof o === 'object');
+  const orgs = orgList.map((o) => o.name ?? o.value).filter(Boolean).map(String);
   const projects = await customerProjects(env).catch(() => []);
   const keys = new Set(projects.map((p) => p.key));
   // The copy in the customer's project, or the PSC ticket this copy came from.
@@ -147,10 +148,22 @@ export async function view(env, viewer, rawKey) {
     canComment: { internal: true, customer: project !== PSC },
     internalGroup: internalGroup(env),
   };
-  if (project === PSC && !orgs.length) {
-    out.raisedByStaff = await isStaff(env, reporter).catch(() => false);
-    out.suggestions = await suggestOrgs(env, issue, reporter).catch(() => []);
+  // A customer project item's customer is the project.
+  if (project !== PSC) out.customer = f.project?.name || project;
+  out.raisedByStaff = await isStaff(env, reporter).catch(() => false);
+  // Which Organizations the customer who raised it is in, in Jira, and whether that
+  // includes this ticket's.
+  if (reporter?.id && !out.raisedByStaff) {
+    const all = await organizations(env).catch(() => []);
+    const ids = await Contacts.orgsOf(env, reporter.id);
+    out.reporterOrgs = ids.map((id) => all.find((o) => String(o.id) === id)?.name).filter(Boolean);
+    if (project === PSC && orgs.length) {
+      out.reporterInOrg = orgList.some((o) => ids.includes(String(o.id)));
+      const link = await env.DB.prepare(`SELECT status, org_name FROM psc_contact_links WHERE account_id = ? AND status = 'new' LIMIT 1`).bind(reporter.id).first().catch(() => null);
+      out.contactPending = Boolean(link);
+    }
   }
+  if (project === PSC && !orgs.length) out.suggestions = await suggestOrgs(env, issue, reporter).catch(() => []);
   return out;
 }
 
@@ -162,9 +175,7 @@ const FREE_MAIL = /(^|\.)(gmail|googlemail|hotmail|outlook|live|yahoo|icloud|me|
 
 export async function isStaff(env, reporter) {
   if (!reporter) return false;
-  const domain = String(reporter.email || '').split('@')[1]?.toLowerCase() || '';
-  const ours = [...allowedDomains(env), 'promtek.com', 'promtek.co.za'];
-  if (domain && ours.some((d) => domain === d || domain.endsWith(`.${d}`))) return true;
+  if (Contacts.ourDomain(env, Contacts.domainOf(reporter.email))) return true;
   if (!reporter.id) return false;
   return Boolean(await env.DB.prepare('SELECT 1 FROM employees WHERE account_id = ?').bind(String(reporter.id)).first().catch(() => null));
 }
@@ -180,6 +191,15 @@ export async function suggestOrgs(env, issue, reporter) {
   // Someone at Promtek raising a ticket could be raising it for any customer, so who they
   // are and their email say nothing about which; only the ticket's own words count.
   const staff = await isStaff(env, reporter);
+  // The Organizations they're in, in Jira.
+  if (reporter?.id && !staff) {
+    for (const id of await Contacts.orgsOf(env, reporter.id)) add(orgs.find((o) => o.id === id), `${reporter.name} is in it in Jira`, 300);
+  }
+  // Others from their email domain.
+  const dom = Contacts.domainOf(reporter?.email);
+  if (dom && !staff && !FREE_MAIL.test(dom)) {
+    for (const d of await Contacts.domainOrgs(env, dom)) add(orgs.find((o) => o.id === d.id), `${d.n} other${d.n === 1 ? '' : 's'} from ${dom} ${d.n === 1 ? 'is' : 'are'} in it`, 150 + d.n);
+  }
   // Their earlier tickets: the Organization those were under.
   if (reporter?.id && !staff) {
     const past = await searchJql(env, `project = ${PSC} AND reporter = "${reporter.id}" AND cf[12900] is not EMPTY AND key != ${issue.key} ORDER BY created DESC`, [ORG_FIELD], { limit: 30 }).catch(() => []);

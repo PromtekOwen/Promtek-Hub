@@ -479,7 +479,7 @@ The **PSC** tile shows every support request: the PSC issue types (Incident, Fur
 
 No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve or New Year's Day; other bank holidays are covered only for contracts with bank holiday cover. Callouts out of office hours carry the £750 breakdown surcharge.
 
-**First look.** Each item is due a first look a set time (by tier, under the cog) after the customer's cover starts: straight away if it was raised in cover, otherwise when their cover next begins. From then it counts around the clock. The first look is the first of: a comment, status change or assignment by a Promtek person in Jira; time logged to it; or **I'm on it** in the hub. Jira's automatic replies don't count. Items raised by the team themselves count as looked at from the start, and are left out of the response figures.
+**First look.** Each item is due a first look a set time (by tier, under the cog) after the customer's cover starts: straight away if it was raised in cover, otherwise when their cover next begins. From then it counts around the clock. The first look is the first of: a comment or internal note by someone at Promtek, a change to the description by someone at Promtek, or the item being moved to an In Progress status (by anyone, automations included). Someone at Promtek means anyone in the hub's employee list, so a customer with their own Jira account on a customer project isn't counted. Jira's automatic replies don't count. An item closed without any of these counts from when it was closed. After an update to how this is worked out, every item is read again from Jira, so first looks already shown can move earlier. Items raised by the team themselves count as looked at from the start, and are left out of the response figures.
 
 **After that.** Each item shows the team's last update (who and what), and flags when the customer has replied since the team last did anything, or when it has gone quiet for longer than the setting.
 
@@ -494,6 +494,8 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 - On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. A new potential customer's quote is kept in the Quotes tile, where it can be worked on and marked **Accepted**. Once they have a project in Jira, the quote is made in its Quote List: chosen on the quote, or found by the hub every hour when exactly one customer project has their name. The PSC board item gets an internal comment saying what happened.
 - **Condor** copies it to the MES project as a Bug, with its summary and description, linked to the PSC with the Sync To / Sync From link type (the PSC Syncs To the Bug). It then shows in Condor Dev's **PSC** tab, with the Bug's status, until the Bug is done.
 - Once either has gone through, the item, and its PSC board original, leave the PSC tile. If Jira refuses, the hub keeps it, tries again every few minutes, and emails admins after three tries.
+
+**Raised in the last 24 hours.** On Triage and Open, items raised in the last 24 hours are listed first, newest first, under their own heading. The rest follow in the order below (or the Sort chosen).
 
 **Order.** Late items first, then new items due within the hour, then customers waiting on us, then other new items by when they're due; within each, Platinum, Gold, Silver, then no contract.
 
@@ -515,6 +517,23 @@ People who only have a Jira licence (no service desk agent licence) can read PSC
 
 **No Organization.** A PSC ticket with no Organization suggests the likely customer: the Organization on the reporter's earlier tickets, a company email domain that matches an Organization's name, or an Organization named in the summary or description. **Set** saves it to Jira.
 
+### Customer contacts
+
+A customer's ticket gets its Organization filled in automatically when they're a member of that Organization in Jira (the service desk's customer list). The hub keeps a copy of every Organization's members, reading a few Organizations each run and starting again twice a day. Run `schema-060.sql` in the D1 console first; until then, items still save and nothing here runs.
+
+When a PSC ticket raised by a customer is under an Organization they aren't a member of, the hub notes it and emails admins: their next ticket won't get it filled in. The email says when no one else from their email domain is in that Organization yet, since that's the likeliest sign of a mistake. Only tickets raised after this is first running are checked, and each person and Organization only once. People at Promtek (a Promtek email address, or in the hub's employee list) are never linked, as they raise tickets for any customer. Someone in more than one Organization (a manager over several sites, say) is fine as long as they're in the ticket's.
+
+PSC tile → cog → **Customer contacts**:
+- **Add to …** adds them to the Organization in Jira.
+- **A different Organization** adds them to the right one instead, when the ticket was put under the wrong customer (put the ticket right too).
+- **Not right** drops it without changing Jira.
+- **Find a customer** searches everyone in an Organization by name or email, to **Move** them to another Organization or **Take out** of one, in Jira as well.
+- **Recent changes** shows who did what. Every change is also in the audit log.
+
+The hub's Jira account needs to be a service desk agent (or admin) to add and remove Organization members.
+
+On a ticket in the hub, **Raised by** shows which Organizations the customer is in, and a PSC ticket under an Organization they aren't in says so. A ticket with no Organization suggests, first, the Organizations the customer is in, then ones other people from their email domain are in, then their earlier tickets and any customer named in it. On a customer project item, **Customer** shows the project.
+
 ### Customer copies, made by the hub
 
 This replaces the two Jira automations (rule 2178201 on create, 2177983 on edit) that filled in the **Automation** field and called Copy & Sync.
@@ -532,7 +551,7 @@ Each ticket is asked for once. Its state (asked for, copied, failed, no project)
 
 1. Run `schema-059.sql` in the D1 console.
 2. Add the secret `COPYSYNC_TOKEN` with the Copy & Sync API token: `npx wrangler secret put COPYSYNC_TOKEN`. It's never kept in the code.
-3. If the recipe is re-imported (below) its ID may change: add `COPYSYNC_RECIPE` as a variable with the new ID (the recipe's ID is in its URL in Copy & Sync). Optional: `COPYSYNC_URL` if Elements ever moves the endpoint, `PSC_INTERNAL_GROUP` if the internal group is renamed.
+3. New copies use Copy & Sync Work Items v2. To use a different recipe, add `COPYSYNC_RECIPE` as a variable with its ID (see The Copy & Sync recipes below). Optional: `COPYSYNC_URL` if Elements ever moves the endpoint, `PSC_INTERNAL_GROUP` if the internal group is renamed.
 4. PSC tile → cog → **Customer copies** → **On**. Only tickets changed from that moment are copied automatically.
 5. In Jira, disable automation rules 2178201 and 2177983 straight after, so tickets aren't copied twice.
 
@@ -540,23 +559,18 @@ Each ticket is asked for once. Its state (asked for, copied, failed, no project)
 
 ### The Copy & Sync recipes
 
-`Promtek-CopySync-recipes-fixed.json` (sent separately, not part of the hub) holds fixed copies of two recipes, named **v2**, for **Copy & Sync → Import**:
+Copy & Sync keeps each synced pair against the recipe that made it, so deactivating a recipe stops every pair it made from syncing. Old recipes stay active for their existing pairs; fixes apply to pairs made from now on.
 
-**Copy & Sync Work Items v2**
+**Copy & Sync Work Items v2** (`RECIPE_e3e97e4e-2f15-44fb-8eec-76f427acd9f1`) makes the hub's new copies. Set `COPYSYNC_RECIPE` only if that changes. It's only run when called (by the hub, or by hand in Jira), never by a link being added, so it and the original **Copy & Sync Work Items** can both stay active without syncing anything twice: the original keeps the pairs it already made. Compared with the original:
 - Status changes go both ways (the workflows match across projects).
-- Customer-visible comments made on the customer copy are public on the PSC ticket, so the customer is emailed.
+- Customer-visible comments made on the customer copy are public on the PSC ticket.
 - No longer maps: Reporter, Issue Type, Status category, Resolution, Sprint, Creation Date, Progress, Summary → Key and Summary → IMS Origin Item. These either can't be set on a copy, are set by Jira, or overwrote other fields with the summary.
 
-**Sync Work Items v2**
-- 44 mappings to fields that no longer exist are removed.
-- Status changes go both ways.
+Before activating it, in its Comments tab set **Restrictions** → **Synchronise public comments**, so internal notes and Promtek Members comments never cross, and **Visibility in JSM** → **Always public**, which needs a Synchronisation Author with a service desk agent licence. Without one, a customer-visible comment from someone with no agent licence lands as internal on PSC.
 
-**Before activating** (imports arrive as drafts):
+**Sync Work Items** stays as it is. It runs whenever a Sync From / Sync To link is added (the hub's Condor button adds one between a PSC ticket and its MES Bug), so a second recipe on the same link would sync every new pair twice. Its "Entity not found" mappings are to fields that no longer exist and do nothing.
 
-1. Open **Copy & Sync Work Items v2** → Comments → **Restrictions** → **Synchronise public comments**, so internal notes and Promtek Members comments never cross. Under **Synchronisation to JSM**, choose **Always public** if the recipe has a Synchronisation Author with a JSM licence. If not, Copy & Sync can only post as the original author's permission allows, so a customer-visible comment from someone without an agent licence lands as internal on PSC. In that case set a Synchronisation Author with an agent licence.
-2. Check the Target tab still uses the **Automation** project picker and the **is cloned by** link.
-3. Deactivate the old recipe, then activate v2. Copy the v2 recipe's ID into `COPYSYNC_RECIPE`. Do the same for Sync Work Items.
-4. Copy one test PSC ticket from the tile and check the copy, a comment each way and a status change.
+Copy one test PSC ticket from the tile afterwards and check the copy, a comment each way and a status change.
 
 ## Part 14f: Which Jira projects the hub uses
 

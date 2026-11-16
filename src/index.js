@@ -471,6 +471,14 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/psc/copy-settings') return json(await Psc.copySettings(env, user));
     if (method === 'POST' && pathname === '/api/psc/copy-settings') return json(await Psc.setCopyOn(env, user, Boolean(body.on)));
     if (method === 'POST' && pathname === '/api/psc/unlink') return json(await Psc.unlinkStart(env, user, { limit: body.limit }));
+    if (pathname.startsWith('/api/psc/contacts')) {
+      const Contacts = await import('./psccontacts.js');
+      const orgs = await Psc.organizations(env);
+      if (method === 'GET' && pathname === '/api/psc/contacts') return json(await Contacts.list(env, user, { q: url.searchParams.get('q') || '' }, orgs));
+      if (method === 'POST' && pathname === '/api/psc/contacts/add') return json(await Contacts.add(env, user, body, orgs));
+      if (method === 'POST' && pathname === '/api/psc/contacts/remove') return json(await Contacts.remove(env, user, body, orgs));
+      if (method === 'POST' && pathname === '/api/psc/contacts/move') return json(await Contacts.move(env, user, body, orgs));
+    }
     if (method === 'GET' && pathname === '/api/psc/item') return json(await Psc.item(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/psc/insights') return json(await Psc.insights(env, user));
     if (method === 'GET' && pathname === '/api/psc/orgs') return json(await Psc.orgOptions(env, user));

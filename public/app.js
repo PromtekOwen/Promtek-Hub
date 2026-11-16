@@ -2000,6 +2000,8 @@ async function renderSettings(route) {
   if (route === '#/psc') {
     settingsData.psc = await api('/api/psc/settings').catch((err) => ({ error: err.message }));
     settingsData.pscCopy = await api('/api/psc/copy-settings').catch((err) => ({ error: err.message }));
+    settingsData.pscContacts = await api(`/api/psc/contacts?q=${encodeURIComponent(pscContactQ)}`).catch((err) => ({ error: err.message }));
+    if (!pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
   }
   if (route === '#/contracts') settingsData.contracts = await api('/api/contracts/settings').catch((err) => ({ error: err.message }));
   if (route === '#/obs') settingsData.library = await api('/api/obs/library').catch(() => ({}));
@@ -10780,6 +10782,10 @@ const fileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 
 function jiraViewBody(v) {
   const draft = jvDraft[v.key] || { text: '', vis: v.canComment.customer ? 'customer' : 'internal' };
   const who = v.reporter ? `${esc(v.reporter.name)}${v.reporter.email ? ` <a href="mailto:${esc(v.reporter.email)}">${esc(v.reporter.email)}</a>` : ''}` : 'Unknown';
+  const inJira = v.raisedByStaff ? '<br><small class="muted">Promtek</small>'
+    : v.reporterOrgs?.length ? `<br><small class="muted">In ${esc(v.reporterOrgs.join(', '))} in Jira</small>` : v.reporter ? '<br><small class="muted">In no Organization in Jira</small>' : '';
+  const notIn = v.project === 'PSC' && v.orgs.length && v.reporterInOrg === false
+    ? `<p class="jv-note">${esc(v.reporter.name)} isn't in ${esc(v.orgs.join(' or '))} in Jira, so their next ticket won't get it filled in.${v.contactPending ? ' Admins have been told, and can add them from the PSC settings.' : ''}</p>` : '';
   const needOrg = v.project === 'PSC' && !v.orgs.length;
   const orgList = `jv-orgs-${v.key}`;
   const sugg = !needOrg ? '' : `<div class="jv-suggest">
@@ -10799,14 +10805,15 @@ function jiraViewBody(v) {
   const vis = (k, label) => `<button type="button" class="seg${draft.vis === k ? ' on' : ''}" data-jv-vis="${k}" data-key="${esc(v.key)}"${k === 'customer' && !v.canComment.customer ? ' disabled' : ''}>${label}</button>`;
   return `<div class="card jv">
       <div class="jv-facts">
-        <div><span class="muted">Raised by</span><br>${who}</div>
-        <div><span class="muted">Organization</span><br>${v.orgs.length ? esc(v.orgs.join(', ')) : '<b class="con-late">Not set</b>'}</div>
+        <div><span class="muted">Raised by</span><br>${who}${inJira}</div>
+        ${v.customer ? `<div><span class="muted">Customer</span><br>${esc(v.customer)}</div>`
+          : `<div><span class="muted">Organization</span><br>${v.orgs.length ? esc(v.orgs.join(', ')) : '<b class="con-late">Not set</b>'}</div>`}
         <div><span class="muted">Status</span><br>${esc(v.status)}</div>
         <div><span class="muted">Assignee</span><br>${v.assignee ? esc(v.assignee.name) : 'Unassigned'}</div>
         ${v.copy ? `<div><span class="muted">Customer copy</span><br>${jiraLink(v.copy.key)}</div>` : ''}
         ${v.original ? `<div><span class="muted">Customer's ticket</span><br>${jiraLink(v.original.key)}</div>` : ''}
       </div>
-      ${sugg}
+      ${notIn}${sugg}
       <h3>Description</h3>
       <div class="jv-rich jv-desc">${v.descriptionHtml || '<p class="muted">No description.</p>'}</div>
       ${v.attachments.length ? `<h3>Attachments</h3><ul class="jv-files">${v.attachments.map((a) => `<li><a href="/api/jira/attachment?key=${encodeURIComponent(v.key)}&id=${encodeURIComponent(a.id)}" target="_blank" rel="noopener">📎 ${esc(a.name)}</a> <small class="muted">${fileSize(a.size || 0)} · ${esc(a.by)} · ${agoText(a.at)}</small></li>`).join('')}</ul>` : ''}
@@ -10931,6 +10938,8 @@ document.addEventListener('click', async (event) => {
 }, true);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && jvOpenKey) { jvOpenKey = null; jvPanel(); }
+  if (e.key === 'Enter' && e.target.id === 'psc-contact-q') { e.preventDefault(); view.querySelector('[data-psc-contact-search]')?.click(); return; }
+  if (e.key === 'Enter' && e.target.dataset?.pscContactOrg) { e.preventDefault(); view.querySelector('[data-psc-contact-move]')?.click(); return; }
   const box = e.key === 'Enter' && e.target.closest?.('[data-jv-org-input]');
   if (box) { e.preventDefault(); box.parentElement.querySelector('[data-jv-org-pick]')?.click(); }
 });
@@ -11715,7 +11724,7 @@ async function pscPageHtml() {
     if (list.some((d) => d.missing.includes('org')) && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
     return `${pscTabsHtml(data)}${pscHeadLine(data)}
       <p class="help">New items, and any missing an Organization, an owner, a first look, or whether it's chargeable. Each leaves this list once it has them all.</p>
-      <div class="psc-list">${list.map((d) => pscCardHtml(d, { triage: true })).join('') || '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner, a first look and a chargeable answer.</p></div>'}</div>`;
+      ${pscWithNew(list, (d) => pscCardHtml(d, { triage: true }), '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner, a first look and a chargeable answer.</p></div>')}`;
   }
   const base = data.items.filter((d) => (pscSnags || !d.orderWork) && (pscShow === 'resolved' ? d.state === 'resolved' : d.state !== 'resolved'));
   const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
@@ -11750,7 +11759,20 @@ async function pscPageHtml() {
       <label class="inline-check psc-check"><input type="checkbox" data-psc-snags${pscSnags ? ' checked' : ''}> Include Snags</label>
     </div>
     <p class="muted search-recheck" id="psc-recheck" role="status" hidden></p>
-    <div class="psc-list">${list.map((d) => pscCardHtml(d)).join('') || `<div class="card"><p style="margin:0">${pscShow === 'resolved' ? 'Nothing resolved in the last 30 days here.' : 'Nothing open here.'}</p></div>`}</div>`;
+    ${pscShow === 'resolved' ? `<div class="psc-list">${list.map((d) => pscCardHtml(d)).join('') || '<div class="card"><p style="margin:0">Nothing resolved in the last 30 days here.</p></div>'}</div>`
+      : pscWithNew(list, (d) => pscCardHtml(d), '<div class="card"><p style="margin:0">Nothing open here.</p></div>')}`;
+}
+
+// Items raised in the last 24 hours come first, newest first, whatever the order below.
+const PSC_NEW_MS = 24 * 3600 * 1000;
+function pscWithNew(list, card, empty) {
+  const now = Date.now();
+  const fresh = list.filter((d) => now - Date.parse(d.created) < PSC_NEW_MS).sort((a, b) => Date.parse(b.created) - Date.parse(a.created));
+  const rest = list.filter((d) => !fresh.includes(d));
+  if (!fresh.length) return `<div class="psc-list">${rest.map(card).join('') || empty}</div>`;
+  return `<h2 class="psc-group">Raised in the last 24 hours <span class="muted">(${fresh.length})</span></h2>
+    <div class="psc-list">${fresh.map(card).join('')}</div>
+    ${rest.length ? `<h2 class="psc-group">Everything else <span class="muted">(${rest.length})</span></h2><div class="psc-list">${rest.map(card).join('')}</div>` : ''}`;
 }
 
 // Turning a PSC into a quote, or sending it to Condor Dev.
@@ -12093,7 +12115,78 @@ function settingsPscHtml() {
       <p class="muted">Read from Jira ${s.syncedAt ? whenText(new Date(s.syncedAt).toISOString()) : 'not yet'}.</p>
       ${s.error ? `<div class="notice error"><p>${esc(s.error)}</p></div>` : ''}
     </section>
-    ${pscCopySettingsHtml()}`;
+    ${pscCopySettingsHtml()}
+    ${pscContactsHtml()}`;
+}
+
+// Customer contacts: who is in which Organization in Jira, and customers who raised a
+// ticket under an Organization they aren't in.
+let pscContactQ = '';
+let pscContactEdit = null;   // { accountId, fromOrgId } while choosing another Organization
+function pscOrgPicker(id) {
+  if (!pscOrgs || pscOrgs.error) return `<span class="muted">${esc(pscOrgs?.error || 'Loading the Organizations…')}</span>`;
+  return `<span class="jv-org-pick"><input type="search" list="psc-contact-orgs" data-psc-contact-org="${esc(id)}" placeholder="Search for the customer" autocomplete="off" aria-label="Organization">
+    <datalist id="psc-contact-orgs">${pscOrgs.orgs.map((o) => `<option value="${esc(o.name)}"></option>`).join('')}</datalist>
+    <button class="btn secondary" data-psc-contact-move="${esc(id)}">Move</button><button class="linklike" data-psc-contact-cancel="1">Cancel</button></span>`;
+}
+function pscContactsHtml() {
+  const c = settingsData.pscContacts;
+  if (!c) return '';
+  if (c.error) return `<section class="card"><h2 style="margin-top:0">Customer contacts</h2><p class="bad">${esc(c.error)}</p></section>`;
+  const editing = (a, o) => pscContactEdit && pscContactEdit.accountId === a && String(pscContactEdit.fromOrgId) === String(o);
+  const ids = (a, o) => `data-pc-account="${esc(a)}" data-pc-org="${esc(o)}"`;
+  const statusText = { added: 'Added', removed: 'Taken out', wrong: 'Marked not right' };
+  const m = c.members;
+  return `<section class="card psc-contacts">
+      <h2 style="margin-top:0">Customer contacts</h2>
+      <p class="muted">A customer's ticket gets its Organization filled in when they're a member of it in Jira. These customers raised a ticket that was put under an Organization they aren't in. Add them, so their next ticket is filled in, or choose the right one if the ticket was put under the wrong customer. People at Promtek are never listed.</p>
+      ${m ? `<p class="muted"><small>${m.done ? `Members of ${m.read} Organizations read ${whenText(m.at)}` : `Reading the Organizations' members: ${m.read} done, ${m.left} to go`}.</small></p>` : '<p class="muted"><small>The Organizations\' members haven\'t been read yet.</small></p>'}
+      ${c.pending.length ? `<ul class="psc-contact-list">${c.pending.map((r) => `<li>
+          <div><strong>${esc(r.name || 'Someone')}</strong> ${r.email ? `<span class="muted">${esc(r.email)}</span>` : ''}${r.new_domain ? ' <span class="psc-chip warn">New domain for this Organization</span>' : ''}
+            <br><small class="muted">Raised ${r.issue_key ? jiraLink(r.issue_key) : 'a ticket'} under ${esc(r.org_name)} ${agoText(r.created_at)}</small></div>
+          ${editing(r.account_id, r.org_id) ? pscOrgPicker(r.account_id) : `<div class="row">
+            <button class="btn" data-psc-contact-add="1" ${ids(r.account_id, r.org_id)}>Add to ${esc(r.org_name)}</button>
+            <button class="btn secondary" data-psc-contact-edit="1" ${ids(r.account_id, r.org_id)}>A different Organization</button>
+            <button class="linklike" data-psc-contact-remove="1" ${ids(r.account_id, r.org_id)}>Not right</button></div>`}</li>`).join('')}</ul>`
+        : '<p>No customers waiting to be added.</p>'}
+      <h3>Find a customer</h3>
+      <div class="row"><input type="search" id="psc-contact-q" value="${esc(pscContactQ)}" placeholder="Name or email" aria-label="Find a customer"><button class="btn secondary" data-psc-contact-search="1">Find</button></div>
+      ${pscContactQ ? (c.found.length ? `<ul class="psc-contact-list">${c.found.map((p) => `<li><div><strong>${esc(p.name || 'Someone')}</strong> <span class="muted">${esc(p.email || '')}</span></div>
+          ${p.orgs.map((o) => `<div class="psc-contact-org">${esc(o.name)} ${editing(p.accountId, o.id) ? pscOrgPicker(p.accountId)
+            : `<button class="linklike" data-psc-contact-edit="1" ${ids(p.accountId, o.id)}>Move</button> <button class="linklike" data-psc-contact-remove="1" ${ids(p.accountId, o.id)}>Take out</button>`}</div>`).join('')}</li>`).join('')}</ul>`
+        : '<p class="muted">No one in an Organization matches that.</p>') : ''}
+      ${c.recent.length ? `<h3>Recent changes</h3><ul class="psc-contact-list">${c.recent.map((r) => `<li><div>${esc(r.name || r.email || 'Someone')} · ${esc(r.org_name)}: ${esc(statusText[r.status] || r.status)}
+          <small class="muted">${r.done_by ? `${esc(r.done_by)}, ` : ''}${agoText(r.done_at || r.created_at)}</small></div></li>`).join('')}</ul>` : ''}
+    </section>`;
+}
+
+async function pscContactsClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  const reload = async () => { settingsData.pscContacts = await api(`/api/psc/contacts?q=${encodeURIComponent(pscContactQ)}`).catch((err) => ({ error: err.message })); render(); };
+  const post = async (path, body, done) => {
+    try { await api(path, { method: 'POST', body: JSON.stringify(body) }); toast(done); pscContactEdit = null; } catch (err) { toast(err.message); }
+    await reload();
+  };
+  if (t('[data-psc-contact-search]')) { pscContactQ = (document.getElementById('psc-contact-q')?.value || '').trim(); await reload(); return true; }
+  if (t('[data-psc-contact-cancel]')) { pscContactEdit = null; render(); return true; }
+  const edit = t('[data-psc-contact-edit]');
+  if (edit) { pscContactEdit = { accountId: edit.dataset.pcAccount, fromOrgId: edit.dataset.pcOrg }; render(); return true; }
+  const addB = t('[data-psc-contact-add]');
+  if (addB) { addB.disabled = true; await post('/api/psc/contacts/add', { accountId: addB.dataset.pcAccount, orgId: addB.dataset.pcOrg }, 'Added in Jira'); return true; }
+  const rem = t('[data-psc-contact-remove]');
+  if (rem) {
+    if (!confirm('Take them out of this Organization? If they\'re in it in Jira, they\'re taken out there too.')) return true;
+    await post('/api/psc/contacts/remove', { accountId: rem.dataset.pcAccount, orgId: rem.dataset.pcOrg }, 'Done'); return true;
+  }
+  const mv = t('[data-psc-contact-move]');
+  if (mv) {
+    const name = (view.querySelector('[data-psc-contact-org]')?.value || '').trim().toLowerCase();
+    const to = (pscOrgs?.orgs || []).find((o) => o.name.toLowerCase() === name);
+    if (!to) { toast('Choose a customer from the list'); return true; }
+    await post('/api/psc/contacts/move', { accountId: pscContactEdit.accountId, fromOrgId: pscContactEdit.fromOrgId, toOrgId: to.id }, `Moved to ${to.name}`);
+    return true;
+  }
+  return false;
 }
 
 // Customer copies: the hub sets the Automation field and asks Copy & Sync to copy each PSC
@@ -12122,6 +12215,7 @@ function pscCopySettingsHtml() {
 }
 
 async function pscSettingsClick(event) {
+  if (event.target.closest('.psc-contacts') && await pscContactsClick(event)) return true;
   const on = event.target.closest('[data-psc-copy-on]');
   if (on) {
     const want = on.dataset.pscCopyOn === '1';

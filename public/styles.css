@@ -1899,3 +1899,11 @@ body.jv-open { overflow: hidden; }
 @media (max-width: 600px) { .jv-sheet { padding: .75rem .75rem 3rem; } }
 .jv-org-pick { display: flex; gap: .5rem; margin-top: .6rem; }
 .jv-org-pick input { flex: 1; min-width: 0; }
+.jv-note { margin: .9rem 0 0; padding: .55rem .75rem; border-radius: 10px; background: #FFF8E6; border: 1px solid #F1DCA6; font-size: .92rem; }
+:where(:root[data-theme="dark"]) .jv-note { background: #2b2614; border-color: #5a4b20; }
+.psc-contact-list { list-style: none; margin: .5rem 0 0; padding: 0; }
+.psc-contact-list > li { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem 1rem; padding: .6rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.psc-contact-list > li > div:first-child { flex: 1 1 260px; }
+.psc-contact-org { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .92rem; }
+.psc-contacts .jv-org-pick { flex: 1 1 320px; margin-top: 0; align-items: center; }
+.psc-group { font-size: 1.05rem; margin: 1.1rem 0 .5rem; }

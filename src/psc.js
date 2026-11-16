@@ -6,6 +6,8 @@
 // database, so the tile opens straight away. The first look is the first time
 // an item is moved to In Progress in Jira, read from its history.
 import { jira, searchPage, customerProjects } from './jira.js';
+import * as Contacts from './psccontacts.js';
+import { staffIds } from './psccontacts.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { leadsOfTeam, canTile } from './permissions.js';
 import { orgMatcher, tokenCounts, holidaysFor, chargeOf, CHARGE } from './contracts.js';
@@ -54,7 +56,7 @@ const FULL_EVERY_MS = 24 * 3600 * 1000;
 const REFRESH_GAP_MS = 60 * 1000;
 const RECENT_DAYS = 30;
 // Moved on whenever deriveItem changes what it works out.
-const DERIVE_VERSION = '3';
+const DERIVE_VERSION = '4';
 const RUN_CALLS = 30;
 const ORGS_FOR_MS = 6 * 3600 * 1000;
 const FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', 'resolutiondate', 'assignee', 'reporter', 'priority', ORG_FIELD, CHARGE_FIELD, 'comment', 'parent', 'issuelinks'];
@@ -141,15 +143,36 @@ export function adfText(node) {
   return ['paragraph', 'heading', 'listItem', 'blockquote'].includes(node.type) ? `${inner}\n` : inner;
 }
 
-const isTeam = (u) => u?.accountType === 'atlassian';
+const isJiraUser = (u) => u?.accountType === 'atlassian';
+const isTeam = isJiraUser;
 const isApp = (u) => u?.accountType === 'app';
 const orgNames = (v) => (Array.isArray(v) ? v : v ? [v] : []).map((o) => (typeof o === 'object' ? o.name ?? o.value : o)).filter(Boolean).map(String);
 
-// The first look is the first time the item was moved to an In Progress status,
-// whoever (or whatever) moved it. One closed without ever being In Progress
-// counts from when it was closed; one raised straight into In Progress, from when it was raised.
+// The first look is the first time someone at Promtek replied or added an internal note,
+// changed the description, or the item was moved to an In Progress status (whoever, or
+// whatever, moved it), whichever came first. One closed without any of those counts from
+// when it was closed; one raised straight into In Progress, from when it was raised.
 export const IN_PROGRESS = /in progress/i;
-export function firstLook(issue) {
+export function firstLook(issue, isUs = isTeam) {
+  const f = issue.fields || {};
+  const looks = [];
+  for (const c of f.comment?.comments || []) {
+    if (isApp(c.author) || !isUs(c.author)) continue;
+    looks.push({ at: c.created, by: c.author?.displayName || 'Someone', how: c.jsdPublic === false ? 'added an internal note' : 'commented' });
+  }
+  for (const h of issue.changelog?.histories || []) {
+    if (isApp(h.author) || !isUs(h.author)) continue;
+    if ((h.items || []).some((i) => String(i.field || '').toLowerCase() === 'description')) looks.push({ at: h.created, by: h.author?.displayName || 'Someone', how: 'updated the description' });
+  }
+  const status = statusLook(issue);
+  if (status && !status.closed) looks.push(status);
+  looks.sort((a, b) => ms(a.at) - ms(b.at));
+  if (looks.length) { const { closed, ...first } = looks[0]; return first; }
+  if (status) { const { closed, ...first } = status; return first; }
+  return null;
+}
+
+function statusLook(issue) {
   const f = issue.fields || {};
   const moves = [];
   for (const h of issue.changelog?.histories || []) {
@@ -163,16 +186,19 @@ export function firstLook(issue) {
   if (!moves.length && IN_PROGRESS.test(f.status?.name || '')) return { at: f.created, by: f.reporter?.displayName || null, how: `raised it as ${f.status.name}` };
   if (f.status?.statusCategory?.key === 'done' || RESOLVED_STATUSES.includes(f.status?.name)) {
     const closed = moves.find((m) => RESOLVED_STATUSES.includes(m.to)) || moves[moves.length - 1];
-    if (closed) return { at: closed.at, by: closed.by, how: `moved it to ${closed.to}` };
-    if (f.resolutiondate) return { at: f.resolutiondate, by: null, how: 'closed it' };
+    if (closed) return { at: closed.at, by: closed.by, how: `moved it to ${closed.to}`, closed: true };
+    if (f.resolutiondate) return { at: f.resolutiondate, by: null, how: 'closed it', closed: true };
   }
   return null;
 }
 
 // The team's first and last touch, the customer's last word, and a short history.
-export function deriveItem(issue, now = new Date().toISOString()) {
+// staff: the Jira account IDs of everyone at Promtek. Customers on a customer project can
+// have full Jira accounts too, so without it anyone with one counts as the team.
+export function deriveItem(issue, now = new Date().toISOString(), staff = null) {
   const f = issue.fields || {};
   const created = f.created;
+  const isTeam = staff?.size ? (u) => Boolean(u?.accountId) && staff.has(String(u.accountId)) : isJiraUser;
   const reporterTeam = isTeam(f.reporter);
   const events = [{ at: created, by: f.reporter?.displayName || 'Unknown', team: reporterTeam, kind: 'created', text: 'Raised' }];
   for (const c of f.comment?.comments || []) {
@@ -190,7 +216,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
   }
   events.sort((a, b) => ms(a.at) - ms(b.at));
   const team = events.filter((e) => e.team && (e.kind !== 'created'));
-  const first = firstLook(issue);
+  const first = firstLook(issue, isTeam);
   const lastTeam = reporterTeam ? [events[0], ...team].pop() : team[team.length - 1];
   const customer = events.filter((e) => !e.team && (e.kind === 'comment' || e.kind === 'created'));
   const lastCustomer = customer[customer.length - 1];
@@ -208,6 +234,7 @@ export function deriveItem(issue, now = new Date().toISOString()) {
     assignee_id: f.assignee?.accountId || null,
     assignee_name: f.assignee?.displayName || null,
     reporter_name: f.reporter?.displayName || null,
+    reporter_id: f.reporter?.accountId || null,
     reporter_team: reporterTeam ? 1 : 0,
     created_at: created,
     updated_at: f.updated || null,
@@ -228,10 +255,20 @@ export function deriveItem(issue, now = new Date().toISOString()) {
   };
 }
 
+let reporterIdCol = null;
+async function hasReporterId(env) {
+  if (reporterIdCol === null) {
+    reporterIdCol = await env.DB.prepare('SELECT reporter_id FROM psc_items LIMIT 1').all().then(() => true, () => false);
+  }
+  return reporterIdCol;
+}
+
 async function saveItems(env, rows) {
   const cols = ['issue_id', 'issue_key', 'project_key', 'org', 'summary', 'issuetype', 'status', 'done', 'priority', 'assignee_id', 'assignee_name',
     'reporter_name', 'reporter_team', 'created_at', 'updated_at', 'resolved_at', 'team_first_at', 'team_first_by', 'team_first_how', 'team_last_at',
     'team_last_by', 'team_last_what', 'customer_last_at', 'customer_last_by', 'timeline', 'links', 'parent_key', 'chargeable', 'synced_at'];
+  // Until schema-060.sql has been run there's no reporter_id column; items save without it.
+  if (await hasReporterId(env)) cols.push('reporter_id');
   const sql = `INSERT INTO psc_items (${cols.join(', ')}) VALUES (${placeholders(cols.length)})
     ON CONFLICT(issue_id) DO UPDATE SET ${cols.slice(1).map((c) => `${c} = excluded.${c}`).join(', ')}`;
   for (const part of chunk(rows, 40)) await env.DB.batch(part.map((r) => env.DB.prepare(sql).bind(...cols.map((c) => r[c] ?? null))));
@@ -268,6 +305,7 @@ export const BASE_JQL = `issuetype in (${quoted(PSC_TYPES)}) AND (statusCategory
 // can be bigger than one run's calls, so it remembers where it got to and the
 // next run carries on from there.
 async function readPages(env, b, jql, { resumeKey = null, started }) {
+  const staff = await staffIds(env);
   let token = resumeKey ? (await getState(env, resumeKey)) || null : null;
   let count = 0;
   for (;;) {
@@ -281,7 +319,7 @@ async function readPages(env, b, jql, { resumeKey = null, started }) {
       if (token && resumeKey && err.status === 400) { await setState(env, resumeKey, ''); token = null; continue; }
       throw err;
     }
-    const rows = (data.issues || []).map((i) => deriveItem(i, started));
+    const rows = (data.issues || []).map((i) => deriveItem(i, started, staff));
     await saveItems(env, rows);
     count += rows.length;
     token = data.nextPageToken || null;
@@ -329,7 +367,7 @@ export async function sync(env, b, { full = false } = {}) {
 
 async function refreshOne(env, b, key) {
   const issue = await b.call(`/rest/api/3/issue/${key}?fields=${FIELDS.join(',')}&expand=changelog`);
-  await saveItems(env, [deriveItem(issue)]);
+  await saveItems(env, [deriveItem(issue, undefined, await staffIds(env))]);
 }
 
 // ---------- writing to Jira, safely ----------
@@ -790,6 +828,11 @@ export async function run(env, { force = false } = {}) {
       || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= ALERTS_EVERY_MS));
     // PSC tickets with an Organization and no customer copy yet: have them copied.
     if (!stillReading) out.copies = await autoCopy(env, b, await context(env));
+    // Customers who aren't in their ticket's Organization in Jira.
+    if (!stillReading && b.left() > 6) {
+      try { out.contacts = await Contacts.run(env, b, (await context(env)).items, await organizations(env)); }
+      catch (err) { if (err instanceof OutOfCalls) throw err; out.contactsError = err.message; }
+    }
     if ((await getState(env, 'psc_unlink'))?.includes('"done":false') && b.left() > 4) out.unlink = await unlinkStep(env, budget(env, Math.min(20, b.left())));
     if (alertsDue) {
       await alerts(env, await context(env));
@@ -886,7 +929,7 @@ export async function saveSettings(env, viewer, input) {
 const AUTOMATION_FIELD = 'customfield_14981';
 const SKIP_TYPE_IDS = ['13031'];
 const COPY_PER_RUN = 5;
-export const COPY_RECIPE = (env) => env.COPYSYNC_RECIPE || 'RECIPE_86901517-66df-45c2-b1e4-fe341068f37e';
+export const COPY_RECIPE = (env) => env.COPYSYNC_RECIPE || 'RECIPE_e3e97e4e-2f15-44fb-8eec-76f427acd9f1';
 const COPY_URL = (env) => env.COPYSYNC_URL || 'https://de-copyandsync.elements-apps.com/api/public/copy';
 
 export async function copyOnSince(env) { return (await getState(env, 'psc_copy_on')) || ''; }
