@@ -1,8 +1,10 @@
 // Time logged beyond someone's contracted hours for the week earns 1.5x XP, and
 // their team leads hear when they first go over. A week runs Monday to Sunday;
-// the worklogs latest in the week are the ones over the line.
+// the worklogs latest in the week are the ones over the line. Lunch and breaks (PMB-1)
+// aren't working time, so they don't count towards the week's hours.
 import { weekHoursOf } from './hours.js';
 import { teamsOf, leadsOfTeam } from './permissions.js';
+import { lunchIssueId } from './specialitems.js';
 
 export const OVERTIME_MULTIPLIER = 1.5;
 const DAY_MS = 86_400_000;
@@ -36,6 +38,7 @@ export async function applyOvertime(env, weeks) {
   const seen = new Set();
   let changed = 0;
   const thisMonday = mondayOfDay(londonDay(Date.now()));
+  const lunch = await lunchIssueId(env).catch(() => null);
   for (const w of weeks) {
     const k = `${w.accountId}|${w.monday}`;
     if (!w.accountId || !w.monday || w.monday < from || seen.has(k)) continue;
@@ -44,15 +47,16 @@ export async function applyOvertime(env, weeks) {
     if (!emp) continue;
     const limit = weekHoursOf(emp) * 3600;
     const { results } = await env.DB.prepare(
-      `SELECT worklog_id, seconds, rate, xp, overtime_seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?
+      `SELECT worklog_id, issue_id, seconds, rate, xp, overtime_seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?
         ORDER BY work_date, COALESCE(start_time, '99:99'), logged_at, worklog_id`
     ).bind(w.accountId, w.monday, addDays(w.monday, 6)).all();
     let total = 0;
     const stmts = [];
     for (const r of results) {
+      const isLunch = lunch && String(r.issue_id) === String(lunch);
       const before = total;
-      total += r.seconds;
-      const ot = Math.max(0, total - Math.max(limit, before));
+      if (!isLunch) total += r.seconds;
+      const ot = isLunch ? 0 : Math.max(0, total - Math.max(limit, before));
       const xp = xpWith(r.rate, r.seconds, ot);
       if (ot !== (r.overtime_seconds || 0) || xp !== r.xp) {
         stmts.push(env.DB.prepare('UPDATE xp_ledger SET overtime_seconds = ?, xp = ? WHERE worklog_id = ?').bind(ot, xp, r.worklog_id));
@@ -85,11 +89,12 @@ export async function overForLead(env, viewer, today) {
   const leads = viewer.leads || [];
   if (!leads.length) return [];
   const monday = mondayOfDay(today);
+  const lunch = await lunchIssueId(env).catch(() => null);
   const { results } = await env.DB.prepare(
-    `SELECT e.account_id, e.name, e.teams, e.team, e.weekly_hours, SUM(l.seconds) AS seconds, SUM(l.overtime_seconds) AS ot
+    `SELECT e.account_id, e.name, e.teams, e.team, e.weekly_hours, SUM(CASE WHEN l.issue_id = ? THEN 0 ELSE l.seconds END) AS seconds, SUM(l.overtime_seconds) AS ot
        FROM employees e JOIN xp_ledger l ON l.account_id = e.account_id AND l.work_date BETWEEN ? AND ?
       WHERE e.active = 1 AND e.account_id != ? GROUP BY e.account_id`
-  ).bind(monday, today, viewer.accountId || '').all();
+  ).bind(lunch || '', monday, today, viewer.accountId || '').all();
   return results.filter((e) => teamsOf(e).some((t) => leads.includes(t)) && e.seconds > weekHoursOf(e) * 3600)
     .map((e) => ({ accountId: e.account_id, name: e.name, seconds: e.seconds, limit: weekHoursOf(e) * 3600, monday }));
 }

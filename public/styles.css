@@ -1766,6 +1766,13 @@ td.bad, .toil-num.bad { color: var(--danger); }
 :where(:root[data-theme="dark"]) .badge.less { background: #22303b; color: #95aab9; }
 :where(:root[data-theme="dark"]) .bonus-box { border-color: #2d6b4b; background: #12261c; }
 
+.chart .seg-log.lunch { background: repeating-linear-gradient(135deg, #c7d3dc 0 5px, #dde6ec 5px 10px); }
+.dt-block.lunch { background: repeating-linear-gradient(135deg, #b5c4cf 0 5px, #cbd7df 5px 10px); color: #3d5363; }
+.toil-missing { display: grid; gap: .2rem; margin: -.25rem 0 .9rem; padding: .7rem .85rem; border-radius: 12px; background: #fdecea; color: #8c1d18; border: 1px solid #f3c2bd; font-size: .92rem; }
+:where(:root[data-theme="dark"]) .chart .seg-log.lunch { background: repeating-linear-gradient(135deg, #3a4b58 0 5px, #2c3a45 5px 10px); }
+:where(:root[data-theme="dark"]) .dt-block.lunch { background: repeating-linear-gradient(135deg, #3a4b58 0 5px, #2c3a45 5px 10px); color: #c6d3dc; }
+:where(:root[data-theme="dark"]) .toil-missing { background: #3a1c1a; color: #f4b7b1; border-color: #6a2e29; }
+
 /* ---------- Dark mode: generated from the colours above ---------- */
 :where(:root[data-theme="dark"]) :focus-visible { outline: 3px solid #326173; }
 :where(:root[data-theme="dark"]) .skip:focus { background: var(--surface); }

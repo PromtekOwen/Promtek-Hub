@@ -229,35 +229,40 @@ export async function raiseAlert(env, { kind, dedupe, subject, body, recipient =
   ).bind(kind, dedupe, subject, body, recipient, new Date().toISOString()).run();
 }
 
-// Once a day, every item with time logged in the last 90 days has its XP Rate read again
-// from Jira. Where it no longer matches what the time on it earned with (set or changed in
-// Jira after the time went in, say), that time's XP is worked out again.
+// XP Rates over time. Each item's XP Rate history is read from Jira (its changelog), so time
+// earns the rate the item had on the day it was logged. Once a day the items with time in the
+// last 90 days are checked; Admin can also have every item ever logged to checked, a batch per run.
 const RATE_CHECK_DAYS = 90;
-const RATE_CHECK_CALLS = 10;
-export async function checkXpRates(env, { force = false } = {}) {
-  const today = londonDate();
-  if (!force && (await getState(env, 'xp_rate_check')) === today) return { idle: true };
-  await setState(env, 'xp_rate_check', today);
-  const from = londonDate(Date.now() - RATE_CHECK_DAYS * 86_400_000);
-  const { results } = await env.DB.prepare(
-    'SELECT issue_id, work_date, COALESCE(override, 1) AS override FROM xp_ledger WHERE work_date >= ? GROUP BY issue_id, work_date, COALESCE(override, 1)'
-  ).bind(from).all();
+const RATE_STEP_ITEMS = 100;
+
+// Checks these items: reads their XP Rate history and current rate from Jira, and works out
+// again any time that earned at a rate other than the one the item had on its day.
+async function rateStep(env, ids) {
+  if (!ids.length) return { checked: 0, items: 0, fixed: 0, keys: [] };
   const earned = new Map();
-  for (const r of results) (earned.get(String(r.issue_id)) || earned.set(String(r.issue_id), []).get(String(r.issue_id))).push(r);
-  const ids = [...earned.keys()];
+  for (const part of chunk(ids, CHUNK)) {
+    const { results } = await env.DB.prepare(
+      `SELECT issue_id, work_date, COALESCE(override, 1) AS override FROM xp_ledger WHERE issue_id IN (${placeholders(part.length)})
+        GROUP BY issue_id, work_date, COALESCE(override, 1)`
+    ).bind(...part).all();
+    for (const r of results) (earned.get(String(r.issue_id)) || earned.set(String(r.issue_id), []).get(String(r.issue_id))).push(r);
+  }
+  const { syncRateHistory } = await import('./xprates.js');
+  await syncRateHistory(env, ids).catch((err) => console.warn('XP Rate history not read:', err.message));
   const history = await historyFor(env, ids);
   const fields = ['summary', 'parent', eloField(env), xpRateField(env)];
   const stale = [];
-  let calls = 0;
+  const keys = [];
   for (const part of chunk(ids, CHUNK)) {
-    if (calls++ >= RATE_CHECK_CALLS) break;
     let issues;
     try { issues = await searchJql(env, `id in (${part.join(',')})`, fields); } catch { continue; }
     const stmts = [];
     for (const issue of issues) {
       const job = jobFromIssue(env, issue);
       const had = earned.get(job.issue_id) || [];
-      if (had.some((r) => Number(r.override) !== (rateFor(history.get(job.issue_id), r.work_date, job.xp_override ?? 1) ?? 1))) stale.push(job.issue_id);
+      if (had.some((r) => Number(r.override) !== (rateFor(history.get(job.issue_id), r.work_date, job.xp_override ?? 1) ?? 1))) {
+        stale.push(job.issue_id); keys.push(job.issue_key);
+      }
       stmts.push(env.DB.prepare(
         `INSERT INTO jobs (issue_id, issue_key, summary, job_elo, xp_override, parent_id, fetched_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -268,7 +273,6 @@ export async function checkXpRates(env, { force = false } = {}) {
     }
     await runBatches(env, stmts);
   }
-  if (!stale.length) return { checked: ids.length, fixed: 0 };
   // The jobs were just read, so the time on them is worked out again without asking Jira twice.
   let changed = 0;
   for (const part of chunk(stale, CHUNK)) {
@@ -280,7 +284,67 @@ export async function checkXpRates(env, { force = false } = {}) {
       seconds: r.seconds, description: r.description || '', loggedAt: r.logged_at, startTime: r.start_time }));
     if (wls.length) changed += (await processWorklogs(env, wls, { backfill: true })).changed;
   }
-  return { checked: ids.length, items: stale.length, fixed: changed };
+  return { checked: ids.length, items: stale.length, fixed: changed, keys };
+}
+
+export async function checkXpRates(env, { force = false } = {}) {
+  const today = londonDate();
+  if (!force && (await getState(env, 'xp_rate_check')) === today) return { idle: true };
+  await setState(env, 'xp_rate_check', today);
+  const from = londonDate(Date.now() - RATE_CHECK_DAYS * 86_400_000);
+  const { results } = await env.DB.prepare('SELECT DISTINCT issue_id FROM xp_ledger WHERE work_date >= ?').bind(from).all();
+  const ids = results.map((r) => String(r.issue_id));
+  const out = { checked: 0, items: 0, fixed: 0, keys: [] };
+  // Kept to a few hundred items a run, well inside the outside calls a run may make.
+  for (const part of chunk(ids, RATE_STEP_ITEMS).slice(0, 3)) {
+    const r = await rateStep(env, part);
+    out.checked += r.checked; out.items += r.items; out.fixed += r.fixed; out.keys.push(...r.keys);
+  }
+  return { ...out, field: xpRateField(env) };
+}
+
+// Once, after lunch stopped counting towards the week's hours: every week since overtime
+// started is worked out again, so lunch never pushed anyone into 1.5x XP.
+async function overtimeWithoutLunch(env) {
+  if (await getState(env, 'overtime_lunch_fix')) return { idle: true };
+  const from = (await getState(env, 'overtime_from')) || londonDate();
+  const { results } = await env.DB.prepare('SELECT DISTINCT account_id, work_date FROM xp_ledger WHERE work_date >= ?').bind(from).all();
+  const weeks = [...new Map(results.map((r) => { const monday = mondayOfDay(r.work_date); return [`${r.account_id}|${monday}`, { accountId: r.account_id, monday }]; })).values()];
+  const r = await applyOvertime(env, weeks);
+  await setState(env, 'overtime_lunch_fix', new Date().toISOString());
+  if (r.changed) await ledgerChanged(env);
+  return { weeks: weeks.length, changed: r.changed };
+}
+
+// Every item ever logged to, checked a batch per run until done.
+export async function startRateBackdate(env) {
+  const saved = await rateBackdateStatus(env);
+  if (saved.running) return saved;
+  const { results } = await env.DB.prepare('SELECT DISTINCT issue_id FROM xp_ledger').all();
+  const job = { ids: results.map((r) => String(r.issue_id)), total: results.length, done: 0, items: 0, fixed: 0, keys: [], started: new Date().toISOString() };
+  await setState(env, 'xp_rate_backdate', JSON.stringify(job));
+  return rateBackdateStep(env);
+}
+
+export async function rateBackdateStatus(env) {
+  let job = null;
+  try { job = JSON.parse((await getState(env, 'xp_rate_backdate')) || 'null'); } catch { /* none */ }
+  if (!job) return { running: false };
+  return { running: job.ids.length > 0, total: job.total, done: job.done, items: job.items, fixed: job.fixed, keys: job.keys.slice(0, 30),
+    started: job.started, finished: job.finished || null, field: xpRateField(env) };
+}
+
+export async function rateBackdateStep(env) {
+  let job = null;
+  try { job = JSON.parse((await getState(env, 'xp_rate_backdate')) || 'null'); } catch { /* none */ }
+  if (!job || !job.ids.length) return { idle: true, ...(await rateBackdateStatus(env)) };
+  const part = job.ids.slice(0, RATE_STEP_ITEMS);
+  const r = await rateStep(env, part);
+  job.ids = job.ids.slice(part.length);
+  job.done += part.length; job.items += r.items; job.fixed += r.fixed; job.keys = [...new Set([...job.keys, ...r.keys])].slice(0, 200);
+  if (!job.ids.length) job.finished = new Date().toISOString();
+  await setState(env, 'xp_rate_backdate', JSON.stringify(job));
+  return rateBackdateStatus(env);
 }
 
 // Recalculates XP already earned on these issues, keeping each worklog's
@@ -578,6 +642,8 @@ export async function runScheduled(rawEnv) {
   await attempt('Time logged ahead', () => catchUpToday(env));
   // While XP is being backdated, a few more past days are read on every run.
   await attempt('XP backdate', async () => (await import('./backdate.js')).step(env));
+  await attempt('XP rate history', () => rateBackdateStep(env));
+  await attempt('Overtime without lunch', () => overtimeWithoutLunch(env));
   // New time puts its author in Promtek Staff Involved within minutes, a few at a time
   // so the job that follows still has its calls. Its own turn below clears any backlog.
   await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });

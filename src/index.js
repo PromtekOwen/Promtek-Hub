@@ -1143,6 +1143,8 @@ async function route(request, env, url, user) {
 
     if (method === 'POST' && pathname === '/api/admin/sync-now') return json(await pollRecent(env, { force: true }));
     if (method === 'POST' && pathname === '/api/admin/xp-rate-check') return json(await (await import('./sync.js')).checkXpRates(env, { force: true }));
+    if (method === 'POST' && pathname === '/api/admin/xp-rate-backdate') return json(await (await import('./sync.js')).startRateBackdate(env));
+    if (method === 'GET' && pathname === '/api/admin/xp-rate-backdate') return json(await (await import('./sync.js')).rateBackdateStatus(env));
     if (method === 'GET' && pathname === '/api/admin/usage') {
       if (!user.isAdmin) return json({ error: 'Admins only.' }, 403);
       return json(await (await import('./usage.js')).report(env, { days: url.searchParams.get('days') }));
@@ -1212,9 +1214,10 @@ async function getMe(env, user) {
   const today = londonDate();
   const [totals, week, recent] = await Promise.all([
     env.DB.prepare('SELECT COALESCE(SUM(xp), 0) AS xp FROM xp_ledger WHERE account_id = ?').bind(emp.account_id).first(),
-    env.DB.prepare(
-      'SELECT COALESCE(SUM(xp), 0) AS xp, COALESCE(SUM(seconds), 0) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?'
-    ).bind(emp.account_id, monday, today).first(),
+    // Lunch and breaks aren't working time, so they're left out of the week's hours.
+    (async () => env.DB.prepare(
+      'SELECT COALESCE(SUM(xp), 0) AS xp, COALESCE(SUM(CASE WHEN issue_id = ? THEN 0 ELSE seconds END), 0) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?'
+    ).bind((await (await import('./specialitems.js')).lunchIssueId(env)) || '', emp.account_id, monday, today).first())(),
     env.DB.prepare(
       `SELECT l.worklog_id, l.work_date, l.seconds, l.description, l.job_elo, l.engineer_elo, l.override, l.rate, l.xp, l.overtime_seconds,
               j.issue_key, j.summary

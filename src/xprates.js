@@ -20,7 +20,7 @@ const placeholders = (n) => Array(n).fill('?').join(',');
 // latest, Jira's own (the same, unless someone has changed it in Jira since).
 export function rateFor(history, date, jiraRate) {
   if (!history?.length) return jiraRate;
-  const sorted = [...history].sort((a, b) => (a.from_date === b.from_date ? a.id - b.id : a.from_date.localeCompare(b.from_date)));
+  const sorted = [...history].sort((a, b) => (a.from_date === b.from_date ? String(a.set_at || '').localeCompare(String(b.set_at || '')) || a.id - b.id : a.from_date.localeCompare(b.from_date)));
   if (date < sorted[0].from_date) return sorted[0].previous ?? jiraRate;
   for (let i = 0; i < sorted.length - 1; i++) if (date >= sorted[i].from_date && date < sorted[i + 1].from_date) return sorted[i].rate;
   return jiraRate;
@@ -36,6 +36,69 @@ export async function historyFor(env, issueIds) {
     for (const r of results) (map.get(r.issue_id) || map.set(r.issue_id, []).get(r.issue_id)).push(r);
   }
   return map;
+}
+
+// Each item's XP Rate changes as Jira recorded them, kept alongside the hub's own so time
+// earns what the item paid on its day. A change made "for time already logged too" in the hub
+// wins over anything Jira recorded before it.
+const dayOf = (iso) => londonDate(Date.parse(iso));
+const rateOf = (v) => { const x = parseFloat(v); return Number.isFinite(x) ? x : 1; };
+
+async function changelogs(env, ids) {
+  const field = xpRateField(env);
+  const out = new Map();
+  const add = (issueId, histories) => {
+    for (const h of histories || []) for (const it of h.items || []) {
+      if ((it.fieldId || it.field) !== field && it.fieldId !== field) continue;
+      (out.get(String(issueId)) || out.set(String(issueId), []).get(String(issueId)))
+        .push({ at: h.created, from: rateOf(it.fromString ?? it.from), to: rateOf(it.toString ?? it.to) });
+    }
+  };
+  // Jira can hand back many items' history in one go.
+  try {
+    for (let i = 0; i < ids.length; i += 1000) {
+      let token = null; let pages = 0;
+      do {
+        const data = await jira(env, '/rest/api/3/changelog/bulkfetch', { method: 'POST',
+          body: JSON.stringify({ issueIdsOrKeys: ids.slice(i, i + 1000), fieldIds: [field], maxResults: 1000, ...(token ? { nextPageToken: token } : {}) }) });
+        for (const log of data?.issueChangeLogs || []) add(log.issueId, log.changeHistories);
+        token = data?.nextPageToken || null;
+      } while (token && ++pages < 10);
+    }
+    return out;
+  } catch (err) {
+    if (err.status && err.status !== 404 && err.status !== 405) throw err;
+  }
+  // Otherwise one item at a time, as many as a run allows.
+  for (const id of ids.slice(0, 20)) {
+    const data = await jira(env, `/rest/api/3/issue/${encodeURIComponent(id)}/changelog?maxResults=100`).catch(() => null);
+    add(id, data?.values);
+  }
+  return out;
+}
+
+export async function syncRateHistory(env, issueIds) {
+  const ids = [...new Set(issueIds.map(String))].filter((id) => /^\d{1,20}$/.test(id));
+  if (!ids.length) return { items: 0 };
+  const logs = await changelogs(env, ids);
+  const existing = await historyFor(env, ids);
+  const stmts = [];
+  for (const id of ids) {
+    const hub = (existing.get(id) || []).filter((h) => h.set_by !== 'jira');
+    const resetAt = hub.filter((h) => h.from_date === '0000-01-01').map((h) => h.set_at).sort().pop() || '';
+    stmts.push(env.DB.prepare("DELETE FROM xp_rate_history WHERE issue_id = ? AND set_by = 'jira'").bind(id));
+    const changes = (logs.get(id) || []).sort((a, b) => a.at.localeCompare(b.at));
+    for (const c of changes) {
+      const day = dayOf(c.at);
+      if (resetAt && c.at <= resetAt) continue;
+      if (hub.some((h) => h.from_date === day && Math.abs(h.rate - c.to) < 1e-9)) continue;
+      stmts.push(env.DB.prepare(
+        `INSERT INTO xp_rate_history (issue_id, issue_key, summary, rate, previous, from_date, note, set_by, set_by_name, set_at) VALUES (?, NULL, NULL, ?, ?, ?, NULL, 'jira', 'Changed in Jira', ?)`
+      ).bind(id, c.to, c.from, day, c.at));
+    }
+  }
+  for (let i = 0; i < stmts.length; i += 50) await env.DB.batch(stmts.slice(i, i + 50));
+  return { items: logs.size };
 }
 
 const shape = (issue, env) => {
@@ -54,7 +117,7 @@ export async function list(env) {
 }
 
 async function recentChanges(env) {
-  const { results } = await env.DB.prepare('SELECT * FROM xp_rate_history ORDER BY id DESC LIMIT 30').all().catch(() => ({ results: [] }));
+  const { results } = await env.DB.prepare("SELECT * FROM xp_rate_history WHERE set_by IS NOT 'jira' ORDER BY id DESC LIMIT 30").all().catch(() => ({ results: [] }));
   return results.map((r) => ({ key: r.issue_key, summary: r.summary, rate: r.rate, previous: r.previous, from: r.from_date, by: r.set_by_name, at: r.set_at, note: r.note }));
 }
 

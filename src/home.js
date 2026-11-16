@@ -280,9 +280,11 @@ async function weekSoFar(env, viewer) {
   const monday = mondayOf(today);
   const all = Array.from({ length: 7 }, (_, i) => new Date(Date.parse(`${monday}T12:00:00Z`) + i * DAY_MS).toISOString().slice(0, 10));
   if (!viewer.accountId) return null;
+  // Lunch and breaks aren't working time.
+  const lunch = (await (await import('./specialitems.js')).lunchIssueId(env).catch(() => null)) || '';
   const { results } = await env.DB.prepare(
-    'SELECT work_date, SUM(seconds) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ? GROUP BY work_date'
-  ).bind(viewer.accountId, monday, today).all();
+    'SELECT work_date, SUM(CASE WHEN issue_id = ? THEN 0 ELSE seconds END) AS seconds FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ? GROUP BY work_date'
+  ).bind(lunch, viewer.accountId, monday, today).all();
   const by = new Map(results.map((r) => [r.work_date, r.seconds]));
   const workDays = workDaysOf(viewer.employee?.work_days);
   const days = daysToShow(all, workDays, by);

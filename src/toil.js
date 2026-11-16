@@ -2,12 +2,15 @@
 // their contracted hours adds to it, and a working day short of the daily share of
 // those hours takes the difference off. Time logged to the TOIL item (PMB-25) is
 // time off being taken, so it doesn't count as worked and comes off the balance.
+// Lunch and breaks (PMB-1) aren't working time, so they never count.
 //
-// The balance runs from when they started logging consistently: the working day
-// after the latest working day, before this week, with nothing logged at all.
+// The balance runs from when they started logging time consistently, so the weeks
+// before anyone used Tempo don't count against them. After that, a working day with
+// nothing logged is a full day short, and they're told how much those days took off.
 // Admins can add or take off hours, to bring in balances kept elsewhere or put one right.
 import { getIssue } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
+import { lunchIssueId } from './specialitems.js';
 import { weekHoursOf, workDaysOf, weekdayOf } from './hours.js';
 import { record } from './audit.js';
 
@@ -42,26 +45,37 @@ export function dayChange({ date, total, toil, workDay, daily, today }) {
   return total >= daily ? worked - daily : 0 - toil;
 }
 
-// Where the balance starts: the working day after the latest working day, before
-// this week, with no time logged at all.
+// Where the balance starts: the first working day with time logged that begins a
+// steady run of logging, at least three working days in four over the next four weeks
+// (or up to today, if that's sooner). A few logs here and there while people were still
+// getting used to Tempo don't start it; a gap later on doesn't restart it.
+export const STEADY_DAYS = 20;
+export const STEADY_SHARE = 0.75;
 export function startOf({ days, workDays, floor, today }) {
-  const monday = mondayOfDay(today);
-  for (let d = addDays(monday, -1), n = 0; d >= floor && n < LOOK_BACK_DAYS; d = addDays(d, -1), n++) {
-    if (workDays.includes(weekdayOf(d)) && !(days.get(d)?.total > 0)) return addDays(d, 1);
+  const working = [];
+  for (let d = floor; d < today; d = addDays(d, 1)) if (workDays.includes(weekdayOf(d))) working.push(d);
+  const logged = working.map((d) => (days.get(d)?.total || 0) > 0);
+  for (let i = 0; i < working.length; i++) {
+    if (!logged[i]) continue;
+    const window = logged.slice(i, i + STEADY_DAYS);
+    if (window.filter(Boolean).length >= Math.ceil(window.length * STEADY_SHARE)) return working[i];
   }
-  return floor;
+  // Nobody steady yet: from today, so nothing counts against them.
+  return today;
 }
 
-export async function balanceFor(env, emp, { today = londonDate(), toilId } = {}) {
+export async function balanceFor(env, emp, { today = londonDate(), toilId, lunchId } = {}) {
   if (!emp?.account_id) return null;
   const ledgerStart = (await getState(env, 'ledger_start')) || addDays(today, -LOOK_BACK_DAYS);
   const lookBack = addDays(today, -LOOK_BACK_DAYS);
   const floor = [ledgerStart, emp.start_date || '', lookBack].sort().pop();
   const id = toilId === undefined ? await toilIssueId(env) : toilId;
+  const lunch = lunchId === undefined ? await lunchIssueId(env) : lunchId;
   const { results } = await env.DB.prepare(
-    `SELECT work_date, SUM(seconds) AS total, SUM(CASE WHEN issue_id = ? THEN seconds ELSE 0 END) AS toil
+    `SELECT work_date, SUM(CASE WHEN issue_id = ? THEN 0 ELSE seconds END) AS total, SUM(CASE WHEN issue_id = ? THEN seconds ELSE 0 END) AS toil,
+            SUM(CASE WHEN issue_id = ? THEN seconds ELSE 0 END) AS lunch
        FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ? GROUP BY work_date`
-  ).bind(id || '', emp.account_id, floor, today).all();
+  ).bind(lunch || '', id || '', lunch || '', emp.account_id, floor, today).all();
   const days = new Map(results.map((r) => [r.work_date, { total: r.total || 0, toil: r.toil || 0 }]));
   const workDays = workDaysOf(emp.work_days);
   const daily = dailySecondsOf(emp);
@@ -70,9 +84,13 @@ export async function balanceFor(env, emp, { today = londonDate(), toilId } = {}
   const weeks = new Map();
   let worked = 0;
   let taken = 0;
+  // Working days since the start with nothing logged at all: each takes a full day off.
+  const missing = [];
   for (let d = start; d <= today; d = addDays(d, 1)) {
     const day = days.get(d) || { total: 0, toil: 0 };
-    const change = dayChange({ date: d, total: day.total, toil: day.toil, workDay: workDays.includes(weekdayOf(d)), daily, today });
+    const workDay = workDays.includes(weekdayOf(d));
+    if (workDay && d < today && !(day.total > 0)) missing.push(d);
+    const change = dayChange({ date: d, total: day.total, toil: day.toil, workDay, daily, today });
     const monday = mondayOfDay(d);
     const w = weeks.get(monday) || { monday, logged: 0, toil: 0, change: 0 };
     w.logged += day.total; w.toil += day.toil; w.change += change;
@@ -89,6 +107,8 @@ export async function balanceFor(env, emp, { today = londonDate(), toilId } = {}
   return {
     start, today, dailySeconds: daily, weekSeconds: Math.round(weekHoursOf(emp) * 3600), workDays,
     seconds: worked - taken + adjusted, overtimeSeconds: worked, toilSeconds: taken, adjustedSeconds: adjusted,
+    missing: { days: missing.length, seconds: missing.length * daily, dates: missing.slice(-30).reverse() },
+    lunchKey: 'PMB-1',
     weeks: [...weeks.values()].reverse(),
     adjustments: adjustments.map((a) => ({ id: a.id, seconds: a.seconds, date: a.effective_date, note: a.note, by: a.created_by_name, at: a.created_at, counted: a.effective_date >= start })),
     toilKey: TOIL_KEY,
@@ -106,11 +126,13 @@ export async function mine(env, viewer) {
 export async function overview(env) {
   const { results } = await env.DB.prepare("SELECT * FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%' ORDER BY name").all();
   const toilId = await toilIssueId(env);
+  const lunchId = await lunchIssueId(env);
   const today = londonDate();
   const people = [];
   for (const e of results) {
-    const b = await balanceFor(env, e, { today, toilId });
-    people.push({ accountId: e.account_id, name: e.name, seconds: b.seconds, start: b.start, toilSeconds: b.toilSeconds, adjustedSeconds: b.adjustedSeconds });
+    const b = await balanceFor(env, e, { today, toilId, lunchId });
+    people.push({ accountId: e.account_id, name: e.name, seconds: b.seconds, start: b.start, toilSeconds: b.toilSeconds, adjustedSeconds: b.adjustedSeconds,
+      missingDays: b.missing.days, missingSeconds: b.missing.seconds });
   }
   return { people, toilKey: TOIL_KEY };
 }

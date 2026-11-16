@@ -296,18 +296,20 @@ const pages = {
       data.entries.forEach((e) => byDay[e.work_date]?.push(e));
       const workDays = data.workDays || '12345';
       const days = week.filter((d, i) => workDays.includes(String(i + 1)) || byDay[d].length);
-      const secs = days.map((d) => byDay[d].reduce((a, e) => a + e.seconds, 0));
+      // Lunch and breaks show in the bars but aren't working time, so they're left out of the hours.
+      const bar = days.map((d) => byDay[d].reduce((a, e) => a + e.seconds, 0));
+      const secs = days.map((d) => byDay[d].reduce((a, e) => a + (isLunch(e) ? 0 : e.seconds), 0));
       const total = secs.reduce((a, b) => a + b, 0);
       const xp = data.entries.reduce((a, e) => a + e.xp, 0);
-      const scale = Math.max(8 * 3600, ...secs);
+      const scale = Math.max(8 * 3600, ...bar);
       const today = todayIso();
       const arrow = (d) => svgIcon(d);
 
       // Each day's bar is made of its time logs, each one tappable to change it.
       const chart = days.map((d, i) => `<div class="col${d === today ? ' today' : ''}">
           <span class="h">${secs[i] ? duration(secs[i]) : ''}</span>
-          ${secs[i] ? `<span class="fill stack" style="height:${Math.max(2, (secs[i] / scale) * 100).toFixed(1)}%">${byDay[d].map((e, j) =>
-            `<button class="seg-log s${j % 4}" data-time-edit="${esc(e.worklog_id)}" style="flex-grow:${e.seconds}" title="${esc(`${e.issue_key || ''} ${e.summary || e.description || ''}`.trim())}, ${duration(e.seconds)}${e.start_time ? ` from ${e.start_time.slice(0, 5)}` : ''}" aria-label="Change ${esc(e.issue_key || 'this time log')}, ${duration(e.seconds)}"></button>`).join('')}</span>`
+          ${bar[i] ? `<span class="fill stack" style="height:${Math.max(2, (bar[i] / scale) * 100).toFixed(1)}%">${byDay[d].map((e, j) =>
+            `<button class="seg-log ${isLunch(e) ? 'lunch' : `s${j % 4}`}" data-time-edit="${esc(e.worklog_id)}" style="flex-grow:${e.seconds}" title="${esc(`${e.issue_key || ''} ${e.summary || e.description || ''}`.trim())}, ${duration(e.seconds)}${e.start_time ? ` from ${e.start_time.slice(0, 5)}` : ''}" aria-label="Change ${esc(e.issue_key || 'this time log')}, ${duration(e.seconds)}"></button>`).join('')}</span>`
             : '<span class="fill none" style="height:2%"></span>'}
           <span class="d">${dateOf(d).toLocaleDateString('en-GB', { weekday: 'short' })}</span>
         </div>`).join('');
@@ -549,6 +551,7 @@ const pages = {
           <div class="row">
             <button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
             <button class="btn secondary" data-action="xp-rate-check">Check XP rates</button>
+            <button class="btn secondary" data-action="xp-rate-backdate">Correct all past XP</button>
           </div>
           <div class="result" id="sync-result" role="status"></div>
         </div>
@@ -4110,12 +4113,15 @@ function drawLogDay() {
   host.innerHTML = dayTimelineHtml(logDay, logDraft(), timeEdit?.worklog_id || null);
 }
 
+// Lunch and breaks (PMB-1) aren't working time.
+const isLunch = (e) => (e.issue_key || e.key) === 'PMB-1';
+
 // The day as a strip of time: what's already logged, the gaps between, and the time being logged now.
 function dayTimelineHtml(day, draft, exclude) {
   const entries = day.entries.filter((e) => String(e.worklog_id) !== String(exclude))
     .map((e) => ({ id: e.worklog_id, start: minsOfTime(e.start_time) ?? 540, mins: Math.max(1, Math.round(e.seconds / 60)), key: e.issue_key || '', what: e.summary || e.description || 'Time logged' }))
     .sort((a, b) => a.start - b.start);
-  const logged = entries.reduce((t, e) => t + e.mins, 0);
+  const logged = entries.reduce((t, e) => t + (isLunch(e) ? 0 : e.mins), 0);
   const daily = Math.round((day.dailySeconds || 0) / 60);
   const ends = entries.map((e) => e.start + e.mins);
   const lo = Math.max(0, Math.floor(Math.min(8 * 60, ...entries.map((e) => e.start), draft ? draft.start : 1440) / 60) * 60);
@@ -4148,7 +4154,7 @@ function dayTimelineHtml(day, draft, exclude) {
     <p class="dt-summary">${summary}</p>
     <div class="dt-track" role="img" aria-label="${esc(summary)}">
       ${gaps.map((g) => `<span class="dt-gap" style="left:${pos(g.start)};width:${width(g.start, g.start + g.mins)}" title="Gap ${clockOf(g.start)} to ${clockOf(g.start + g.mins)}"></span>`).join('')}
-      ${entries.map((e, i) => `<span class="dt-block s${i % 4}" style="left:${pos(e.start)};width:${width(e.start, e.start + e.mins)}" title="${esc(`${clockOf(e.start)} to ${clockOf(e.start + e.mins)}, ${e.key} ${e.what}`)}"><span>${esc(e.key)}</span></span>`).join('')}
+      ${entries.map((e, i) => `<span class="dt-block ${isLunch(e) ? 'lunch' : `s${i % 4}`}" style="left:${pos(e.start)};width:${width(e.start, e.start + e.mins)}" title="${esc(`${clockOf(e.start)} to ${clockOf(e.start + e.mins)}, ${e.key} ${e.what}`)}"><span>${esc(e.key)}</span></span>`).join('')}
       ${draft && draft.mins ? `<span class="dt-draft${clash.length ? ' clash' : ''}" style="left:${pos(draft.start)};width:${width(draft.start, draft.start + draft.mins)}" title="${timeEdit ? 'This time log' : 'This time'}, ${clockOf(draft.start)} to ${clockOf(draft.start + draft.mins)}"></span>` : ''}
     </div>
     <div class="dt-ticks">${ticks.join('')}</div>
@@ -4226,7 +4232,10 @@ function toilCardHtml(t) {
   const weeks = (t.weeks || []).slice(0, 26).map((w) => `<tr><td>${shortDate(w.monday)}</td><td class="num">${duration(w.logged)}</td>
       <td class="num">${w.toil ? duration(w.toil) : '—'}</td><td class="num ${w.change < 0 ? 'bad' : w.change > 0 ? 'good' : ''}">${w.change ? signedDuration(w.change) : '0'}</td></tr>`).join('');
   const adjustments = (t.adjustments || []).filter((a) => a.counted).map((a) => `<li><strong>${signedDuration(a.seconds)}</strong> ${shortDate(a.date)}, ${esc(a.note || '')}<small class="muted"> ${esc(a.by || '')}</small></li>`).join('');
+  const miss = t.missing?.days ? `<div class="toil-missing" role="alert"><strong>${duration(t.missing.seconds)} taken off for ${t.missing.days} working day${t.missing.days === 1 ? '' : 's'} with no time logged</strong>
+      <span>${t.missing.dates.slice(0, 8).map((d) => shortDate(d)).join(', ')}${t.missing.days > 8 ? ` and ${t.missing.days - 8} more` : ''}. Log the time for ${t.missing.days === 1 ? 'it' : 'them'}, including holiday or sickness, and it comes back.</span></div>` : '';
   return `<div class="card toil-card">
+      ${miss}
       <div class="toil-head">
         <div><p class="muted" style="margin:0">Overtime balance</p>
           <p class="toil-total${tone}">${signedDuration(t.seconds)}</p></div>
@@ -4234,7 +4243,7 @@ function toilCardHtml(t) {
       </div>
       <details class="toil-more"${toilOpen ? ' open' : ''} data-toil-more>
         <summary>How it's worked out</summary>
-        <p class="help">Time over your ${duration(t.weekSeconds)} a week adds to it. A working day with less than ${duration(t.dailySeconds)} logged takes the difference off, as does time logged to ${esc(t.toilKey)} (time off in lieu). Today only counts once it's past ${duration(t.dailySeconds)}. It runs from the day after the last working day before this week with nothing logged.</p>
+        <p class="help">Time over your ${duration(t.weekSeconds)} a week adds to it. A working day with less than ${duration(t.dailySeconds)} logged takes the difference off, as does time logged to ${esc(t.toilKey)} (time off in lieu). Lunch and breaks (${esc(t.lunchKey || 'PMB-1')}) don't count. Today only counts once it's past ${duration(t.dailySeconds)}. It runs from when you started logging your time regularly; a working day since then with nothing logged takes the whole day off.</p>
         ${weeks ? `<div class="table-wrap"><table><thead><tr><th>Week of</th><th class="num">Logged</th><th class="num">TOIL</th><th class="num">Change</th></tr></thead><tbody>${weeks}</tbody></table></div>` : ''}
         ${adjustments ? `<p class="muted" style="margin:.75rem 0 .25rem">Adjustments</p><ul class="toil-adj">${adjustments}</ul>` : ''}
       </details>
@@ -4312,7 +4321,7 @@ function toilAdminHtml() {
       <button class="toil-who" data-toil-person="${esc(p.accountId)}" aria-expanded="${toilPerson?.accountId === p.accountId}">
         <span class="title">${esc(p.name)}</span>
         <span class="toil-num ${p.seconds < 0 ? 'bad' : p.seconds > 0 ? 'good' : 'muted'}">${signedDuration(p.seconds)}</span>
-        <span class="sub">Since ${shortDate(p.start)}${p.toilSeconds ? `. ${duration(p.toilSeconds)} TOIL taken` : ''}${p.adjustedSeconds ? `. ${signedDuration(p.adjustedSeconds)} adjusted` : ''}</span>
+        <span class="sub">Since ${shortDate(p.start)}${p.toilSeconds ? `. ${duration(p.toilSeconds)} TOIL taken` : ''}${p.adjustedSeconds ? `. ${signedDuration(p.adjustedSeconds)} adjusted` : ''}${p.missingDays ? `. <span class="bad">${p.missingDays} day${p.missingDays === 1 ? '' : 's'} with nothing logged (${duration(p.missingSeconds)})</span>` : ''}</span>
       </button>
       ${toilPerson?.accountId === p.accountId ? toilPersonHtml() : ''}
     </li>`).join('');
@@ -7992,7 +8001,8 @@ async function developerAdminHtml() {
         <dt>Ledger started</dt><dd>${esc(s.ledger_start || 'Not started')}</dd>
       </dl>
       <div class="row"><button class="btn secondary" data-action="sync-now">Sync Tempo now</button>
-        <button class="btn secondary" data-action="xp-rate-check">Check XP rates</button></div>
+        <button class="btn secondary" data-action="xp-rate-check">Check XP rates</button>
+        <button class="btn secondary" data-action="xp-rate-backdate">Correct all past XP</button></div>
       <div class="result" id="sync-result" role="status"></div></div>
     ${bitbucketAdminHtml(bitbucket)}
     ${readsHtml(reads)}`;
@@ -12628,8 +12638,15 @@ async function adminAction(action, button) {
       out(target, r.skipped ? r.skipped : `Checked ${r.fetched} worklogs, updated ${r.changed}.`);
     } else if (action === 'xp-rate-check') {
       const r = await api('/api/admin/xp-rate-check', { method: 'POST' });
-      out(target, r.fixed ? `Checked ${r.checked} items. ${r.items} had a different XP Rate in Jira, and ${r.fixed} time logs were worked out again.`
-        : `Checked ${r.checked} items. Every time log matches its XP Rate in Jira.`);
+      const field = r.field && r.field !== 'customfield_16566' ? ` XP Rates are read from ${r.field}, but Log time shows customfield_16566: check FIELD_XP_OVERRIDE.` : '';
+      out(target, (r.fixed ? `Checked ${r.checked} items logged to in the last 90 days. ${r.items} had time earning at the wrong rate (${(r.keys || []).slice(0, 10).join(', ')}), and ${r.fixed} time logs were worked out again.`
+        : `Checked ${r.checked} items logged to in the last 90 days. All their time matches the XP Rate each had on its day.`) + field);
+    } else if (action === 'xp-rate-backdate') {
+      if (!confirm('Check every item ever logged to against its XP Rate history in Jira, and correct the XP on any time that earned at the wrong rate? It runs in the background, about 100 items every couple of minutes.')) return;
+      const r = await api('/api/admin/xp-rate-backdate', { method: 'POST' });
+      out(target, r.running
+        ? `Checked ${r.done} of ${r.total} items so far; ${r.fixed} time logs corrected${r.keys?.length ? ` (${r.keys.slice(0, 10).join(', ')})` : ''}. The rest carries on in the background; press again to see how it's going.`
+        : `Checked all ${r.total} items. ${r.fixed ? `${r.fixed} time logs on ${r.items} items were corrected${r.keys?.length ? ` (${r.keys.slice(0, 10).join(', ')})` : ''}.` : 'All time matched the XP Rate each item had on its day.'}`);
     } else if (action === 'snapshot') {
       const r = await api('/api/admin/snapshot', { method: 'POST', body: JSON.stringify({}) });
       out(target, r.skipped ? r.skipped : `Recorded ${r.engineers} ${r.engineers === 1 ? 'person' : 'people'} for the week of ${r.week}.`);
