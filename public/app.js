@@ -10771,6 +10771,7 @@ async function jvFetch(key, { fresh = false } = {}) {
   if (!fresh && jvCache.has(key)) return jvCache.get(key);
   const data = await api(`/api/jira/view?key=${encodeURIComponent(key)}`);
   jvCache.set(key, data);
+  if (data.project === 'PSC' && !data.orgs?.length && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
   return data;
 }
 
@@ -10779,10 +10780,17 @@ const fileSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 
 function jiraViewBody(v) {
   const draft = jvDraft[v.key] || { text: '', vis: v.canComment.customer ? 'customer' : 'internal' };
   const who = v.reporter ? `${esc(v.reporter.name)}${v.reporter.email ? ` <a href="mailto:${esc(v.reporter.email)}">${esc(v.reporter.email)}</a>` : ''}` : 'Unknown';
-  const sugg = v.suggestions?.length ? `<div class="jv-suggest"><p style="margin:0 0 .4rem"><strong>Which customer?</strong> <span class="muted">No Organization is set. These look likely:</span></p>
-      ${v.suggestions.map((o) => `<div class="jv-sugg-row"><span><strong>${esc(o.name)}</strong> <small class="muted">${esc(o.why)}</small></span>
-        <button class="chip-btn" data-jv-set-org="${esc(o.id)}" data-key="${esc(v.key)}">Set</button></div>`).join('')}</div>`
-    : v.project === 'PSC' && !v.orgs.length ? `<div class="jv-suggest"><p style="margin:0"><strong>No Organization is set</strong> <span class="muted">and nothing points to one. The reporter's email and the description are the best clues.</span></p></div>` : '';
+  const needOrg = v.project === 'PSC' && !v.orgs.length;
+  const orgList = `jv-orgs-${v.key}`;
+  const sugg = !needOrg ? '' : `<div class="jv-suggest">
+      <p style="margin:0 0 .4rem"><strong>Which customer?</strong> <span class="muted">No Organization is set.${v.raisedByStaff ? ' Raised by someone at Promtek, so it could be for any customer.' : ''}</span></p>
+      ${v.suggestions?.length ? `<p class="muted" style="margin:.2rem 0">These look likely:</p>${v.suggestions.map((o) => `<div class="jv-sugg-row"><span><strong>${esc(o.name)}</strong> <small class="muted">${esc(o.why)}</small></span>
+        <button class="chip-btn" data-jv-set-org="${esc(o.id)}" data-key="${esc(v.key)}">Set</button></div>`).join('')}` : ''}
+      ${!pscOrgs ? '<p class="muted" style="margin:.4rem 0 0">Loading the Organizations…</p>' : pscOrgs.error ? `<p class="bad">${esc(pscOrgs.error)}</p>`
+        : `<div class="jv-org-pick"><input type="search" list="${esc(orgList)}" data-jv-org-input="${esc(v.key)}" placeholder="Search for the customer" aria-label="Organization for ${esc(v.key)}" autocomplete="off">
+          <datalist id="${esc(orgList)}">${pscOrgs.orgs.map((o) => `<option value="${esc(o.name)}"></option>`).join('')}</datalist>
+          <button class="btn secondary" data-jv-org-pick="${esc(v.key)}">Set</button></div>`}
+    </div>`;
   const comments = v.comments.length ? v.comments.map((c) => `<li class="jv-comment${c.internal ? ' internal' : ''}">
       <div class="jv-c-head"><strong>${esc(c.by)}</strong>${c.team || c.app ? '' : ' <span class="psc-chip plain">customer</span>'}
         ${c.internal ? `<span class="psc-chip plain">${c.restricted ? `Only ${esc(c.restricted)}` : 'Internal'}</span>` : '<span class="psc-chip plain customer-seen">Customer can see</span>'}
@@ -10881,7 +10889,16 @@ async function jvClick(event) {
     } catch (err) { toast(err.message); send.disabled = false; }
     return true;
   }
-  const org = t('[data-jv-set-org]');
+  const pick = t('[data-jv-org-pick]');
+  if (pick) {
+    const k = pick.dataset.jvOrgPick;
+    const box = document.querySelector(`[data-jv-org-input="${CSS.escape(k)}"]`);
+    const name = (box?.value || '').trim().toLowerCase();
+    const found = (pscOrgs?.orgs || []).find((o) => o.name.toLowerCase() === name);
+    if (!found) { toast('Choose a customer from the list'); box?.focus(); return true; }
+    pick.dataset.key = k; pick.dataset.jvSetOrg = found.id;
+  }
+  const org = pick || t('[data-jv-set-org]');
   if (org) {
     org.disabled = true;
     try { const r = await api('/api/psc/org', { method: 'POST', body: JSON.stringify({ key: org.dataset.key, orgId: org.dataset.jvSetOrg }) }); toast(r.saved ? 'Organization set' : r.message); } catch (err) { toast(err.message); }
@@ -10912,7 +10929,11 @@ document.addEventListener('click', async (event) => {
   event.stopPropagation();
   openJiraViewer(`${m[1]}-${m[2]}`);
 }, true);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && jvOpenKey) { jvOpenKey = null; jvPanel(); } });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && jvOpenKey) { jvOpenKey = null; jvPanel(); }
+  const box = e.key === 'Enter' && e.target.closest?.('[data-jv-org-input]');
+  if (box) { e.preventDefault(); box.parentElement.querySelector('[data-jv-org-pick]')?.click(); }
+});
 
 const bankHolidayIcon = () => `<span class="con-bh" title="Covers bank holidays">${svgIcon('<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/><path d="M12 12.5l1 2 2.2.3-1.6 1.5.4 2.2-2-1.1-2 1.1.4-2.2-1.6-1.5 2.2-.3z"/>')}<span class="visually-hidden">Covers bank holidays</span></span>`;
 

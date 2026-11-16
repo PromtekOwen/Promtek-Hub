@@ -7,6 +7,7 @@
 import { jira, searchJql, customerProjects, BLOCKED_PROJECTS } from './jira.js';
 import { mustSee, organizations, rowFor } from './psc.js';
 import { record } from './audit.js';
+import { allowedDomains } from './auth.js';
 
 const ORG_FIELD = 'customfield_12900';
 const PSC = 'PSC';
@@ -146,7 +147,10 @@ export async function view(env, viewer, rawKey) {
     canComment: { internal: true, customer: project !== PSC },
     internalGroup: internalGroup(env),
   };
-  if (project === PSC && !orgs.length) out.suggestions = await suggestOrgs(env, issue, reporter).catch(() => []);
+  if (project === PSC && !orgs.length) {
+    out.raisedByStaff = await isStaff(env, reporter).catch(() => false);
+    out.suggestions = await suggestOrgs(env, issue, reporter).catch(() => []);
+  }
   return out;
 }
 
@@ -156,6 +160,15 @@ const STOP = new Set(['ltd', 'limited', 'plc', 'llp', 'inc', 'group', 'the', 'an
 const words = (s) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
 const FREE_MAIL = /(^|\.)(gmail|googlemail|hotmail|outlook|live|yahoo|icloud|me|aol|btinternet|sky|virginmedia|protonmail)\./i;
 
+export async function isStaff(env, reporter) {
+  if (!reporter) return false;
+  const domain = String(reporter.email || '').split('@')[1]?.toLowerCase() || '';
+  const ours = [...allowedDomains(env), 'promtek.com', 'promtek.co.za'];
+  if (domain && ours.some((d) => domain === d || domain.endsWith(`.${d}`))) return true;
+  if (!reporter.id) return false;
+  return Boolean(await env.DB.prepare('SELECT 1 FROM employees WHERE account_id = ?').bind(String(reporter.id)).first().catch(() => null));
+}
+
 export async function suggestOrgs(env, issue, reporter) {
   const orgs = await organizations(env).catch(() => []);
   const found = new Map();
@@ -164,8 +177,11 @@ export async function suggestOrgs(env, issue, reporter) {
     const was = found.get(org.id);
     if (!was || was.score < score) found.set(org.id, { id: org.id, name: org.name, why, score });
   };
+  // Someone at Promtek raising a ticket could be raising it for any customer, so who they
+  // are and their email say nothing about which; only the ticket's own words count.
+  const staff = await isStaff(env, reporter);
   // Their earlier tickets: the Organization those were under.
-  if (reporter?.id) {
+  if (reporter?.id && !staff) {
     const past = await searchJql(env, `project = ${PSC} AND reporter = "${reporter.id}" AND cf[12900] is not EMPTY AND key != ${issue.key} ORDER BY created DESC`, [ORG_FIELD], { limit: 30 }).catch(() => []);
     const counts = new Map();
     for (const p of past) for (const o of p.fields?.[ORG_FIELD] || []) counts.set(String(o.id), (counts.get(String(o.id)) || 0) + 1);
@@ -173,7 +189,7 @@ export async function suggestOrgs(env, issue, reporter) {
   }
   // Their email address: a company domain that shares a word with an Organization's name.
   const domain = (reporter?.email || '').split('@')[1] || '';
-  if (domain && !FREE_MAIL.test(domain)) {
+  if (domain && !staff && !FREE_MAIL.test(domain)) {
     const dw = words(domain.replace(/\.[a-z.]+$/i, ''));
     for (const o of orgs) {
       const ow = words(o.name);

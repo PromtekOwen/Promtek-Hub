@@ -1897,3 +1897,5 @@ body.jv-open { overflow: hidden; }
 :where(:root[data-theme="dark"]) .psc-chip.customer-seen { background: #17352a; color: var(--ok); }
 :where(:root[data-theme="dark"]) .jv-backdrop { background: rgba(0, 0, 0, .6); }
 @media (max-width: 600px) { .jv-sheet { padding: .75rem .75rem 3rem; } }
+.jv-org-pick { display: flex; gap: .5rem; margin-top: .6rem; }
+.jv-org-pick input { flex: 1; min-width: 0; }
