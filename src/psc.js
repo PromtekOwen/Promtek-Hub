@@ -370,6 +370,11 @@ export async function sync(env, b, { full = false } = {}) {
   return r.count;
 }
 
+// One item read now, as when the hub has just made it.
+export async function readOne(env, key) {
+  await refreshOne(env, budget(env, 2), key);
+}
+
 async function refreshOne(env, b, key) {
   const issue = await b.call(`/rest/api/3/issue/${key}?fields=${FIELDS.join(',')}&expand=changelog`);
   await saveItems(env, [deriveItem(issue, undefined, await staffIds(env))]);

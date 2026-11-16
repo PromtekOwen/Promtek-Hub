@@ -1907,3 +1907,15 @@ body.jv-open { overflow: hidden; }
 .psc-contact-org { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .92rem; }
 .psc-contacts .jv-org-pick { flex: 1 1 320px; margin-top: 0; align-items: center; }
 .psc-group { font-size: 1.05rem; margin: 1.1rem 0 .5rem; }
+.psc-new { display: grid; gap: .8rem; }
+.psc-new label { display: grid; gap: .3rem; }
+.psc-new label.inline-check { display: flex; }
+.psc-new-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: .8rem; }
+.psc-new-pics { padding: .7rem .8rem; border: 1px dashed var(--line); border-radius: 12px; }
+.psc-new-thumbs { display: flex; flex-wrap: wrap; gap: .6rem; }
+.psc-new-thumbs figure { position: relative; margin: 0; width: 120px; }
+.psc-new-thumbs img { width: 120px; height: 90px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); display: block; }
+.psc-new-thumbs figcaption { font-size: .75rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.psc-new-thumbs .icon-btn { position: absolute; top: 4px; right: 4px; padding: .1rem .35rem; }
+.psc-new-add { width: 120px; height: 90px; display: flex !important; align-items: center; justify-content: center; border: 1px dashed var(--line); border-radius: 8px; cursor: pointer; color: var(--blue-deep); font-weight: 600; font-size: .9rem; text-align: center; }
+.psc-headline .row { gap: .5rem; }

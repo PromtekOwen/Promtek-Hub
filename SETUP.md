@@ -503,6 +503,18 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 **Settings** (cog, admin only): the first-look target for each tier (Platinum 1 hour, Gold 2, Silver 4, no contract 8 to start with), the day shift (08:00 to 17:00), and how many days without an update before an item is quiet.
 
+### Raising a PSC
+
+**New PSC** (next to Refresh) raises one from the hub, as in Jira:
+- **Customer**: type to search the customer projects.
+- **Type**: Incident (to start with), Further Investigation, PSC, Problem, Change or Service Request. Snags are raised on their orders.
+- **Assignee**: anyone in the hub, you to start with, or unassigned.
+- **Summary** and **Description**: blank lines start a new paragraph.
+- **Pictures**: up to 10, 10 MB each. Choose them, drop them on the form or paste a screenshot. They're attached to the ticket.
+- **Condor**: sends it straight to Condor Dev as a Bug in MES, as the Condor button does.
+
+The customer is known, so it's raised in the customer's own project, under its PSC & Snag List (a Service Request under its Service item), not on the PSC board. The PSC board is for what customers raise themselves, through the portal or by email. The person raising it is the reporter. Where Jira won't let the hub set the reporter, the hub's account raises it and their name goes at the end of the description; where it won't take the list, it's raised without and the lists job moves it under later. It shows in the tile straight away, opened. Every PSC raised is in the audit log.
+
 ### Reading tickets in the hub
 
 Opening an item on the PSC tile shows the ticket itself under the hub's details: who raised it (with their email address, taken from the service desk when Jira hides it), the Organization, description, attachments, links, the customer copy or original, and every comment, marked **Internal**, **Only Promtek Members** or **Customer can see**. A link to any PSC or customer project item anywhere in the hub opens the same view in a side panel instead of Jira; Ctrl or Cmd click still opens Jira, and so does **Open in Jira** in the panel. Attachments download through the hub, which checks the file belongs to that ticket first.

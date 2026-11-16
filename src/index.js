@@ -462,6 +462,16 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/jira/attachment') return View.attachment(env, user, url.searchParams.get('key'), url.searchParams.get('id'));
     if (method === 'POST' && pathname === '/api/jira/comment') return json(await View.comment(env, user, body));
   }
+  // Raising a PSC, with pictures, so the form comes as it was sent rather than as JSON.
+  if (pathname === '/api/psc/create' || pathname === '/api/psc/create-options') {
+    const Create = await import('./psc-create.js');
+    if (method === 'GET') return json(await Create.options(env, user));
+    if (method === 'POST') {
+      const form = await request.formData().catch(() => null);
+      if (!form) return json({ error: 'That form didn\'t come through. Try again.' }, 400);
+      return json(await Create.create(env, user, form));
+    }
+  }
   if (pathname.startsWith('/api/psc')) {
     const Psc = await import('./psc.js');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};

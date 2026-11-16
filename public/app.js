@@ -11684,7 +11684,7 @@ function pscTabsHtml(data) {
 
 function pscHeadLine(data) {
   return `<div class="psc-headline"><p class="help">${data.reading ? `Reading everything from Jira: ${data.reading.count} items so far. The rest follows over the next few minutes.` : `Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.`}</p>
-      <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
+      <span class="row"><button class="btn" data-psc-new="1">New PSC</button><button class="btn secondary" data-psc-refresh="1">Refresh</button></span></div>
     ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
     ${(data.handoffs || []).length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.handoffs.map((h) => `${esc(h.issue_key)} ${h.kind === 'condor' ? 'to Condor Dev' : 'to a quote'}${h.error ? ` (${esc(h.error)})` : ''}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
     ${pscOrgFlagsHtml(data)}`;
@@ -11716,6 +11716,7 @@ async function pscHtml() {
 }
 
 async function pscPageHtml() {
+  if (pscNew) return pscNewHtml();
   if (pscOpen) return pscItemHtml();
   const data = await pscLoad();
   if (pscTab === 'insights') return pscTabsHtml(data) + await pscInsightsHtml();
@@ -11774,6 +11775,111 @@ function pscWithNew(list, card, empty) {
     <div class="psc-list">${fresh.map(card).join('')}</div>
     ${rest.length ? `<h2 class="psc-group">Everything else <span class="muted">(${rest.length})</span></h2><div class="psc-list">${rest.map(card).join('')}</div>` : ''}`;
 }
+
+// ---------- raising a PSC ----------
+// As in Jira: the customer, the type, a summary and description, who has it, any pictures,
+// and whether it goes straight to Condor Dev. It's raised in the customer's own project.
+let pscNew = null;            // the form, while it's open
+let pscNewOptions = null;     // customers, types and people, loaded once
+const PSC_NEW_MAX_FILES = 10;
+
+function pscNewCapture() {
+  const f = view.querySelector('.psc-new');
+  if (!f || !pscNew) return;
+  const v = (sel) => f.querySelector(sel)?.value ?? '';
+  pscNew.orgName = v('#psc-new-org'); pscNew.type = v('#psc-new-type'); pscNew.summary = v('#psc-new-summary');
+  pscNew.description = v('#psc-new-description'); pscNew.assigneeId = v('#psc-new-assignee');
+  pscNew.condor = Boolean(f.querySelector('#psc-new-condor')?.checked);
+}
+
+function pscNewAddFiles(list) {
+  pscNewCapture();
+  const pics = [...list].filter((f) => /^image\//.test(f.type));
+  if (pics.length < list.length) toast('Only pictures can be added');
+  for (const f of pics) {
+    if (pscNew.files.length >= PSC_NEW_MAX_FILES) { toast(`Up to ${PSC_NEW_MAX_FILES} pictures`); break; }
+    if (f.size > 10 * 1024 * 1024) { toast(`${f.name || 'That picture'} is over 10 MB`); continue; }
+    pscNew.files.push({ file: f, url: URL.createObjectURL(f) });
+  }
+  render();
+}
+
+async function pscNewHtml() {
+  if (!pscNewOptions || pscNewOptions.error) pscNewOptions = await api('/api/psc/create-options').catch((err) => ({ error: err.message }));
+  const o = pscNewOptions;
+  if (o.error) return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-new-cancel="1">Back to the list</button></div><div class="card"><p class="bad">${esc(o.error)}</p></div>`;
+  const n = pscNew;
+  if (n.assigneeId === null) n.assigneeId = o.me || '';
+  if (!n.type) n.type = 'Incident';
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-new-cancel="1">Back to the list</button></div>
+    <section class="card psc-new">
+      <h2 style="margin-top:0">New PSC</h2>
+      <label>Customer
+        <input type="search" id="psc-new-org" list="psc-new-orgs" value="${esc(n.orgName)}" placeholder="Search for the customer" autocomplete="off">
+        <datalist id="psc-new-orgs">${o.customers.map((x) => `<option value="${esc(x.name)}">${esc(x.key)}</option>`).join('')}</datalist></label>
+      <div class="psc-new-row">
+        <label>Type<select id="psc-new-type">${o.types.map((t) => `<option${t === n.type ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+        <label>Assignee<select id="psc-new-assignee"><option value="">Unassigned</option>${o.people.map((p) => `<option value="${esc(p.id)}"${p.id === n.assigneeId ? ' selected' : ''}>${esc(p.name)}${p.id === o.me ? ' (you)' : ''}</option>`).join('')}</select></label>
+      </div>
+      <label>Summary<input type="text" id="psc-new-summary" maxlength="250" value="${esc(n.summary)}" placeholder="What's wrong, in a line"></label>
+      <label>Description<textarea id="psc-new-description" rows="7" placeholder="What the customer reported, what's been tried, the site, the line">${esc(n.description)}</textarea></label>
+      <div class="psc-new-pics">
+        <p style="margin:0 0 .4rem"><strong>Pictures</strong> <span class="muted">Choose them, drop them here, or paste a screenshot.</span></p>
+        <div class="psc-new-thumbs">${n.files.map((f, i) => `<figure><img src="${esc(f.url)}" alt="${esc(f.file.name || 'Picture')}"><figcaption>${esc(f.file.name || 'Pasted picture')}</figcaption>
+          <button class="icon-btn" data-psc-new-unpic="${i}" aria-label="Remove ${esc(f.file.name || 'this picture')}">✕</button></figure>`).join('')}
+          <label class="psc-new-add">＋ Add pictures<input type="file" id="psc-new-files" accept="image/*" multiple hidden></label></div>
+      </div>
+      <label class="inline-check"><input type="checkbox" id="psc-new-condor"${n.condor ? ' checked' : ''}> Condor: send it straight to Condor Dev as a Bug in MES</label>
+      <p class="help">It's raised in the customer's project, under their PSC & Snag List (a Service Request under their Service item), with you as the reporter.</p>
+      <div class="row"><button class="btn" data-psc-new-go="1">Raise in Jira</button><button class="linklike" data-psc-new-cancel="1">Cancel</button></div>
+    </section>`;
+}
+
+async function pscNewClick(t) {
+  if (t('[data-psc-new-cancel]')) {
+    if (pscNew?.summary || pscNew?.description || pscNew?.files.length) { pscNewCapture(); if ((pscNew.summary || pscNew.description || pscNew.files.length) && !confirm('Throw away this PSC?')) return true; }
+    pscNew = null; return render();
+  }
+  const un = t('[data-psc-new-unpic]');
+  if (un) { pscNewCapture(); const [gone] = pscNew.files.splice(Number(un.dataset.pscNewUnpic), 1); if (gone) URL.revokeObjectURL(gone.url); return render(); }
+  const go = t('[data-psc-new-go]');
+  if (!go) return false;
+  pscNewCapture();
+  const n = pscNew;
+  const typed = n.orgName.trim().toLowerCase();
+  const org = (pscNewOptions?.customers || []).find((o) => o.name.toLowerCase() === typed || o.key.toLowerCase() === typed);
+  if (!org) { toast('Choose the customer from the list'); view.querySelector('#psc-new-org')?.focus(); return true; }
+  if (n.summary.trim().length < 3) { toast('Give it a summary'); view.querySelector('#psc-new-summary')?.focus(); return true; }
+  const fd = new FormData();
+  fd.append('projectKey', org.key); fd.append('type', n.type); fd.append('summary', n.summary); fd.append('description', n.description);
+  fd.append('assigneeId', n.assigneeId || ''); if (n.condor) fd.append('condor', '1');
+  for (const f of n.files) fd.append('files', f.file, f.file.name || 'picture.png');
+  go.disabled = true; go.textContent = 'Raising…';
+  try {
+    const r = await api('/api/psc/create', { method: 'POST', body: fd, headers: {} });
+    for (const f of n.files) URL.revokeObjectURL(f.url);
+    toast(`${r.key} raised${r.condor ? `, and in Condor Dev as ${r.condor}` : ''}`);
+    if (r.pictureProblem) toast(r.pictureProblem);
+    if (r.condorProblem) toast(r.condorProblem);
+    pscNew = null; pscFetchedAt = 0;
+    pscOpen = r.condor ? null : r.key;
+    return render();
+  } catch (err) { toast(err.message); go.disabled = false; go.textContent = 'Raise in Jira'; return true; }
+}
+
+// Pictures: chosen, dropped on the form, or pasted.
+view.addEventListener('change', (e) => { if (e.target.id === 'psc-new-files' && e.target.files?.length) pscNewAddFiles(e.target.files); });
+view.addEventListener('paste', (e) => {
+  if (!pscNew || !e.target.closest?.('.psc-new')) return;
+  const files = [...(e.clipboardData?.files || [])].filter((f) => /^image\//.test(f.type));
+  if (files.length) { e.preventDefault(); pscNewAddFiles(files); }
+});
+view.addEventListener('dragover', (e) => { if (pscNew && e.target.closest?.('.psc-new')) e.preventDefault(); });
+view.addEventListener('drop', (e) => {
+  if (!pscNew || !e.target.closest?.('.psc-new')) return;
+  e.preventDefault();
+  if (e.dataTransfer?.files?.length) pscNewAddFiles(e.dataTransfer.files);
+});
 
 // Turning a PSC into a quote, or sending it to Condor Dev.
 let pscHand = null;       // { key, kind, disciplines, team, projectKey, customer, prospect, prospectMode }
@@ -11967,6 +12073,8 @@ async function pscInsightsHtml() {
 async function pscClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('.jv') && await jvClick(event)) return true;
+  if (t('.psc-new') && await pscNewClick(t)) return true;
+  if (t('[data-psc-new]')) { pscNew = { orgName: '', type: '', summary: '', description: '', assigneeId: null, condor: false, files: [] }; window.scrollTo(0, 0); return render(); }
   if (t('a') || t('select') || t('input') || t('textarea')) return false;
   if (await pscResolveClick(t)) return true;
   if (await pscHandClick(t)) return true;
@@ -11992,7 +12100,7 @@ async function pscClick(event) {
     pscFetchedAt = 0; return render();
   }
   const tab = t('[data-psc-tab]');
-  if (tab) { pscTab = tab.dataset.pscTab; pscOpen = null; return render(); }
+  if (tab) { pscTab = tab.dataset.pscTab; pscOpen = null; pscNew = null; return render(); }
   const who = t('[data-psc-who]');
   if (who) { pscWho = who.dataset.pscWho; return render(); }
   if (t('[data-psc-back]')) { pscOpen = null; return render(); }
@@ -13819,7 +13927,8 @@ let cameByNav = false;          // the next draw follows going to a page, not so
 // What's open within each tile: how to tell, how to close it, and (where it's just an ID)
 // how to open it again when coming forward or back to it.
 const SUB_VIEWS = {
-  '#/psc': { open: () => pscOpen, close: () => { pscOpen = null; }, reopen: (v) => { pscOpen = v; } },
+  '#/psc': { open: () => pscOpen || (pscNew ? 'new' : null), close: () => { pscOpen = null; pscNew = null; },
+    reopen: (v) => { if (v === 'new') pscNew = { orgName: '', type: '', summary: '', description: '', assigneeId: null, condor: false, files: [] }; else pscOpen = v; } },
   '#/contracts': { open: () => conOpen, close: () => { conOpen = null; }, reopen: (v) => { conOpen = v; } },
   '#/wip': { open: () => wipOpen, close: () => { wipOpen = null; }, reopen: (v) => { wipOpen = v; } },
   '#/nearmiss': { open: () => nmOpenId, close: () => { nmOpenId = null; }, reopen: (v) => { nmOpenId = v; } },
@@ -13890,7 +13999,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
-  if (currentRoute() !== '#/psc') pscOpen = null;
+  if (currentRoute() !== '#/psc') { pscOpen = null; pscNew = null; }
   if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
