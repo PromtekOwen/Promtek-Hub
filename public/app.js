@@ -13572,6 +13572,7 @@ async function render() {
     if (token === renderToken && currentRoute() === route) {
       view.innerHTML = html;
       lastView = viewKey;
+      noteSubView(route);
       scrollTo(0, samePage ? keepY : 0);
       if (!settingsOpen) maybeTour(route);
       reapplySearch();
@@ -13808,14 +13809,66 @@ function notePage() {
 
 // How many pages into the hub this tab is, kept on each history entry, so the back arrow
 // returns to the page before; with nothing before it (a page opened from a link), it goes home.
+// Opening something within a tile (a PSC ticket, a contract, the settings) counts as a page
+// too, so back closes it and returns to the tile's list.
 const navDepth = () => Number(history.state?.hubDepth) || 0;
 let lastDepth = navDepth();
+let quietPop = false;
+let cameByNav = false;          // the next draw follows going to a page, not something done on it
+
+// What's open within each tile: how to tell, how to close it, and (where it's just an ID)
+// how to open it again when coming forward or back to it.
+const SUB_VIEWS = {
+  '#/psc': { open: () => pscOpen, close: () => { pscOpen = null; }, reopen: (v) => { pscOpen = v; } },
+  '#/contracts': { open: () => conOpen, close: () => { conOpen = null; }, reopen: (v) => { conOpen = v; } },
+  '#/wip': { open: () => wipOpen, close: () => { wipOpen = null; }, reopen: (v) => { wipOpen = v; } },
+  '#/nearmiss': { open: () => nmOpenId, close: () => { nmOpenId = null; }, reopen: (v) => { nmOpenId = v; } },
+  '#/jobs': { open: () => jobsView, close: () => { jobsView = null; jobsDraft = null; } },
+  '#/quotes': { open: () => quotesView, close: () => { quotesView = null; quoteData = null; } },
+  '#/condor': { open: () => mesEst && mesEst.issueId, close: () => { mesEst = null; } },
+};
+function subViewKey(route) {
+  if (settingsOpen === route) return 'settings';
+  const v = SUB_VIEWS[route]?.open();
+  return v ? JSON.stringify(v) : null;
+}
+// After each page is drawn: something newly opened within the tile gets a history entry of its own.
+function noteSubView(route) {
+  const key = subViewKey(route);
+  const cur = history.state?.hubSub || null;
+  const byNav = cameByNav;
+  cameByNav = false;
+  if (key === cur) return;
+  // Arriving at a page whose entry had something open that isn't any more: just forget it.
+  if (byNav && !key) { history.replaceState({ ...history.state, hubSub: null }, ''); return; }
+  if (key && !cur) history.pushState({ hubDepth: navDepth() + 1, hubSub: key }, '');
+  else if (key) history.replaceState({ ...history.state, hubSub: key }, '');
+  // Closed with the tile's own button: step back over its entry, without drawing again.
+  else if (navDepth() > 0) { quietPop = true; history.back(); }
+  else history.replaceState({ ...history.state, hubSub: null }, '');
+  lastDepth = navDepth();
+}
 window.addEventListener('hashchange', () => {
+  cameByNav = true;
   // A new page has no depth yet; going back or forward lands on one that has.
   if (history.state?.hubDepth === undefined) history.replaceState({ ...(history.state || {}), hubDepth: lastDepth + 1 }, '');
   lastDepth = navDepth();
 });
-window.addEventListener('popstate', () => { if (history.state?.hubDepth !== undefined) lastDepth = navDepth(); });
+window.addEventListener('popstate', () => {
+  if (history.state?.hubDepth !== undefined) lastDepth = navDepth();
+  if (quietPop) { quietPop = false; return; }
+  cameByNav = true;
+  // Back (or forward) within a tile: open or close what the entry had open.
+  const route = currentRoute();
+  const want = history.state?.hubSub || null;
+  if (want === subViewKey(route)) return;
+  if (settingsOpen === route) settingsOpen = null;
+  SUB_VIEWS[route]?.close();
+  if (want === 'settings' && TILE_SETTINGS[route]) settingsOpen = route;
+  else if (want && SUB_VIEWS[route]?.reopen) { try { SUB_VIEWS[route].reopen(JSON.parse(want)); } catch { /* left closed */ } }
+  else if (want) history.replaceState({ ...history.state, hubSub: null }, '');
+  render();
+});
 back.addEventListener('click', (event) => {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.button) return;
   event.preventDefault();
