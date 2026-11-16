@@ -419,6 +419,8 @@ async function applyWrite(b, w) {
       throw new Error(`Jira offers no way to move it to ${RESOLVE_TO} from ${now?.fields?.status?.name || 'where it is'}.`);
     }
     await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
+  } else if (w.kind === 'reporter') {
+    await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { reporter: { accountId: p.accountId } } }) });
   } else if (w.kind === 'charge') {
     await b.call(`/rest/api/3/issue/${w.issue_key}`, { method: 'PUT', body: JSON.stringify({ fields: { [CHARGE_FIELD]: { value: p.value } } }) });
   } else if (w.kind === 'progress') {
@@ -462,9 +464,14 @@ async function retryWrites(env, b) {
       if (err instanceof OutOfCalls) break;
       // Deleted in Jira: there's nothing left to change.
       if (err.status === 404) { await env.DB.prepare('UPDATE psc_writes SET done_at = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), 'No longer in Jira', w.id).run(); continue; }
+      // Jira won't make them the reporter (not a customer of that project, say): that's its answer.
+      if (w.kind === 'reporter' && err.status === 400) {
+        await env.DB.prepare('UPDATE psc_writes SET done_at = ?, attempts = ?, error = ? WHERE id = ?').bind(new Date().toISOString(), w.attempts + 1, `Refused: ${String(err.message).slice(0, 360)}`, w.id).run();
+        continue;
+      }
       const attempts = w.attempts + 1;
       await env.DB.prepare('UPDATE psc_writes SET attempts = ?, error = ? WHERE id = ?').bind(attempts, String(err.message).slice(0, 400), w.id).run();
-      if (attempts === 3) {
+      if (attempts === 3 && w.kind !== 'reporter') {
         await raiseAlert(env, { kind: 'psc-write', dedupe: `psc-write:${w.id}`, subject: `The hub couldn't update ${w.issue_key} in Jira`,
           body: `${w.label || w.kind} on ${w.issue_key}, asked for by ${w.created_by}, hasn't gone through:\n\n${err.message}\n\nThe hub keeps trying.` });
       }
@@ -611,8 +618,6 @@ export function describe(original, ctx, now = new Date().toISOString()) {
   if (!resolved && isPsc && !row.org) missing.push('org');
   if (!resolved && !row.assignee_id) missing.push('assignee');
   if (!resolved && !first) missing.push('response');
-  // Whether it's chargeable decides if its time goes on the customer's token clock.
-  if (!row.chargeable && !ORDER_TYPES.includes(row.issuetype) && !resolved) missing.push('charge');
 
   let state = 'active';
   if (resolved) state = 'resolved';
@@ -663,7 +668,7 @@ export async function overview(env, viewer) {
   const items = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).sort(byAttention);
   const people = ctx.emps.filter((e) => e.account_id).map((e) => ({ id: e.account_id, name: e.name,
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
-  const { results: pending } = await env.DB.prepare('SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL ORDER BY id').all();
+  const { results: pending } = await env.DB.prepare("SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL AND kind != 'reporter' ORDER BY id").all();
   const { results: orgFlags } = await env.DB.prepare("SELECT id, ref_key, detail, created_at FROM contract_flags WHERE kind = 'psc-org' AND resolved_at IS NULL ORDER BY id DESC LIMIT 50").all()
     .catch(() => ({ results: [] }));
   const { results: handoffs } = await env.DB.prepare("SELECT issue_key, kind, status, error, target_key FROM psc_handoffs WHERE status != 'done'").all().catch(() => ({ results: [] }));
@@ -742,12 +747,12 @@ export async function setCharge(env, viewer, key, chargeable) {
   return result;
 }
 
-// Resolving from the tile: whether it was chargeable and what the root cause was, both
-// written to Jira, then the status moved to Resolved [Promtek]. A chargeable PSC's time
-// goes on the customer's token clock; Promtek at Fault time never does.
-export async function resolve(env, viewer, { key, chargeable, rootCause }) {
+// Resolving from the tile: the root cause, and Chargable PSC unless it was marked Promtek at
+// Fault, both written to Jira, then the status moved to Resolved [Promtek]. A PSC's time goes
+// on the customer's token clock unless it's Promtek at Fault.
+export async function resolve(env, viewer, { key, chargeable = true, rootCause }) {
   mustSee(viewer);
-  if (typeof chargeable !== 'boolean') throw Object.assign(new Error('Say whether it was chargeable.'), { status: 400 });
+  chargeable = chargeable !== false;
   const solution = String(rootCause || '').replace(/\r\n/g, '\n').trim().slice(0, 4000);
   if (solution.length < 5) throw Object.assign(new Error('Give the root cause: what was wrong and what put it right.'), { status: 400 });
   const row = await rowFor(env, key);
@@ -860,6 +865,7 @@ export async function run(env, { force = false } = {}) {
       || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= ALERTS_EVERY_MS));
     // PSC tickets with an Organization and no customer copy yet: have them copied.
     if (!stillReading) out.copies = await autoCopy(env, b, await context(env));
+    if (!stillReading) out.reporters = await fixReporters(env, await context(env)).catch((err) => ({ error: err.message }));
     // Customers who aren't in their ticket's Organization in Jira.
     if (!stillReading && b.left() > 6) {
       try { out.contacts = await Contacts.run(env, b, (await context(env)).items, await organizations(env)); }
@@ -1029,6 +1035,24 @@ export async function autoCopy(env, b, ctx) {
   return { made };
 }
 
+// A customer copy is made by the Copy & Sync account, so Jira says that account raised it.
+// The copy is given the original's reporter, so it shows who really raised it. Open copies
+// only, a few each run; each is tried once, and Jira's refusal is kept as its answer.
+const REPORTER_PER_RUN = 15;
+export async function fixReporters(env, ctx) {
+  const pairs = ctx.items.filter((r) => r.source && !r.done && r.source.reporter_id && r.reporter_id && r.reporter_id !== r.source.reporter_id);
+  if (!pairs.length) return { queued: 0 };
+  const { results } = await env.DB.prepare("SELECT issue_key FROM psc_writes WHERE kind = 'reporter'").all();
+  const tried = new Set(results.map((r) => r.issue_key));
+  const due = pairs.filter((r) => !tried.has(r.issue_key)).slice(0, REPORTER_PER_RUN);
+  const at = new Date().toISOString();
+  for (const r of due) {
+    await env.DB.prepare('INSERT INTO psc_writes (issue_key, kind, payload, label, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(r.issue_key, 'reporter', JSON.stringify({ accountId: r.source.reporter_id, from: r.source.issue_key }), `Setting who raised it to ${r.source.reporter_name || 'the original reporter'}`, 'The hub', at).run();
+  }
+  return { queued: due.length };
+}
+
 // Copying from the tile, by hand: for one that was missed, failed, or came before copying was switched on.
 export async function copyNow(env, viewer, key) {
   mustSee(viewer);
@@ -1052,7 +1076,15 @@ export async function copySettings(env, viewer) {
   const ctx = await context(env);
   const waiting = ctx.items.filter((r) => r.project_key === PSC_PROJECT && r.org && r.uncopied && !r.done).length;
   return { on: Boolean(await copyOnSince(env)), since: (await copyOnSince(env)) || null, tokenSet: Boolean(env.COPYSYNC_TOKEN), recipe: COPY_RECIPE(env),
-    recent: results, waiting };
+    recent: results, waiting, reporters: await reporterCounts(env) };
+}
+
+async function reporterCounts(env) {
+  const r = await env.DB.prepare(`SELECT SUM(CASE WHEN done_at IS NOT NULL AND error IS NULL THEN 1 ELSE 0 END) AS fixed,
+    SUM(CASE WHEN error LIKE 'Refused:%' THEN 1 ELSE 0 END) AS refused, SUM(CASE WHEN done_at IS NULL THEN 1 ELSE 0 END) AS waiting
+    FROM psc_writes WHERE kind = 'reporter'`).first().catch(() => null);
+  const { results } = await env.DB.prepare("SELECT issue_key, error FROM psc_writes WHERE kind = 'reporter' AND error LIKE 'Refused:%' ORDER BY id DESC LIMIT 5").all().catch(() => ({ results: [] }));
+  return { fixed: r?.fixed || 0, refused: r?.refused || 0, waiting: r?.waiting || 0, examples: results };
 }
 
 export async function setCopyOn(env, viewer, on) {

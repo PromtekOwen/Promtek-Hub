@@ -11104,6 +11104,31 @@ async function contractsHtml() {
     <div class="con-grid">${list.map((c) => conCardHtml(c, today)).join('') || '<div class="card"><p style="margin:0">No contracts here.</p></div>'}</div>`;
 }
 
+// The time that used a token, ready to show a customer who asks where their tokens went.
+let conTokenData = new Map();
+function conTokenTimeHtml(x, c) {
+  const t = x.time;
+  if (!t?.lines?.length) return '';
+  const id = `${c.key}:${x.seq}`;
+  conTokenData.set(id, { customer: c.customer, contract: c.key, token: x.token, seq: x.seq, reason: x.reason, ...t });
+  const range = t.from === t.to ? fullDate(t.from) : `${fullDate(t.from)} to ${fullDate(t.to)}`;
+  return `<details class="con-token-time"><summary>The time that used it: ${duration(t.seconds)}, ${t.lines.length} ${t.lines.length === 1 ? 'entry' : 'entries'}, ${range}</summary>
+      <div class="table-wrap"><table class="con-token-table"><thead><tr><th>Date</th><th>Work</th><th>Who</th><th class="num">Time</th></tr></thead><tbody>
+      ${t.lines.map((l) => `<tr><td>${shortDate(l.date)}</td>
+        <td>${l.key ? jiraLink(l.key) : ''} ${esc(l.summary || '')}${l.note ? `<br><small class="muted">${esc(l.note)}</small>` : ''}</td>
+        <td>${esc(l.who)}</td>
+        <td class="num">${duration(l.seconds)}${l.split ? `<br><small class="muted">of ${duration(l.logged)}</small>` : ''}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${duration(t.seconds)}</strong></td></tr></tfoot></table></div>
+      ${t.lines.some((l) => l.split) ? '<p class="help">"of" marks an entry split between two tokens: only the part shown counted towards this one.</p>' : ''}
+      <div class="row"><button class="btn secondary" data-con-token-copy="${esc(id)}">Copy as text</button><button class="btn secondary" data-con-token-csv="${esc(id)}">Download CSV</button></div>
+    </details>`;
+}
+
+function conTokenRows(t) {
+  const hrs = (sec) => (Math.round(sec / 36) / 100).toFixed(2);
+  return t.lines.map((l) => [l.date, l.key || '', l.summary || '', l.note || '', l.who, hrs(l.seconds)]);
+}
+
 async function contractDetailHtml() {
   const d = await api(`/api/contracts/detail?key=${encodeURIComponent(conOpen)}`);
   const c = d.contract;
@@ -11126,10 +11151,10 @@ async function contractDetailHtml() {
     </section>
     ${c.clock ? `<h2>Token clock</h2>
       <section class="card">${conClockHtml(c.clock, true)}
-        <p class="muted" style="margin:.4rem 0 0">Chargeable time on the contract item, its tokens and this customer's chargeable PSC items (not Snags) since ${fullDate(d.clockStart)}. Every 4 hours uses a token; at the end of the contract, an hour or more left over uses one more.</p>
+        <p class="muted" style="margin:.4rem 0 0">Chargeable time on the contract item, its tokens and this customer's PSC items (not Snags, and not those marked Promtek at fault) since ${fullDate(d.clockStart)}. Every 4 hours uses a token; at the end of the contract, an hour or more left over uses one more.</p>
       </section>
       ${d.waiting?.length ? `<h2>Waiting for a chargeable answer</h2>
-        <section class="card"><p class="muted" style="margin-top:0">Not on the clock until someone says it's chargeable. Promtek at fault time never is.</p>
+        <section class="card"><p class="muted" style="margin-top:0">Time on the contract item goes on the clock once whoever logged it says it's chargeable. Promtek at fault time never does.</p>
         <ul class="con-logs">${d.waiting.map((l) => conChargeRow(l)).join('')}</ul></section>` : ''}
       ${d.notCharged?.length ? `<details class="con-not-charged"><summary>Promtek at fault: not charged (${duration(d.notCharged.reduce((t, l) => t + l.seconds, 0))})</summary>
         <ul class="con-logs">${d.notCharged.map((l) => `<li><span class="con-log-date">${shortDate(l.date)}</span>
@@ -11137,12 +11162,16 @@ async function contractDetailHtml() {
           <span class="con-log-time">${duration(l.seconds)}</span></li>`).join('')}</ul></details>` : ''}
       ${d.contributions.length ? `<ul class="list con-list">${d.contributions.map((x) => `<li><span class="title">${x.key ? jiraLink(x.key) : ''} ${esc(x.summary || '')}</span>
         <span class="xp">${duration(x.seconds)}</span></li>`).join('')}</ul>` : ''}` : ''}
-    ${d.charges.length ? `<h2>Tokens used by the clock</h2><ul class="list con-list">${d.charges.map((x) => `<li>
+    ${d.charges.length ? `<h2>Tokens used by the clock</h2><ul class="list con-list">${d.charges.map((x) => `<li class="con-token-row">
         <span class="title">${x.token ? jiraLink(x.token) : 'Choosing a token'}${x.overdraft ? ' <span class="con-od">overdraft</span>' : ''}</span>
         <span class="xp">${x.done ? 'Used' : 'Waiting for Jira'}</span>
-        <span class="sub">${x.reason === 'end' ? 'Time left when the contract ended' : `Clock passed ${x.seq * 4}h${x.trigger ? ` on ${esc(x.trigger)}` : ''}`} · ${whenText(x.at)}${x.error ? ` · ${esc(x.error)}` : ''}</span></li>`).join('')}</ul>` : ''}
+        <span class="sub">${x.reason === 'end' ? 'Time left when the contract ended' : `Clock passed ${x.seq * 4}h${x.trigger ? ` on ${esc(x.trigger)}` : ''}`} · ${whenText(x.at)}${x.error ? ` · ${esc(x.error)}` : ''}</span>
+        ${conTokenTimeHtml(x, c)}</li>`).join('')}</ul>` : ''}
     ${visits.length ? `<h2>Visits</h2><ul class="list con-list">${visits.map(itemRow).join('')}</ul>` : ''}
-    ${tokens.length ? `<h2>Tokens</h2><ul class="list con-list">${tokens.map(itemRow).join('')}</ul>` : ''}
+    ${tokens.length ? `<h2>Tokens</h2><ul class="list con-list">${tokens.map((i) => {
+      const used = d.charges.find((x) => x.token === i.key);
+      return used ? itemRow(i).replace(/<\/li>$/, `${conTokenTimeHtml(used, c)}</li>`) : itemRow(i);
+    }).join('')}</ul>` : ''}
     ${d.events.length ? `<h2>Changes made in Jira</h2><ul class="list con-list">${d.events.map((e) => `<li><span class="title">${esc(e.text)}</span><span class="sub">${whenText(e.at)}</span></li>`).join('')}</ul>` : ''}`;
 }
 
@@ -11224,6 +11253,29 @@ async function contractsClick(event) {
   if (t('[data-con-flags]')) { conAllFlags = !conAllFlags; return render(); }
   if (t('[data-con-load-orgs]')) { conOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
   if (t('[data-con-back]')) { conOpen = null; return render(); }
+  const tokCopy = t('[data-con-token-copy]');
+  if (tokCopy) {
+    const tk = conTokenData.get(tokCopy.dataset.conTokenCopy);
+    if (!tk) return true;
+    const text = [`${tk.customer}: ${tk.token || `token ${tk.seq}`} (${tk.contract})`, `${duration(tk.seconds)} of support time`, '',
+      ...tk.lines.map((l) => `${fullDate(l.date)}  ${duration(l.seconds)}  ${l.key ? `${l.key} ` : ''}${l.summary || ''}${l.note ? ` - ${l.note}` : ''} (${l.who})`)].join('\n');
+    try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('This browser wouldn\'t copy it'); }
+    return true;
+  }
+  const tokCsv = t('[data-con-token-csv]');
+  if (tokCsv) {
+    const tk = conTokenData.get(tokCsv.dataset.conTokenCsv);
+    if (!tk) return true;
+    const cell = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+    const csv = [['Date', 'Ticket', 'Summary', 'Work done', 'Engineer', 'Hours'], ...conTokenRows(tk), ['', '', '', '', 'Total', (Math.round(tk.seconds / 36) / 100).toFixed(2)]]
+      .map((r) => r.map(cell).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${tk.customer} ${tk.token || `token ${tk.seq}`}.csv`.replace(/[\\/:*?"<>|]/g, '');
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    return true;
+  }
   const charge = t('[data-con-charge]');
   if (charge) {
     charge.closest('li')?.querySelectorAll('button').forEach((b) => { b.disabled = true; });
@@ -11563,9 +11615,7 @@ const pscCanResolve = (d) => d.state !== 'resolved' && PSC_IN_PROGRESS.test(d.st
 function pscUpdateChips(d) {
   const out = [];
   if (!d.orderWork) {
-    out.push(d.chargeable === 'yes' ? '<span class="psc-chip plain">Chargeable</span>'
-      : d.chargeable === 'no' ? '<span class="psc-chip plain">Promtek at fault</span>'
-      : '<span class="psc-chip warn">Chargeable not set</span>');
+    if (d.chargeable === 'no') out.push('<span class="psc-chip plain">Not chargeable: Promtek at fault</span>');
   }
   if (d.customerWaiting) out.push(`<span class="psc-chip warn">${esc((d.customerLast.by || 'Customer').split(' ')[0])} replied ${agoText(d.customerLast.at)}, waiting on us</span>`);
   if (d.lastTeam && d.response.at) out.push(`<span class="psc-chip${d.stale ? ' warn' : ''}">Last update ${agoText(d.lastTeam.at)}: ${esc((d.lastTeam.by || '').split(' ')[0])} ${esc(d.lastTeam.what || '')}</span>`);
@@ -11605,7 +11655,7 @@ function pscOrgSelect(d) {
 }
 
 function pscTriageActions(d) {
-  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it', charge: 'Chargeable not set' };
+  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it' };
   return `<div class="psc-triage">
       <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${need[m]}</span>`).join('')}</p>
       <div class="psc-actions">
@@ -11613,7 +11663,6 @@ function pscTriageActions(d) {
         ${pscQuickHand(d)}
         ${pscPeopleSelect(d)}
         ${d.missing.includes('org') ? pscOrgSelect(d) : ''}
-        ${d.missing.includes('charge') ? pscChargeSelect(d) : ''}
       </div>
     </div>`;
 }
@@ -11625,13 +11674,11 @@ let pscResolving = null;         // { key, summary, chargeable, cause, busy }
 function pscResolveModal() {
   const r = pscResolving;
   if (!r) return '';
-  const seg = (v, label) => `<button type="button" class="seg${r.chargeable === v ? ' on' : ''}" data-psc-res-charge="${v ? 'yes' : 'no'}">${label}</button>`;
   return `<div class="modal-backdrop"><div class="modal card psc-resolve" role="dialog" aria-modal="true" aria-labelledby="psc-resolve-title">
       <h2 id="psc-resolve-title">Resolve ${esc(r.key)}</h2>
       <p class="muted" style="margin-top:0">${esc(r.summary || '')}</p>
-      <p class="psc-resolve-q"><strong>Was it chargeable?</strong></p>
-      <div class="segment psc-resolve-charge">${seg(true, 'Chargable PSC')}${seg(false, 'Promtek at Fault')}</div>
-      <p class="help">A chargeable PSC's time goes on the customer's token clock. Promtek at Fault is for problems Promtek caused, and is never charged.</p>
+      <label class="nt-check psc-resolve-fault"><input type="checkbox" data-psc-res-fault${r.chargeable === false ? ' checked' : ''}> <span><strong>Not chargeable: Promtek at fault</strong><br>
+        <small class="muted">For problems Promtek caused. Left unticked, its time goes on the customer's token clock.</small></span></label>
       <label class="psc-resolve-cause"><strong>Root cause</strong>
         <textarea data-psc-cause rows="4" placeholder="What was wrong, and what put it right">${esc(r.cause || '')}</textarea></label>
       <p class="help">Saved to the PSC solution field in Jira.</p>
@@ -11649,20 +11696,19 @@ async function pscResolveClick(t) {
   const open = t('[data-psc-resolve]');
   if (open) {
     const d = pscData?.items.find((x) => x.key === open.dataset.pscResolve) || null;
-    pscResolving = { key: open.dataset.pscResolve, summary: d?.summary || '', chargeable: d?.chargeable === 'yes' ? true : d?.chargeable === 'no' ? false : null, cause: '' };
+    pscResolving = { key: open.dataset.pscResolve, summary: d?.summary || '', chargeable: d?.chargeable !== 'no', cause: '' };
     await render();
     document.querySelector('[data-psc-cause]')?.focus({ preventScroll: true });
     return true;
   }
   if (!pscResolving) return false;
-  const charge = t('[data-psc-res-charge]');
-  if (charge) { pscResolving.chargeable = charge.dataset.pscResCharge === 'yes'; await render(); return true; }
+  const fault = t('[data-psc-res-fault]');
+  if (fault) { pscResolving.chargeable = !fault.checked; return false; }
   const act = t('[data-psc-res]')?.dataset.pscRes;
   if (act === 'cancel') { pscResolving = null; await render(); return true; }
   if (act === 'go') {
     const out = document.getElementById('psc-resolve-result');
     const say = (text) => { if (out) { out.textContent = text; out.className = 'result bad'; } };
-    if (pscResolving.chargeable === null) { say('Choose whether it was chargeable.'); return true; }
     if ((pscResolving.cause || '').trim().length < 5) { say('Give the root cause: what was wrong and what put it right.'); return true; }
     pscResolving.busy = true;
     try {
@@ -11682,13 +11728,11 @@ async function pscResolveClick(t) {
   return false;
 }
 
-// Chargable PSC or Promtek at Fault: only chargeable PSCs go on a customer's token clock.
+// Every PSC is chargeable unless it's marked Promtek at Fault.
 function pscChargeSelect(d) {
-  return `<select data-psc-charge="${esc(d.key)}" aria-label="Is ${esc(d.key)} chargeable?">
-      <option value="">${d.chargeable === 'yes' ? 'Chargable PSC' : d.chargeable === 'no' ? 'Promtek at Fault' : 'Chargeable?'}</option>
-      <option value="yes"${d.chargeable === 'yes' ? ' disabled' : ''}>Chargable PSC</option>
-      <option value="no"${d.chargeable === 'no' ? ' disabled' : ''}>Promtek at Fault</option>
-    </select>`;
+  return d.chargeable === 'no'
+    ? `<button class="btn secondary" data-psc-charge-btn="${esc(d.key)}" data-value="yes">Make it chargeable again</button>`
+    : `<button class="btn secondary" data-psc-charge-btn="${esc(d.key)}" data-value="no">Mark not chargeable: Promtek at fault</button>`;
 }
 
 function pscTabsHtml(data) {
@@ -12382,7 +12426,7 @@ async function pscItemHtml() {
         <div><dt>Last update from the team</dt><dd>${d.lastTeam ? `${when(d.lastTeam.at)}: ${esc(d.lastTeam.by || '')} ${esc(d.lastTeam.what || '')}` : '—'}</dd></div>
         <div><dt>Customer's last word</dt><dd>${d.customerLast ? `${when(d.customerLast.at)} from ${esc(d.customerLast.by || 'the customer')}${d.customerWaiting ? ' <b class="con-late">· waiting on us</b>' : ''}` : '—'}</dd></div>
         <div><dt>Owner</dt><dd>${d.assignee ? esc(d.assignee) : '<b>Unassigned</b>'}</dd></div>
-        <div><dt>Chargeable</dt><dd>${d.chargeable === 'yes' ? 'Chargable PSC: its time goes on the token clock' : d.chargeable === 'no' ? 'Promtek at Fault: its time isn\'t charged' : '<b class="con-late">Not set yet</b>'}
+        <div><dt>Chargeable</dt><dd>${d.chargeable === 'no' ? 'Not chargeable, Promtek at fault: its time isn\'t charged' : 'Chargeable: its time goes on the token clock'}
           ${d.orderWork ? '' : `<div style="margin-top:.4rem">${pscChargeSelect(d)}</div>`}</dd></div>
         <div><dt>First look due</dt><dd>${when(d.response.dueAt)}, ${workText(d.response.targetMs)} after ${d.cover.raisedInCover ? 'it was raised' : `${esc(d.tierName)} cover began`}</dd></div>
       </dl>
@@ -12507,6 +12551,15 @@ async function pscClick(event) {
     return render();
   }
   if (t('[data-psc-load-orgs]')) { pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
+  const chg = t('[data-psc-charge-btn]');
+  if (chg) {
+    const yes = chg.dataset.value === 'yes';
+    if (!yes && !confirm(`Mark ${chg.dataset.pscChargeBtn} not chargeable? Its time comes off the customer's token clock.`)) return true;
+    chg.disabled = true;
+    try { const r = await api('/api/psc/charge', { method: 'POST', body: JSON.stringify({ key: chg.dataset.pscChargeBtn, chargeable: yes }) }); toast(r.saved === false ? r.message : yes ? 'Chargeable again' : 'Marked not chargeable: Promtek at fault'); } catch (err) { toast(err.message); }
+    pscFetchedAt = 0;
+    return render();
+  }
   const pick = t('[data-psc-pickup]');
   if (pick) {
     pick.disabled = true;
@@ -12554,7 +12607,6 @@ async function pscChange(event) {
     catch (err) { toast(err.message); }
     pscFetchedAt = 0; render(); return true;
   }
-  if (el.matches('[data-psc-charge]') && el.value) { await send('/api/psc/charge', { key: el.dataset.pscCharge, chargeable: el.value === 'yes' }, el.value === 'yes' ? 'Marked chargeable' : 'Marked Promtek at fault'); return true; }
   if (el.matches('[data-psc-customer]')) { pscCustomer = el.value; render(); return true; }
   if (el.matches('[data-psc-tier]')) { pscTier = el.value; render(); return true; }
   if (el.matches('[data-psc-sort]')) { pscSort = el.value; render(); return true; }
@@ -12710,6 +12762,9 @@ function pscCopySettingsHtml() {
         <td>${jiraLink(r.issue_key)}</td><td>${esc(r.project_key || r.org || '')}</td>
         <td>${esc(statusText[r.status] || r.status)}${r.copy_key ? ` ${jiraLink(r.copy_key)}` : ''}${r.error ? `<br><small class="muted">${esc(r.error)}</small>` : ''}</td>
         <td><small>${whenText(r.requested_at)} · ${esc(r.requested_by || '')}</small></td></tr>`).join('')}</tbody></table></div>` : ''}
+      <h2>Who raised it</h2>
+      <p class="muted">Copy & Sync makes each copy from its own account, so Jira shows that account as the one who raised it. The hub sets each open copy's reporter back to whoever raised the original, a few each run.${c.reporters ? ` ${c.reporters.fixed} put right${c.reporters.waiting ? `, ${c.reporters.waiting} to do` : ''}.` : ''}</p>
+      ${c.reporters?.refused ? `<p class="muted"><strong>Jira refused ${c.reporters.refused}</strong>, usually because the person isn't a customer of that project in Jira, for example${c.reporters.examples.map((x) => ` ${jiraLink(x.issue_key)}`).join(',')}: ${esc(String(c.reporters.examples[0]?.error || '').replace(/^Refused: /, ''))}</p>` : ''}
     </section>`;
 }
 

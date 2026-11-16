@@ -24,7 +24,7 @@ export const FIELDS = {
   chargeable: 'customfield_16884',
 };
 
-// The Chargable field on PSCs: only a chargeable PSC's time goes on the token clock.
+// The Chargable field on PSCs: a PSC's time goes on the token clock unless it's Promtek at Fault.
 export const CHARGE = { yes: 'Chargable PSC', no: 'Promtek at Fault' };
 export function chargeOf(value) {
   const v = String((value && typeof value === 'object' ? value.value ?? value.name : value) || '').trim().toLowerCase();
@@ -444,14 +444,14 @@ async function worklogsSince(env, from) {
 }
 
 // What a worklog counts towards: a contract, or a reason it doesn't.
-// From the day the Chargable field came in, only chargeable time goes on the clock: a PSC
-// marked Chargable PSC, or time on the contract item that the engineer said was chargeable.
-// Anything marked Promtek at Fault never counts. Time from before then counts as it always did.
-function chargeRule(placed, w, st, charge) {
+// A PSC's time is chargeable unless the PSC is marked Promtek at Fault. Time on the contract
+// item itself waits, from the day the Chargable field came in, for the engineer to say
+// whether it's chargeable. Anything marked Promtek at Fault never counts.
+function chargeRule(placed, w, st, charge, { chargeableUnlessMarked = false } = {}) {
   if (!placed.contract) return placed;
   const held = { held: placed.contract, via: placed.via, issue: placed.issue };
   if (charge === 'no') return { skip: 'not-chargeable', ...held };
-  if (charge === 'yes' || !st.ruleFrom || w.work_date < st.ruleFrom) return placed;
+  if (charge === 'yes' || chargeableUnlessMarked || !st.ruleFrom || w.work_date < st.ruleFrom) return placed;
   return { skip: 'awaiting-charge', ...held };
 }
 
@@ -460,12 +460,12 @@ export function placeWorklog(w, st) {
   if (!placed.contract || placed.via === 'token') return placed;
   if (placed.via === 'contract') return chargeRule(placed, w, st, w.worklog_id ? st.decisions?.get(String(w.worklog_id)) : null);
   const own = st.psc?.get(String(w.issue_id));
-  if (own) return chargeRule(placed, w, st, own.chargeable || null);
+  if (own) return chargeRule(placed, w, st, own.chargeable || null, { chargeableUnlessMarked: true });
   const issue = st.issues.get(String(w.issue_id));
   const parent = issue?.parent_id ? st.issues.get(issue.parent_id) : null;
   const charge = st.board?.get(String(w.issue_id)) || issue?.chargeable
     || (parent ? st.board?.get(parent.issue_id) || parent.chargeable : null) || null;
-  return chargeRule(placed, w, st, charge);
+  return chargeRule(placed, w, st, charge, { chargeableUnlessMarked: true });
 }
 
 function placeByIssue(w, st) {
@@ -1064,6 +1064,7 @@ export async function detail(env, viewer, key) {
     kind: l.via === 'contract' ? 'contract' : 'psc', key: l.via === 'contract' ? c.issue_key : l.issue?.issue_key || '', summary: l.via === 'contract' ? 'Time on the contract' : l.issue?.summary || '',
   });
   const byDate = (a, b) => b.date.localeCompare(a.date);
+  const tokenTime = await tokenBreakdown(env, st, c, clock, charges);
   return {
     ...head,
     contract: summarise(c, st.items, clock, charges.length, head.clockStart),
@@ -1073,10 +1074,56 @@ export async function detail(env, viewer, key) {
     notCharged: (clock?.notCharged || []).map(timeLine).sort(byDate).slice(0, 50),
     canDecide: true,
     charges: charges.map((x) => ({ seq: x.seq, token: x.token_key, trigger: x.trigger_key, reason: x.reason, overdraft: Boolean(x.overdraft),
-      done: x.step >= 3, at: x.done_at || x.created_at, error: x.step < 3 ? x.error : null })),
+      done: x.step >= 3, at: x.done_at || x.created_at, error: x.step < 3 ? x.error : null, time: tokenTime.get(x.seq) || null })),
     events,
     problems: checkDates(c),
   };
+}
+
+// The time that used each token: the clock runs through the chargeable time in the order it
+// was logged, and every 4 hours of it uses one token, so a worklog can be split between two.
+// The token used when the contract ended takes whatever was left.
+async function tokenBreakdown(env, st, c, clock, charges) {
+  const out = new Map();
+  const logs = clock?.logs || [];
+  if (!logs.length || !charges.length) return out;
+  const total = clock.seconds || 0;
+  const parts = new Map();
+  for (const ch of charges) {
+    const lo = (ch.seq - 1) * TOKEN_SECONDS;
+    const hi = ch.reason === 'end' ? Math.max(total, lo) : ch.seq * TOKEN_SECONDS;
+    const slices = [];
+    for (const l of logs) {
+      const end = l.running;
+      const start = end - l.seconds;
+      const used = Math.min(end, hi) - Math.max(start, lo);
+      if (used > 0) slices.push({ l, used, split: used < l.seconds });
+    }
+    parts.set(ch.seq, slices);
+  }
+  const ids = [...new Set([...parts.values()].flat().map((x) => String(x.l.worklog_id)))];
+  const notes = new Map();
+  const people = new Map();
+  for (let i = 0; i < ids.length; i += 90) {
+    const part = ids.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT l.worklog_id, l.description, e.name FROM xp_ledger l LEFT JOIN employees e ON e.account_id = l.account_id
+      WHERE l.worklog_id IN (${part.map(() => '?').join(',')})`).bind(...part).all();
+    for (const r of results) { notes.set(String(r.worklog_id), r.description || ''); people.set(String(r.worklog_id), r.name || null); }
+  }
+  const labelOf = (l) => {
+    const issue = st.issues.get(String(l.issue_id)) || st.psc?.get(String(l.issue_id));
+    if (issue?.issue_key) return { key: issue.issue_key, summary: issue.summary || '' };
+    if (l.via === 'contract') return { key: c.issue_key, summary: 'Time on the contract' };
+    const item = st.items.find((i) => i.issue_id === String(l.issue_id));
+    return { key: item?.issue_key || '', summary: item?.summary || 'Time on a token' };
+  };
+  for (const [seq, slices] of parts) {
+    const lines = slices.map(({ l, used, split }) => ({ date: l.work_date, seconds: used, logged: l.seconds, split, ...labelOf(l),
+      who: people.get(String(l.worklog_id)) || 'Someone without a profile', note: notes.get(String(l.worklog_id)) || '' }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    out.set(seq, { seconds: lines.reduce((t, x) => t + x.seconds, 0), from: lines[0]?.date || null, to: lines.at(-1)?.date || null, lines });
+  }
+  return out;
 }
 
 // Whether some time on a contract item is chargeable. The person who logged it says,

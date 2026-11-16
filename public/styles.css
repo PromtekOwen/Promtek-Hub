@@ -2035,3 +2035,14 @@ dialog#bell::backdrop { background: rgba(9, 32, 48, .45); }
 .nt-table td.nt-tog { white-space: nowrap; }
 .nt-section .segment { display: flex; flex-wrap: wrap; max-width: 100%; }
 .nt-section .segment .seg { flex: 1 1 auto; }
+
+/* The time that used a token */
+.con-token-time { grid-column: 1 / -1; margin-top: .5rem; width: 100%; }
+.con-token-time summary { cursor: pointer; color: var(--blue-deep); font-weight: 600; font-size: .92rem; }
+.con-token-time[open] summary { margin-bottom: .5rem; }
+.con-token-table { font-size: .88rem; }
+.con-token-table td { vertical-align: top; white-space: normal; }
+.con-token-table td:first-child { white-space: nowrap; }
+.con-token-table small { overflow-wrap: anywhere; }
+.con-token-time .row { gap: .5rem; margin-top: .5rem; flex-wrap: wrap; }
+.psc-resolve-fault { margin: .75rem 0 1rem; align-items: flex-start; }
