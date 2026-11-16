@@ -75,6 +75,8 @@ function budget(env, max) {
       used++;
       return jira(env, path, init);
     },
+    // A call to somewhere other than Jira still counts.
+    tick() { if (used >= max) throw new OutOfCalls('Call budget used'); used++; },
     get used() { return used; },
     left: () => max - used,
   };
@@ -618,6 +620,7 @@ export async function item(env, viewer, key) {
   const timeline = JSON.parse(m.timeline || '[]');
   for (const a of ctx.actions.filter((x) => ids.includes(x.issue_id))) timeline.push({ at: a.at, by: a.name, team: true, kind: 'hub', text: 'Picked it up in the hub' });
   timeline.sort((a, b) => ms(b.at) - ms(a.at));
+  if (row.project_key === PSC_PROJECT) d.copyRequest = await copyState(env, row.issue_key).catch(() => null);
   return { item: d, timeline: timeline.slice(0, 40) };
 }
 
@@ -785,6 +788,9 @@ export async function run(env, { force = false } = {}) {
     const v = await version(env);
     const alertsDue = force || (!stillReading && ((await getState(env, 'psc_alerts_version')) !== v
       || Date.now() - Number((await getState(env, 'psc_alerts_at')) || 0) >= ALERTS_EVERY_MS));
+    // PSC tickets with an Organization and no customer copy yet: have them copied.
+    if (!stillReading) out.copies = await autoCopy(env, b, await context(env));
+    if ((await getState(env, 'psc_unlink'))?.includes('"done":false') && b.left() > 4) out.unlink = await unlinkStep(env, budget(env, Math.min(20, b.left())));
     if (alertsDue) {
       await alerts(env, await context(env));
       await setState(env, 'psc_alerts_at', Date.now());
@@ -868,4 +874,159 @@ export async function saveSettings(env, viewer, input) {
   await setState(env, 'psc_settings', JSON.stringify(s));
   await changed(env);
   return { ok: true, before, after: s };
+}
+
+// ---------- customer copies, made by the hub ----------
+// A PSC ticket with an Organization is copied into the customer's project (the project
+// named exactly as the Organization) by the Copy & Sync app, which then keeps the two in
+// step. The hub starts it: it fills in the Automation field the app reads the project from,
+// then calls the app. That replaces the two Jira automations, once switched on under the
+// PSC settings. Each ticket is asked for once; a ticket that already links to an item in
+// its customer's project isn't asked for at all.
+const AUTOMATION_FIELD = 'customfield_14981';
+const SKIP_TYPE_IDS = ['13031'];
+const COPY_PER_RUN = 5;
+export const COPY_RECIPE = (env) => env.COPYSYNC_RECIPE || 'RECIPE_e3e97e4e-2f15-44fb-8eec-76f427acd9f1';
+const COPY_URL = (env) => env.COPYSYNC_URL || 'https://de-copyandsync.elements-apps.com/api/public/copy';
+
+export async function copyOnSince(env) { return (await getState(env, 'psc_copy_on')) || ''; }
+
+async function noteCopy(env, key, fields) {
+  const cols = Object.keys(fields);
+  await env.DB.prepare(`INSERT INTO psc_copy_requests (issue_key, ${cols.join(', ')}) VALUES (?, ${placeholders(cols.length)})
+    ON CONFLICT(issue_key) DO UPDATE SET ${cols.map((c) => `${c} = excluded.${c}`).join(', ')}, attempts = psc_copy_requests.attempts + 1`)
+    .bind(key, ...cols.map((c) => fields[c] ?? null)).run();
+}
+
+// Copies one PSC ticket into its customer's project. b is a call budget.
+export async function makeCopy(env, b, key, by = 'The hub') {
+  if (!env.COPYSYNC_TOKEN) throw new Error('The Copy & Sync token isn\'t set for the hub (COPYSYNC_TOKEN).');
+  const at = new Date().toISOString();
+  const issue = await b.call(`/rest/api/3/issue/${encodeURIComponent(key)}?fields=issuetype,summary,issuelinks,${ORG_FIELD}`);
+  const f = issue?.fields || {};
+  if (SKIP_TYPE_IDS.includes(String(f.issuetype?.id))) { await noteCopy(env, key, { status: 'skipped', error: `${f.issuetype?.name || 'This type'} isn't copied`, requested_by: by, requested_at: at }); return { skipped: true }; }
+  if (/quote/i.test(f.summary || '')) { await noteCopy(env, key, { status: 'skipped', error: 'Quotes go to the quote recipe', requested_by: by, requested_at: at }); return { skipped: true }; }
+  const orgs = orgNames(f[ORG_FIELD]);
+  if (!orgs.length) throw new Error(`${key} has no Organization yet.`);
+  const projects = await customerProjects(env);
+  const norm = (s) => String(s || '').trim().toLowerCase();
+  const target = orgs.map((o) => projects.find((p) => p.name === o) || projects.find((p) => norm(p.name) === norm(o))).find(Boolean);
+  if (!target) {
+    await noteCopy(env, key, { org: orgs.join(' | '), status: 'no-project', error: `No customer project is named ${orgs.join(' or ')}`, requested_by: by, requested_at: at });
+    throw new Error(`No customer project is named ${orgs.join(' or ')}.`);
+  }
+  // Already linked to something in that project: that's its copy.
+  const linked = (f.issuelinks || []).map((l) => l.outwardIssue?.key || l.inwardIssue?.key).find((k) => k && k.startsWith(`${target.key}-`));
+  if (linked) { await noteCopy(env, key, { org: orgs.join(' | '), project_key: target.key, status: 'copied', copy_key: linked, error: null, requested_by: by, requested_at: at }); return { already: linked }; }
+  await b.call(`/rest/api/3/issue/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ fields: { [AUTOMATION_FIELD]: { id: String(target.id) } } }) });
+  b.tick();
+  const res = await fetch(`${COPY_URL(env)}?recipeId=${encodeURIComponent(COPY_RECIPE(env))}&issueId=${encodeURIComponent(key)}`, { method: 'POST', headers: { token: env.COPYSYNC_TOKEN } });
+  if (!res.ok) {
+    const text = (await res.text().catch(() => '')).slice(0, 200);
+    await noteCopy(env, key, { org: orgs.join(' | '), project_key: target.key, status: 'failed', error: `Copy & Sync ${res.status}: ${text}`, requested_by: by, requested_at: at });
+    throw new Error(`Copy & Sync didn't take it (${res.status}). ${text}`);
+  }
+  await noteCopy(env, key, { org: orgs.join(' | '), project_key: target.key, status: 'requested', copy_key: null, error: null, requested_by: by, requested_at: at });
+  return { requested: target.key };
+}
+
+// Each run: PSC tickets with an Organization, no copy found and not asked for yet, that have
+// changed since copying was switched on.
+export async function autoCopy(env, b, ctx) {
+  const since = await copyOnSince(env);
+  if (!since || !env.COPYSYNC_TOKEN) return { off: true };
+  const { results } = await env.DB.prepare('SELECT issue_key FROM psc_copy_requests').all();
+  const asked = new Set(results.map((r) => r.issue_key));
+  const due = ctx.items.filter((r) => r.project_key === PSC_PROJECT && r.org && r.uncopied && !r.done && !asked.has(r.issue_key)
+    && ms(r.updated_at || r.created_at) >= ms(since) && !/quote/i.test(r.summary || '')).slice(0, COPY_PER_RUN);
+  let made = 0;
+  for (const r of due) {
+    if (b.left() < 4) break;
+    try { await makeCopy(env, b, r.issue_key); made++; }
+    catch (err) {
+      if (err instanceof OutOfCalls) break;
+      if (!(await env.DB.prepare('SELECT 1 FROM psc_copy_requests WHERE issue_key = ?').bind(r.issue_key).first())) {
+        await noteCopy(env, r.issue_key, { org: r.org, status: 'failed', error: String(err.message).slice(0, 300), requested_by: 'The hub', requested_at: new Date().toISOString() });
+      }
+      await raiseAlert(env, { kind: 'psc-copy', dedupe: `psc-copy:${r.issue_key}`, subject: `${r.issue_key} couldn't be copied to the customer's project`,
+        body: `${r.issue_key} (${r.summary}) has the Organization ${r.org}, but the hub couldn't have it copied:\n\n${err.message}\n\nOpen it on the PSC tile to try again.` }).catch(() => {});
+    }
+  }
+  return { made };
+}
+
+// Copying from the tile, by hand: for one that was missed, failed, or came before copying was switched on.
+export async function copyNow(env, viewer, key) {
+  mustSee(viewer);
+  const row = await rowFor(env, key);
+  if (row.project_key !== PSC_PROJECT) throw Object.assign(new Error('Only PSC tickets are copied.'), { status: 400 });
+  const b = budget(env, 6);
+  const r = await makeCopy(env, b, row.issue_key, viewer.employee?.name || viewer.email);
+  await changed(env);
+  return r;
+}
+
+export async function copyState(env, key) {
+  return env.DB.prepare('SELECT * FROM psc_copy_requests WHERE issue_key = ?').bind(String(key)).first();
+}
+
+// ---------- the PSC copy settings, for admins ----------
+
+export async function copySettings(env, viewer) {
+  if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
+  const { results } = await env.DB.prepare('SELECT * FROM psc_copy_requests ORDER BY requested_at DESC LIMIT 40').all().catch(() => ({ results: [] }));
+  const ctx = await context(env);
+  const waiting = ctx.items.filter((r) => r.project_key === PSC_PROJECT && r.org && r.uncopied && !r.done).length;
+  return { on: Boolean(await copyOnSince(env)), since: (await copyOnSince(env)) || null, tokenSet: Boolean(env.COPYSYNC_TOKEN), recipe: COPY_RECIPE(env),
+    recent: results, waiting, unlink: JSON.parse((await getState(env, 'psc_unlink')) || 'null') };
+}
+
+export async function setCopyOn(env, viewer, on) {
+  if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
+  await setState(env, 'psc_copy_on', on ? new Date().toISOString() : '');
+  return copySettings(env, viewer);
+}
+
+// ---------- stopping PSC tickets being synced twice ----------
+// Some PSC tickets and their copies are joined by a "Sync From / Sync To" link as well as
+// the copy link, so two Copy & Sync recipes keep them in step at once and changes go
+// across twice. This takes those Sync links off, a few each run.
+const SYNC_LINK_TYPE = '10303';
+export async function unlinkStart(env, viewer, { limit = null } = {}) {
+  if (!viewer.isAdmin) { const err = new Error('Admin only.'); err.status = 403; throw err; }
+  const job = { started: new Date().toISOString(), removed: 0, checked: 0, limit: limit ? Number(limit) : null, done: false, pairs: [] };
+  await setState(env, 'psc_unlink', JSON.stringify(job));
+  return unlinkStep(env);
+}
+
+export async function unlinkStep(env, b = budget(env, 20)) {
+  const job = JSON.parse((await getState(env, 'psc_unlink')) || 'null');
+  if (!job || job.done) return job || { idle: true };
+  const projects = new Set((await customerProjects(env).catch(() => [])).map((p) => p.key));
+  try {
+    const after = job.last ? ` AND key > ${job.last}` : '';
+    const page = await b.call(`/rest/api/3/search/jql?jql=${encodeURIComponent(`project = PSC AND issueLinkType in ("Sync From", "Sync To")${after} ORDER BY key ASC`)}&fields=issuelinks&maxResults=15`);
+    const issues = page?.issues || [];
+    let stopped = false;
+    for (const issue of issues) {
+      for (const l of issue.fields?.issuelinks || []) {
+        const other = l.outwardIssue || l.inwardIssue;
+        if (String(l.type?.id) !== SYNC_LINK_TYPE || !other || !projects.has(other.key.split('-')[0])) continue;
+        // Only where the copy link is there too, so the pair stays in step through the copy recipe.
+        const copied = (issue.fields.issuelinks || []).some((x) => String(x.type?.id) !== SYNC_LINK_TYPE && (x.outwardIssue || x.inwardIssue)?.key === other.key);
+        if (!copied) { job.kept = (job.kept || 0) + 1; continue; }
+        if ((job.limit && job.removed >= job.limit) || b.left() < 2) { stopped = true; break; }
+        await b.call(`/rest/api/3/issueLink/${encodeURIComponent(l.id)}`, { method: 'DELETE' });
+        job.removed++;
+        if (job.pairs.length < 50) job.pairs.push(`${issue.key} ↔ ${other.key}`);
+      }
+      if (stopped) break;
+      job.checked++; job.last = issue.key;
+    }
+    if (!issues.length || (job.limit && job.removed >= job.limit)) { job.done = true; job.finished = new Date().toISOString(); }
+  } catch (err) {
+    if (!(err instanceof OutOfCalls)) { job.error = String(err.message).slice(0, 300); job.done = true; }
+  }
+  await setState(env, 'psc_unlink', JSON.stringify(job));
+  return job;
 }
