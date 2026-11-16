@@ -11678,13 +11678,14 @@ function pscChargeSelect(d) {
 function pscTabsHtml(data) {
   const triage = data.items.filter((d) => !d.orderWork && d.missing.length).length;
   const open = data.items.filter((d) => !d.orderWork && d.state !== 'resolved').length;
-  return `<div class="tabs con-tabs psc-tabs">${[['triage', `Triage${triage ? ` (${triage})` : ''}`], ['open', `Open (${open})`], ['insights', 'Insights']].map(([k, l]) =>
-    `<button class="tab${pscTab === k ? ' on' : ''}" data-psc-tab="${k}">${l}</button>`).join('')}</div>`;
+  return `<div class="psc-tabs-row"><div class="tabs con-tabs psc-tabs">${[['triage', `Triage${triage ? ` (${triage})` : ''}`], ['open', `Open (${open})`], ['insights', 'Insights']].map(([k, l]) =>
+    `<button class="tab${pscTab === k ? ' on' : ''}" data-psc-tab="${k}">${l}</button>`).join('')}</div>
+    <button class="btn psc-new-btn" data-psc-new="1">＋ New PSC</button></div>`;
 }
 
 function pscHeadLine(data) {
   return `<div class="psc-headline"><p class="help">${data.reading ? `Reading everything from Jira: ${data.reading.count} items so far. The rest follows over the next few minutes.` : `Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.`}</p>
-      <span class="row"><button class="btn" data-psc-new="1">New PSC</button><button class="btn secondary" data-psc-refresh="1">Refresh</button></span></div>
+      <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
     ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
     ${(data.handoffs || []).length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.handoffs.map((h) => `${esc(h.issue_key)} ${h.kind === 'condor' ? 'to Condor Dev' : 'to a quote'}${h.error ? ` (${esc(h.error)})` : ''}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
     ${pscOrgFlagsHtml(data)}`;
