@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS contract_refunds (id INTEGER PRIMARY KEY AUTOINCREMENT, contract_key TEXT NOT NULL, seq INTEGER NOT NULL, reason TEXT, token_key TEXT NOT NULL, trigger_key TEXT, trigger_summary TEXT, overdraft INTEGER NOT NULL DEFAULT 0, charge_step INTEGER NOT NULL DEFAULT 0, charged_at TEXT, requested_at TEXT NOT NULL, clock_seconds INTEGER, refund_step INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT, done_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_contract_refunds_open ON contract_refunds(done_at, contract_key);
+CREATE TABLE IF NOT EXISTS token_names (token_key TEXT PRIMARY KEY, summary TEXT);

@@ -10848,6 +10848,14 @@ function jvPanel() {
     document.body.classList.add('jv-open');
   }
   const v = jvCache.get(jvOpenKey);
+  if (v?.tokenView) {
+    el.innerHTML = `<div class="jv-sheet" role="dialog" aria-modal="true" aria-label="${esc(jvOpenKey)}">
+    <div class="jv-sheet-head"><div><strong>${esc(jvOpenKey)}</strong> <span class="muted">Service Token${v.contract?.customer ? ` · ${esc(v.contract.customer)}` : ''}</span>${v.summary ? `<h2>${esc(v.summary)}</h2>` : ''}</div>
+      <button class="icon-btn" data-jv-close="1" aria-label="Close">✕</button></div>
+    ${v.error ? `<div class="card"><p class="bad">${esc(v.error)}</p><a class="btn secondary" href="${esc(me.jiraBaseUrl)}/browse/${esc(jvOpenKey)}" target="_blank" rel="noopener" data-jv-out="1">Open in Jira</a></div>` : tokenPanelBody(v)}
+  </div>`;
+    return;
+  }
   el.innerHTML = `<div class="jv-sheet" role="dialog" aria-modal="true" aria-label="${esc(jvOpenKey)}">
     <div class="jv-sheet-head"><div><strong>${esc(jvOpenKey)}</strong>${v ? ` <span class="muted">${esc(v.type)} · ${esc(v.projectName)}</span><h2>${esc(v.summary)}</h2>` : ''}</div>
       <button class="icon-btn" data-jv-close="1" aria-label="Close">✕</button></div>
@@ -10877,6 +10885,7 @@ async function jvClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (event.currentTarget?.id === 'jira-viewer' && event.target === event.currentTarget) { jvOpenKey = null; jvPanel(); return true; }
   if (t('[data-jv-close]')) { jvOpenKey = null; jvPanel(); return true; }
+  if (jvCache.get(jvOpenKey)?.tokenView && await tokenClick(t)) return true;
   const vis = t('[data-jv-vis]');
   if (vis) {
     const k = vis.dataset.key;
@@ -10935,12 +10944,25 @@ document.addEventListener('click', async (event) => {
   if (!a || a.dataset.jvOut || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
   const m = /\/browse\/([A-Z][A-Z0-9_]*)-(\d+)(?:[?#]|$)/.exec(a.getAttribute('href') || '');
   if (!m || !me?.jiraBaseUrl || !a.href.startsWith(me.jiraBaseUrl)) return;
-  if (!jvProjects) { event.preventDefault(); await jvLoadProjects(); if (!jvProjects.includes(m[1])) { window.open(a.href, '_blank', 'noopener'); return; } openJiraViewer(`${m[1]}-${m[2]}`); return; }
-  if (!jvProjects.includes(m[1])) return;
+  if (jvProjects && !jvProjects.includes(m[1])) return;
   event.preventDefault();
   event.stopPropagation();
-  openJiraViewer(`${m[1]}-${m[2]}`);
+  const key = `${m[1]}-${m[2]}`;
+  if (!jvProjects) { await jvLoadProjects(); if (!jvProjects.includes(m[1])) { window.open(a.href, '_blank', 'noopener'); return; } }
+  // PSC items open here; a token shows what used it; anything else goes to Jira.
+  const kind = await jvKind(key);
+  if (kind === 'token') openTokenPanel(key);
+  else if (kind === 'psc') openJiraViewer(key);
+  else window.open(a.href, '_blank', 'noopener');
 }, true);
+const jvKinds = new Map();
+async function jvKind(key) {
+  if (jvKinds.has(key)) return jvKinds.get(key);
+  let kind = 'psc';
+  try { kind = (await api(`/api/jira/kind?key=${encodeURIComponent(key)}`)).kind; } catch { /* the viewer says if it can't */ }
+  jvKinds.set(key, kind);
+  return kind;
+}
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && jvOpenKey) { jvOpenKey = null; jvPanel(); }
   if (e.key === 'Enter' && e.target.id === 'psc-contact-q') { e.preventDefault(); view.querySelector('[data-psc-contact-search]')?.click(); return; }
@@ -11104,29 +11126,118 @@ async function contractsHtml() {
     <div class="con-grid">${list.map((c) => conCardHtml(c, today)).join('') || '<div class="card"><p style="margin:0">No contracts here.</p></div>'}</div>`;
 }
 
-// The time that used a token, ready to show a customer who asks where their tokens went.
+// The time that used a token, item by item, ready to show a customer who asks where their
+// tokens went. Shown on the contract and when a token is opened from anywhere in the hub.
 let conTokenData = new Map();
-function conTokenTimeHtml(x, c) {
-  const t = x.time;
+function tokenUsageHtml(t, { id, customer, contract, token, seq, open = true }) {
   if (!t?.lines?.length) return '';
-  const id = `${c.key}:${x.seq}`;
-  conTokenData.set(id, { customer: c.customer, contract: c.key, token: x.token, seq: x.seq, reason: x.reason, ...t });
+  conTokenData.set(id, { customer, contract, token, seq, ...t });
   const range = t.from === t.to ? fullDate(t.from) : `${fullDate(t.from)} to ${fullDate(t.to)}`;
-  return `<details class="con-token-time"><summary>The time that used it: ${duration(t.seconds)}, ${t.lines.length} ${t.lines.length === 1 ? 'entry' : 'entries'}, ${range}</summary>
+  const max = Math.max(...t.items.map((i) => i.seconds));
+  const items = t.items.map((i, n) => `<li class="tok-item">
+      <div class="tok-item-head">
+        <span class="tok-item-what">${i.via === 'contract' ? `<strong>Time on the contract</strong>` : i.key ? `${jiraLink(i.key)} <strong>${esc(i.summary || '')}</strong>` : `<strong>${esc(i.summary || 'Time on a token')}</strong>`}</span>
+        <span class="tok-item-time">${duration(i.seconds)}</span>
+      </div>
+      <div class="tok-bar" aria-hidden="true"><span style="width:${Math.max(3, Math.round((i.seconds / max) * 100))}%"></span></div>
+      <div class="tok-item-foot"><small class="muted">${i.entries} ${i.entries === 1 ? 'entry' : 'entries'} · ${esc(i.people.join(', '))}</small>
+        ${i.via === 'psc' || i.via === 'contract' ? `<button class="chip-btn" data-tok-nc="${esc(id)}" data-n="${n}">Not chargeable</button>` : ''}</div>
+    </li>`).join('');
+  const body = `<p class="tok-total"><strong>${duration(t.seconds)}</strong> across ${t.items.length} ${t.items.length === 1 ? 'item' : 'items'}, ${range}</p>
+      <ul class="tok-items">${items}</ul>
+      <details class="tok-entries"><summary>Every entry (${t.lines.length})</summary>
       <div class="table-wrap"><table class="con-token-table"><thead><tr><th>Date</th><th>Work</th><th>Who</th><th class="num">Time</th></tr></thead><tbody>
       ${t.lines.map((l) => `<tr><td>${shortDate(l.date)}</td>
         <td>${l.key ? jiraLink(l.key) : ''} ${esc(l.summary || '')}${l.note ? `<br><small class="muted">${esc(l.note)}</small>` : ''}</td>
         <td>${esc(l.who)}</td>
         <td class="num">${duration(l.seconds)}${l.split ? `<br><small class="muted">of ${duration(l.logged)}</small>` : ''}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${duration(t.seconds)}</strong></td></tr></tfoot></table></div>
-      ${t.lines.some((l) => l.split) ? '<p class="help">"of" marks an entry split between two tokens: only the part shown counted towards this one.</p>' : ''}
-      <div class="row"><button class="btn secondary" data-con-token-copy="${esc(id)}">Copy as text</button><button class="btn secondary" data-con-token-csv="${esc(id)}">Download CSV</button></div>
-    </details>`;
+      </tbody></table></div>
+      ${t.lines.some((l) => l.split) ? '<p class="help">"of" marks an entry split between two tokens: only the part shown counted towards this one.</p>' : ''}</details>
+      <div class="row tok-actions"><button class="btn secondary" data-con-token-copy="${esc(id)}">Copy as text</button><button class="btn secondary" data-con-token-csv="${esc(id)}">Download CSV</button></div>`;
+  return open ? `<div class="tok-usage">${body}</div>`
+    : `<details class="con-token-time"><summary>What used it: ${duration(t.seconds)} across ${t.items.length} ${t.items.length === 1 ? 'item' : 'items'}</summary><div class="tok-usage">${body}</div></details>`;
 }
+const conTokenTimeHtml = (x, c) => tokenUsageHtml(x.time, { id: `${c.key}:${x.seq}`, customer: c.customer, contract: c.key, token: x.token, seq: x.seq, open: false });
 
 function conTokenRows(t) {
   const hrs = (sec) => (Math.round(sec / 36) / 100).toFixed(2);
   return t.lines.map((l) => [l.date, l.key || '', l.summary || '', l.note || '', l.who, hrs(l.seconds)]);
+}
+
+// Copy, download, and marking time not chargeable: the same on the contract and in the token panel.
+async function tokenClick(t) {
+  const tokCopy = t('[data-con-token-copy]');
+  if (tokCopy) {
+    const tk = conTokenData.get(tokCopy.dataset.conTokenCopy);
+    if (!tk) return true;
+    const text = [`${tk.customer}: ${tk.token || `token ${tk.seq}`} (${tk.contract})`, `${duration(tk.seconds)} of support time`, '',
+      ...tk.items.map((i) => `${duration(i.seconds)}  ${i.via === 'contract' ? 'Time on the contract' : `${i.key ? `${i.key} ` : ''}${i.summary || ''}`}`), '',
+      'Each entry:', ...tk.lines.map((l) => `${fullDate(l.date)}  ${duration(l.seconds)}  ${l.key ? `${l.key} ` : ''}${l.summary || ''}${l.note ? ` - ${l.note}` : ''} (${l.who})`)].join('\n');
+    try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('This browser wouldn\'t copy it'); }
+    return true;
+  }
+  const tokCsv = t('[data-con-token-csv]');
+  if (tokCsv) {
+    const tk = conTokenData.get(tokCsv.dataset.conTokenCsv);
+    if (!tk) return true;
+    const cell = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+    const csv = [['Date', 'Ticket', 'Summary', 'Work done', 'Engineer', 'Hours'], ...conTokenRows(tk), ['', '', '', '', 'Total', (Math.round(tk.seconds / 36) / 100).toFixed(2)]]
+      .map((r) => r.map(cell).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `${tk.customer} ${tk.token || `token ${tk.seq}`}.csv`.replace(/[\\/:*?"<>|]/g, '');
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    return true;
+  }
+  const nc = t('[data-tok-nc]');
+  if (nc) {
+    const tk = conTokenData.get(nc.dataset.tokNc);
+    const it = tk?.items[Number(nc.dataset.n)];
+    if (!it) return true;
+    const ask = it.via === 'psc'
+      ? `Mark ${it.key} not chargeable (Promtek at fault)?\n\nAll of its time comes off ${tk.customer}'s token clock, not only the ${duration(it.seconds)} on this token. Any token the clock no longer reaches is given back in Jira.`
+      : `Mark this ${duration(it.seconds)} on the contract not chargeable?\n\nIt comes off ${tk.customer}'s token clock, and any token the clock no longer reaches is given back in Jira.`;
+    if (!confirm(ask)) return true;
+    nc.disabled = true;
+    try {
+      const r = await api('/api/contracts/not-chargeable', { method: 'POST', body: JSON.stringify({ contractKey: tk.contract, key: it.key, via: it.via, worklogIds: it.worklogIds }) });
+      toast(r.note || (r.tokensBack ? `${r.tokensBack} ${r.tokensBack === 1 ? 'token' : 'tokens'} given back${r.refunded < r.tokensBack ? ', Jira follows shortly' : ''}` : 'Taken off the token clock'));
+    } catch (err) { toast(err.message); nc.disabled = false; return true; }
+    if (jvOpenKey && jvCache.get(jvOpenKey)?.tokenView) await openTokenPanel(jvOpenKey);
+    if (currentRoute() === '#/contracts') render();
+    return true;
+  }
+  return false;
+}
+
+// A token opened from a link: what used it, not the Jira item.
+async function openTokenPanel(key) {
+  jvOpenKey = key;
+  if (!jvCache.get(key)?.tokenView) jvCache.set(key, { tokenView: true, loading: true });
+  jvPanel();
+  try { jvCache.set(key, { tokenView: true, ...(await api(`/api/contracts/token?key=${encodeURIComponent(key)}`)) }); }
+  catch (err) { jvCache.set(key, { tokenView: true, error: err.message }); }
+  if (jvOpenKey === key) jvPanel();
+}
+
+function tokenPanelBody(v) {
+  if (v.loading) return '<div class="card"><p class="muted">Loading…</p></div>';
+  const c = v.contract || {};
+  const how = v.charge ? (v.charge.reason === 'end' ? 'Used for the time left on the clock when the contract ended' : `Used when the token clock passed ${v.charge.seq * 4}h${v.charge.trigger ? ` on ${v.charge.trigger}` : ''}`)
+    : v.refund ? (v.refund.done ? `Given back ${whenText(v.refund.at)}, as the time that used it was no longer chargeable` : `Being given back${v.refund.error ? `: ${v.refund.error}` : ''}`) : '';
+  return `<div class="card jv tok-panel">
+      <div class="jv-facts">
+        <div><span class="muted">Customer</span><br>${esc(c.customer || '')}</div>
+        <div><span class="muted">Contract</span><br>${c.key ? jiraLink(c.key) : ''}</div>
+        <div><span class="muted">Status</span><br>${esc(v.status || '')}</div>
+        ${v.charge ? `<div><span class="muted">Used</span><br>${whenText(v.charge.at)}</div>` : ''}
+      </div>
+      ${how ? `<p class="muted">${esc(how.replace(/\.$/, ''))}.</p>` : ''}
+      ${v.time ? `<h3>What used it</h3>${tokenUsageHtml(v.time, { id: `tok:${v.key}`, customer: c.customer, contract: c.key, token: v.key, seq: v.charge?.seq })}`
+        : v.refund ? '' : `<p>${v.charge ? 'No time is on the clock for this token any more.' : 'The token clock hasn\'t used this token, so there\'s no time to show.'}${v.status === 'Token Allocated' ? ' It\'s set aside for a job.' : ''}</p>`}
+      <div class="row"><a class="btn secondary" href="${esc(me.jiraBaseUrl)}/browse/${esc(v.key)}" target="_blank" rel="noopener" data-jv-out="1">Open in Jira</a></div>
+    </div>`;
 }
 
 async function contractDetailHtml() {
@@ -11167,6 +11278,10 @@ async function contractDetailHtml() {
         <span class="xp">${x.done ? 'Used' : 'Waiting for Jira'}</span>
         <span class="sub">${x.reason === 'end' ? 'Time left when the contract ended' : `Clock passed ${x.seq * 4}h${x.trigger ? ` on ${esc(x.trigger)}` : ''}`} · ${whenText(x.at)}${x.error ? ` · ${esc(x.error)}` : ''}</span>
         ${conTokenTimeHtml(x, c)}</li>`).join('')}</ul>` : ''}
+    ${d.refunds?.length ? `<h2>Tokens given back</h2><ul class="list con-list">${d.refunds.map((r) => `<li>
+        <span class="title">${jiraLink(r.token)}${r.overdraft ? ' <span class="con-od">overdraft</span>' : ''}</span>
+        <span class="xp">${r.done ? 'Given back' : 'Giving back'}</span>
+        <span class="sub">${whenText(r.at)}${r.error ? ` · ${esc(r.error)}` : ''}</span></li>`).join('')}</ul>` : ''}
     ${visits.length ? `<h2>Visits</h2><ul class="list con-list">${visits.map(itemRow).join('')}</ul>` : ''}
     ${tokens.length ? `<h2>Tokens</h2><ul class="list con-list">${tokens.map((i) => {
       const used = d.charges.find((x) => x.token === i.key);
@@ -11253,29 +11368,7 @@ async function contractsClick(event) {
   if (t('[data-con-flags]')) { conAllFlags = !conAllFlags; return render(); }
   if (t('[data-con-load-orgs]')) { conOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message })); return render(); }
   if (t('[data-con-back]')) { conOpen = null; return render(); }
-  const tokCopy = t('[data-con-token-copy]');
-  if (tokCopy) {
-    const tk = conTokenData.get(tokCopy.dataset.conTokenCopy);
-    if (!tk) return true;
-    const text = [`${tk.customer}: ${tk.token || `token ${tk.seq}`} (${tk.contract})`, `${duration(tk.seconds)} of support time`, '',
-      ...tk.lines.map((l) => `${fullDate(l.date)}  ${duration(l.seconds)}  ${l.key ? `${l.key} ` : ''}${l.summary || ''}${l.note ? ` - ${l.note}` : ''} (${l.who})`)].join('\n');
-    try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('This browser wouldn\'t copy it'); }
-    return true;
-  }
-  const tokCsv = t('[data-con-token-csv]');
-  if (tokCsv) {
-    const tk = conTokenData.get(tokCsv.dataset.conTokenCsv);
-    if (!tk) return true;
-    const cell = (v) => (/[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
-    const csv = [['Date', 'Ticket', 'Summary', 'Work done', 'Engineer', 'Hours'], ...conTokenRows(tk), ['', '', '', '', 'Total', (Math.round(tk.seconds / 36) / 100).toFixed(2)]]
-      .map((r) => r.map(cell).join(',')).join('\r\n');
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    a.download = `${tk.customer} ${tk.token || `token ${tk.seq}`}.csv`.replace(/[\\/:*?"<>|]/g, '');
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    return true;
-  }
+  if (await tokenClick(t)) return true;
   const charge = t('[data-con-charge]');
   if (charge) {
     charge.closest('li')?.querySelectorAll('button').forEach((b) => { b.disabled = true; });

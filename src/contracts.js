@@ -551,7 +551,11 @@ export function tokensDue(clock, contract, clockStart) {
   return { due, rest, ended };
 }
 
-async function queueCharges(env, st, clocks, clockStart) {
+// A drop in the clock waits this long before tokens are given back, so a worklog being moved
+// or re-read doesn't refund and re-use a token. Marking time not chargeable refunds at once.
+const REFUND_AFTER_MS = 15 * 60 * 1000;
+
+async function queueCharges(env, st, clocks, clockStart, { now: refundNow = false } = {}) {
   const { results } = await env.DB.prepare('SELECT contract_key, COUNT(*) AS n, MAX(seq) AS top FROM contract_charges GROUP BY contract_key').all();
   const have = new Map(results.map((r) => [r.contract_key, r]));
   const now = new Date().toISOString();
@@ -559,7 +563,37 @@ async function queueCharges(env, st, clocks, clockStart) {
     if (!CLOCKED.includes(contract.status)) continue;
     const clock = clocks.get(contract.issue_key);
     const { due, ended } = tokensDue(clock, contract, clockStart);
-    const charged = have.get(contract.issue_key)?.n || 0;
+    let charged = have.get(contract.issue_key)?.n || 0;
+    // The clock has dropped below tokens already used: give the latest back.
+    if (charged > due) {
+      const overKey = `contracts_over:${contract.issue_key}`;
+      const since = Number((await getState(env, overKey)) || 0);
+      if (!since && !refundNow) { await setState(env, overKey, String(Date.now())); continue; }
+      if (!refundNow && Date.now() - since < REFUND_AFTER_MS) continue;
+      const refunded = await refundCharges(env, contract, charged - due, clock);
+      if (refunded === null) {
+        const hrs = ((clock?.seconds || 0) / 3600).toFixed(1);
+        await flag(env, { kind: 'clock', dedupe: `clock-over:${contract.issue_key}:${charged}`, contractKey: contract.issue_key,
+          detail: `${charged} ${charged === 1 ? 'token has' : 'tokens have'} been used by the clock, but it now holds ${hrs}h. Run schema-063.sql so the hub can give tokens back.` });
+      }
+      await setState(env, overKey, '');
+      continue;
+    }
+    await setState(env, `contracts_over:${contract.issue_key}`, '').catch(() => {});
+    // A token waiting to be given back is used again, rather than refunding one and using another.
+    const back = charged < due ? await env.DB.prepare('SELECT * FROM contract_refunds WHERE contract_key = ? AND done_at IS NULL AND refund_step = 0 ORDER BY seq')
+      .bind(contract.issue_key).all().then((r) => r.results, () => []) : [];
+    for (const r of back) {
+      if (charged >= due) break;
+      charged++;
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO contract_charges (contract_key, seq, reason, trigger_key, trigger_summary, token_key, overdraft, step, created_at, done_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(contract_key, seq) DO NOTHING`)
+          .bind(contract.issue_key, charged, r.reason, r.trigger_key, r.trigger_summary, r.token_key, r.overdraft, r.charge_step, r.charged_at || now, r.charge_step >= 3 ? (r.charged_at || now) : null),
+        env.DB.prepare('DELETE FROM contract_refunds WHERE id = ?').bind(r.id),
+      ]);
+      await event(env, contract.issue_key, `${r.token_key} kept: the clock went back over ${charged * 4}h before it was given back`);
+    }
     for (let seq = charged + 1; seq <= due; seq++) {
       const isEnd = ended && seq * TOKEN_SECONDS > (clock?.seconds || 0);
       const t = triggerFor(clock || { logs: [] }, seq, st);
@@ -568,12 +602,101 @@ async function queueCharges(env, st, clocks, clockStart) {
          ON CONFLICT(contract_key, seq) DO NOTHING`
       ).bind(contract.issue_key, seq, isEnd ? 'end' : 'clock', t.key, t.summary, now).run();
     }
-    if (charged > due) {
-      const hrs = ((clock?.seconds || 0) / 3600).toFixed(1);
-      await flag(env, { kind: 'clock', dedupe: `clock-over:${contract.issue_key}:${charged}`, contractKey: contract.issue_key,
-        detail: `${charged} ${charged === 1 ? 'token has' : 'tokens have'} been used by the clock, but it now holds ${hrs}h. A worklog may have been deleted or shortened. Check the tokens in Jira.` });
+  }
+}
+
+// Takes the latest charges off the clock and queues their tokens to be given back in Jira.
+// A charge that hadn't reached a token yet is simply dropped. Null if the refunds table isn't there.
+async function refundCharges(env, contract, count, clock) {
+  const { results } = await env.DB.prepare('SELECT * FROM contract_charges WHERE contract_key = ? ORDER BY seq DESC LIMIT ?').bind(contract.issue_key, count).all();
+  const ok = await env.DB.prepare('SELECT 1 FROM contract_refunds LIMIT 1').all().then(() => true, () => false);
+  if (!ok) return null;
+  const now = new Date().toISOString();
+  const hrs = ((clock?.seconds || 0) / 3600).toFixed(1).replace(/\.0$/, '');
+  for (const ch of results) {
+    const stmts = [env.DB.prepare('DELETE FROM contract_charges WHERE id = ?').bind(ch.id)];
+    if (ch.token_key) {
+      stmts.unshift(env.DB.prepare(`INSERT INTO contract_refunds (contract_key, seq, reason, token_key, trigger_key, trigger_summary, overdraft, charge_step, charged_at, requested_at, clock_seconds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(contract.issue_key, ch.seq, ch.reason, ch.token_key, ch.trigger_key, ch.trigger_summary, ch.overdraft || 0, ch.step, ch.done_at || ch.created_at, now, clock?.seconds || 0));
+    }
+    await env.DB.batch(stmts);
+    await event(env, contract.issue_key, ch.token_key ? `${ch.token_key} to be given back: the clock is down to ${hrs}h` : `Token ${ch.seq} no longer needed: the clock is down to ${hrs}h`);
+  }
+  return results.length;
+}
+
+// The token's own name before the hub renamed it, or "Service Token n" by its place among the contract's tokens.
+async function originalName(env, token, contractKey) {
+  const kept = await env.DB.prepare('SELECT summary FROM token_names WHERE token_key = ?').bind(token).first().catch(() => null);
+  if (kept?.summary && !/^token used for/i.test(kept.summary)) return kept.summary;
+  const { results } = await env.DB.prepare("SELECT issue_key, summary FROM contract_items WHERE contract_key = ? AND kind = 'token'").bind(contractKey).all();
+  const ours = results.filter((t) => !String(t.summary || '').toUpperCase().includes(OVERDRAFT)).sort((a, b) => issueNum(a.issue_key) - issueNum(b.issue_key));
+  // Its place among them, unless another token already has that number: then the first number free.
+  const taken = new Set(ours.filter((t) => t.issue_key !== token).map((t) => Number(/^service token (\d+)$/i.exec(String(t.summary || '').trim())?.[1])).filter(Boolean));
+  let n = ours.findIndex((t) => t.issue_key === token) + 1;
+  if (!n || taken.has(n)) { n = 1; while (taken.has(n)) n++; }
+  return `Service Token ${n}`;
+}
+
+// Gives tokens back in Jira: the link to the PSC taken off, the name put back, and moved to
+// Available through Token Refunded. An overdraft token the hub made is deleted instead.
+async function processRefunds(env, b) {
+  const { results } = await env.DB.prepare('SELECT * FROM contract_refunds WHERE done_at IS NULL AND attempts < ? ORDER BY id LIMIT 10').bind(MAX_ATTEMPTS).all()
+    .catch(() => ({ results: [] }));
+  let done = 0;
+  for (const r of results) {
+    if (b.left() < 6) break;
+    const step = (n) => env.DB.prepare('UPDATE contract_refunds SET refund_step = ? WHERE id = ?').bind(n, r.id).run().then(() => { r.refund_step = n; });
+    try {
+      if (r.refund_step < 1) {
+        if (r.charge_step >= 2 && r.trigger_key) {
+          const issue = await b.call(`/rest/api/3/issue/${r.token_key}?fields=issuelinks`);
+          for (const l of issue?.fields?.issuelinks || []) {
+            const other = l.outwardIssue || l.inwardIssue;
+            if (other?.key === r.trigger_key && /implement/i.test(`${l.type?.name} ${l.type?.inward} ${l.type?.outward}`)) await b.call(`/rest/api/3/issueLink/${l.id}`, { method: 'DELETE' });
+          }
+        }
+        await step(1);
+      }
+      if (r.overdraft) {
+        let deleted = true;
+        try { await b.call(`/rest/api/3/issue/${r.token_key}`, { method: 'DELETE' }); } catch (err) { if (err instanceof OutOfCalls) throw err; if (err.status !== 404) deleted = false; }
+        if (deleted) {
+          await env.DB.prepare('DELETE FROM contract_items WHERE issue_key = ?').bind(r.token_key).run();
+          await event(env, r.contract_key, `${r.token_key} deleted: the overdraft token wasn't needed after all`);
+        } else {
+          const name = `${OVERDRAFT} Not needed, delete this token`;
+          await b.call(`/rest/api/3/issue/${r.token_key}`, { method: 'PUT', body: JSON.stringify({ fields: { summary: name } }) });
+          await env.DB.prepare('UPDATE contract_items SET summary = ? WHERE issue_key = ?').bind(name, r.token_key).run();
+          await writeProblem(env, r.contract_key, `refund-${r.token_key}`, `${r.token_key} was an overdraft token that's no longer needed, but Jira wouldn't let the hub delete it. Delete it in Jira.`);
+        }
+      } else {
+        if (r.refund_step < 2) {
+          const name = await originalName(env, r.token_key, r.contract_key);
+          await b.call(`/rest/api/3/issue/${r.token_key}`, { method: 'PUT', body: JSON.stringify({ fields: { summary: name } }) });
+          await env.DB.prepare('UPDATE contract_items SET summary = ? WHERE issue_key = ?').bind(name, r.token_key).run();
+          await step(2);
+        }
+        const { transitions = [] } = await b.call(`/rest/api/3/issue/${r.token_key}/transitions`);
+        const go = transitions.find((t) => /^token refunded$/i.test(t.name || '')) || transitions.find((t) => canonStatus(t.to?.name).toLowerCase() === TOKEN.available.toLowerCase());
+        if (go) await b.call(`/rest/api/3/issue/${r.token_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
+        else {
+          const now = await b.call(`/rest/api/3/issue/${r.token_key}?fields=status`);
+          if (String(now?.fields?.status?.name || '').toLowerCase() !== TOKEN.available.toLowerCase()) throw new Error(`Jira offers no Token Refunded transition on ${r.token_key} from ${now?.fields?.status?.name || 'where it is'}.`);
+        }
+        await env.DB.prepare('UPDATE contract_items SET status = ?, done = 0 WHERE issue_key = ?').bind(TOKEN.available, r.token_key).run();
+        await event(env, r.contract_key, `${r.token_key} refunded: back to Available as ${await originalName(env, r.token_key, r.contract_key)}`);
+      }
+      await env.DB.prepare('UPDATE contract_refunds SET done_at = ?, refund_step = 3, error = NULL WHERE id = ?').bind(new Date().toISOString(), r.id).run();
+      done++;
+    } catch (err) {
+      if (err instanceof OutOfCalls) break;
+      const attempts = r.attempts + 1;
+      await env.DB.prepare('UPDATE contract_refunds SET attempts = ?, error = ? WHERE id = ?').bind(attempts, String(err.message).slice(0, 400), r.id).run();
+      if (attempts >= 3) await writeProblem(env, r.contract_key, `refund-${r.token_key}`, `Giving ${r.token_key} back on ${r.contract_key}: ${err.message}`);
     }
   }
+  return done;
 }
 
 let linkTypeCache = null;
@@ -628,6 +751,7 @@ async function processCharges(env, b) {
         }
       }
       if (ch.step < 1) {
+        await env.DB.prepare('INSERT OR IGNORE INTO token_names (token_key, summary) SELECT issue_key, summary FROM contract_items WHERE issue_key = ?').bind(ch.token_key).run().catch(() => {});
         await b.call(`/rest/api/3/issue/${ch.token_key}`, { method: 'PUT', body: JSON.stringify({ fields: { summary: name.slice(0, 250) } }) });
         await env.DB.prepare('UPDATE contract_charges SET step = 1 WHERE id = ?').bind(ch.id).run();
         await env.DB.prepare('UPDATE contract_items SET summary = ? WHERE issue_key = ?').bind(name, ch.token_key).run();
@@ -889,7 +1013,9 @@ async function orgReminders(env, st, since) {
 
 export async function run(env, { force = false } = {}) {
   const last = Number((await getState(env, 'contracts_sync_at')) || 0);
-  const pending = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_charges WHERE step < 3 AND attempts < ?').bind(MAX_ATTEMPTS).first();
+  const pending = await env.DB.prepare(`SELECT (SELECT COUNT(*) FROM contract_charges WHERE step < 3 AND attempts < ?)
+    + (SELECT COUNT(*) FROM contract_refunds WHERE done_at IS NULL AND attempts < ?) AS n`).bind(MAX_ATTEMPTS, MAX_ATTEMPTS).first()
+    .catch(() => env.DB.prepare('SELECT COUNT(*) AS n FROM contract_charges WHERE step < 3 AND attempts < ?').bind(MAX_ATTEMPTS).first());
   // Charges Jira refused are tried again every few minutes, not on every run, as each
   // try works out every contract's clock from the worklogs.
   const retryDue = Boolean(pending?.n) && Date.now() - Number((await getState(env, 'contracts_retry_at')) || 0) >= RETRY_EVERY_MS;
@@ -925,6 +1051,7 @@ export async function run(env, { force = false } = {}) {
       const clocks = buildClocks(await worklogsSince(env, clockStart), st, clockStart);
       await noteClockChanges(env, clocks);
       await queueCharges(env, st, clocks, clockStart);
+      out.refunded = await processRefunds(env, b);
       out.charged = await processCharges(env, b);
       st = await loadState(env);
       await expireTokens(env, b, st, clockStart);
@@ -1065,6 +1192,7 @@ export async function detail(env, viewer, key) {
   });
   const byDate = (a, b) => b.date.localeCompare(a.date);
   const tokenTime = await tokenBreakdown(env, st, c, clock, charges);
+  const { results: refunds } = await env.DB.prepare('SELECT * FROM contract_refunds WHERE contract_key = ? ORDER BY id DESC LIMIT 20').bind(key).all().catch(() => ({ results: [] }));
   return {
     ...head,
     contract: summarise(c, st.items, clock, charges.length, head.clockStart),
@@ -1075,6 +1203,7 @@ export async function detail(env, viewer, key) {
     canDecide: true,
     charges: charges.map((x) => ({ seq: x.seq, token: x.token_key, trigger: x.trigger_key, reason: x.reason, overdraft: Boolean(x.overdraft),
       done: x.step >= 3, at: x.done_at || x.created_at, error: x.step < 3 ? x.error : null, time: tokenTime.get(x.seq) || null })),
+    refunds: refunds.map((r) => ({ token: r.token_key, done: Boolean(r.done_at), at: r.done_at || r.requested_at, error: r.done_at ? null : r.error, overdraft: Boolean(r.overdraft) })),
     events,
     problems: checkDates(c),
   };
@@ -1118,12 +1247,100 @@ async function tokenBreakdown(env, st, c, clock, charges) {
     return { key: item?.issue_key || '', summary: item?.summary || 'Time on a token' };
   };
   for (const [seq, slices] of parts) {
-    const lines = slices.map(({ l, used, split }) => ({ date: l.work_date, seconds: used, logged: l.seconds, split, ...labelOf(l),
+    const lines = slices.map(({ l, used, split }) => ({ worklogId: String(l.worklog_id), via: l.via, date: l.work_date, seconds: used, logged: l.seconds, split, ...labelOf(l),
       who: people.get(String(l.worklog_id)) || 'Someone without a profile', note: notes.get(String(l.worklog_id)) || '' }))
       .sort((a, b) => a.date.localeCompare(b.date));
-    out.set(seq, { seconds: lines.reduce((t, x) => t + x.seconds, 0), from: lines[0]?.date || null, to: lines.at(-1)?.date || null, lines });
+    // The same, item by item: what a customer asks about.
+    const items = new Map();
+    for (const x of lines) {
+      const k = `${x.via}|${x.key}`;
+      const it = items.get(k) || { key: x.key, summary: x.summary, via: x.via, seconds: 0, entries: 0, worklogIds: [], people: [] };
+      it.seconds += x.seconds; it.entries++; it.worklogIds.push(x.worklogId);
+      if (!it.people.includes(x.who)) it.people.push(x.who);
+      items.set(k, it);
+    }
+    out.set(seq, { seconds: lines.reduce((t, x) => t + x.seconds, 0), from: lines[0]?.date || null, to: lines.at(-1)?.date || null, lines,
+      items: [...items.values()].sort((a, b) => b.seconds - a.seconds) });
   }
   return out;
+}
+
+// One token: what used it, item by item, for the token panel.
+export async function tokenUsage(env, viewer, tokenKey) {
+  mustSee(viewer);
+  const key = String(tokenKey || '').toUpperCase();
+  const item = await env.DB.prepare("SELECT * FROM contract_items WHERE issue_key = ? AND kind = 'token'").bind(key).first();
+  if (!item) throw Object.assign(new Error('That isn\'t a token the hub knows about.'), { status: 404 });
+  const head = await header(env);
+  const { st, clocks } = await stateAndClocks(env, head);
+  const c = st.contracts.find((x) => x.issue_key === item.contract_key) || await env.DB.prepare('SELECT * FROM contracts WHERE issue_key = ?').bind(item.contract_key).first();
+  const charge = await env.DB.prepare('SELECT * FROM contract_charges WHERE token_key = ?').bind(key).first();
+  const refund = await env.DB.prepare('SELECT * FROM contract_refunds WHERE token_key = ? ORDER BY id DESC LIMIT 1').bind(key).first().catch(() => null);
+  const out = {
+    key, summary: item.summary, status: item.status, overdraft: String(item.summary || '').toUpperCase().includes(OVERDRAFT),
+    contract: c ? { key: c.issue_key, customer: c.customer } : { key: item.contract_key, customer: '' },
+    charge: charge ? { seq: charge.seq, reason: charge.reason, done: charge.step >= 3, at: charge.done_at || charge.created_at, trigger: charge.trigger_key } : null,
+    refund: refund && (!charge || refund.id) ? { done: Boolean(refund.done_at), at: refund.done_at || refund.requested_at, error: refund.done_at ? null : refund.error } : null,
+    time: null,
+  };
+  if (charge && c) {
+    const t = await tokenBreakdown(env, st, c, clocks.get(c.issue_key), [charge]);
+    out.time = t.get(charge.seq) || null;
+  }
+  if (charge) out.refund = null;
+  return out;
+}
+
+// Time found later not to be chargeable, from what used a token: a PSC is marked Promtek at
+// Fault (all of its time comes off), or time on the contract item is marked one worklog at a
+// time. The clock is worked out again at once, and any token it no longer reaches is given back.
+export async function markNotChargeable(env, viewer, { contractKey, key, via, worklogIds = [] }) {
+  mustSee(viewer);
+  const contract = await env.DB.prepare('SELECT * FROM contracts WHERE issue_key = ?').bind(String(contractKey || '')).first();
+  if (!contract) throw Object.assign(new Error('That contract isn\'t in the list.'), { status: 404 });
+  let note = '';
+  if (via === 'contract') {
+    const ids = (Array.isArray(worklogIds) ? worklogIds : []).map(String).filter((x) => /^\d+$/.test(x)).slice(0, 200);
+    if (!ids.length) throw Object.assign(new Error('Which time?'), { status: 400 });
+    for (const id of ids) await saveTimeCharge(env, viewer, id, contract.issue_id, false);
+  } else if (via === 'psc') {
+    const k = String(key || '').toUpperCase();
+    if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(k)) throw Object.assign(new Error('Which item?'), { status: 400 });
+    const Psc = await import('./psc.js');
+    const inList = await env.DB.prepare('SELECT 1 FROM psc_items WHERE issue_key = ?').bind(k).first();
+    if (inList) {
+      const r = await Psc.setCharge(env, viewer, k, false);
+      if (r && r.saved === false) note = 'Taken off the token clock. Jira didn\'t take the change just now; the hub keeps trying.';
+      // Counted as not chargeable straight away, whatever Jira's next read is a moment behind with.
+      await env.DB.prepare("UPDATE psc_items SET chargeable = 'no' WHERE issue_key = ?").bind(k).run();
+      await env.DB.prepare("UPDATE contract_issues SET chargeable = 'no' WHERE issue_key = ?").bind(k).run();
+      await Psc.changed(env);
+    } else {
+      // Closed long enough ago to have left the PSC list: straight to Jira.
+      await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}`, { method: 'PUT', body: JSON.stringify({ fields: { [FIELDS.chargeable]: { value: CHARGE.no } } }) });
+      await env.DB.prepare("UPDATE contract_issues SET chargeable = 'no' WHERE issue_key = ?").bind(k).run();
+    }
+  } else throw Object.assign(new Error('Time logged on a token itself can\'t be marked here.'), { status: 400 });
+  await touched(env);
+  kept = null;
+  const out = await reclock(env, contract.issue_key);
+  return { ok: true, contract: contract.issue_key, note, ...out };
+}
+
+// Works the clocks out again now and gives back any token they no longer reach.
+export async function reclock(env, contractKey, { now = true } = {}) {
+  const head = await header(env);
+  if (!head.clockStart) return {};
+  const st = await loadState(env);
+  const clocks = buildClocks(await worklogsSince(env, head.clockStart), st, head.clockStart);
+  await noteClockChanges(env, clocks);
+  const before = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_charges WHERE contract_key = ?').bind(contractKey).first();
+  await queueCharges(env, { ...st, contracts: st.contracts.filter((c) => c.issue_key === contractKey) }, clocks, head.clockStart, { now });
+  const after = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_charges WHERE contract_key = ?').bind(contractKey).first();
+  let refunded = 0;
+  try { refunded = await processRefunds(env, budget(env, 18)); } catch { /* the next run carries on */ }
+  kept = null;
+  return { tokensBack: Math.max(0, (before?.n || 0) - (after?.n || 0)), refunded, clockSeconds: clocks.get(contractKey)?.seconds || 0 };
 }
 
 // Whether some time on a contract item is chargeable. The person who logged it says,

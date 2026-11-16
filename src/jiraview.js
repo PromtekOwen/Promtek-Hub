@@ -108,6 +108,17 @@ const FIELDS = ['summary', 'status', 'issuetype', 'priority', 'reporter', 'creat
 
 const person = (u) => (u ? { name: u.displayName || 'Someone', email: u.emailAddress || null, id: u.accountId || null, team: u.accountType === 'atlassian', customer: u.accountType === 'customer' } : null);
 
+// What a link opens as: a PSC in the viewer, a token as what used it, anything else in Jira.
+export async function kindOf(env, rawKey) {
+  const key = String(rawKey || '').toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(key)) return 'other';
+  const token = await env.DB.prepare("SELECT 1 FROM contract_items WHERE issue_key = ? AND kind = 'token'").bind(key).first().catch(() => null);
+  if (token) return 'token';
+  if (key.startsWith('PSC-')) return 'psc';
+  const psc = await env.DB.prepare('SELECT 1 FROM psc_items WHERE issue_key = ?').bind(key).first().catch(() => null);
+  return psc ? 'psc' : 'other';
+}
+
 export async function view(env, viewer, rawKey) {
   const { key, project } = await checkKey(env, viewer, rawKey);
   return viewItem(env, key, project);

@@ -459,6 +459,7 @@ async function route(request, env, url, user) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/jira/projects') return json({ projects: await View.viewableProjects(env) });
     if (method === 'GET' && pathname === '/api/jira/view') return json(await View.view(env, user, url.searchParams.get('key')));
+    if (method === 'GET' && pathname === '/api/jira/kind') return json({ kind: await View.kindOf(env, url.searchParams.get('key')) });
     if (method === 'GET' && pathname === '/api/jira/attachment') return View.attachment(env, user, url.searchParams.get('key'), url.searchParams.get('id'));
     if (method === 'POST' && pathname === '/api/jira/comment') return json(await View.comment(env, user, body));
   }
@@ -663,6 +664,13 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/contracts/check') return json(await Con.check(env, user, url.searchParams.get('issueId') || ''));
     // Someone's own time on contract items still needing a chargeable answer. Theirs only.
     if (method === 'GET' && pathname === '/api/contracts/mine') return json({ time: await Con.myUndecided(env, user.accountId) });
+    if (method === 'GET' && pathname === '/api/contracts/token') return json(await Con.tokenUsage(env, user, url.searchParams.get('key') || ''));
+    if (method === 'POST' && pathname === '/api/contracts/not-chargeable') {
+      const r = await Con.markNotChargeable(env, user, body);
+      await Audit.record(env, user, { area: 'Service contracts', action: body.via === 'psc' ? 'PSC marked not chargeable from a token' : 'Contract time marked not chargeable from a token',
+        subjectType: 'contract', subjectId: r.contract, label: r.contract, changes: [{ label: body.via === 'psc' ? 'Item' : 'Worklogs', before: 'Chargeable', after: `${body.via === 'psc' ? body.key : (body.worklogIds || []).join(', ')}: not chargeable` }] });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/contracts/charge') {
       const r = await Con.decideTime(env, user, body);
       await Audit.record(env, user, { area: 'Service contracts', action: body.chargeable ? 'Time marked chargeable' : 'Time marked Promtek at fault',

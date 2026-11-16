@@ -2053,3 +2053,18 @@ dialog#bell::backdrop { background: rgba(9, 32, 48, .45); }
 .con-token-table small { overflow-wrap: anywhere; }
 .con-token-time .row { gap: .5rem; margin-top: .5rem; flex-wrap: wrap; }
 .psc-resolve-fault { margin: .75rem 0 1rem; align-items: flex-start; }
+.tok-usage { margin-top: .4rem; }
+.tok-total { margin: 0 0 .6rem; }
+.tok-items { list-style: none; margin: 0 0 .75rem; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.tok-item { padding: .65rem .85rem; }
+.tok-item + .tok-item { border-top: 1px solid var(--line); }
+.tok-item-head { display: flex; justify-content: space-between; gap: 1rem; align-items: baseline; }
+.tok-item-what { min-width: 0; overflow-wrap: anywhere; }
+.tok-item-time { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 1.05rem; }
+.tok-bar { height: 6px; border-radius: 99px; background: var(--tint); margin: .4rem 0 .35rem; overflow: hidden; }
+.tok-bar span { display: block; height: 100%; background: var(--blue); border-radius: 99px; }
+.tok-item-foot { display: flex; justify-content: space-between; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.tok-item-foot .chip-btn { font-size: .82rem; padding: .2rem .65rem; }
+.tok-entries summary { cursor: pointer; color: var(--blue-deep); font-weight: 600; font-size: .92rem; margin-bottom: .4rem; }
+.tok-actions { gap: .5rem; margin-top: .6rem; flex-wrap: wrap; }
+.tok-panel h3 { margin: 1rem 0 .4rem; }
