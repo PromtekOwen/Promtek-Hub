@@ -345,6 +345,7 @@ It runs from when they started logging consistently: the first working day with 
 **Changed or removed time.** Run `schema-064.sql` in the D1 console first.
 - Time removed from the hub stays removed, and time shortened from the hub stays shortened, even while Tempo's search still shows the old version for a few minutes. If Tempo saves a change as a new worklog, the old one goes.
 - Opening a week on My time checks that person's week against Tempo first: anything Tempo no longer has is taken off, however long ago it was logged, and the overtime balance is worked out from what's left.
+- **Check this week against Tempo** (under the week on My time) does the same there and then, including time changed in the last few minutes, and says what it found: Tempo's total for the week, each time log taken off, and any added. It works while viewing the hub as someone else (Developer tools), on their week; that check is the one change allowed while viewing as someone.
 - Today and yesterday are re-checked against Tempo every 3 minutes, as are older days that have just had time logged or changed on them. Every day in the last two months is re-checked in turn, about every 10 hours.
 - Time logged or changed in the last 10 minutes is never taken as deleted, as Tempo's search can take a few minutes to show it.
 

@@ -560,17 +560,23 @@ const fresh = (r) => [r.logged_at, r.updated_at].some((t) => t && Date.now() - D
 
 // One person's time over some days, read straight from Tempo: anything the hub holds
 // that Tempo no longer has is taken off. Run when they look at a week on My time.
-export async function reconcileUser(env, accountId, from, to) {
+// force (the Check against Tempo button) takes off even time changed in the last few minutes.
+export async function reconcileUser(env, accountId, from, to, { force = false } = {}) {
   const ledgerStart = await getState(env, 'ledger_start');
   if (!ledgerStart || !accountId) return { skipped: true };
   const start = from < ledgerStart ? ledgerStart : from;
   if (start > to) return { skipped: true };
   const worklogs = await fetchUserWorklogs(env, accountId, { from: start, to });
+  const before = await env.DB.prepare('SELECT worklog_id FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?').bind(accountId, start, to).all();
+  const had = new Set(before.results.map((r) => r.worklog_id));
+  // Time Tempo has that the hub put aside as removed is Tempo's to decide: it comes back.
+  const back = worklogs.filter((w) => !had.has(w.id)).map((w) => w.id);
+  if (force && back.length) await env.DB.prepare(`DELETE FROM deleted_worklogs WHERE worklog_id IN (${back.slice(0, 90).map(() => '?').join(',')})`).bind(...back.slice(0, 90)).run().catch(() => {});
   await processWorklogs(env, worklogs);
   const live = new Set(worklogs.map((w) => w.id));
-  const { results } = await env.DB.prepare('SELECT worklog_id, account_id, work_date, logged_at, updated_at FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?')
+  const { results } = await env.DB.prepare('SELECT worklog_id, account_id, work_date, seconds, description, logged_at, updated_at FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?')
     .bind(accountId, start, to).all();
-  const goneRows = results.filter((r) => !live.has(r.worklog_id) && !fresh(r));
+  const goneRows = results.filter((r) => !live.has(r.worklog_id) && (force || !fresh(r)));
   await runBatches(env, goneRows.flatMap((r) => [
     env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(r.worklog_id),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(r.worklog_id),
@@ -579,7 +585,14 @@ export async function reconcileUser(env, accountId, from, to) {
     await applyOvertime(env, [...new Set(goneRows.map((r) => mondayOfDay(r.work_date)))].map((monday) => ({ accountId, monday }))).catch((err) => console.warn('Overtime not worked out:', err.message));
     await ledgerChanged(env);
   }
-  return { fetched: worklogs.length, deleted: goneRows.length };
+  const counted = worklogs.filter((w) => w.startDate >= start && w.startDate <= to);
+  return {
+    fetched: worklogs.length, deleted: goneRows.length,
+    removed: goneRows.map((r) => ({ date: r.work_date, seconds: r.seconds, description: r.description || '' })),
+    added: counted.filter((w) => !had.has(w.id)).length,
+    tempoSeconds: counted.reduce((t, w) => t + w.seconds, 0),
+    hubSeconds: results.filter((r) => live.has(r.worklog_id)).reduce((t, r) => t + r.seconds, 0),
+  };
 }
 
 export async function reconcileDay(env, day) {

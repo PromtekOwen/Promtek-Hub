@@ -334,9 +334,11 @@ const pages = {
           <div class="chart" style="grid-template-columns:repeat(${days.length}, minmax(0, 1fr))">${chart}</div>
           ${data.entries.length ? '<p class="help" style="margin:.6rem 0 0;text-align:center">Tap a piece of a bar to change that time log.</p>' : ''}
         </div>
+        ${timeRecheck?.week === monday ? timeRecheckHtml(timeRecheck) : ''}
         <div class="row" style="margin-top:1rem">
           <a class="btn" href="#/log">Log time</a>
           <a class="btn secondary" href="${esc(me.jiraBaseUrl)}/plugins/servlet/ac/io.tempo.jira/tempo-app" target="_blank" rel="noopener">Open Tempo</a>
+          <button class="btn secondary" data-time-recheck="${monday}">Check this week against Tempo</button>
         </div>
         ${listByDay || `<h2>Time logs</h2><div class="card"><p class="muted">Nothing logged ${weekOffset === 0 ? 'yet this week' : 'this week'}.</p></div>`}`;
     },
@@ -4237,6 +4239,19 @@ function timeEditHtml() {
 }
 
 // ---------- overtime and TOIL ----------
+
+// What checking a week against Tempo found.
+let timeRecheck = null;
+function timeRecheckHtml(r) {
+  if (r.error) return `<div class="card jv-note" style="margin-top:1rem"><p style="margin:0"><strong>Tempo couldn't be checked:</strong> ${esc(r.error)}</p></div>`;
+  const who = me.viewingAs ? esc(me.viewingAs.name.split(' ')[0]) : 'You';
+  return `<div class="card jv-note" style="margin-top:1rem">
+      <p style="margin:0 0 .3rem"><strong>Checked against Tempo.</strong> Tempo has ${duration(r.tempoSeconds || 0)} for this week${r.fetched ? ` in ${r.fetched} time log${r.fetched === 1 ? '' : 's'}` : ''}, and so does the hub now.</p>
+      ${r.removed?.length ? `<p style="margin:.3rem 0">${r.removed.length} time log${r.removed.length === 1 ? ' was' : 's were'} no longer in Tempo and ${r.removed.length === 1 ? 'has' : 'have'} been taken off, with ${who === 'You' ? 'your' : `${who}'s`} overtime balance worked out again:</p>
+        <ul style="margin:.2rem 0 0 1.1rem;padding:0">${r.removed.map((x) => `<li>${shortDate(x.date)}: ${duration(x.seconds)}${x.description ? ` · ${esc(x.description)}` : ''}</li>`).join('')}</ul>` : '<p style="margin:0" class="muted">Nothing needed taking off.</p>'}
+      ${r.added ? `<p style="margin:.3rem 0 0">${r.added} time log${r.added === 1 ? '' : 's'} from Tempo ${r.added === 1 ? 'was' : 'were'} missing and ${r.added === 1 ? 'has' : 'have'} been added.</p>` : ''}
+    </div>`;
+}
 
 function toilCardHtml(t) {
   if (!t || !t.linked) return '';
@@ -14293,6 +14308,15 @@ view.addEventListener('click', async (event) => {
     return logActions.includes(actionBtn.dataset.action)
       ? logAction(actionBtn.dataset.action, actionBtn)
       : adminAction(actionBtn.dataset.action, actionBtn);
+  }
+  const recheck = event.target.closest('[data-time-recheck]');
+  if (recheck) {
+    recheck.disabled = true;
+    recheck.textContent = 'Checking against Tempo…';
+    try { timeRecheck = { week: recheck.dataset.timeRecheck, ...(await api('/api/time/recheck', { method: 'POST', body: JSON.stringify({ week: recheck.dataset.timeRecheck }) })) }; }
+    catch (err) { timeRecheck = { week: recheck.dataset.timeRecheck, error: err.message }; }
+    render();
+    return;
   }
   const weekBtn = event.target.closest('button[data-week]');
   if (weekBtn) {

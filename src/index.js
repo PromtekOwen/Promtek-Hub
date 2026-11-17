@@ -120,10 +120,12 @@ export default {
         if (viewer) {
           // Guides marked as seen and tile layouts are theirs; those are let go quietly.
           if (!['GET', 'HEAD'].includes(request.method) && url.pathname.startsWith('/api/prefs/')) return json({ ok: true });
+          // Checking their week against Tempo only brings the hub in line with Tempo, so it's allowed.
+          if (request.method === 'POST' && url.pathname === '/api/time/recheck') return await route(request, { ...env, DB: readOnly(env.DB), RAW_DB: env.DB }, url, viewer);
           if (!['GET', 'HEAD'].includes(request.method)) {
             return json({ error: `You're viewing the hub as ${viewer.viewingAs.name}, so nothing can be changed. Stop viewing as them to make changes.` }, 403);
           }
-          return await route(request, { ...env, DB: readOnly(env.DB) }, url, viewer);
+          return await route(request, { ...env, DB: readOnly(env.DB), RAW_DB: env.DB }, url, viewer);
         }
       }
       return await route(request, env, url, real);
@@ -225,6 +227,7 @@ async function route(request, env, url, user) {
   }
 
   if (method === 'GET' && pathname === '/api/time') return json(await getTime(env, user, url));
+  if (method === 'POST' && pathname === '/api/time/recheck') return json(await recheckWeek(env, user, await request.json().catch(() => ({}))));
   if (method === 'GET' && pathname === '/api/toil') return json(await (await import('./toil.js')).mine(env, user));
 
   if (method === 'POST' && pathname === '/api/sync') {
@@ -1331,6 +1334,20 @@ async function getMe(env, user) {
 }
 
 // One week of the signed-in person's logged time. ?week=YYYY-MM-DD (a Monday).
+// Checks one week against Tempo now, for whoever's My time is open (someone being viewed as,
+// too), and says what it found.
+async function recheckWeek(env, user, { week }) {
+  if (!user.accountId) throw Object.assign(new Error('Your account isn\'t linked to an employee record yet.'), { status: 400 });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(week || ''))) throw Object.assign(new Error('Which week?'), { status: 400 });
+  const today = londonDate();
+  const sunday = londonDate(Date.parse(`${week}T12:00:00Z`) + 6 * 86_400_000);
+  if (week > today) return { fetched: 0, removed: [], added: 0, tempoSeconds: 0, hubSeconds: 0 };
+  const w = { ...env, DB: env.RAW_DB || env.DB };
+  const r = await reconcileUser(w, user.accountId, week, sunday < today ? sunday : today, { force: true });
+  await setState(w, `time_checked:${user.accountId}`, `${week}|${Date.now()}`).catch(() => {});
+  return r;
+}
+
 async function getTime(env, user, url) {
   const emp = await findEmployee(env, user.email);
   if (!emp) return { linked: false };
@@ -1343,8 +1360,11 @@ async function getTime(env, user, url) {
   const checkKey = `time_checked:${emp.account_id}`;
   const [lastWeek, lastAt] = String((await getState(env, checkKey)) || '|0').split('|');
   if (monday <= today && (lastWeek !== monday || Date.now() - Number(lastAt || 0) > 2 * 60 * 1000)) {
-    await setState(env, checkKey, `${monday}|${Date.now()}`);
-    try { await reconcileUser(env, emp.account_id, monday, sunday < today ? sunday : today); } catch (err) { console.warn('Week not checked against Tempo:', err.message); }
+    const w = { ...env, DB: env.RAW_DB || env.DB };
+    try {
+      await setState(w, checkKey, `${monday}|${Date.now()}`);
+      await reconcileUser(w, emp.account_id, monday, sunday < today ? sunday : today);
+    } catch (err) { console.warn('Week not checked against Tempo:', err.message); }
   }
   const { results } = await env.DB.prepare(
     `SELECT l.worklog_id, l.work_date, l.start_time, l.seconds, l.description, l.xp, l.overtime_seconds, j.issue_key, j.summary
