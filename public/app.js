@@ -12130,7 +12130,10 @@ async function imsHtml() {
   if (imsMeetingOpen) return imsMeetingHtml();
   const data = await imsLoad();
   const head = `${imsTabsHtml()}<div class="psc-headline"><p class="help">${data.reading ? 'Reading everything from Jira; the rest follows over the next few minutes.' : `Read from Jira ${data.readAt ? agoText(new Date(data.readAt).toISOString()) : 'not yet'}.`}${data.pending ? ` ${data.pending} change${data.pending === 1 ? '' : 's'} waiting to go to the other copies${data.failing ? `, ${data.failing} that Jira refused` : ''}.` : ''}</p>
-    <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>`;
+    <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>
+    ${data.main?.failed?.length ? `<div class="jv-note warn" style="margin-bottom:.8rem"><p style="margin:0"><strong>Jira wouldn't move ${data.main.failed.length === 1 ? 'a category' : `${data.main.failed.length} categories`} on the IMS Main Board.</strong></p>
+      <ul style="margin:.3rem 0 0">${data.main.failed.map((f) => `<li><a href="${esc(me.jiraBaseUrl)}/browse/${esc(f.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(f.key)}</a> to ${esc(f.to)}: ${esc(f.error)}</li>`).join('')}</ul>
+      <p class="help" style="margin:.3rem 0 0">The hub tries again at each read.</p></div>` : ''}`;
   if (imsTab === 'training' || imsTab === 'policy') { const body = await trainingHtml(imsTab, 'ims'); return `${imsTabsHtml()}${body}`; }
   if (imsCleanup) return head + await imsCleanupHtml();
   if (imsTab === 'stats') return head + await imsStatsHtml();
@@ -12399,7 +12402,7 @@ async function imsStatsHtml() {
       ${s.openByArea.map((a) => `<tr><td>${imsAreaChip(a.key)} ${esc(a.name)}</td><td class="num"><button class="linklike" data-ims-drill="area:${a.key}" data-title="Open in ${esc(a.name)}">${a.n}</button></td>
         <td class="num"><button class="linklike" data-ims-drill="areaNc:${a.key}" data-title="Incidents, non-conformities and 8D reports open in ${esc(a.name)}">${a.incidents}</button></td>
         <td><span class="ims-rag ${a.incidents ? 'red' : a.n ? 'blue' : 'green'}">${a.incidents ? 'Needs attention' : a.n ? 'Open tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div>
-      <p class="help">Each area counts every item in it, so an item in several areas counts in each.</p></section>`}
+      <p class="help">Each area counts every item in it, so an item in several areas counts in each. Each area's category on the IMS Main Board follows its colour: Active Incident, Active Tasks or Clear.</p></section>`}
     <div class="ims-grid ims-wide">
       <section class="card"><div class="ims-card-head"><h3>By IMS Task Type</h3>${imsSwitch('type', imsPie.type, [['open', `Open ${at}`], ['raised', 'Raised']])}</div>
         ${imsPie.type === 'open' ? imsDonut(s.openByType, 'openByType') : imsDonut(s.raisedByType, 'raisedByType')}</section>

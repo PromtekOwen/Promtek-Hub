@@ -638,10 +638,12 @@ The **IMS** tile treats the ten IMS projects (GOALS, LEGAL, HEALTH, COMPLIANCE, 
 - The form only shows the fields the chosen type has in the main area's project (read from Jira, so a field added to a screen there shows up within six hours). If Jira refuses a field when raising, the item is raised without it and the hub says which were left off.
 - Gap analysis items aren't raised here yet.
 
+**The IMS Main Board's categories.** Each area's category item (PROMTEK-2 Strategic Objectives to PROMTEK-20 Quality Assurance) follows the area's colour, at each read (every 10 minutes, or **Refresh**): **Active Incident** while an incident, non-conformity or 8D report is open in the area, **Active Tasks** while other work is, and **Clear** when nothing is. So it only comes down a step once everything at the step above is closed. A category moved by hand in Jira is put back. Each move is in the audit log. If Jira won't make a move (a transition missing from the workflow, say), the IMS tile says which and why, and the hub tries again at each read. PROMTEK-1 Management Team is left alone.
+
 **Jira rules to turn off** once the tile is in use:
 - **IMS - Clone to Other Category on Creation** and **on Edit**: the hub makes the copies now. Left on, items raised in Jira would be copied twice. (Items raised in the hub name themselves as origin, which those rules skip.)
 - The eleven **Task Counter** rules and **IMS - Total Task Counter**: about 130 searches an hour for numbers the Stats tab works out.
-- **IMS - Task Status Transition 1/2 and 2/2**: the area status is on the Stats tab.
+- **IMS - Task Status Transition 1/2 and 2/2**: the hub moves the IMS Main Board's categories itself (below).
 - **IMS - Number of Items Needing Action** and **Number of Sub-task Requiring Action**: the tile shows these.
 - Keep the Onboarding, Leaver, 8D set up and training gap rules for now.
 

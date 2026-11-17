@@ -528,6 +528,7 @@ export async function run(env, { force = false } = {}) {
         const groups = await groupsFor(env, keys);
         await stampGroups(env, groups);
         out.sync = await syncGroups(env, groups);
+        out.main = await moveMainItems(env, b);
       }
     }
   } catch (err) {
@@ -589,11 +590,7 @@ export async function list(env, viewer, { done = false } = {}) {
   const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && inIms(i) && (done || !i.done));
   // How each area stands, from everything open in it: red for an open incident,
   // non-conformity or 8D report, blue for other open work, green for nothing open.
-  const openAll = collapse(rows).filter((i) => counted(i) && !i.done);
-  const areaState = Object.fromEntries(AREAS.map((a) => {
-    const here = openAll.filter((i) => i.areas.includes(a.key));
-    return [a.key, { open: here.length, nc: here.filter(isNC).length, eightD: here.filter(is8D).length, state: here.some(isRed) ? 'red' : here.length ? 'blue' : 'green' }];
-  }));
+  const areaState = areaStates(rows);
   const writes = await env.DB.prepare('SELECT target_key, kind, error FROM ims_writes WHERE done_at IS NULL').all().catch(() => ({ results: [] }));
   const conflicts = await liveConflicts(env, 'SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key');
   const conflictMap = Object.fromEntries(conflicts.results.map((c) => [c.group_key, c.n]));
@@ -604,6 +601,7 @@ export async function list(env, viewer, { done = false } = {}) {
     reading: Boolean(await getState(env, 'ims_full_started')),
     pending: writes.results.length, failing: writes.results.filter((w) => w.error).length,
     disagreeing: conflicts.results.length,
+    main: await mainNote(env),
   };
 }
 
@@ -620,6 +618,51 @@ export const counted = (i) => !NOT_WORK.includes(i.type) && !NOT_COUNTED.include
 export const is8D = (i) => i.type === '8D Report';
 export const isNC = (i) => !is8D(i) && (i.imsType === 'Non-Conformity' || i.type === 'Incident');
 export const isRed = (i) => isNC(i) || is8D(i);
+
+// How each area stands, from everything open in it: red for an open incident, non-conformity
+// or 8D report, blue for other open work, green for nothing open.
+export function areaStates(rows) {
+  const open = collapse(rows).filter((i) => counted(i) && !i.done);
+  return Object.fromEntries(AREAS.map((a) => {
+    const here = open.filter((i) => i.areas.includes(a.key));
+    return [a.key, { open: here.length, nc: here.filter(isNC).length, eightD: here.filter(is8D).length, state: here.some(isRed) ? 'red' : here.length ? 'blue' : 'green' }];
+  }));
+}
+
+// The IMS Main Board's Category item for each area follows it: Active Incident while an incident,
+// non-conformity or 8D report is open there, Active Tasks while other work is, Clear when nothing is.
+// So it only comes down a step once everything at the step above is closed. Moved by hand, it's put back.
+export const MAIN_STATUS = { red: 'Active Incident', blue: 'Active Tasks', green: 'Clear' };
+export async function moveMainItems(env, b) {
+  const { results: rows } = await env.DB.prepare('SELECT * FROM ims_items').all();
+  const states = areaStates(rows);
+  const byKey = new Map(rows.map((r) => [r.issue_key, r]));
+  const moved = []; const failed = [];
+  for (const a of AREAS) {
+    const item = byKey.get(a.main);
+    if (!item) continue;
+    const want = MAIN_STATUS[states[a.key].state];
+    if (String(item.status || '').toLowerCase() === want.toLowerCase()) continue;
+    if (b.left() < 3) break;
+    try {
+      await moveTo((p, i) => b.call(p, i), a.main, want);
+      await env.DB.prepare('UPDATE ims_items SET status = ? WHERE issue_key = ?').bind(want, a.main).run();
+      moved.push({ key: a.main, area: a.key, from: item.status, to: want });
+      await record(env, { email: 'hub', employee: { name: 'The hub' } }, { area: 'IMS', action: `moved the ${a.name} category to ${want}`, subjectType: 'ims', subjectId: a.main,
+        label: `${a.main} ${a.name}`, changes: [{ label: 'Status', before: item.status, after: want }] }).catch(() => {});
+    } catch (err) {
+      if (err instanceof OutOfCalls) throw err;
+      failed.push({ key: a.main, area: a.key, to: want, error: String(err.message || err).slice(0, 200) });
+    }
+  }
+  if (moved.length) await changed(env);
+  const prev = await mainNote(env);
+  await setState(env, 'ims_main_note', JSON.stringify({ at: Date.now(), moved: moved.length ? moved : prev?.moved || [], movedAt: moved.length ? Date.now() : prev?.movedAt || null, failed }));
+  return { moved: moved.length, failed: failed.length };
+}
+async function mainNote(env) {
+  try { return JSON.parse((await getState(env, 'ims_main_note')) || 'null'); } catch { return null; }
+}
 
 // Copies made before the Sync links were in place: the same summary and type, raised in
 // different areas within the hour. Counted once in the numbers, and listed to be linked up.
