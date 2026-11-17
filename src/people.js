@@ -36,6 +36,23 @@ function startDateOf(value) {
   if (v > new Date().toISOString().slice(0, 10)) throw new Error('The start date can\'t be in the future.');
   return v;
 }
+// A birthday: month and day only, kept as MM-DD. Both or neither.
+export function birthdayOf(month, day) {
+  const m = Number(month); const d = Number(day);
+  if (!month && !day) return null;
+  if (!m || !d) throw new Error('Choose both the month and the day of their birthday, or neither.');
+  const most = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1];
+  if (!most || d < 1 || d > most) throw new Error('That birthday isn\'t a real date.');
+  return `${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+// Kept apart from the rest, so saving someone still works before schema-066 adds the column.
+async function saveBirthday(env, accountId, person) {
+  if (person.birthdayMonth === undefined && person.birthdayDay === undefined) return;
+  const value = birthdayOf(person.birthdayMonth, person.birthdayDay);
+  await env.DB.prepare('UPDATE employees SET birthday = ? WHERE account_id = ?').bind(value, accountId).run().catch(() => null);
+  await env.DB.prepare("DELETE FROM sync_state WHERE key = 'memo:birthdays'").run().catch(() => null);
+}
+
 // Hours a week, if not the usual 37.5, and the days they work (1 Monday to 7 Sunday), if not Monday to Friday.
 function hoursOf(value) {
   if (value === '' || value === null || value === undefined) return null;
@@ -91,6 +108,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
         email: e.email,
         pronouns: e.pronouns,
         startDate: e.start_date || '',
+        birthday: e.birthday || '',
         weeklyHours: e.weekly_hours ?? null,
         chart: {
           level: e.chart_level || null, group: e.chart_group || null, covers: listOf(e.chart_covers),
@@ -126,6 +144,7 @@ export async function listPeople(env, { includeInactive = true } = {}) {
 
 export async function savePerson(env, person) {
   const name = clean(person.name, 120);
+  if (person.birthdayMonth !== undefined || person.birthdayDay !== undefined) birthdayOf(person.birthdayMonth, person.birthdayDay);
   if (!name) throw new Error('A name is needed.');
   // Checked before anything is saved, so a mistake here saves nothing.
   const hours = person.weeklyHours !== undefined || person.workDays !== undefined
@@ -155,6 +174,7 @@ export async function savePerson(env, person) {
       acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
       Number(person.xpRate) || DEFAULT_XP_RATE, Number(person.elo) || null, icons,
       cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), now).run();
+    await saveBirthday(env, accountId, person);
     await saveHours(env, accountId, hours);
     await saveChart(env, accountId, chart);
     await forgetAnniversaries(env);
@@ -170,6 +190,7 @@ export async function savePerson(env, person) {
     acc.role, acc.team, JSON.stringify(acc.groups), JSON.stringify(acc.teams), JSON.stringify(acc.lead), clean(person.extension, 20),
     Number(person.xpRate) || DEFAULT_XP_RATE,
     icons, cleanAvatar(person.avatar), clean(person.notes, 500), startDateOf(person.startDate), person.active === false ? 0 : 1, now, accountId).run();
+  await saveBirthday(env, accountId, person);
   await saveHours(env, accountId, hours);
   await saveChart(env, accountId, chart);
   await forgetAnniversaries(env);

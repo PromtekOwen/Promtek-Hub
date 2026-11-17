@@ -60,6 +60,7 @@ export const EVENTS = {
   requests: [{ id: 'request', label: 'Hub requests', about: 'A request is made, or yours moves on', app: true, email: true }],
   hub: [
     { id: 'home-message', label: 'Messages for everyone', about: 'Management post a message on the home screen and email it', app: true, email: true },
+    { id: 'birthday', label: 'Birthdays', about: 'Whose birthday it is, so you can wish them a happy birthday', app: true, email: false },
     { id: 'other', label: 'Anything else', about: 'Other alerts the hub sends you', app: true, email: true },
   ],
 };

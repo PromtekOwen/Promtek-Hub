@@ -2323,3 +2323,8 @@ button.ims-since:hover { border-color: var(--blue); }
 :where(:root[data-theme="dark"]) .ims-nudge { background: #2b2614; border-color: #5a4b20; color: #f5d27a; }
 .ims-whys-card .ims-whys { margin: 0; }
 @media (max-width: 560px) { .ims-why-list li { grid-template-columns: 1fr; } .ims-why-list li::before { display: none; } }
+
+.person-birthday-label { display: block; font-weight: 600; font-size: .95rem; margin-bottom: .3rem; }
+.person-birthday .row { gap: .6rem; margin: 0; }
+.person-birthday .row label:first-child { flex: 0 0 6.5rem; }
+.person-birthday .row label:last-child { flex: 1 1 12rem; max-width: 16rem; }

@@ -677,6 +677,15 @@ Anywhere, choosing a person's course opens it to record training. **＋ Course**
 
 **Notifications.** The tile's bell chooses how new talks, talk reminders, new policies and policy reminders arrive, like other tiles.
 
+## Part 14g3: Birthdays
+
+Run `schema-066.sql` in the D1 console first. Until it's run, people still save as before and no birthdays show.
+
+Each person's page (Admin, People) has an optional **Birthday**: the day and month only, no year. On the day, from 7am on weekdays:
+- The home screen's news says whose birthday it is ("It is Sam Lee's birthday today: wish them a happy birthday"). Birthdays shared with someone else are one message ("Birthdays today: Owen Hume and Sam Lee"). The person themselves is wished a happy birthday instead, and told who they share it with.
+- Everyone gets a notification, worded the same way, under **Everything else**, **Birthdays** in the bell's choices (in the hub by default, not emailed; each person can change it).
+- Birthdays on a Saturday or Sunday are caught up on the Monday, as belated. A 29 February birthday falls on the 28th in other years. People who have left aren't included.
+
 ## Part 14h: Notifications
 
 Run `schema-062.sql` in the D1 console first. Until it's run, alerts are emailed exactly as before.

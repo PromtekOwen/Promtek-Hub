@@ -1302,6 +1302,21 @@ function personOpenSections() {
   try { const v = localStorage.getItem(PERSON_OPEN_KEY); return new Set(v ? JSON.parse(v) : ['who']); } catch { return new Set(['who']); }
 }
 
+// Birthday: month and day only. Everyone is wished a happy birthday on the day.
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function personBirthdayHtml(p) {
+  const [m, d] = (p.birthday || '').split('-').map(Number);
+  const month = p.birthdayMonth !== undefined ? Number(p.birthdayMonth) || 0 : m || 0;
+  const day = p.birthdayDay !== undefined ? Number(p.birthdayDay) || 0 : d || 0;
+  const most = month ? [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] : 31;
+  return `<div class="person-birthday" style="margin-top:.75rem"><span class="person-birthday-label">Birthday, optional</span>
+      <div class="row">
+        <label><span class="visually-hidden">Day</span><select data-person="birthdayDay" aria-label="Birthday day"><option value="">Day</option>${Array.from({ length: most }, (_, i) => i + 1).map((n) => `<option value="${n}"${n === day ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label><span class="visually-hidden">Month</span><select data-person="birthdayMonth" aria-label="Birthday month"><option value="">Month</option>${MONTHS.map((name, i) => `<option value="${i + 1}"${i + 1 === month ? ' selected' : ''}>${name}</option>`).join('')}</select></label>
+      </div>
+      <p class="muted" style="margin:.3rem 0 0">Just the day and month. On the day, everyone is told so they can wish them a happy birthday.</p></div>`;
+}
+
 function personEditHtml() {
   const p = personEdit;
   const { people = [], icons = [], departments = [] } = peopleCache || {};
@@ -1332,6 +1347,7 @@ function personEditHtml() {
       ${field('pronouns', 'Pronouns, optional', p.pronouns, 'placeholder="He/Him"')}
       ${field('jobTitle', 'Job title', p.jobTitle)}
       ${field('startDate', 'Start date, for work anniversaries', p.startDate, `type="date" max="${todayIso()}"`)}
+      ${personBirthdayHtml(p)}
       ${field('notes', 'Notes, optional', p.notes)}`)}
 
       ${sec('where', 'Where they sit', `
@@ -14953,6 +14969,17 @@ view.addEventListener('change', async (event) => {
       toast('Saved');
     } catch (err) {
       toast(err.message);
+    }
+    return;
+  }
+  // A birthday's days follow its month.
+  if (event.target.dataset?.person === 'birthdayMonth') {
+    const daySel = event.target.closest('.person-birthday')?.querySelector('[data-person="birthdayDay"]');
+    if (daySel) {
+      const m = Number(event.target.value);
+      const most = m ? [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1] : 31;
+      const keep = Number(daySel.value);
+      daySel.innerHTML = `<option value="">Day</option>${Array.from({ length: most }, (_, i) => i + 1).map((n) => `<option value="${n}"${n === keep ? ' selected' : ''}>${n}</option>`).join('')}`;
     }
     return;
   }

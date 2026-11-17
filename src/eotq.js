@@ -657,3 +657,75 @@ export function anniversaryNews(list, viewer, today = londonDate()) {
       body: yours ? `${a.years} year${a.years === 1 ? '' : 's'} at Promtek ${when}. Thank you for everything you do.` : `${a.years === 1 ? 'One year' : `${a.years} years`} ${when}. Wish them a happy work anniversary.` };
   });
 }
+
+// ---------- birthdays ----------
+
+// Month and day only. Today's, and on a Monday the weekend's, so nobody's is missed.
+// 29 February birthdays fall on the 28th in other years.
+export async function birthdays(env, today = londonDate()) {
+  return remembered(env, 'birthdays', today, async () => {
+    const { results } = await env.DB.prepare("SELECT account_id, name, birthday FROM employees WHERE active = 1 AND birthday IS NOT NULL AND birthday != '' AND account_id NOT LIKE 'pending%'")
+      .all().catch(() => ({ results: [] }));
+    const dow = new Date(`${today}T12:00:00Z`).getUTCDay();
+    if (dow === 0 || dow === 6) return [];
+    const days = dow === 1 ? [addDays(today, -2), addDays(today, -1), today] : [today];
+    const leap = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    const out = [];
+    for (const e of results) {
+      if (!/^\d{2}-\d{2}$/.test(e.birthday)) continue;
+      for (const d of days) {
+        const md = e.birthday === '02-29' && !leap(Number(d.slice(0, 4))) ? '02-28' : e.birthday;
+        if (md === d.slice(5)) out.push({ accountId: e.account_id, name: e.name, on: d });
+      }
+    }
+    return out.sort((a, b) => a.on.localeCompare(b.on) || a.name.localeCompare(b.name));
+  });
+}
+
+const andList = (names) => (names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`);
+const first = (name) => String(name || '').split(' ')[0];
+// What to say about one day's birthdays, to one person: their own, or everyone else's. Shared birthdays are one message.
+export function birthdayMessage(day, viewerId, today = londonDate()) {
+  const past = day.on !== today;
+  const when = past ? `on ${weekday(day.on)}` : 'today';
+  const mine = day.people.find((p) => p.accountId === viewerId);
+  const others = day.people.filter((p) => p.accountId !== viewerId);
+  if (mine) {
+    return { title: past ? `Happy belated birthday, ${first(mine.name)}!` : `Happy birthday, ${first(mine.name)}!`,
+      body: `From everyone at Promtek, have a great ${past ? 'one' : 'day'}.${others.length ? ` You share your birthday with ${andList(others.map((p) => p.name))}.` : ''}` };
+  }
+  const n = others.length;
+  return { title: n === 1 ? `It ${past ? 'was' : 'is'} ${others[0].name}'s birthday ${when}` : `Birthdays ${when}: ${andList(others.map((p) => p.name))}`,
+    body: `Wish ${n === 1 ? 'them' : n === 2 ? 'them both' : 'them all'} a happy ${past ? 'belated ' : ''}birthday.` };
+}
+const byDay = (list) => [...list.reduce((m, b) => m.set(b.on, [...(m.get(b.on) || []), b]), new Map())].map(([on, people]) => ({ on, people }));
+
+export function birthdayNews(list, viewer, today = londonDate()) {
+  return byDay(list).map((day) => {
+    const m = birthdayMessage(day, viewer?.accountId, today);
+    return { key: `birthday:${day.on}`, tone: 'info', link: null, title: `🎂 ${m.title}`, body: m.body };
+  });
+}
+
+// Once a day, from 7am on weekdays: a notification to everyone, as they've chosen under Everything else.
+export async function birthdayAlerts(env) {
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: 'numeric', hourCycle: 'h23' }).format(new Date()));
+  if (hour < 7) return { idle: true };
+  const today = londonDate();
+  const done = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'birthday_alerts'").first().catch(() => null);
+  if (done?.value === today) return { idle: true };
+  const list = await birthdays(env, today);
+  let sent = 0;
+  if (list.length) {
+    const { toPerson } = await import('./notify.js');
+    const { results: staff } = await env.DB.prepare("SELECT account_id FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%'").all();
+    for (const day of byDay(list)) {
+      for (const s of staff) {
+        const m = birthdayMessage(day, s.account_id, today);
+        if (await toPerson(env, s.account_id, { tile: 'hub', kind: 'birthday', dedupe: `birthday:${day.on}`, subject: `🎂 ${m.title}`, body: m.body, link: '#/' }).catch(() => false)) sent++;
+      }
+    }
+  }
+  await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('birthday_alerts', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(today).run();
+  return { sent };
+}
