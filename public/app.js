@@ -12114,7 +12114,14 @@ async function imsLoadOptions() {
 function imsTabsHtml() {
   return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings'], ['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
     `<button class="tab${imsTab === k ? ' on' : ''}" data-ims-tab="${k}">${l}</button>`).join('')}</div>
-    <button class="btn psc-new-btn" data-ims-new="1">＋ New IMS item</button></div>`;
+    ${imsCreateBtn()}</div>`;
+}
+// Each tab's own create button.
+function imsCreateBtn() {
+  if (imsTab === 'meetings') return imsNewMeeting || imsMeetingOpen ? '' : '<button class="btn psc-new-btn" data-ims-meeting-new="1">＋ New meeting</button>';
+  if (imsTab === 'training') return trCache.talks?.manage && !trOpen ? '<button class="btn psc-new-btn" data-tr-new-talk="1">＋ Create tool box talk</button>' : '';
+  if (imsTab === 'policy') return trCache.policies?.manage && !trOpen ? '<button class="btn psc-new-btn" data-tr-new-policy="1">＋ New policy</button>' : '';
+  return '<button class="btn psc-new-btn" data-ims-new="1">＋ New IMS item</button>';
 }
 
 async function imsHtml() {
@@ -12124,7 +12131,7 @@ async function imsHtml() {
   const data = await imsLoad();
   const head = `${imsTabsHtml()}<div class="psc-headline"><p class="help">${data.reading ? 'Reading everything from Jira; the rest follows over the next few minutes.' : `Read from Jira ${data.readAt ? agoText(new Date(data.readAt).toISOString()) : 'not yet'}.`}${data.pending ? ` ${data.pending} change${data.pending === 1 ? '' : 's'} waiting to go to the other copies${data.failing ? `, ${data.failing} that Jira refused` : ''}.` : ''}</p>
     <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>`;
-  if (imsTab === 'training' || imsTab === 'policy') return `${imsTabsHtml()}${await trainingHtml(imsTab, 'ims')}`;
+  if (imsTab === 'training' || imsTab === 'policy') { const body = await trainingHtml(imsTab, 'ims'); return `${imsTabsHtml()}${body}`; }
   if (imsCleanup) return head + await imsCleanupHtml();
   if (imsTab === 'stats') return head + await imsStatsHtml();
   if (imsTab === 'meetings') return head + await imsMeetingsHtml();
@@ -12374,38 +12381,51 @@ async function imsStatsHtml() {
     </div>
     <div class="ims-kpis">
       ${kpi('open', `Open ${at}`, t.open, `${t.overdue} past their target`)}
-      ${kpi('overdue', `Past their target ${at}`, t.overdue, '', true)}
       ${kpi('raised', `Raised in ${period}`, t.raised)}
       ${kpi('closed', `Closed in ${period}`, t.closed, s.medianDaysToClose != null ? `Typically in ${s.medianDaysToClose} days` : '')}
-      ${kpi('ncRaised', `Non-conformities raised in ${period}`, t.ncRaised, '', true)}
-      ${kpi('ncClosed', `Non-conformities closed in ${period}`, t.ncClosed)}
+      ${kpi('overdue', `Past their target ${at}`, t.overdue, '', true)}
       ${kpi('ncOpen', `Non-conformities open ${at}`, t.ncOpen, `${t.ncOld} over 30 days`, true)}
-      ${kpi('eightRaised', `8D reports raised in ${period}`, t.eightRaised, '', true)}
-      ${kpi('eightClosed', `8D reports closed in ${period}`, t.eightClosed)}
-      ${kpi('eightOpen', `8D reports open ${at}`, t.eightOpen, `${t.eightOld} over 30 days`, true)}
+      ${kpi('ncRaised', `Non-conformities raised in ${period}`, t.ncRaised, `${t.ncClosed} closed`)}
+      ${kpi('eightOpen', `8D reports open ${at}`, t.eightOpen, '', true)}
       ${kpi('rootMissing', 'Root cause still needed', t.rootMissing, '', true)}
     </div>
-    <div class="ims-grid ims-wide">
-      <section class="card"><h3 style="margin-top:0">Raised and closed each month</h3>${imsMonthBars(s.months, 'raised', 'closed', { labels: ['Raised', 'Closed'] })}</section>
-      <section class="card"><h3 style="margin-top:0">Non-conformities each month</h3>${imsMonthBars(s.months, 'ncRaised', 'ncClosed', { labels: ['Raised', 'Closed'] })}
-        <p class="help">Non-conformities and incidents.</p></section>
-      <section class="card"><h3 style="margin-top:0">8D reports each month</h3>${imsMonthBars(s.months, 'eightRaised', 'eightClosed', { labels: ['Raised', 'Closed'] })}</section>
-    </div>
-    <section class="card"><h3 style="margin-top:0">Open at the end of each month</h3>${imsOpenLine(s.months, 'open')}<p class="help">Choose a point, a bar or a month above to see that month.</p></section>
-    ${imsStats.area ? '' : `<section class="card"><h3 style="margin-top:0">Each area, ${esc(at)}</h3><div class="table-wrap"><table class="ims-area-table"><thead><tr><th>Area</th><th class="num">Open</th><th class="num">Incidents and non-conformities</th><th class="num">8D reports</th><th></th></tr></thead><tbody>
+    ${imsSinceHtml(s.latest)}
+    <section class="card ims-trend">
+      <div class="ims-card-head"><h3>${{ flow: 'Raised and closed each month', nc: 'Non-conformities each month', open: 'Open at the end of each month' }[imsTrend]}</h3>
+        ${imsSwitch('trend', imsTrend, [['flow', 'Raised and closed'], ['nc', 'Non-conformities'], ['open', 'Open']])}</div>
+      ${imsTrend === 'open' ? imsOpenLine(s.months, 'open') : imsTrend === 'nc' ? imsMonthBars(s.months, 'ncRaised', 'ncClosed', { labels: ['Raised', 'Closed'] }) : imsMonthBars(s.months, 'raised', 'closed', { labels: ['Raised', 'Closed'] })}
+      <p class="help">${imsTrend === 'nc' ? 'Non-conformities and incidents. ' : ''}Choose a month to see it.</p></section>
+    ${imsStats.area ? '' : `<section class="card"><h3 style="margin-top:0">Each area, ${esc(at)}</h3><div class="table-wrap"><table class="ims-area-table"><thead><tr><th>Area</th><th class="num">Open</th><th class="num">Incidents, non-conformities and 8D reports</th><th></th></tr></thead><tbody>
       ${s.openByArea.map((a) => `<tr><td>${imsAreaChip(a.key)} ${esc(a.name)}</td><td class="num"><button class="linklike" data-ims-drill="area:${a.key}" data-title="Open in ${esc(a.name)}">${a.n}</button></td>
-        <td class="num"><button class="linklike" data-ims-drill="areaNc:${a.key}" data-title="Incidents and non-conformities open in ${esc(a.name)}">${a.incidents}</button></td>
-        <td class="num"><button class="linklike" data-ims-drill="area8D:${a.key}" data-title="8D reports open in ${esc(a.name)}">${a.eightD}</button></td>
-        <td><span class="ims-rag ${a.incidents || a.eightD ? 'red' : a.n ? 'blue' : 'green'}">${a.incidents ? 'Open incidents' : a.eightD ? 'Open 8D reports' : a.n ? 'Open tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div>
+        <td class="num"><button class="linklike" data-ims-drill="areaNc:${a.key}" data-title="Incidents, non-conformities and 8D reports open in ${esc(a.name)}">${a.incidents}</button></td>
+        <td><span class="ims-rag ${a.incidents ? 'red' : a.n ? 'blue' : 'green'}">${a.incidents ? 'Needs attention' : a.n ? 'Open tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div>
       <p class="help">Each area counts every item in it, so an item in several areas counts in each.</p></section>`}
-    <div class="ims-grid">
-      <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by IMS Task Type</h3>${imsDonut(s.openByType, 'openByType')}</section>
-      <section class="card"><h3 style="margin-top:0">Raised in ${esc(period)} by type</h3>${imsDonut(s.raisedByType, 'raisedByType')}</section>
-      <section class="card"><h3 style="margin-top:0">Root causes, raised in ${esc(period)}</h3>${imsDonut(s.rootCauses, 'rootCauses')}</section>
-      <section class="card"><h3 style="margin-top:0">Root causes of what's open ${esc(at)}</h3>${imsDonut(s.rootCausesOpen, 'rootCausesOpen')}</section>
+    <div class="ims-grid ims-wide">
+      <section class="card"><div class="ims-card-head"><h3>By IMS Task Type</h3>${imsSwitch('type', imsPie.type, [['open', `Open ${at}`], ['raised', 'Raised']])}</div>
+        ${imsPie.type === 'open' ? imsDonut(s.openByType, 'openByType') : imsDonut(s.raisedByType, 'raisedByType')}</section>
+      <section class="card"><div class="ims-card-head"><h3>Root causes</h3>${imsSwitch('root', imsPie.root, [['raised', 'Raised'], ['open', `Open ${at}`]])}</div>
+        ${imsPie.root === 'open' ? imsDonut(s.rootCausesOpen, 'rootCausesOpen') : imsDonut(s.rootCauses, 'rootCauses')}
+        <p class="help">Items marked as not needing a root cause are left out. "Not set" is items that need one and don't have it yet.</p></section>
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by sub-type</h3>${imsDonut(s.subTypes, 'subTypes')}</section>
-      <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by assignee</h3>${imsBars(s.openByAssignee, 'openByAssignee', { limit: 15 })}</section>
+      <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by assignee</h3>${imsBars(s.openByAssignee, 'openByAssignee', { limit: 12 })}</section>
     </div>`;
+}
+
+let imsTrend = 'flow';
+const imsPie = { type: 'open', root: 'raised' };
+function imsSwitch(name, on, opts) {
+  return `<div class="ims-switch" role="group">${opts.map(([k, l]) => `<button class="${on === k ? 'on' : ''}" data-ims-switch="${name}:${k}" aria-pressed="${on === k}">${esc(l)}</button>`).join('')}</div>`;
+}
+// How long since the last incident, non-conformity and 8D report: rare enough not to need a chart.
+function imsSinceHtml(latest) {
+  if (!latest) return '';
+  const card = (k, label) => {
+    const x = latest[k];
+    if (!x) return `<div class="ims-since none"><span class="ims-since-l">${label}</span><b>None</b><small>Nothing recorded</small></div>`;
+    return `<button class="ims-since${x.days < 30 ? ' recent' : ''}" data-ims-open="${esc(x.key)}"><span class="ims-since-l">${label}</span>
+      <b>${x.days}<small> day${x.days === 1 ? '' : 's'}</small></b><small>${esc(x.key)} · ${esc(shortDate(x.created.slice(0, 10)))}${x.done ? ' · closed' : ' · open'}</small><span class="ims-since-s">${esc(x.summary)}</span></button>`;
+  };
+  return `<div class="ims-sinces">${card('incident', 'Since the last incident')}${card('nc', 'Since the last non-conformity')}${card('eightD', 'Since the last 8D report')}</div>`;
 }
 
 // Copies to tidy by hand.
@@ -12432,7 +12452,7 @@ async function imsCleanupHtml() {
 async function imsMeetingsHtml() {
   const { meetings } = await api('/api/ims/meetings');
   const m = imsNewMeeting;
-  return `<section class="card"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">Management meetings</h3>${m ? '' : '<button class="btn secondary" data-ims-meeting-new="1">New meeting</button>'}</div>
+  return `<section class="card"><div class="row" style="justify-content:space-between;align-items:center"><h3 style="margin:0">Management meetings</h3></div>
       ${m ? `<div class="ims-form" style="margin-top:.8rem"><div class="psc-new-row"><label>Name<input type="text" id="ims-meeting-name" value="${esc(m.summary)}"></label><label>Date<input type="date" id="ims-meeting-date" value="${esc(m.date)}"></label></div>
         <div class="row"><button class="btn" data-ims-meeting-add="1">Add meeting</button><button class="linklike" data-ims-meeting-cancel="1">Cancel</button></div></div>` : ''}
       <ul class="ims-meetings">${meetings.map((x) => `<li data-ims-meeting="${esc(x.key)}" tabindex="0" role="button"><span><strong>${esc(x.summary)}</strong><br><small class="muted">${x.date ? new Date(`${x.date}T12:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : ''} · ${esc(x.key)}</small></span>
@@ -12640,7 +12660,15 @@ async function imsClick(event) {
   }
   if (t('[data-ims-new-cancel]')) { imsCapture(); if ((imsNew?.summary || imsNew?.description) && !confirm('Throw away this item?')) return true; imsNew = null; return render(); }
   const ntab = t('[data-ims-new-tab]');
-  if (ntab && imsNew) { imsCapture(); imsNew.tab = Number(ntab.dataset.imsNewTab); window.scrollTo(0, 0); return render(); }
+  if (ntab && imsNew) {
+    imsCapture(); imsNew.tab = Number(ntab.dataset.imsNewTab);
+    // The tabs keep their place; Back and Next at the foot bring the tabs back into view if they're off the top.
+    const fromFoot = !ntab.closest('.ims-type-tabs');
+    await render();
+    const bar = view.querySelector('.ims-type-tabs');
+    if (fromFoot && bar && bar.getBoundingClientRect().top < 70) window.scrollTo(0, scrollY + bar.getBoundingClientRect().top - 80);
+    return true;
+  }
   const addRow = t('[data-ims-row-add]');
   if (addRow && imsNew) { imsCapture(); imsPath(imsNew, addRow.dataset.imsRowAdd).push(imsBlankRow(addRow.dataset.table)); return render(); }
   const rmRow = t('[data-ims-row-remove]');
@@ -12713,6 +12741,8 @@ async function imsClick(event) {
     return render();
   }
   if (t('[data-ims-drill-back]')) { imsDrill = null; return render(); }
+  const sw = t('[data-ims-switch]');
+  if (sw) { const [k, v] = sw.dataset.imsSwitch.split(':'); if (k === 'trend') imsTrend = v; else imsPie[k] = v; return render(); }
   const clean = t('[data-ims-cleanup]');
   if (clean) { imsCleanup = clean.dataset.imsCleanup === 'open' ? {} : null; return render(); }
   if (t('[data-ims-meeting-new]')) {
@@ -12781,6 +12811,12 @@ view.addEventListener('input', (event) => {
     imsFilter.q = event.target.value;
     const pos = event.target.selectionStart;
     render().then(() => { const box = view.querySelector('#ims-search'); if (box) { box.focus(); box.setSelectionRange(pos, pos); } });
+  }
+  // Finding someone or a course in training: as they type.
+  if (event.target.matches('[data-tr-find]')) {
+    trFind = event.target.value;
+    const pos = event.target.selectionStart;
+    render().then(() => { const box = view.querySelector('[data-tr-find]'); if (box) { box.focus(); box.setSelectionRange(pos, pos); } });
   }
 });
 
@@ -14987,11 +15023,11 @@ let trDraft = null;            // a form being filled in
 let trDivision = '';
 let trOnlyProblems = false;
 let trCell = null;             // { personKey, courseId } being edited
-let trCache = { talks: null, policies: null, matrix: null, options: null, at: 0 };
+let trCache = { talks: null, policies: null, matrix: null, all: null, options: null, at: 0 };
 let trShowPast = false;
 
 async function trLoad(what, force = false) {
-  if (force || Date.now() - trCache.at > 60000) trCache = { talks: null, policies: null, matrix: null, options: null, at: Date.now() };
+  if (force || Date.now() - trCache.at > 60000) trCache = { talks: null, policies: null, matrix: null, all: null, options: null, at: Date.now() };
   if (what === 'talks' && !trCache.talks) trCache.talks = await api('/api/training/talks');
   if (what === 'policies' && !trCache.policies) trCache.policies = await api('/api/training/policies');
   if (what === 'options' && !trCache.options) trCache.options = await api('/api/training/options');
@@ -15156,14 +15192,179 @@ async function trPolicyFormHtml() {
 // ----- the training matrix -----
 
 const TR_STATUS = { ok: 'In date', soon: 'Due soon', expired: 'Expired', missing: 'Required, not done', na: 'Not applicable', optional: 'Optional', blank: 'Not recorded' };
+// ----- training: overview, people, courses and the matrix -----
+
+const TR_ICON = { ok: '✓', soon: '✓', expired: '!', missing: '✕', na: '–', optional: '○', blank: '' };
+const TR_COUNTED = ['ok', 'soon', 'expired', 'missing'];
+let trView = 'overview';        // 'overview', 'talks', 'people', 'courses' or 'matrix'
+let trPerson = null;            // a person's key, while their training is open
+let trCourse = null;            // a course id, while it's open
+let trFind = '';
+let trActFilter = '';           // '', 'expired', 'soon' or 'missing'
+let trShowAllActs = false;
+let trShowDates = false;
+
 function trCellText(c) {
   if (c.status === 'na') return 'N/A';
-  if (c.status === 'optional') return c.note === 'Not held' ? '✕' : 'O';
-  if (c.status === 'missing') return 'Req';
+  if (c.status === 'optional') return c.note === 'Not held' ? 'Not held' : 'Optional';
+  if (c.status === 'missing') return 'Not done';
   if (c.status === 'blank') return '';
   if (c.completed) return new Date(`${c.completed}T12:00:00Z`).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
   if (c.expires) return `to ${new Date(`${c.expires}T12:00:00Z`).toLocaleDateString('en-GB', { month: '2-digit', year: '2-digit' })}`;
   return '✓';
+}
+// How much of what's needed is in date, from cells.
+function trScore(cells) {
+  const n = { ok: 0, soon: 0, expired: 0, missing: 0 };
+  for (const c of cells) if (n[c?.status] != null) n[c.status]++;
+  const need = n.ok + n.soon + n.expired + n.missing;
+  return { ...n, need, pct: need ? Math.round(((n.ok + n.soon) / need) * 100) : null };
+}
+const trTone = (pct) => (pct == null ? 'none' : pct >= 90 ? 'good' : pct >= 75 ? 'fair' : 'poor');
+function trRing(pct, size = 64, label = '') {
+  const r = size / 2 - 5; const len = 2 * Math.PI * r;
+  const on = pct == null ? 0 : (pct / 100) * len;
+  return `<svg class="tr-ring t-${trTone(pct)}" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="${pct == null ? 'Nothing required' : `${pct}% in date`}">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="tr-ring-bg"/>
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" class="tr-ring-on" stroke-dasharray="${on.toFixed(1)} ${len.toFixed(1)}" transform="rotate(-90 ${size / 2} ${size / 2})"/>
+      <text x="50%" y="50%" dominant-baseline="central" text-anchor="middle" class="tr-ring-n" style="font-size:${Math.round(size / 4.2)}px">${pct == null ? '–' : `${pct}%`}</text>
+      ${label ? `<text x="50%" y="${size * 0.72}" text-anchor="middle" class="tr-ring-l">${esc(label)}</text>` : ''}</svg>`;
+}
+const trInitials = (name) => String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+const trDue = (v) => {
+  if (v.status === 'expired') return `Expired ${shortDate(v.due)}`;
+  if (v.status === 'soon') return `Due ${shortDate(v.due)}`;
+  if (v.status === 'missing') return 'Not done';
+  if (v.status === 'ok') return v.due ? `In date until ${shortDate(v.due)}` : 'Done';
+  return TR_STATUS[v.status] || '';
+};
+const trBadge = (v) => `<span class="tr-badge s-${v.status}" aria-hidden="true">${TR_ICON[v.status] || ''}</span>`;
+const trDivName = (m, id) => m.divisions.find((d) => d.id === id)?.name || '';
+// The whole company, for the overview, people and courses.
+async function trLoadAll() {
+  if (!trCache.all) trCache.all = await api('/api/training/matrix?division=all');
+  return trCache.all;
+}
+const trTheirCells = (r, m) => (r.courses || Object.keys(r.cells).map(Number)).map((id) => ({ course: m.courses.find((c) => c.id === id), v: r.cells[id] || { status: 'blank' } })).filter((x) => x.course);
+
+function trViewsHtml(m) {
+  return `<div class="tr-viewbar"><div class="tr-views" role="tablist">${[['overview', 'Overview'], ['talks', 'Tool box talks'], ['people', 'People'], ['courses', 'Courses'], ['matrix', 'Matrix']].map(([k, l]) =>
+    `<button class="tr-view${trView === k ? ' on' : ''}" data-tr-view="${k}" role="tab" aria-selected="${trView === k}">${l}</button>`).join('')}</div>
+    ${m?.manage && trView !== 'talks' ? `<div class="tr-tools"><button class="btn secondary" data-tr-open="course">＋ Course</button><button class="btn secondary" data-tr-open="member">＋ Person</button>${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}</div>` : ''}</div>`;
+}
+
+async function trOverviewHtml() {
+  const [m, talks] = await Promise.all([trLoadAll(), trLoad('talks')]);
+  if (!m.rows.length) return '<div class="card"><p class="muted" style="margin:0">Nothing in the training matrix yet. Run the import from the setup notes, or add courses and people.</p></div>';
+  const all = m.rows.flatMap((r) => trTheirCells(r, m).map((x) => ({ ...x, r })));
+  const score = trScore(all.map((x) => x.v));
+  const order = { expired: 0, missing: 1, soon: 2 };
+  const acts = all.filter((x) => order[x.v.status] != null && (!trActFilter || x.v.status === trActFilter))
+    .sort((a, b) => order[a.v.status] - order[b.v.status] || String(a.v.due || '').localeCompare(String(b.v.due || '')) || a.r.name.localeCompare(b.r.name));
+  const shownActs = trShowAllActs ? acts : acts.slice(0, 10);
+  const next = talks.talks.filter((t) => t.upcoming).sort((a, b) => a.startsAt.localeCompare(b.startsAt))[0];
+  const stat = (k, label, n) => `<button class="tr-stat s-${k}${trActFilter === k ? ' on' : ''}" data-tr-act-filter="${k}"><b>${n}</b><span>${label}</span></button>`;
+  const divs = m.divisions.map((d) => {
+    const s = trScore(m.rows.filter((r) => r.divisions.includes(d.id)).flatMap((r) => trTheirCells(r, m).filter((x) => x.course && m.courses.some((c) => c.id === x.course.id)).map((x) => x.v)));
+    return { d, s, people: m.rows.filter((r) => r.divisions.includes(d.id)).length };
+  });
+  return `<div class="tr-ov">
+      <section class="card tr-ov-score">${trRing(score.pct, 112)}
+        <div><h3>Required training in date</h3><p class="muted">${score.ok + score.soon} of ${score.need} across ${m.rows.length} people and ${m.courses.length} courses.</p>
+        ${next ? `<button class="tr-next" data-tr-open="talk-${next.id}"><span class="muted">Next tool box talk</span><strong>${esc(next.title)}</strong><span>${esc(trWhen(next.startsAt))} · ${esc(trCountdown(next.startsAt))}</span></button>` : ''}</div></section>
+      <div class="tr-stats">${stat('expired', 'expired', score.expired)}${stat('soon', `due in ${m.dueSoonDays} days`, score.soon)}${stat('missing', 'required, not done', score.missing)}</div>
+    </div>
+    <div class="ims-grid ims-wide">
+      <section class="card"><div class="row" style="justify-content:space-between;align-items:baseline"><h3 style="margin:0">Needs doing</h3>${trActFilter ? '<button class="linklike" data-tr-act-filter="">Show everything</button>' : ''}</div>
+        ${acts.length ? `<ul class="tr-acts">${shownActs.map((x) => `<li><button class="tr-act" data-tr-cell="${esc(x.r.key)}|${x.course.id}">${trBadge(x.v)}
+            <span class="tr-act-who"><strong>${esc(x.r.name)}</strong><small>${esc(x.course.name)}</small></span><span class="tr-act-when s-${x.v.status}">${esc(trDue(x.v))}</span></button></li>`).join('')}</ul>
+          ${acts.length > shownActs.length ? `<button class="linklike" data-tr-acts-all="1">Show all ${acts.length}</button>` : ''}` : '<p class="muted">Nothing outstanding.</p>'}</section>
+      <section class="card"><h3 style="margin-top:0">By division</h3>
+        <ul class="tr-divs">${divs.map(({ d, s, people }) => `<li><button class="tr-div" data-tr-division-go="${d.id}"><span class="tr-div-name"><strong>${esc(d.name)}</strong><small>${people} ${people === 1 ? 'person' : 'people'}${s.expired + s.missing ? ` · ${s.expired + s.missing} to sort` : ''}</small></span>
+            <span class="tr-meter t-${trTone(s.pct)}"><i style="width:${s.pct ?? 0}%"></i></span><b>${s.pct == null ? '–' : `${s.pct}%`}</b></button></li>`).join('')}</ul>
+        <p class="help">Choose a division to see its matrix.</p></section>
+    </div>`;
+}
+
+async function trPeopleHtml() {
+  const m = await trLoadAll();
+  if (trPerson) return trPersonHtml(m);
+  const q = trFind.trim().toLowerCase();
+  const rows = m.rows.filter((r) => (!q || r.name.toLowerCase().includes(q)) && (!trDivision || trDivision === 'all' || r.divisions.includes(Number(trDivision))))
+    .map((r) => ({ r, s: trScore(trTheirCells(r, m).map((x) => x.v)) }))
+    .sort((a, b) => (a.s.pct ?? 101) - (b.s.pct ?? 101) || a.r.name.localeCompare(b.r.name));
+  return `${trFilterBar(m, 'Find someone')}
+    <div class="tr-people">${rows.map(({ r, s }) => `<button class="card tr-person" data-tr-person="${esc(r.key)}">
+        <span class="tr-avatar">${esc(trInitials(r.name))}</span>
+        <span class="tr-person-main"><strong>${esc(r.name)}</strong><small>${esc(r.divisions.map((id) => trDivName(m, id)).join(', '))}</small>
+          <span class="tr-chips">${s.expired ? `<span class="tr-chip s-expired">${s.expired} expired</span>` : ''}${s.missing ? `<span class="tr-chip s-missing">${s.missing} not done</span>` : ''}${s.soon ? `<span class="tr-chip s-soon">${s.soon} due soon</span>` : ''}${!s.expired && !s.missing && !s.soon ? '<span class="tr-chip s-ok">All in date</span>' : ''}</span></span>
+        ${trRing(s.pct, 54)}</button>`).join('') || '<p class="muted">Nobody matches.</p>'}</div>`;
+}
+
+function trFilterBar(m, placeholder) {
+  return `<div class="row con-tools psc-tools tr-filter"><input type="search" data-tr-find="1" value="${esc(trFind)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}">
+      <select data-tr-division-pick="1" aria-label="Division"><option value="">Every division</option>${m.divisions.map((d) => `<option value="${d.id}"${String(trDivision) === String(d.id) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>`;
+}
+
+function trPersonHtml(m) {
+  const r = m.rows.find((x) => x.key === trPerson);
+  if (!r) { trPerson = null; return '<p class="muted">They\'re no longer in the matrix.</p>'; }
+  const mine = trTheirCells(r, m);
+  const s = trScore(mine.map((x) => x.v));
+  const rank = { expired: 0, missing: 1, soon: 2, ok: 3, blank: 4, optional: 5, na: 6 };
+  const main = mine.filter((x) => !['na', 'blank'].includes(x.v.status)).sort((a, b) => rank[a.v.status] - rank[b.v.status] || a.course.name.localeCompare(b.course.name));
+  const na = mine.filter((x) => x.v.status === 'na');
+  const blank = mine.filter((x) => x.v.status === 'blank');
+  const line = (x) => `<li><button class="tr-line" data-tr-cell="${esc(r.key)}|${x.course.id}">${trBadge(x.v)}
+      <span class="tr-line-main"><strong>${esc(x.course.name)}</strong><small>${esc([x.course.category, x.course.frequency].filter(Boolean).join(' · '))}</small></span>
+      <span class="tr-line-when s-${x.v.status}">${esc(trDue(x.v))}${x.v.completed && x.v.status !== 'expired' ? `<small>Done ${esc(shortDate(x.v.completed))}</small>` : ''}</span>
+      ${x.v.evidence ? '<span class="tr-ev" title="Evidence attached">📎</span>' : ''}</button></li>`;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-person="">Everyone</button></div>
+    <section class="card tr-profile">
+      <div class="tr-profile-head"><span class="tr-avatar big">${esc(trInitials(r.name))}</span>
+        <div><h2 style="margin:0">${esc(r.name)}</h2><p class="muted" style="margin:.2rem 0 0">${esc(r.divisions.map((id) => trDivName(m, id)).join(', '))}${r.note ? ` · ${esc(r.note)}` : ''}</p>
+          ${!r.linked && m.manage ? `<label class="tr-match">Not matched to anyone in the hub <select data-tr-link-person="${esc(r.key)}"><option value="">Match to…</option>${m.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>` : ''}</div>
+        ${trRing(s.pct, 84)}</div>
+      <ul class="tr-lines">${main.map(line).join('')}</ul>
+      ${blank.length ? `<details class="tr-na"><summary>Nothing recorded yet (${blank.length})</summary><ul class="tr-lines">${blank.map(line).join('')}</ul></details>` : ''}
+      ${na.length ? `<details class="tr-na"><summary>Not applicable (${na.length})</summary><ul class="tr-lines">${na.map(line).join('')}</ul></details>` : ''}
+    </section>`;
+}
+
+async function trCoursesHtml() {
+  const m = await trLoadAll();
+  if (trCourse) return trCourseHtml(m);
+  const q = trFind.trim().toLowerCase();
+  const inDiv = (c) => !trDivision || trDivision === 'all' || m.rows.some((r) => r.divisions.includes(Number(trDivision)) && r.courses?.includes(c.id));
+  const cats = new Map();
+  for (const c of m.courses.filter((x) => (!q || x.name.toLowerCase().includes(q)) && inDiv(x))) (cats.get(c.category || 'Other') || cats.set(c.category || 'Other', []).get(c.category || 'Other')).push(c);
+  const rowFor = (c) => {
+    const vs = m.rows.filter((r) => r.courses?.includes(c.id)).map((r) => r.cells[c.id] || { status: 'blank' });
+    const s = trScore(vs);
+    const seg = (k) => (s[k] ? `<i class="s-${k}" style="flex:${s[k]}" title="${s[k]} ${esc(TR_STATUS[k].toLowerCase())}"></i>` : '');
+    return `<li><button class="tr-course-row" data-tr-course="${c.id}"><span class="tr-line-main"><strong>${esc(c.name)}</strong><small>${esc(c.frequency || 'No set frequency')}</small></span>
+        <span class="tr-stack">${s.need ? `${seg('ok')}${seg('soon')}${seg('expired')}${seg('missing')}` : '<i class="s-na" style="flex:1"></i>'}</span>
+        <span class="tr-course-n">${s.need ? `${s.ok + s.soon}/${s.need}` : '–'}</span></button></li>`;
+  };
+  return `${trFilterBar(m, 'Find a course')}
+    <p class="help tr-legend">${['ok', 'soon', 'expired', 'missing'].map((k) => `<span class="tr-sw-key"><i class="tr-sw s-${k}"></i>${TR_STATUS[k]}</span>`).join('')}</p>
+    ${[...cats].map(([cat, list]) => `<section class="card tr-cat-card"><h3>${esc(cat)}</h3><ul class="tr-lines">${list.map(rowFor).join('')}</ul></section>`).join('') || '<p class="muted">No courses match.</p>'}`;
+}
+
+function trCourseHtml(m) {
+  const c = m.courses.find((x) => x.id === Number(trCourse));
+  if (!c) { trCourse = null; return ''; }
+  const rank = { expired: 0, missing: 1, soon: 2, blank: 3, ok: 4, optional: 5, na: 6 };
+  const who = m.rows.filter((r) => r.courses?.includes(c.id)).map((r) => ({ r, v: r.cells[c.id] || { status: 'blank' } }))
+    .sort((a, b) => rank[a.v.status] - rank[b.v.status] || a.r.name.localeCompare(b.r.name));
+  const s = trScore(who.map((x) => x.v));
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-course="">All courses</button></div>
+    <section class="card tr-profile">
+      <div class="tr-profile-head"><div><h2 style="margin:0">${esc(c.name)}</h2><p class="muted" style="margin:.2rem 0 0">${esc([c.category, c.frequency].filter(Boolean).join(' · '))}</p></div>${trRing(s.pct, 84)}</div>
+      <ul class="tr-lines">${who.map(({ r, v }) => `<li><button class="tr-line" data-tr-cell="${esc(r.key)}|${c.id}">${trBadge(v)}
+          <span class="tr-line-main"><strong>${esc(r.name)}</strong><small>${esc(r.divisions.map((id) => trDivName(m, id)).join(', '))}</small></span>
+          <span class="tr-line-when s-${v.status}">${esc(trDue(v))}${v.completed && v.status !== 'expired' ? `<small>Done ${esc(shortDate(v.completed))}</small>` : ''}</span></button></li>`).join('')}</ul>
+    </section>`;
 }
 
 async function trMatrixHtml() {
@@ -15175,49 +15376,44 @@ async function trMatrixHtml() {
   const cell = (r, c) => {
     const v = r.cells[c.id] || { status: 'blank' };
     const tip = [r.name, c.name, TR_STATUS[v.status], v.completed ? `Done ${fullDate(v.completed)}` : '', v.due ? `Due ${fullDate(v.due)}` : '', v.note || ''].filter(Boolean).join(' · ');
-    return `<td class="tr-cell s-${v.status}${trCell && trCell.personKey === r.key && trCell.courseId === c.id ? ' on' : ''}"${m.manage ? ` data-tr-cell="${esc(r.key)}|${c.id}" tabindex="0"` : ''} title="${esc(tip)}">${esc(trCellText(v))}${v.evidence ? '<sup>📎</sup>' : ''}</td>`;
+    return `<td class="tr-cell s-${v.status}${trShowDates ? ' dated' : ''}"${m.manage ? ` data-tr-cell="${esc(r.key)}|${c.id}" tabindex="0"` : ''} title="${esc(tip)}">${trShowDates ? esc(trCellText(v)) : `<span>${TR_ICON[v.status] || ''}</span>`}</td>`;
   };
-  const editor = trCell ? trCellEditorHtml(m) : '';
   return `<section class="tr-matrix-wrap">
       <div class="row con-tools psc-tools">
-        ${m.divisions.length ? `<div class="ims-areas-bar" style="margin:0"><button class="chip${trDivision === 'all' || (!m.manage && !trDivision) ? ' on' : ''}" data-tr-division="${m.manage ? 'all' : ''}">${m.manage ? 'Every division' : 'All mine'}</button>${m.divisions.map((d) => `<button class="chip${String(trDivision) === String(d.id) ? ' on' : ''}" data-tr-division="${d.id}">${esc(d.name)}</button>`).join('')}</div>` : ''}
+        ${m.divisions.length ? `<div class="ims-areas-bar" style="margin:0">${m.manage ? `<button class="chip${trDivision === 'all' ? ' on' : ''}" data-tr-division="all">Every division</button>` : ''}${m.divisions.map((d) => `<button class="chip${String(trDivision) === String(d.id) ? ' on' : ''}" data-tr-division="${d.id}">${esc(d.name)}</button>`).join('')}</div>` : ''}
         <label class="inline-check"><input type="checkbox" data-tr-problems="1"${trOnlyProblems ? ' checked' : ''}> Only what needs doing</label>
-        ${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}
-        ${m.manage ? '<button class="btn secondary" data-tr-open="course">＋ Course</button><button class="btn secondary" data-tr-open="member">＋ Person</button>' : ''}
+        <label class="inline-check"><input type="checkbox" data-tr-dates="1"${trShowDates ? ' checked' : ''}> Show dates</label>
       </div>
-      <div class="tr-totals"><span class="tr-key s-expired">${m.totals.expired} expired</span><span class="tr-key s-soon">${m.totals.soon} due in the next ${m.dueSoonDays} days</span><span class="tr-key s-missing">${m.totals.missing} required, not done</span>
-        <span class="tr-key s-ok">In date</span><span class="tr-key s-na">Not applicable</span></div>
-      ${editor}
-      ${!m.rows.length ? `<div class="card"><p class="muted" style="margin:0">${m.manage ? 'Nothing in the matrix yet. Run the import from the setup notes, or add courses and people.' : 'You\'re not in the training matrix yet.'}</p></div>`
+      <p class="help tr-legend">${['ok', 'soon', 'expired', 'missing', 'optional', 'na'].map((k) => `<span class="tr-key s-${k}"><span class="tr-badge s-${k}">${TR_ICON[k]}</span>${TR_STATUS[k]}</span>`).join('')}</p>
+      ${!rows.length ? '<div class="card"><p class="muted" style="margin:0">Nothing here.</p></div>'
         : `<div class="tr-matrix"><table>
-        <thead><tr><th class="tr-name" rowspan="2">Name</th>${cats.map((c) => `<th colspan="${c.n}" class="tr-cat">${esc(c.name)}</th>`).join('')}</tr>
-          <tr>${courses.map((c) => `<th class="tr-course" title="${esc(`${c.name}${c.frequency ? ` · ${c.frequency}` : ''}`)}"><span>${esc(c.name)}</span>${c.frequency ? `<small>${esc(c.frequency)}</small>` : ''}${c.bad ? `<b class="tr-bad">${c.bad}</b>` : ''}</th>`).join('')}</tr></thead>
-        <tbody>${rows.map((r) => `<tr><th class="tr-name" scope="row">${esc(r.name)}${r.note ? `<small>${esc(r.note)}</small>` : ''}
-            ${!r.linked && m.manage ? `<select class="tr-link-person" data-tr-link-person="${esc(r.key)}"><option value="">Match to…</option>${m.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>` : ''}
-            ${r.counts.expired + r.counts.missing ? `<b class="tr-bad">${r.counts.expired + r.counts.missing}</b>` : ''}</th>
-          ${courses.map((c) => cell(r, c)).join('')}</tr>`).join('')}</tbody></table></div>`}
-      <p class="help">Each date is when the training was done; the colour shows when it's due again, from how often the course is needed. "to 10/28" is a certificate valid until then. ${m.manage ? 'Choose a cell to change it.' : ''}</p>
+        <thead><tr><th class="tr-name" rowspan="2">Name</th>${cats.map((c) => `<th colspan="${c.n}" class="tr-cat" title="${esc(c.name)}">${esc(c.name)}</th>`).join('')}</tr>
+          <tr>${courses.map((c) => `<th class="tr-course${trShowDates ? ' dated' : ''}" title="${esc(`${c.name}${c.frequency ? ` · ${c.frequency}` : ''}`)}"><button class="tr-course-btn" data-tr-course-go="${c.id}"><span>${esc(c.name)}</span></button>${c.bad ? `<b class="tr-bad">${c.bad}</b>` : ''}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map((r) => { const s = trScore(trTheirCells(r, m).map((x) => x.v)); return `<tr><th class="tr-name" scope="row"><button class="tr-name-btn" data-tr-person-go="${esc(r.key)}"><span>${esc(r.name)}</span><span class="tr-pct t-${trTone(s.pct)}">${s.pct == null ? '' : `${s.pct}%`}</span></button></th>
+          ${courses.map((c) => cell(r, c)).join('')}</tr>`; }).join('')}</tbody></table></div>`}
+      <p class="help">${m.manage ? 'Choose a square to record training, a name to see their training, or a course to see who has it.' : ''}</p>
     </section>`;
 }
 
-function trCellEditorHtml(m) {
-  const r = m.rows.find((x) => x.key === trCell.personKey);
-  const c = m.courses.find((x) => x.id === trCell.courseId);
+function trCellEditorHtml() {
+  const m = trCache.all || trCache.matrix;
+  const r = m?.rows.find((x) => x.key === trCell.personKey);
+  const c = m?.courses.find((x) => x.id === trCell.courseId);
   if (!r || !c) return '';
   const v = r.cells[c.id] || {};
   const state = trCell.state ?? (v.state || 'done');
-  return `<div class="card tr-form tr-cell-editor">
-      <h3 style="margin-top:0">${esc(r.name)}: ${esc(c.name)}</h3>
-      <p class="muted" style="margin-top:0">${esc(c.frequency || 'No set frequency')}${v.due ? ` · due ${esc(fullDate(v.due))}` : ''}</p>
+  return `<div class="modal-backdrop" data-tr-cell-backdrop="1"><div class="modal card tr-form tr-cell-editor" role="dialog" aria-modal="true" aria-labelledby="tr-cell-title">
+      <div class="tr-cell-head">${trBadge({ status: v.status || 'blank' })}<div><h3 id="tr-cell-title" style="margin:0">${esc(c.name)}</h3>
+        <p class="muted" style="margin:.15rem 0 0">${esc(r.name)} · ${esc(c.frequency || 'No set frequency')}${v.status ? ` · ${esc(trDue(v))}` : ''}</p></div></div>
+      <label>State<select id="tr-cell-state">${[['done', 'Done'], ['required', 'Required, not done'], ['optional', 'Optional'], ['na', 'Not applicable']].map(([k, l]) => `<option value="${k}"${state === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
       <div class="psc-new-row">
-        <label>State<select id="tr-cell-state">${[['done', 'Done'], ['required', 'Required, not done'], ['optional', 'Optional'], ['na', 'Not applicable']].map(([k, l]) => `<option value="${k}"${state === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
         <label>Done on<input type="date" id="tr-cell-done" value="${esc(v.completed || '')}"></label>
-        <label>Valid until <small class="muted">(certificates)</small><input type="date" id="tr-cell-exp" value="${esc(v.expires || '')}"></label>
-        <label>Evidence link<input type="url" id="tr-cell-evidence" value="${esc(v.evidence || '')}" placeholder="https://…"></label>
+        <label>Certificate valid until<input type="date" id="tr-cell-exp" value="${esc(v.expires || '')}"></label>
       </div>
+      <label>Evidence link<input type="url" id="tr-cell-evidence" value="${esc(v.evidence || '')}" placeholder="https://…"></label>
       <label>Note<input type="text" id="tr-cell-note" value="${esc(v.note || '')}"></label>
       <div class="row"><button class="btn" data-tr-cell-save="1">Save</button><button class="btn secondary" data-tr-cell-clear="1">Clear</button><button class="linklike" data-tr-cell-close="1">Close</button></div>
-    </div>`;
+    </div></div>`;
 }
 
 async function trCourseFormHtml() {
@@ -15296,29 +15492,34 @@ async function trainingHtml(mode, host) {
     const d = await trLoad('policies');
     const mine = d.policies.filter((p) => p.forMe && !p.acknowledged && !p.archived);
     const rest = d.policies.filter((p) => !mine.includes(p));
-    return `${d.manage ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-policy="1">＋ New policy to acknowledge</button></div>' : ''}
+    return `${d.manage && host !== 'ims' ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-policy="1">＋ New policy to acknowledge</button></div>' : ''}
       ${mine.length ? `<h2>For you to acknowledge</h2><div class="psc-list">${mine.map(trPolicyCard).join('')}</div>` : ''}
       <h2>${d.manage ? 'Every policy' : 'Acknowledged'}</h2>
       <div class="psc-list">${rest.map(trPolicyCard).join('') || `<div class="card"><p class="muted" style="margin:0">${d.manage ? 'No policies yet.' : 'Nothing yet.'}</p></div>`}</div>`;
   }
   const d = await trLoad('talks');
-  const upcoming = d.talks.filter((t) => t.upcoming);
-  const toAck = d.talks.filter((t) => !t.upcoming && t.forMe && !t.acknowledged);
-  const past = d.talks.filter((t) => !t.upcoming && !toAck.includes(t));
-  return `${d.manage ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-talk="1">＋ Create tool box talk</button></div>' : ''}
+  const talksHtml = () => {
+    const upcoming = d.talks.filter((t) => t.upcoming);
+    const toAck = d.talks.filter((t) => !t.upcoming && t.forMe && !t.acknowledged);
+    const past = d.talks.filter((t) => !t.upcoming && !toAck.includes(t));
+    return `${d.manage && host !== 'ims' ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-talk="1">＋ Create tool box talk</button></div>' : ''}
     ${toAck.length ? `<h2>To acknowledge</h2><div class="psc-list">${toAck.map(trTalkCard).join('')}</div>` : ''}
     <h2>Tool box talks coming up</h2>
     <div class="psc-list">${upcoming.map(trTalkCard).join('') || '<div class="card"><p class="muted" style="margin:0">None arranged.</p></div>'}</div>
     ${past.length ? `<h2>Held</h2><div class="psc-list">${(trShowPast ? past : past.slice(0, 4)).map(trTalkCard).join('')}</div>
-      ${past.length > 4 && !trShowPast ? `<button class="linklike" data-tr-past="1">Show all ${past.length}</button>` : ''}` : ''}
-    <h2>${d.manage ? 'Training matrix' : 'Your training'}</h2>
-    ${await trMatrixHtml()}`;
+      ${past.length > 4 && !trShowPast ? `<button class="linklike" data-tr-past="1">Show all ${past.length}</button>` : ''}` : ''}`;
+  };
+  if (!d.manage) return talksHtml();
+  const m = await trLoadAll();
+  const body = trView === 'talks' ? talksHtml() : trView === 'people' ? await trPeopleHtml() : trView === 'courses' ? await trCoursesHtml()
+    : trView === 'matrix' ? await trMatrixHtml() : await trOverviewHtml();
+  return `${trViewsHtml(m)}${body}${trCell ? trCellEditorHtml() : ''}`;
 }
 
 async function trClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('[data-tr-join], [data-tr-doc], [data-jv-out]')) return false;
-  const reload = async (what) => { trCache[what] = null; if (what === 'matrix') trCache.matrix = null; };
+  const reload = async (what) => { trCache[what] = null; if (what === 'matrix') trCache.matrix = trCache.all = null; };
   const open = t('[data-tr-open]');
   if (open) {
     trOpen = open.dataset.trOpen;
@@ -15326,6 +15527,22 @@ async function trClick(event) {
     trCell = null; window.scrollTo(0, 0); render(); return true;
   }
   if (t('[data-tr-close]')) { trOpen = null; trDraft = null; render(); return true; }
+  const tview = t('[data-tr-view]');
+  if (tview) { trView = tview.dataset.trView; trPerson = null; trCourse = null; trCell = null; render(); return true; }
+  const af = t('[data-tr-act-filter]');
+  if (af) { trActFilter = trActFilter === af.dataset.trActFilter ? '' : af.dataset.trActFilter; trShowAllActs = false; render(); return true; }
+  if (t('[data-tr-acts-all]')) { trShowAllActs = true; render(); return true; }
+  const per = t('[data-tr-person]');
+  if (per) { trPerson = per.dataset.trPerson || null; window.scrollTo(0, 0); render(); return true; }
+  const perGo = t('[data-tr-person-go]');
+  if (perGo) { trView = 'people'; trPerson = perGo.dataset.trPersonGo; window.scrollTo(0, 0); render(); return true; }
+  const crs = t('[data-tr-course]');
+  if (crs) { trCourse = crs.dataset.trCourse || null; window.scrollTo(0, 0); render(); return true; }
+  const crsGo = t('[data-tr-course-go]');
+  if (crsGo) { trView = 'courses'; trCourse = crsGo.dataset.trCourseGo; window.scrollTo(0, 0); render(); return true; }
+  const divGo = t('[data-tr-division-go]');
+  if (divGo) { trView = 'matrix'; trDivision = divGo.dataset.trDivisionGo; trCache.matrix = null; window.scrollTo(0, 0); render(); return true; }
+  if (event.target.matches('[data-tr-cell-backdrop]')) { trCell = null; render(); return true; }
   if (t('[data-tr-past]')) { trShowPast = true; render(); return true; }
   if (t('[data-tr-new-talk]')) {
     trOpen = 'new-talk';
@@ -15374,7 +15591,7 @@ async function trClick(event) {
     if (!view.querySelector('#tr-ack-ok')?.checked) { toast('Tick the box to confirm first'); return true; }
     await busy(ack, async () => {
       await api('/api/training/acknowledge', { method: 'POST', body: JSON.stringify({ kind: ack.dataset.trAck, id: Number(ack.dataset.id) }) });
-      toast('Acknowledged'); await reload(ack.dataset.trAck === 'talk' ? 'talks' : 'policies'); trCache.matrix = null; render();
+      toast('Acknowledged'); await reload(ack.dataset.trAck === 'talk' ? 'talks' : 'policies'); trCache.matrix = trCache.all = null; render();
     });
     return true;
   }
@@ -15416,7 +15633,7 @@ async function trClick(event) {
     await busy(csave, async () => {
       await api('/api/training/record', { method: 'POST', body: JSON.stringify({ personKey: trCell.personKey, courseId: trCell.courseId, state: clear ? 'clear' : v('#tr-cell-state'),
         completedOn: v('#tr-cell-done'), expiresOn: v('#tr-cell-exp'), note: v('#tr-cell-note'), evidence: v('#tr-cell-evidence') }) });
-      toast('Saved'); trCell = null; trCache.matrix = null; render();
+      toast('Saved'); trCell = null; trCache.matrix = trCache.all = null; render();
     });
     return true;
   }
@@ -15436,21 +15653,21 @@ async function trClick(event) {
   if (dadd) {
     trCapture();
     const name = view.querySelector('#tr-new-division')?.value || '';
-    await busy(dadd, async () => { await api('/api/training/division', { method: 'POST', body: JSON.stringify({ name }) }); trCache.matrix = null; trCache.options = null; render(); });
+    await busy(dadd, async () => { await api('/api/training/division', { method: 'POST', body: JSON.stringify({ name }) }); trCache.matrix = trCache.all = null; trCache.options = null; render(); });
     return true;
   }
   const csv2 = t('[data-tr-course-save]');
   if (csv2) {
     trCapture();
     trDraft.divisions = [...view.querySelectorAll('[data-tr-course-div]:checked')].map((el) => Number(el.value));
-    await busy(csv2, async () => { await api('/api/training/course', { method: 'POST', body: JSON.stringify(trDraft) }); toast('Saved'); trOpen = null; trDraft = null; trCache.matrix = null; trCache.options = null; render(); });
+    await busy(csv2, async () => { await api('/api/training/course', { method: 'POST', body: JSON.stringify(trDraft) }); toast('Saved'); trOpen = null; trDraft = null; trCache.matrix = trCache.all = null; trCache.options = null; render(); });
     return true;
   }
   const msave = t('[data-tr-member-save]');
   if (msave) {
     const v = (id) => view.querySelector(id)?.value || '';
     if (!v('#tr-member-person')) { toast('Choose someone'); return true; }
-    await busy(msave, async () => { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: v('#tr-member-person'), divisionId: v('#tr-member-division'), note: v('#tr-member-note') }) }); toast('Added'); trOpen = null; trCache.matrix = null; render(); });
+    await busy(msave, async () => { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: v('#tr-member-person'), divisionId: v('#tr-member-division'), note: v('#tr-member-note') }) }); toast('Added'); trOpen = null; trCache.matrix = trCache.all = null; render(); });
     return true;
   }
   return false;
@@ -15461,9 +15678,11 @@ async function trChange(event) {
   if (el.matches('[data-tr-aud], [data-tr-field]') && trDraft) { trCapture(); if (el.dataset.trAud === 'everyone') render(); return true; }
   if (el.matches('[data-tr-aud-add]') && el.value && trDraft) { trCapture(); trDraft.audience.people = [...new Set([...(trDraft.audience.people || []), el.value])]; render(); return true; }
   if (el.matches('[data-tr-problems]')) { trOnlyProblems = el.checked; render(); return true; }
+  if (el.matches('[data-tr-dates]')) { trShowDates = el.checked; render(); return true; }
+  if (el.matches('[data-tr-division-pick]')) { trDivision = el.value; trCache.matrix = null; render(); return true; }
   if (el.matches('[data-tr-link-person]') && el.value) {
-    try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: el.dataset.trLinkPerson, linkTo: el.value }) }); toast('Matched'); } catch (err) { toast(err.message); }
-    trCache.matrix = null; render(); return true;
+    try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: el.dataset.trLinkPerson, linkTo: el.value }) }); toast('Matched'); if (trPerson === el.dataset.trLinkPerson) trPerson = el.value; } catch (err) { toast(err.message); }
+    trCache.matrix = trCache.all = null; render(); return true;
   }
   if (el.matches('[data-tr-course-pick]')) {
     const m = await trLoad('matrix');

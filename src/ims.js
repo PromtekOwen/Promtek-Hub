@@ -574,6 +574,7 @@ export function collapse(rows) {
       imsType: rep.ims_type, subTypes: listOf(rep.sub_types), categories: listOf(rep.categories), rootCause: listOf(rep.root_cause), rootRequired: rep.root_required,
       assignee: rep.assignee_name, assigneeId: rep.assignee_id, created: rep.created_at, resolved: rep.resolved_at, updated: members.map((m) => m.updated_at).sort().pop(),
       start: rep.start_date, target: rep.target_end, priority: rep.priority, parent: rep.parent_key, folder: folder?.issuetype === 'Folder' ? folder.summary : null,
+      parentType: rep.subtask ? folder?.issuetype || null : null,
       areas: [...new Set(members.map((m) => m.project_key))],
       copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status })),
       subtasks: { done: kids.filter(isDone).length, all: kids.length },
@@ -588,7 +589,7 @@ export async function list(env, viewer, { done = false } = {}) {
   const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && inIms(i) && (done || !i.done));
   // How each area stands, from everything open in it: red for an open incident,
   // non-conformity or 8D report, blue for other open work, green for nothing open.
-  const openAll = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i) && !i.done);
+  const openAll = collapse(rows).filter((i) => counted(i) && !i.done);
   const areaState = Object.fromEntries(AREAS.map((a) => {
     const here = openAll.filter((i) => i.areas.includes(a.key));
     return [a.key, { open: here.length, nc: here.filter(isNC).length, eightD: here.filter(is8D).length, state: here.some(isRed) ? 'red' : here.length ? 'blue' : 'green' }];
@@ -610,7 +611,11 @@ export async function list(env, viewer, { done = false } = {}) {
 
 // Operational Improvements also holds product ideas and features; only its IMS work counts.
 export const SUGGEST_TYPES = ['IMS Task', '8D Report', 'Incident'];
-export const inIms = (i) => !(i.areas.length && i.areas.every((a) => a === 'SUGGEST') && !SUGGEST_TYPES.includes(i.type));
+// A sub-task goes by the item it's under.
+export const inIms = (i) => !(i.areas.length && i.areas.every((a) => a === 'SUGGEST') && !SUGGEST_TYPES.includes(i.subtask && i.parentType ? i.parentType : i.type));
+// What the numbers count: IMS work, sub-tasks included (many non-conformities are raised as sub-tasks), but not meeting sub-tasks.
+const NOT_COUNTED = ['Meeting (Subtask)'];
+export const counted = (i) => !NOT_WORK.includes(i.type) && !NOT_COUNTED.includes(i.type) && inIms(i);
 // Non-conformities and incidents; 8D reports are counted on their own. Any of them turns an area red.
 export const is8D = (i) => i.type === '8D Report';
 export const isNC = (i) => !is8D(i) && (i.imsType === 'Non-Conformity' || i.type === 'Incident');
@@ -619,10 +624,10 @@ export const isRed = (i) => isNC(i) || is8D(i);
 // Copies made before the Sync links were in place: the same summary and type, raised in
 // different areas within the hour. Counted once in the numbers, and listed to be linked up.
 const COPY_WINDOW_MS = 60 * 60 * 1000;
-export function likelyCopies(items) {
+export function likelyCopies(items, { subtasks = false } = {}) {
   const bySum = new Map();
   for (const i of items) {
-    if (i.subtask) continue;
+    if (i.subtask && !subtasks) continue;
     const k = `${String(i.summary || '').trim().toLowerCase()}|${i.type}`;
     (bySum.get(k) || bySum.set(k, []).get(k)).push(i);
   }
@@ -644,7 +649,7 @@ export function likelyCopies(items) {
 function mergeCopies(items) {
   const gone = new Set();
   const merged = new Map();
-  for (const set of likelyCopies(items)) {
+  for (const set of likelyCopies(items, { subtasks: true })) {
     const [first, ...rest] = set;
     merged.set(first.key, { ...first, areas: [...new Set(set.flatMap((x) => x.areas))], alsoKeys: rest.map((x) => x.key) });
     rest.forEach((x) => gone.add(x.key));
@@ -671,7 +676,7 @@ const rootNeeded = (i) => /^yes$/i.test(i.rootRequired || '') || ['Incident', '8
 const rootCounts = (i) => !/^no$/i.test(i.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
 
 export function statsOf(allItems, { area = null, month = null, now = new Date() } = {}) {
-  let work = mergeCopies(allItems.filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i)));
+  let work = mergeCopies(allItems.filter(counted));
   if (area) work = work.filter((i) => i.areas.includes(area));
   const months = lastMonths(24, now);
   const shown = months.slice(-12);
@@ -710,15 +715,26 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
     openByType: breakdown(open, (i) => (i.imsType ? [i.imsType] : [])),
     raisedByType: breakdown(raised, (i) => (i.imsType ? [i.imsType] : [])),
     // Items marked as not needing a root cause are left out of the root cause charts.
-    rootCauses: breakdown(raised.filter(rootCounts), (i) => i.rootCause),
-    rootCausesOpen: breakdown(open.filter(rootCounts), (i) => i.rootCause),
+    // "Not set" only counts items that need a root cause, not those nobody has decided on.
+    rootCauses: breakdown(raised.filter((i) => rootCounts(i) && (i.rootCause.length || rootNeeded(i))), (i) => i.rootCause),
+    rootCausesOpen: breakdown(open.filter((i) => rootCounts(i) && (i.rootCause.length || rootNeeded(i))), (i) => i.rootCause),
     subTypes: breakdown(open, (i) => i.subTypes),
     openByAssignee: breakdown(open, (i) => (i.assignee ? [i.assignee] : [])).map((e) => (e.name === NOT_SET ? { ...e, name: 'Unassigned' } : e)),
     openByArea: AREAS.map((a) => {
       const here = open.filter((i) => i.areas.includes(a.key));
-      return { key: a.key, name: a.name, n: here.length, keys: keys(here), incidents: here.filter(isNC).length, incidentKeys: keys(here.filter(isNC)),
+      return { key: a.key, name: a.name, n: here.length, keys: keys(here), incidents: here.filter(isRed).length, incidentKeys: keys(here.filter(isRed)),
         eightD: here.filter(is8D).length, eightDKeys: keys(here.filter(is8D)) };
     }),
+    // The most recent of each, raised by the end of the period.
+    latest: Object.fromEntries([
+      ['incident', (i) => i.type === 'Incident'],
+      ['nc', (i) => i.imsType === 'Non-Conformity' && !is8D(i) && i.type !== 'Incident'],
+      ['eightD', is8D],
+    ].map(([k, f]) => {
+      const last = work.filter((i) => f(i) && ms(i.created) <= end).sort((a, b) => ms(b.created) - ms(a.created))[0];
+      if (last) used.add(last.key);
+      return [k, last ? { key: last.key, summary: last.summary, created: last.created, days: Math.max(0, Math.floor((end - ms(last.created)) / 86400000)), done: last.done } : null];
+    })),
   };
   out.openByArea.forEach((a) => a.keys.forEach((k) => used.add(k)));
   const byKey = new Map(work.map((i) => [i.key, i]));

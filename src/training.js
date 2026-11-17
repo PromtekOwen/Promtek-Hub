@@ -137,7 +137,10 @@ export async function matrix(env, viewer, { division = null } = {}) {
       if (counts[st.status] != null) counts[st.status]++;
       cells[c.id] = { ...st, completed: rec?.completed_on || null, expires: rec?.expires_on || null, note: rec?.note || null, evidence: rec?.evidence || null, state: rec?.state || null };
     }
-    return { key, name: byId.get(key)?.name || m.name, linked: byId.has(key), note: m.note, divisions: members.filter((x) => x.person_key === key).map((x) => x.division_id), cells, counts };
+    const theirDivisions = members.filter((x) => x.person_key === key).map((x) => x.division_id);
+    // The courses that apply to them: those of their divisions.
+    const theirCourses = shownCourses.filter((c) => links.some((l) => l.course_id === c.id && theirDivisions.includes(l.division_id))).map((c) => c.id);
+    return { key, name: byId.get(key)?.name || m.name, linked: byId.has(key), note: m.note, divisions: theirDivisions, courses: theirCourses, cells, counts };
   });
   const courseCounts = Object.fromEntries(shownCourses.map((c) => [c.id, rows.reduce((t, r) => {
     const s = r.cells[c.id]?.status; if (s === 'expired' || s === 'missing') t.bad++; if (s === 'soon') t.soon++; return t;
