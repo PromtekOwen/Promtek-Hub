@@ -478,6 +478,7 @@ async function route(request, env, url, user) {
     const q = (k) => url.searchParams.get(k);
     if (method === 'GET' && pathname === '/api/ims') return json(await Ims.list(env, user, { done: q('done') === '1' }));
     if (method === 'GET' && pathname === '/api/ims/cleanup') return json(await Ims.cleanup(env, user));
+    if (method === 'POST' && pathname === '/api/ims/dismiss') return json(await Ims.dismiss(env, user, body));
     if (method === 'GET' && pathname === '/api/ims/stats') return json(await Ims.stats(env, user, { area: q('area') || null, month: q('month') || null }));
     if (method === 'GET' && pathname === '/api/ims/item') return json(await Ims.item(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/ims/options') return json(await Ims.options(env, user));

@@ -2291,3 +2291,16 @@ button.ims-since:hover { border-color: var(--blue); }
 .ims-since-s { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ims-since.recent b { color: var(--danger); }
 .ims-since.none b { color: var(--muted); }
+
+/* Training forms: room between one field and the next heading, and above the buttons */
+.tr-form { display: grid; gap: 1.05rem; }
+.tr-form > h2, .tr-form > h3 { margin-bottom: 0; }
+.tr-form .psc-new-row { gap: 1.05rem; }
+.tr-form > .row { margin-top: .5rem; }
+.tr-form fieldset .row { margin-top: .6rem; }
+.tr-cell-editor .tr-cell-head { margin-bottom: 0; }
+.tr-cog { flex: none; align-self: flex-start; }
+.tr-cog.on { background: var(--tint); }
+.tr-cog-panel { border: 1px solid var(--line); background: var(--bg); border-radius: 12px; padding: .9rem 1rem; margin: .2rem 0 .9rem; display: grid; gap: .8rem; }
+.tr-cog-panel .row { margin: 0; }
+.ims-dismiss { margin-top: .45rem; padding: .2rem .7rem; font-size: .82rem; }

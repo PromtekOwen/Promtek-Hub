@@ -625,7 +625,7 @@ The **IMS** tile treats the ten IMS projects (GOALS, LEGAL, HEALTH, COMPLIANCE, 
 
 **What's behind a number.** Any number, slice, legend entry or bar opens the items that make it up. Where an item has its IMS Task Type, assignee, root cause (when one is needed, or on a root cause chart) or sub-type (on the sub-type chart) not set, it can be set there and then, as in PSC Triage; the change goes to every copy.
 
-**Items tab.** Each area's button is coloured by what's open in it: red for an open incident, non-conformity or 8D report, blue for other open work, green for nothing open. **See the list** under the copies-disagree note lists every item whose copies disagree, field by field with each copy's value, and the likely unlinked copies, to tidy by hand.
+**Items tab.** Each area's button is coloured by what's open in it: red for an open incident, non-conformity or 8D report, blue for other open work, green for nothing open. **See the list** under the copies-disagree note lists every item whose copies disagree, field by field with each copy's value, and the likely unlinked copies, to tidy by hand. **Dismiss** on an item leaves its copies as they are and takes it off the list and the count; it comes back only if another field starts to disagree. **Make every copy match its original** skips dismissed items.
 
 **Meetings.** The meetings under the Management Meeting List (PROMTEK-21), newest first, with how many items each raised. A meeting shows its minutes (attachments, opened through the hub) and the items linked to it. **New meeting** (top right on the Meetings tab) adds one under the list with its date. **Upload minutes** attaches them and, if ticked, moves the meeting to For Reference.
 
@@ -657,7 +657,9 @@ Run `schema-065.sql` in the D1 console first. Whoever has the **IMS** tile (mana
 - **People**: everyone, least in date first, searchable and by division; open someone for their training, worst first.
 - **Courses**: each course with a bar of who's in date, due, expired and not done; open one for who has it.
 - **Matrix**: the grid, one division at a time (or every division), with symbols in place of dates (**Show dates** brings them back).
-Anywhere, choosing a person's course opens it to record training. **＋ Course**, **＋ Person** and **Download CSV** are at the top right. A person in the matrix is linked to their hub account by name; anyone left unlinked can be linked by hand.
+Anywhere, choosing a person's course opens it to record training. **＋ Course** and **Download CSV** are at the top right.
+- **Everyone on the hub is in the matrix.** Someone not yet in a division has no courses that apply; the cog on their page sets their divisions (and a note, such as their role). A name from the old spreadsheet that doesn't match anyone on the hub can be matched to someone, or taken off the matrix from the same cog.
+- **Changing a course.** Open it under Courses and use the cog: **Edit the course** (name, category, how often, divisions) or **Delete the course**, which takes it off the matrix and every division but keeps the training recorded against it. A person in the matrix is linked to their hub account by name; anyone left unlinked can be linked by hand.
 
 **Bringing in the current matrix.** `training-matrix-import.sql` (sent separately, not in the ZIP, as it holds people's training records) loads the AD2 matrix: 72 courses across Service Division, Projects Team, Office/Sales, Development team and IT Department. Run it once, after `schema-065.sql`, in the D1 console or with `npx wrangler d1 execute <database> --remote --file=training-matrix-import.sql`. Run it only once: running it again would put the spreadsheet's values back over changes made in the hub since.
 

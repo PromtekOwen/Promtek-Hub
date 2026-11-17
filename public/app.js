@@ -12435,9 +12435,10 @@ async function imsCleanupHtml() {
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-cleanup="close">Back to the items</button></div>
     <h2 style="margin:0 0 .3rem">Copies to tidy up</h2>
     <section class="card"><h3 style="margin-top:0">Copies that disagree (${d.disagree.length})</h3>
-      <p class="muted">Each item's copies have a different value for the fields shown. Open one to choose which copy is right, or put them right in Jira.</p>
+      <p class="muted">Each item's copies have a different value for the fields shown. Open one to choose which copy is right, or put them right in Jira. <strong>Dismiss</strong> leaves the copies as they are and takes the item off this list; it comes back only if another field starts to disagree.</p>
       ${d.disagree.length ? `<div class="table-wrap"><table class="ims-clean"><thead><tr><th>Item</th><th>Field</th><th>Each copy</th></tr></thead><tbody>
-        ${d.disagree.map((g) => g.fields.map((f, n) => `<tr>${n ? '' : `<td rowspan="${g.fields.length}"><button class="linklike" data-ims-open="${esc(g.key)}">${esc(g.key)}</button> ${esc(g.summary)}<br>${g.areas.map(imsAreaChip).join('')}${g.done ? ' <small class="muted">complete</small>' : ''}</td>`}
+        ${d.disagree.map((g) => g.fields.map((f, n) => `<tr>${n ? '' : `<td rowspan="${g.fields.length}"><button class="linklike" data-ims-open="${esc(g.key)}">${esc(g.key)}</button> ${esc(g.summary)}<br>${g.areas.map(imsAreaChip).join('')}${g.done ? ' <small class="muted">complete</small>' : ''}
+            <div><button class="btn secondary ims-dismiss" data-ims-dismiss="${esc(g.key)}" title="Leave the copies as they are and take this off the list">Dismiss</button></div></td>`}
           <td>${esc(f.label)}</td><td>${f.values.map((v) => `<div><a href="${esc(me.jiraBaseUrl)}/browse/${esc(v.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(v.key)}</a>: ${esc(v.value)}</div>`).join('')}</td></tr>`).join('')).join('')}
       </tbody></table></div>` : '<p class="muted">None.</p>'}
     </section>
@@ -12743,6 +12744,16 @@ async function imsClick(event) {
   if (t('[data-ims-drill-back]')) { imsDrill = null; return render(); }
   const sw = t('[data-ims-switch]');
   if (sw) { const [k, v] = sw.dataset.imsSwitch.split(':'); if (k === 'trend') imsTrend = v; else imsPie[k] = v; return render(); }
+  const dis = t('[data-ims-dismiss]');
+  if (dis) {
+    dis.disabled = true;
+    try {
+      await api('/api/ims/dismiss', { method: 'POST', body: JSON.stringify({ key: dis.dataset.imsDismiss }) });
+      if (imsCleanup?.data) imsCleanup.data.disagree = imsCleanup.data.disagree.filter((g) => g.key !== dis.dataset.imsDismiss);
+      imsData = null; toast('Dismissed');
+    } catch (err) { toast(err.message); dis.disabled = false; return true; }
+    return render();
+  }
   const clean = t('[data-ims-cleanup]');
   if (clean) { imsCleanup = clean.dataset.imsCleanup === 'open' ? {} : null; return render(); }
   if (t('[data-ims-meeting-new]')) {
@@ -15200,9 +15211,13 @@ let trView = 'overview';        // 'overview', 'talks', 'people', 'courses' or '
 let trPerson = null;            // a person's key, while their training is open
 let trCourse = null;            // a course id, while it's open
 let trFind = '';
+let trListDiv = '';            // the division People and Courses are narrowed to
 let trActFilter = '';           // '', 'expired', 'soon' or 'missing'
 let trShowAllActs = false;
 let trShowDates = false;
+let trCog = null;               // 'course-3' or 'person-<key>' while its settings are open
+let trCogConfirm = false;       // asking before deleting a course
+const TR_COG = '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.8l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.8-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.8.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.8 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.8l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.8.3H9a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.8-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.8V9a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/>';
 
 function trCellText(c) {
   if (c.status === 'na') return 'N/A';
@@ -15250,7 +15265,7 @@ const trTheirCells = (r, m) => (r.courses || Object.keys(r.cells).map(Number)).m
 function trViewsHtml(m) {
   return `<div class="tr-viewbar"><div class="tr-views" role="tablist">${[['overview', 'Overview'], ['talks', 'Tool box talks'], ['people', 'People'], ['courses', 'Courses'], ['matrix', 'Matrix']].map(([k, l]) =>
     `<button class="tr-view${trView === k ? ' on' : ''}" data-tr-view="${k}" role="tab" aria-selected="${trView === k}">${l}</button>`).join('')}</div>
-    ${m?.manage && trView !== 'talks' ? `<div class="tr-tools"><button class="btn secondary" data-tr-open="course">＋ Course</button><button class="btn secondary" data-tr-open="member">＋ Person</button>${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}</div>` : ''}</div>`;
+    ${m?.manage && trView !== 'talks' ? `<div class="tr-tools"><button class="btn secondary" data-tr-open="course">＋ Course</button>${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}</div>` : ''}</div>`;
 }
 
 async function trOverviewHtml() {
@@ -15290,7 +15305,7 @@ async function trPeopleHtml() {
   const m = await trLoadAll();
   if (trPerson) return trPersonHtml(m);
   const q = trFind.trim().toLowerCase();
-  const rows = m.rows.filter((r) => (!q || r.name.toLowerCase().includes(q)) && (!trDivision || trDivision === 'all' || r.divisions.includes(Number(trDivision))))
+  const rows = m.rows.filter((r) => (!q || r.name.toLowerCase().includes(q)) && (!trListDiv || r.divisions.includes(Number(trListDiv))))
     .map((r) => ({ r, s: trScore(trTheirCells(r, m).map((x) => x.v)) }))
     .sort((a, b) => (a.s.pct ?? 101) - (b.s.pct ?? 101) || a.r.name.localeCompare(b.r.name));
   return `${trFilterBar(m, 'Find someone')}
@@ -15303,7 +15318,7 @@ async function trPeopleHtml() {
 
 function trFilterBar(m, placeholder) {
   return `<div class="row con-tools psc-tools tr-filter"><input type="search" data-tr-find="1" value="${esc(trFind)}" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}">
-      <select data-tr-division-pick="1" aria-label="Division"><option value="">Every division</option>${m.divisions.map((d) => `<option value="${d.id}"${String(trDivision) === String(d.id) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>`;
+      <select data-tr-division-pick="1" aria-label="Division"><option value="">Every division</option>${m.divisions.map((d) => `<option value="${d.id}"${String(trListDiv) === String(d.id) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></div>`;
 }
 
 function trPersonHtml(m) {
@@ -15323,8 +15338,14 @@ function trPersonHtml(m) {
     <section class="card tr-profile">
       <div class="tr-profile-head"><span class="tr-avatar big">${esc(trInitials(r.name))}</span>
         <div><h2 style="margin:0">${esc(r.name)}</h2><p class="muted" style="margin:.2rem 0 0">${esc(r.divisions.map((id) => trDivName(m, id)).join(', '))}${r.note ? ` · ${esc(r.note)}` : ''}</p>
-          ${!r.linked && m.manage ? `<label class="tr-match">Not matched to anyone in the hub <select data-tr-link-person="${esc(r.key)}"><option value="">Match to…</option>${m.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>` : ''}</div>
-        ${trRing(s.pct, 84)}</div>
+          ${!r.linked && m.manage ? `<label class="tr-match">Not on the hub under this name <select data-tr-link-person="${esc(r.key)}"><option value="">Match to…</option>${m.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>` : ''}
+          ${!r.divisions.length ? '<p class="tr-match">Not in a division yet, so no courses apply. Choose the cog to put them in one.</p>' : ''}</div>
+        ${trRing(s.pct, 84)}
+        ${m.manage ? `<button class="icon-btn tr-cog${trCog === `person-${r.key}` ? ' on' : ''}" data-tr-cog="person-${esc(r.key)}" aria-label="Change their divisions" aria-expanded="${trCog === `person-${r.key}`}">${svgIcon(TR_COG)}</button>` : ''}</div>
+      ${trCog === `person-${r.key}` ? `<div class="tr-cog-panel tr-form"><fieldset><legend>Divisions</legend><div class="ims-checks">${m.divisions.map((d) => `<label class="inline-check"><input type="checkbox" data-tr-person-div="1" value="${d.id}"${r.divisions.includes(d.id) ? ' checked' : ''}> ${esc(d.name)}</label>`).join('')}</div></fieldset>
+          <label>Note<input type="text" id="tr-person-note" value="${esc(r.note || '')}" placeholder="Their role, say"></label>
+          <div class="row"><button class="btn" data-tr-person-save="${esc(r.key)}">Save</button><button class="btn secondary" data-tr-cog-cancel="1">Cancel</button>
+            ${!r.linked ? `<button class="btn secondary danger-outline" data-tr-person-remove="${esc(r.key)}">Take them off the matrix</button>` : ''}</div></div>` : ''}
       <ul class="tr-lines">${main.map(line).join('')}</ul>
       ${blank.length ? `<details class="tr-na"><summary>Nothing recorded yet (${blank.length})</summary><ul class="tr-lines">${blank.map(line).join('')}</ul></details>` : ''}
       ${na.length ? `<details class="tr-na"><summary>Not applicable (${na.length})</summary><ul class="tr-lines">${na.map(line).join('')}</ul></details>` : ''}
@@ -15335,7 +15356,7 @@ async function trCoursesHtml() {
   const m = await trLoadAll();
   if (trCourse) return trCourseHtml(m);
   const q = trFind.trim().toLowerCase();
-  const inDiv = (c) => !trDivision || trDivision === 'all' || m.rows.some((r) => r.divisions.includes(Number(trDivision)) && r.courses?.includes(c.id));
+  const inDiv = (c) => !trListDiv || m.rows.some((r) => r.divisions.includes(Number(trListDiv)) && r.courses?.includes(c.id));
   const cats = new Map();
   for (const c of m.courses.filter((x) => (!q || x.name.toLowerCase().includes(q)) && inDiv(x))) (cats.get(c.category || 'Other') || cats.set(c.category || 'Other', []).get(c.category || 'Other')).push(c);
   const rowFor = (c) => {
@@ -15358,9 +15379,15 @@ function trCourseHtml(m) {
   const who = m.rows.filter((r) => r.courses?.includes(c.id)).map((r) => ({ r, v: r.cells[c.id] || { status: 'blank' } }))
     .sort((a, b) => rank[a.v.status] - rank[b.v.status] || a.r.name.localeCompare(b.r.name));
   const s = trScore(who.map((x) => x.v));
+  const inDivs = m.allCourses?.find((x) => x.id === c.id)?.divisions || [];
+  const divs = m.divisions.filter((d) => inDivs.includes(d.id)).map((d) => d.name);
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-course="">All courses</button></div>
     <section class="card tr-profile">
-      <div class="tr-profile-head"><div><h2 style="margin:0">${esc(c.name)}</h2><p class="muted" style="margin:.2rem 0 0">${esc([c.category, c.frequency].filter(Boolean).join(' · '))}</p></div>${trRing(s.pct, 84)}</div>
+      <div class="tr-profile-head"><div><h2 style="margin:0">${esc(c.name)}</h2><p class="muted" style="margin:.2rem 0 0">${esc([c.category, c.frequency].filter(Boolean).join(' · '))}${divs.length ? `<br>${esc(divs.join(', '))}` : ''}</p></div>${trRing(s.pct, 84)}
+        ${m.manage ? `<button class="icon-btn tr-cog${trCog === `course-${c.id}` ? ' on' : ''}" data-tr-cog="course-${c.id}" aria-label="Change or delete this course" aria-expanded="${trCog === `course-${c.id}`}">${svgIcon(TR_COG)}</button>` : ''}</div>
+      ${trCog === `course-${c.id}` ? `<div class="tr-cog-panel">${trCogConfirm ? `<p style="margin:0"><strong>Delete ${esc(c.name)}?</strong> It comes off the matrix and every division. Training already recorded against it is kept.</p>
+          <div class="row"><button class="btn danger" data-tr-course-delete="${c.id}">Delete the course</button><button class="btn secondary" data-tr-cog-cancel="1">Keep it</button></div>`
+        : `<div class="row"><button class="btn secondary" data-tr-course-edit="${c.id}">Edit the course</button><button class="btn secondary danger-outline" data-tr-course-delete-ask="1">Delete the course</button></div>`}</div>` : ''}
       <ul class="tr-lines">${who.map(({ r, v }) => `<li><button class="tr-line" data-tr-cell="${esc(r.key)}|${c.id}">${trBadge(v)}
           <span class="tr-line-main"><strong>${esc(r.name)}</strong><small>${esc(r.divisions.map((id) => trDivName(m, id)).join(', '))}</small></span>
           <span class="tr-line-when s-${v.status}">${esc(trDue(v))}${v.completed && v.status !== 'expired' ? `<small>Done ${esc(shortDate(v.completed))}</small>` : ''}</span></button></li>`).join('')}</ul>
@@ -15423,7 +15450,6 @@ async function trCourseFormHtml() {
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
     <section class="card tr-form">
       <h2 style="margin-top:0">${d.id ? 'Edit course' : 'Add a course to the matrix'}</h2>
-      ${m.allCourses.length ? `<label>Edit an existing one<select data-tr-course-pick="1"><option value="">A new course</option>${m.allCourses.map((c) => `<option value="${c.id}"${String(d.id) === String(c.id) ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
       <label>Name<input type="text" data-tr-field="name" value="${esc(d.name)}"></label>
       <div class="psc-new-row">
         <label>Category<input type="text" list="tr-cats" data-tr-field="category" value="${esc(d.category)}"><datalist id="tr-cats">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
@@ -15528,21 +15554,55 @@ async function trClick(event) {
   }
   if (t('[data-tr-close]')) { trOpen = null; trDraft = null; render(); return true; }
   const tview = t('[data-tr-view]');
-  if (tview) { trView = tview.dataset.trView; trPerson = null; trCourse = null; trCell = null; render(); return true; }
+  if (tview) { trView = tview.dataset.trView; trPerson = null; trCourse = null; trCell = null; trCog = null; render(); return true; }
   const af = t('[data-tr-act-filter]');
   if (af) { trActFilter = trActFilter === af.dataset.trActFilter ? '' : af.dataset.trActFilter; trShowAllActs = false; render(); return true; }
   if (t('[data-tr-acts-all]')) { trShowAllActs = true; render(); return true; }
   const per = t('[data-tr-person]');
-  if (per) { trPerson = per.dataset.trPerson || null; window.scrollTo(0, 0); render(); return true; }
+  if (per) { trPerson = per.dataset.trPerson || null; trCog = null; window.scrollTo(0, 0); render(); return true; }
   const perGo = t('[data-tr-person-go]');
   if (perGo) { trView = 'people'; trPerson = perGo.dataset.trPersonGo; window.scrollTo(0, 0); render(); return true; }
   const crs = t('[data-tr-course]');
-  if (crs) { trCourse = crs.dataset.trCourse || null; window.scrollTo(0, 0); render(); return true; }
+  if (crs) { trCourse = crs.dataset.trCourse || null; trCog = null; window.scrollTo(0, 0); render(); return true; }
   const crsGo = t('[data-tr-course-go]');
   if (crsGo) { trView = 'courses'; trCourse = crsGo.dataset.trCourseGo; window.scrollTo(0, 0); render(); return true; }
   const divGo = t('[data-tr-division-go]');
   if (divGo) { trView = 'matrix'; trDivision = divGo.dataset.trDivisionGo; trCache.matrix = null; window.scrollTo(0, 0); render(); return true; }
   if (event.target.matches('[data-tr-cell-backdrop]')) { trCell = null; render(); return true; }
+  const cog = t('[data-tr-cog]');
+  if (cog) { trCog = trCog === cog.dataset.trCog ? null : cog.dataset.trCog; trCogConfirm = false; render(); return true; }
+  if (t('[data-tr-cog-cancel]')) { trCog = null; trCogConfirm = false; render(); return true; }
+  if (t('[data-tr-course-delete-ask]')) { trCogConfirm = true; render(); return true; }
+  const cedit = t('[data-tr-course-edit]');
+  if (cedit) {
+    const m = await trLoad('matrix');
+    const c = m.allCourses.find((x) => String(x.id) === cedit.dataset.trCourseEdit);
+    if (!c) return true;
+    trDraft = { id: c.id, name: c.name, category: c.category || '', frequency: c.frequency || '', months: c.months ?? '', divisions: c.divisions || [] };
+    trOpen = 'course'; trCog = null; window.scrollTo(0, 0); render(); return true;
+  }
+  const cdel = t('[data-tr-course-delete]');
+  if (cdel) {
+    cdel.disabled = true;
+    try { await api('/api/training/course', { method: 'POST', body: JSON.stringify({ id: Number(cdel.dataset.trCourseDelete), remove: true }) }); toast('Course deleted'); }
+    catch (err) { toast(err.message); cdel.disabled = false; return true; }
+    trCog = null; trCogConfirm = false; trCourse = null; trCache.matrix = trCache.all = null; trCache.options = null; render(); return true;
+  }
+  const persave = t('[data-tr-person-save]');
+  if (persave) {
+    const divisions = [...view.querySelectorAll('[data-tr-person-div]:checked')].map((el) => Number(el.value));
+    persave.disabled = true;
+    try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: persave.dataset.trPersonSave, divisions, note: view.querySelector('#tr-person-note')?.value || '' }) }); toast('Saved'); }
+    catch (err) { toast(err.message); persave.disabled = false; return true; }
+    trCog = null; trCache.matrix = trCache.all = null; render(); return true;
+  }
+  const prem = t('[data-tr-person-remove]');
+  if (prem) {
+    prem.disabled = true;
+    try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: prem.dataset.trPersonRemove, removePerson: true }) }); toast('Taken off the matrix'); }
+    catch (err) { toast(err.message); prem.disabled = false; return true; }
+    trCog = null; trPerson = null; trCache.matrix = trCache.all = null; render(); return true;
+  }
   if (t('[data-tr-past]')) { trShowPast = true; render(); return true; }
   if (t('[data-tr-new-talk]')) {
     trOpen = 'new-talk';
@@ -15679,7 +15739,7 @@ async function trChange(event) {
   if (el.matches('[data-tr-aud-add]') && el.value && trDraft) { trCapture(); trDraft.audience.people = [...new Set([...(trDraft.audience.people || []), el.value])]; render(); return true; }
   if (el.matches('[data-tr-problems]')) { trOnlyProblems = el.checked; render(); return true; }
   if (el.matches('[data-tr-dates]')) { trShowDates = el.checked; render(); return true; }
-  if (el.matches('[data-tr-division-pick]')) { trDivision = el.value; trCache.matrix = null; render(); return true; }
+  if (el.matches('[data-tr-division-pick]')) { trListDiv = el.value; render(); return true; }
   if (el.matches('[data-tr-link-person]') && el.value) {
     try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: el.dataset.trLinkPerson, linkTo: el.value }) }); toast('Matched'); if (trPerson === el.dataset.trLinkPerson) trPerson = el.value; } catch (err) { toast(err.message); }
     trCache.matrix = trCache.all = null; render(); return true;

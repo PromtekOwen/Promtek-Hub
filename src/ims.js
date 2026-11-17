@@ -595,7 +595,7 @@ export async function list(env, viewer, { done = false } = {}) {
     return [a.key, { open: here.length, nc: here.filter(isNC).length, eightD: here.filter(is8D).length, state: here.some(isRed) ? 'red' : here.length ? 'blue' : 'green' }];
   }));
   const writes = await env.DB.prepare('SELECT target_key, kind, error FROM ims_writes WHERE done_at IS NULL').all().catch(() => ({ results: [] }));
-  const conflicts = await env.DB.prepare('SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key').all().catch(() => ({ results: [] }));
+  const conflicts = await liveConflicts(env, 'SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key');
   const conflictMap = Object.fromEntries(conflicts.results.map((c) => [c.group_key, c.n]));
   for (const i of items) if (conflictMap[i.key]) i.conflicts = conflictMap[i.key];
   return {
@@ -760,7 +760,7 @@ export async function cleanup(env, viewer) {
   const items = collapse(rows);
   const byKey = new Map(items.map((i) => [i.key, i]));
   const rowByKey = new Map(rows.map((r) => [r.issue_key, r]));
-  const { results } = await env.DB.prepare('SELECT group_key, field FROM ims_sync WHERE conflict = 1 ORDER BY group_key').all().catch(() => ({ results: [] }));
+  const { results } = await liveConflicts(env, 'SELECT group_key, field FROM ims_sync WHERE conflict = 1 ORDER BY group_key');
   const groups = new Map();
   for (const r of results) (groups.get(r.group_key) || groups.set(r.group_key, []).get(r.group_key)).push(r.field);
   const show = (v) => (Array.isArray(v) ? v.join(', ') : v == null || v === '' ? 'Not set' : String(v));
@@ -876,11 +876,38 @@ export async function resolveConflict(env, viewer, { group, field, from }) {
   return { ok: true };
 }
 
+// Disagreements someone has dismissed are left as they are and out of the lists, until
+// another field starts to disagree. Kept as { group: [fields] }.
+async function dismissedMap(env) {
+  try { return JSON.parse((await getState(env, 'ims_dismissed')) || '{}') || {}; } catch { return {}; }
+}
+async function liveConflicts(env, sql, binds = []) {
+  const [{ results }, gone] = await Promise.all([env.DB.prepare(sql).bind(...binds).all().catch(() => ({ results: [] })), dismissedMap(env)]);
+  if (!Object.keys(gone).length) return { results };
+  if (results[0] && 'field' in results[0]) return { results: results.filter((r) => !(gone[r.group_key] || []).includes(r.field)) };
+  // Counted by item: an item stays while any of its disagreements hasn't been dismissed.
+  const { results: rows } = await env.DB.prepare('SELECT group_key, field FROM ims_sync WHERE conflict = 1').all().catch(() => ({ results: [] }));
+  const open = new Map();
+  for (const r of rows) if (!(gone[r.group_key] || []).includes(r.field)) open.set(r.group_key, (open.get(r.group_key) || 0) + 1);
+  return { results: results.filter((r) => open.has(r.group_key)).map((r) => ({ ...r, n: open.get(r.group_key) })) };
+}
+export async function dismiss(env, viewer, { key }) {
+  mustSee(viewer);
+  const g = String(key || '').toUpperCase();
+  const { results } = await env.DB.prepare('SELECT field FROM ims_sync WHERE conflict = 1 AND group_key = ?').bind(g).all();
+  if (!results.length) return { ok: true };
+  const gone = await dismissedMap(env);
+  gone[g] = [...new Set([...(gone[g] || []), ...results.map((r) => r.field)])];
+  await setState(env, 'ims_dismissed', JSON.stringify(gone));
+  await record(env, viewer, { area: 'IMS', action: 'dismissed copies that disagree', subjectType: 'ims', subjectId: g, label: g }).catch(() => {});
+  return { ok: true };
+}
+
 // Every disagreement settled the same way: each item's original (its first copy) is taken as right.
 export async function resolveAll(env, viewer, { field = null } = {}) {
   mustSee(viewer);
   if (field && !SYNCED[field]) throw refuse('That isn\'t a field the hub keeps in step.');
-  const { results } = await env.DB.prepare(`SELECT group_key, field FROM ims_sync WHERE conflict = 1${field ? ' AND field = ?' : ''}`).bind(...(field ? [field] : [])).all();
+  const { results } = await liveConflicts(env, `SELECT group_key, field FROM ims_sync WHERE conflict = 1${field ? ' AND field = ?' : ''}`, field ? [field] : []);
   let n = 0;
   for (const r of results) {
     const src = await env.DB.prepare('SELECT issue_key FROM ims_items WHERE issue_key = ?').bind(r.group_key).first();

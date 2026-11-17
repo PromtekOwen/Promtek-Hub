@@ -112,8 +112,11 @@ export async function matrix(env, viewer, { division = null } = {}) {
   // Management start on the first division: every course at once is too wide to read.
   const div = divisions.find((d) => d.id === Number(division)) || (manage && division == null && divisions.length ? divisions[0] : null);
   const mine = viewer.accountId;
+  // Everyone on the hub is in the matrix, in a division or not yet.
+  const inMatrix = new Set(members.map((m) => m.person_key));
+  const everyone = [...members, ...list.filter((p) => !inMatrix.has(p.id)).map((p) => ({ person_key: p.id, name: p.name, division_id: null, note: null }))];
   // Everyone sees their own training; management see everyone's.
-  const shownMembers = members.filter((m) => (div ? m.division_id === div.id : true) && (manage || m.person_key === mine));
+  const shownMembers = everyone.filter((m) => (div ? m.division_id === div.id : true) && (manage || m.person_key === mine));
   const personKeys = [...new Set(shownMembers.map((m) => m.person_key))];
   const courseIds = div ? links.filter((l) => l.division_id === div.id).map((l) => l.course_id)
     : [...new Set(links.filter((l) => shownMembers.some((m) => m.division_id === l.division_id)).map((l) => l.course_id))];
@@ -190,8 +193,15 @@ const MONTHS = (text) => {
   return null;
 };
 
-export async function saveCourse(env, viewer, { id, name, category, frequency, months, about, divisions, active = true }) {
+export async function saveCourse(env, viewer, { id, name, category, frequency, months, about, divisions, active = true, remove = false }) {
   mustManage(viewer);
+  // Deleting a course takes it out of the matrix; the training recorded against it is kept.
+  if (remove) {
+    if (!Number(id)) throw refuse('Choose a course.');
+    await env.DB.prepare('UPDATE training_courses SET active = 0 WHERE id = ?').bind(Number(id)).run();
+    await env.DB.prepare('DELETE FROM training_division_courses WHERE course_id = ?').bind(Number(id)).run();
+    return { ok: true };
+  }
   const n = clip(name, 120);
   if (n.length < 2) throw refuse('Give the course a name.');
   const m = months === '' || months == null ? MONTHS(frequency) : Math.max(0, Math.min(240, Number(months) || 0)) || null;
@@ -223,10 +233,31 @@ export async function saveDivision(env, viewer, { id, name }) {
 }
 
 // Someone added to or taken out of a division, or an old spreadsheet name matched to someone.
-export async function saveMember(env, viewer, { divisionId, personKey, remove = false, linkTo = null, note }) {
+export async function saveMember(env, viewer, { divisionId, personKey, remove = false, removePerson = false, divisions = null, linkTo = null, note }) {
   mustManage(viewer);
   const d = Number(divisionId);
   const key = String(personKey || '');
+  // Someone from the old spreadsheet who isn't on the hub: out of the matrix (their records are kept).
+  if (removePerson) { await env.DB.prepare('DELETE FROM training_members WHERE person_key = ?').bind(key).run(); return { ok: true }; }
+  // Which divisions someone is in, all at once.
+  if (Array.isArray(divisions)) {
+    const p = (await people(env)).find((x) => x.id === key);
+    const existing = await env.DB.prepare('SELECT name FROM training_members WHERE person_key = ? LIMIT 1').bind(key).first();
+    if (!p && !existing) throw refuse('They aren\'t in the hub.');
+    const name = p?.name || existing.name;
+    const want = new Set(divisions.map(Number).filter(Boolean));
+    const { results: all } = await env.DB.prepare('SELECT id FROM training_divisions').all();
+    const valid = new Set(all.map((x) => x.id));
+    const { results: have } = await env.DB.prepare('SELECT division_id FROM training_members WHERE person_key = ?').bind(key).all();
+    for (const h of have) if (!want.has(h.division_id)) await env.DB.prepare('DELETE FROM training_members WHERE division_id = ? AND person_key = ?').bind(h.division_id, key).run();
+    for (const id of want) {
+      if (!valid.has(id)) continue;
+      await env.DB.prepare(`INSERT OR IGNORE INTO training_members (division_id, person_key, name, note, position) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), 0) + 1 FROM training_members WHERE division_id = ?))`)
+        .bind(id, key, name, clip(note, 200) || null, id).run();
+    }
+    if (note !== undefined) await env.DB.prepare('UPDATE training_members SET note = ? WHERE person_key = ?').bind(clip(note, 200) || null, key).run();
+    return { ok: true };
+  }
   if (linkTo) {
     const p = (await people(env)).find((x) => x.id === String(linkTo));
     if (!p) throw refuse('Choose someone from the list.');
