@@ -12178,6 +12178,42 @@ function imsItemsHtml(data) {
 
 // ---------- one item ----------
 
+// ---------- 5 Whys ----------
+// From the problem, "why?" asked of each answer until it reaches something that, fixed, stops it
+// happening again. Optional, with nudges: an answer about what someone did, or stopping early.
+let imsWhys = null;            // { key, problem, list, text } on an item's page
+const IMS_BLAME = /\b(forgot|forgotten|forget|didn'?t|did not|wasn'?t|was not|weren'?t|human error|operator error|user error|careless|mistake|fail(ed|s)? to|not paying attention|ignored|lazy|negligen\w*|should have|neglected)\b/i;
+function imsWhysNudge(list) {
+  const filled = list.map((x) => String(x || '').trim()).filter(Boolean);
+  const last = filled.at(-1) || '';
+  if (last && IMS_BLAME.test(last)) return '<p class="ims-nudge">That answer is about what someone did or didn\'t do. Ask why once more: what let it happen, or made it easy to happen?</p>';
+  if (filled.length && filled.length < 3) return '<p class="ims-nudge soft">Most root causes take three to five whys. Ask why again if the last answer isn\'t something you can fix.</p>';
+  return '';
+}
+function imsWhysHtml(w, scope) {
+  const list = w.list?.length ? w.list : [''];
+  const attr = (k) => (scope === 'new' ? `data-ims-new-path="whys.${k}"` : `data-ims-why="${k}"`);
+  return `<div class="ims-whys" data-ims-whys="${scope}">
+      <div class="ims-whys-head"><h3>5 Whys</h3><span class="psc-chip plain">Optional</span></div>
+      <p class="help" style="margin-top:0">Start with the problem, then ask "why?" of each answer until you reach something that, fixed, would stop it happening again: usually three to five times. The last answer is the root cause; choose its category under Root cause.</p>
+      ${w.text ? `<div class="jv-note"><p style="margin:0"><strong>Written in Jira:</strong> ${esc(w.text)}</p><p class="help" style="margin:.3rem 0 0">Saving here sets it out as a 5 Whys table in its place.</p></div>` : ''}
+      <label>Problem<textarea rows="2" ${attr('problem')} placeholder="What went wrong, in a sentence">${esc(w.problem || '')}</textarea></label>
+      <ol class="ims-why-list">${list.map((x, n) => `<li><span class="ims-why-n">Why ${n + 1}?</span>
+          <div class="ims-why-row"><textarea rows="2" ${attr(`list.${n}`)} aria-label="Why ${n + 1}" placeholder="${n ? 'And why did that happen?' : 'Why did the problem happen?'}">${esc(x)}</textarea>
+          ${list.length > 1 ? `<button type="button" class="linklike" data-ims-why-remove="${scope}" data-i="${n}" aria-label="Remove why ${n + 1}">Remove</button>` : ''}</div></li>`).join('')}</ol>
+      <div class="ims-why-nudge">${imsWhysNudge(list)}</div>
+      ${list.length < 12 ? `<div><button type="button" class="btn secondary" data-ims-why-add="${scope}">＋ Ask why again</button></div>` : ''}
+    </div>`;
+}
+function imsWhysCapture(scope) {
+  const box = view.querySelector(`[data-ims-whys="${scope}"]`);
+  if (!box) return;
+  const target = scope === 'new' ? imsNew?.whys : imsWhys;
+  if (!target) return;
+  target.problem = box.querySelector(scope === 'new' ? '[data-ims-new-path="whys.problem"]' : '[data-ims-why="problem"]')?.value || '';
+  target.list = [...box.querySelectorAll(scope === 'new' ? '[data-ims-new-path^="whys.list."]' : '[data-ims-why^="list."]')].map((el) => el.value);
+}
+
 async function imsItemHtml() {
   if (!imsItemData || imsItemData.item.key !== imsOpen && !imsItemData.copies.some((c) => c.key === imsOpen)) imsItemData = await api(`/api/ims/item?key=${encodeURIComponent(imsOpen)}`);
   const o = await imsLoadOptions();
@@ -12190,6 +12226,9 @@ async function imsItemHtml() {
   imsEdit ||= { summary: i.summary, status: i.status, assignee: i.assigneeId || '', imsType: i.imsType || '', subTypes: [...i.subTypes], categories: [...areaNames(i)],
     rootCause: [...i.rootCause], rootRequired: i.rootRequired || '', start: i.start || '', target: i.target || '' };
   const e = imsEdit;
+  if (!imsWhys || imsWhys.key !== i.key) imsWhys = { key: i.key, problem: d.whys?.problem || '', list: d.whys?.list?.length ? [...d.whys.list] : [''], text: d.whys?.text || '' };
+  const hasWhys = Boolean(d.whys && (d.whys.problem || d.whys.list?.length));
+  const showWhys = d.whysField && (hasWhys || d.whys?.text || !/^no$/i.test(e.rootRequired || ''));
   const checks = (name, all) => `<div class="ims-checks">${all.map((x) => `<label class="inline-check"><input type="checkbox" data-ims-check="${name}" value="${esc(x)}"${e[name].includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')}</div>`;
   const sel = (name, all, empty) => `<select data-ims-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${e[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
   const statuses = [...new Set([i.status, ...o.statuses])];
@@ -12217,9 +12256,13 @@ async function imsItemHtml() {
       </div>
       <fieldset><legend>Areas</legend>${checks('categories', o.allowed.categories)}<p class="help">Adding an area makes a copy in its project. Taking one away leaves its copy where it is.</p></fieldset>
       <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
-      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>
+      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
+        ${showWhys && e.rootCause.length && !hasWhys ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (below) shows how this root cause was reached.</p>' : ''}</fieldset>
       <div class="row"><button class="btn" data-ims-save="1">Save to every copy</button><button class="linklike" data-ims-reset="1">Undo changes</button></div>
     </section>
+    ${showWhys ? `<section class="card ims-whys-card">${imsWhysHtml(imsWhys, 'item')}
+      <div class="row" style="margin-top:.9rem"><button class="btn" data-ims-whys-save="1">Save the 5 Whys${d.copies.length > 1 ? ' to every copy' : ''}</button>
+        ${hasWhys ? '<button class="btn secondary danger-outline" data-ims-whys-clear="1">Clear it</button>' : ''}</div></section>` : ''}
     ${d.subtasks.length ? `<section class="card"><h3 style="margin-top:0">Sub-tasks</h3><ul class="jv-links">${d.subtasks.map((s) => `<li>${jiraLink(s.issue_key)} ${esc(s.summary)} <small class="muted">${esc(s.status)}${s.assignee_name ? ` · ${esc(s.assignee_name)}` : ''}</small></li>`).join('')}</ul></section>` : ''}
     <section class="card jv">
       ${d.meetings.length ? `<p style="margin-top:0"><span class="muted">From the meeting</span> ${d.meetings.map((m) => `<button class="linklike" data-ims-meeting="${esc(m.key)}">${esc(m.key)}</button>`).join(', ')}</p>` : ''}
@@ -12408,7 +12451,8 @@ async function imsStatsHtml() {
         ${imsPie.type === 'open' ? imsDonut(s.openByType, 'openByType') : imsDonut(s.raisedByType, 'raisedByType')}</section>
       <section class="card"><div class="ims-card-head"><h3>Root causes</h3>${imsSwitch('root', imsPie.root, [['raised', 'Raised'], ['open', `Open ${at}`]])}</div>
         ${imsPie.root === 'open' ? imsDonut(s.rootCausesOpen, 'rootCausesOpen') : imsDonut(s.rootCauses, 'rootCauses')}
-        <p class="help">Items marked as not needing a root cause are left out. "Not set" is items that need one and don't have it yet.</p></section>
+        <p class="help">Items marked as not needing a root cause are left out. "Not set" is items that need one and don't have it yet.</p>
+        ${t.noWhys ? `<p class="ims-nudge soft" style="margin-top:.6rem"><button class="linklike" data-ims-drill="set:noWhys" data-title="Root cause chosen without a 5 Whys">${t.noWhys} root cause${t.noWhys === 1 ? '' : 's'} chosen without a 5 Whys</button> to show how ${t.noWhys === 1 ? 'it was' : 'they were'} reached.</p>` : ''}</section>
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by sub-type</h3>${imsDonut(s.subTypes, 'subTypes')}</section>
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by assignee</h3>${imsBars(s.openByAssignee, 'openByAssignee', { limit: 12 })}</section>
     </div>`;
@@ -12504,7 +12548,7 @@ async function imsRaiseForm(type, home) {
 }
 function imsNewBlank(meeting = '') {
   return { areas: [], home: '', type: 'IMS Task', imsType: '', assigneeId: me.user.accountId || '', staffIds: [], start: '', target: '', rootRequired: '', meeting, summary: '', description: '',
-    subTypes: [], rootCause: [], tab: 0,
+    subTypes: [], rootCause: [], tab: 0, whys: { problem: '', list: [''] },
     incident: { at: '', location: '', happened: '', severity: '', injury: '', containment: [imsBlankRow('containment')], factors: '', analysis: [imsBlankRow('analysis')] },
     eightD: { businessArea: [], customer: '', address: '', persons: [], containment: [imsBlankRow('containment')], factors: '', analysis: [imsBlankRow('analysis')], actions: [imsBlankRow('actions')] },
     change: { description: { system: '', type: '', scope: '', summary: '', requestedBy: '' }, docs: { procedure: '', sop: '', approval: '', related: '', audit: '' } } };
@@ -12543,7 +12587,8 @@ async function imsNewHtml() {
     : `<input type="text" data-ims-new-path="${path}" value="${esc(imsPath(n, path) || '')}" placeholder="${esc(placeholder)}">`}</label>`;
   const rootFixed = ['Incident', '8D Report'].includes(n.type);
   const staffChips = n.staffIds.map((id) => o.people.find((p) => p.id === id)).filter(Boolean);
-  const rootCause = `<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>`;
+  const rootCause = `${imsWhysHtml(n.whys, 'new')}<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
+    ${n.rootCause.length && !(n.whys.problem || n.whys.list.some((x) => x.trim())) ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (above) shows how this root cause was reached.</p>' : ''}</fieldset>`;
   const tabs = IMS_TYPE_TABS[n.type];
   const tab = tabs ? Math.min(n.tab || 0, tabs.length - 1) : 0;
   let body = '';
@@ -12700,6 +12745,39 @@ async function imsClick(event) {
   if (open) { imsOpen = open.dataset.imsOpen; imsItemData = null; imsEdit = null; imsMeetingOpen = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-ims-back]')) { imsOpen = null; imsItemData = null; imsEdit = null; return render(); }
   if (t('[data-ims-reset]')) { imsEdit = null; return render(); }
+  const wadd = t('[data-ims-why-add]');
+  if (wadd) {
+    const scope = wadd.dataset.imsWhyAdd;
+    if (scope === 'new') imsCapture(); imsWhysCapture(scope);
+    const w = scope === 'new' ? imsNew.whys : imsWhys;
+    w.list.push('');
+    await render();
+    view.querySelectorAll(`[data-ims-whys="${scope}"] .ims-why-list textarea`)[w.list.length - 1]?.focus();
+    return true;
+  }
+  const wrem = t('[data-ims-why-remove]');
+  if (wrem) {
+    const scope = wrem.dataset.imsWhyRemove;
+    if (scope === 'new') imsCapture(); imsWhysCapture(scope);
+    const w = scope === 'new' ? imsNew.whys : imsWhys;
+    w.list.splice(Number(wrem.dataset.i), 1);
+    if (!w.list.length) w.list.push('');
+    return render();
+  }
+  const wsave = t('[data-ims-whys-save]') || t('[data-ims-whys-clear]');
+  if (wsave) {
+    imsWhysCapture('item');
+    const clear = wsave.matches('[data-ims-whys-clear]');
+    const value = clear ? null : { problem: imsWhys.problem, list: imsWhys.list };
+    if (!clear && !imsWhys.problem.trim() && !imsWhys.list.some((x) => x.trim())) { toast('Write the problem and at least one why first'); return true; }
+    wsave.disabled = true;
+    try {
+      const r = await api('/api/ims/edit', { method: 'POST', body: JSON.stringify({ key: imsItemData.item.key, changes: { fiveWhys: value } }) });
+      toast(clear ? 'Cleared' : r.failed.length ? `Saved, but Jira refused ${r.failed.length}; the hub tries again` : r.copies > 1 ? `Saved to all ${r.copies} copies` : 'Saved');
+      imsItemData = null; imsWhys = null; imsData = null; imsStatsCache = null;
+    } catch (err) { toast(err.message); wsave.disabled = false; return true; }
+    return render();
+  }
   if (t('[data-ims-save]')) {
     imsCapture();
     const i = imsItemData.item;
@@ -12821,6 +12899,13 @@ async function imsChange(event) {
 }
 
 view.addEventListener('input', (event) => {
+  const whysBox = event.target.closest?.('[data-ims-whys]');
+  if (whysBox) {
+    const list = [...whysBox.querySelectorAll('.ims-why-list textarea')].map((el) => el.value);
+    const nudge = whysBox.querySelector('.ims-why-nudge');
+    if (nudge) nudge.innerHTML = imsWhysNudge(list);
+    if (whysBox.dataset.imsWhys === 'item') imsWhysCapture('item');
+  }
   if (event.target.id === 'ims-search') {
     imsFilter.q = event.target.value;
     const pos = event.target.selectionStart;

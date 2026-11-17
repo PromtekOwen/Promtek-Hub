@@ -87,13 +87,14 @@ const FIELD_NAMES = {
   address: ['Customer Address', null],
   changeDesc: ['Change Description', null],
   changeDocs: ['Change Documentation', null],
+  fiveWhys: ['5 Whys', 'customfield_16920'],
 };
 // Carried onto each copy as they are, beyond the fields kept in step.
 const COPIED_AS_IS = ['incidentAt', 'location', 'happened', 'severity', 'injury', 'factors', 'businessArea', 'customer', 'address', 'changeDesc', 'changeDocs'];
 let fieldCache = null;
 export async function fieldMap(env, call = (p) => jira(env, p)) {
   if (fieldCache && Date.now() - fieldCache.at < 6 * 3600 * 1000) return fieldCache.map;
-  const saved = JSON.parse((await getState(env, 'ims_fields_v2')) || 'null');
+  const saved = JSON.parse((await getState(env, 'ims_fields_v3')) || 'null');
   if (saved && Date.now() - saved.at < 24 * 3600 * 1000) { fieldCache = saved; return saved.map; }
   const map = {};
   let all = [];
@@ -103,7 +104,7 @@ export async function fieldMap(env, call = (p) => jira(env, p)) {
     map[k] = (found.find((f) => f.id === fallback) || found[0])?.id || fallback;
   }
   fieldCache = { at: Date.now(), map };
-  await setState(env, 'ims_fields_v2', JSON.stringify(fieldCache));
+  await setState(env, 'ims_fields_v3', JSON.stringify(fieldCache));
   return map;
 }
 
@@ -128,6 +129,7 @@ export const SYNCED = {
   actions: { kind: 'text', label: 'Corrective & preventative actions', field: 'actions' },
   persons: { kind: 'text', label: 'Persons involved', field: 'persons' },
   finalise: { kind: 'text', label: 'Finalise teamwork', field: 'finalise' },
+  fiveWhys: { kind: 'text', label: '5 Whys', field: 'fiveWhys' },
 };
 
 const optionValues = (v) => (Array.isArray(v) ? v : v ? [v] : []).map((o) => (typeof o === 'object' ? o?.value ?? o?.name : o)).filter((x) => x != null).map(String);
@@ -453,13 +455,13 @@ async function typeIdIn(call, project, name) {
 // A copy of the group's first item in another area's project, linked to it, in a folder of the same name if there is one.
 async function makeCopy(env, call, groupKey, areaKey, F) {
   const src = await call(`/rest/api/3/issue/${encodeURIComponent(groupKey)}?fields=${['summary', 'description', 'issuetype', 'assignee', 'priority', 'labels', 'parent', 'status',
-    ...['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'staff', 'containment', 'analysis', 'actions', 'persons', 'finalise', ...COPIED_AS_IS].map((k) => F[k]).filter(Boolean)].join(',')}`);
+    ...['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'staff', 'containment', 'analysis', 'actions', 'persons', 'finalise', 'fiveWhys', ...COPIED_AS_IS].map((k) => F[k]).filter(Boolean)].join(',')}`);
   const f = src?.fields || {};
   const typeId = await typeIdIn(call, areaKey, f.issuetype?.name);
   if (!typeId) throw new Error(`${areaKey} has no ${f.issuetype?.name} type.`);
   const fields = { project: { key: areaKey }, issuetype: { id: typeId }, summary: f.summary, [F.origin]: groupKey };
   if (f.description) fields.description = f.description;
-  for (const n of ['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'containment', 'analysis', 'actions', 'persons', 'finalise']) {
+  for (const n of ['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'containment', 'analysis', 'actions', 'persons', 'finalise', 'fiveWhys']) {
     const id = jiraFieldId(n, F); if (id && f[id] != null) fields[id] = writeValue(n, f[id]);
   }
   if (F.staff && f[F.staff]?.length) fields[F.staff] = f[F.staff].map((u) => ({ accountId: u.accountId }));
@@ -550,6 +552,7 @@ async function allRows(env) {
 }
 
 const listOf = (s) => { try { return JSON.parse(s || '[]'); } catch { return []; } };
+const hasWhys = (r) => { try { return Boolean(JSON.parse(r.vals || '{}').fiveWhys); } catch { return false; } };
 const isDone = (r) => r.status_cat === 'done';
 
 // Each item once: its group's first copy, with where the others are.
@@ -576,6 +579,7 @@ export function collapse(rows) {
       assignee: rep.assignee_name, assigneeId: rep.assignee_id, created: rep.created_at, resolved: rep.resolved_at, updated: members.map((m) => m.updated_at).sort().pop(),
       start: rep.start_date, target: rep.target_end, priority: rep.priority, parent: rep.parent_key, folder: folder?.issuetype === 'Folder' ? folder.summary : null,
       parentType: rep.subtask ? folder?.issuetype || null : null,
+      whys: hasWhys(rep),
       areas: [...new Set(members.map((m) => m.project_key))],
       copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status })),
       subtasks: { done: kids.filter(isDone).length, all: kids.length },
@@ -604,6 +608,43 @@ export async function list(env, viewer, { done = false } = {}) {
     main: await mainNote(env),
   };
 }
+
+// ---------- 5 Whys ----------
+
+// Kept in Jira as a table: the problem, then each why in turn; the last is the root cause.
+const cleanWhys = (w) => {
+  if (!w || typeof w !== 'object') return null;
+  const problem = String(w.problem || '').trim().slice(0, 2000);
+  const list = (Array.isArray(w.list) ? w.list : []).map((x) => String(x || '').trim().slice(0, 2000)).filter(Boolean).slice(0, 12);
+  return problem || list.length ? { problem, list } : null;
+};
+export function whysAdf(w) {
+  const c = cleanWhys(w);
+  if (!c) return null;
+  const rows = [['Problem', c.problem || '-'], ...c.list.map((x, n) => [n === c.list.length - 1 ? `Why ${n + 1} (root cause)` : `Why ${n + 1}`, x])];
+  return docOf(adfTable(['', 'Answer'], rows, { boldFirstColumn: true }));
+}
+const textOf = (node) => (!node ? '' : node.type === 'text' ? node.text || '' : node.type === 'hardBreak' ? '\n'
+  : (node.content || []).map(textOf).join(node.type === 'tableCell' || node.type === 'doc' ? '\n' : '').trim());
+// Back from Jira: the table if it's one the hub wrote (or laid out the same way), otherwise its text.
+export function whysFrom(adf) {
+  if (!adf) return null;
+  if (typeof adf === 'string') return adf.trim() ? { problem: '', list: [], text: adf.trim() } : null;
+  const table = (adf.content || []).find((n) => n.type === 'table');
+  if (table) {
+    const out = { problem: '', list: [] };
+    for (const r of table.content || []) {
+      const [label, answer] = (r.content || []).map((cell) => textOf(cell).trim());
+      if (/^problem/i.test(label || '')) out.problem = answer || '';
+      else if (/^why/i.test(label || '') && answer) out.list.push(answer);
+    }
+    if (out.problem === '-') out.problem = '';
+    if (out.problem || out.list.length) return out;
+  }
+  const text = textOf(adf).trim();
+  return text ? { problem: '', list: [], text } : null;
+}
+const whysText = (w) => { const c = cleanWhys(w); return c ? [c.problem && `Problem: ${c.problem}`, ...c.list.map((x, n) => `Why ${n + 1}: ${x}`)].filter(Boolean).join(' / ').slice(0, 500) : 'Cleared'; };
 
 // ---------- the numbers ----------
 
@@ -740,6 +781,8 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
     ncRaised: keys(nc(raised)), ncClosed: keys(nc(closed)), ncOpen: keys(nc(open)), ncOld: keys(nc(open).filter((i) => ms(i.created) < end - 30 * 86400000)),
     eightRaised: keys(e8(raised)), eightClosed: keys(e8(closed)), eightOpen: keys(e8(open)), eightOld: keys(e8(open).filter((i) => ms(i.created) < end - 30 * 86400000)),
     rootMissing: keys([...new Set([...open, ...closed])].filter((i) => rootNeeded(i) && !i.rootCause.length)),
+    // A root cause chosen without a 5 Whys to show how it was reached: encouraged, not required.
+    noWhys: keys([...new Set([...open, ...closed])].filter((i) => rootCounts(i) && i.rootCause.length && !i.whys)),
   };
   const used = new Set(Object.values(sets).flat());
   const breakdown = (xs, f) => { const t = tally(xs.flatMap((i) => { const v = f(i); return (v.length ? v : [NOT_SET]).map((n) => [n, i.key]); })); t.forEach((e) => e.keys.forEach((k) => used.add(k))); return t; };
@@ -783,7 +826,7 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
   const byKey = new Map(work.map((i) => [i.key, i]));
   out.items = Object.fromEntries([...used].map((k) => byKey.get(k)).filter(Boolean).map((i) => [i.key, {
     key: i.key, summary: i.summary, type: i.type, imsType: i.imsType, status: i.status, done: i.done, areas: i.areas, assignee: i.assignee, assigneeId: i.assigneeId,
-    rootCause: i.rootCause, rootRequired: i.rootRequired, subTypes: i.subTypes, created: i.created, resolved: i.resolved, target: i.target, alsoKeys: i.alsoKeys || [],
+    rootCause: i.rootCause, rootRequired: i.rootRequired, whys: Boolean(i.whys), subTypes: i.subTypes, created: i.created, resolved: i.resolved, target: i.target, alsoKeys: i.alsoKeys || [],
   }]));
   return out;
 }
@@ -841,13 +884,19 @@ export async function item(env, viewer, key) {
   const view = await viewItem(env, groupKey);
   const rep = collapse(members.map((m) => ({ ...m, group_key: groupKey })))[0];
   const meetings = JSON.parse(row.links || '[]').filter((l) => l.key.startsWith(`${MAIN}-`));
-  return { item: rep, copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status, updated: m.updated_at })),
+  const F = await fieldMap(env);
+  let whys = null;
+  if (F.fiveWhys) {
+    const got = await jira(env, `/rest/api/3/issue/${encodeURIComponent(groupKey)}?fields=${F.fiveWhys}`).catch(() => null);
+    whys = whysFrom(got?.fields?.[F.fiveWhys]);
+  }
+  return { whys, whysField: Boolean(F.fiveWhys), item: rep, copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status, updated: m.updated_at })),
     subtasks: kids.filter((x) => !NOT_WORK.includes(x.issuetype)), conflicts, waiting, view, meetings };
 }
 
 // ---------- changing it, everywhere ----------
 
-const EDITABLE = ['summary', 'status', 'assignee', 'imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target'];
+const EDITABLE = ['summary', 'status', 'assignee', 'imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'fiveWhys'];
 
 // Writes the change to every copy now; anything Jira refuses is queued and tried again.
 export async function edit(env, viewer, { key, changes = {} }) {
@@ -867,6 +916,13 @@ export async function edit(env, viewer, { key, changes = {} }) {
     if (n === 'status') continue;
     const v = changes[n];
     const def = SYNCED[n];
+    if (n === 'fiveWhys') {
+      // Written as a table; the copies' text is compared by its hash, as Jira gives it back.
+      const adf = whysAdf(v);
+      fields[jiraFieldId(n, F)] = adf;
+      base[n] = { value: adf ? `#${hash(JSON.stringify(adf))}` : null, conflict: false };
+      continue;
+    }
     const val = def.kind === 'multi' ? (Array.isArray(v) ? v.map(String) : []) : def.kind === 'date' ? (v || null) : n === 'summary' ? String(v).trim().slice(0, 250) : (v || null);
     fields[jiraFieldId(n, F)] = def.kind === 'select' ? (val ? { value: val } : null) : def.kind === 'multi' ? val.map((x) => ({ value: x }))
       : def.kind === 'user' ? (val ? { accountId: val } : null) : val;
@@ -897,7 +953,7 @@ export async function edit(env, viewer, { key, changes = {} }) {
   if (names.includes('categories')) await queueMissingCopies(env, { key: groupKey, members }, added(JSON.parse(row.categories || '[]'), changes.categories));
   await changed(env);
   await record(env, viewer, { area: 'IMS', action: 'changed an IMS item', subjectType: 'ims', subjectId: groupKey, label: `${groupKey} ${row.summary}`.slice(0, 120),
-    changes: names.map((n) => ({ label: SYNCED[n].label, before: '', after: Array.isArray(changes[n]) ? changes[n].join(', ') : String(changes[n] ?? '') })) }).catch(() => {});
+    changes: names.map((n) => ({ label: SYNCED[n].label, before: '', after: n === 'fiveWhys' ? whysText(changes[n]) : Array.isArray(changes[n]) ? changes[n].join(', ') : String(changes[n] ?? '') })) }).catch(() => {});
   return { ok: true, copies: members.length, failed };
 }
 
@@ -1176,6 +1232,9 @@ export async function create(env, viewer, input) {
   if (input.imsType) fields[F.imsType] = { value: String(input.imsType) };
   if (input.subTypes?.length) fields[F.subTypes] = input.subTypes.map((value) => ({ value: String(value) }));
   if (input.rootCause?.length) fields[F.rootCause] = input.rootCause.map((value) => ({ value: String(value) }));
+  const whys = rootRequired === 'No' ? null : whysAdf(input.whys);
+  const whysId = byName('5 Whys')?.id || F.fiveWhys;
+  if (whys && whysId) fields[whysId] = whys;
   const rr = byName('Is Root Cause Required?') || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array', items: 'option' } } : null);
   if (rr) fields[rr.id] = valueFor(rr, rootRequired);
   if (isoDay(input.start)) fields[F.start] = input.start;
@@ -1199,7 +1258,7 @@ export async function create(env, viewer, input) {
     try { bad = JSON.parse(String(err.message).replace(/^[^{]*/, '')).errors || {}; } catch { bad = {}; }
     const keys = Object.keys(bad).filter((k) => k in fields && !['project', 'issuetype', 'summary'].includes(k));
     if (!keys.length) throw err;
-    for (const k of keys) { skipped.push(Object.values(meta.byName).find((f) => f.id === k)?.name || k); delete fields[k]; }
+    for (const k of keys) { skipped.push(Object.values(meta.byName).find((f) => f.id === k)?.name || (k === F.fiveWhys ? '5 Whys' : k)); delete fields[k]; }
     made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
   }
   // The item names itself as its origin, so Jira's old copy rules leave it alone.

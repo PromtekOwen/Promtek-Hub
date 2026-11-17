@@ -2304,3 +2304,22 @@ button.ims-since:hover { border-color: var(--blue); }
 .tr-cog-panel { border: 1px solid var(--line); background: var(--bg); border-radius: 12px; padding: .9rem 1rem; margin: .2rem 0 .9rem; display: grid; gap: .8rem; }
 .tr-cog-panel .row { margin: 0; }
 .ims-dismiss { margin-top: .45rem; padding: .2rem .7rem; font-size: .82rem; }
+
+/* 5 Whys */
+.ims-whys { display: grid; gap: .8rem; margin: .4rem 0 1rem; }
+.ims-whys-head { display: flex; align-items: center; gap: .6rem; }
+.ims-whys-head h3 { margin: 0; }
+.ims-why-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .55rem; counter-reset: why; }
+.ims-why-list li { display: grid; grid-template-columns: 5.2rem minmax(0, 1fr); gap: .6rem; align-items: start; position: relative; }
+.ims-why-list li::before { content: ''; position: absolute; left: 2.2rem; top: 2.1rem; bottom: -.6rem; border-left: 2px dashed var(--line); }
+.ims-why-list li:last-child::before { display: none; }
+.ims-why-n { font-weight: 700; color: var(--blue-deep); padding-top: .55rem; background: var(--surface); position: relative; }
+.ims-why-list li:last-child .ims-why-n::after { content: 'root cause'; display: block; font-size: .7rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.ims-why-row { display: flex; gap: .5rem; align-items: flex-start; }
+.ims-why-row textarea { flex: 1; min-width: 0; }
+.ims-why-row .linklike { padding-top: .55rem; }
+.ims-nudge { margin: 0; padding: .5rem .75rem; border-radius: 10px; background: #FFF8E6; border: 1px solid #F1DCA6; color: #6b4e00; font-size: .9rem; }
+.ims-nudge.soft { background: var(--tint); border-color: transparent; color: var(--blue-deep); }
+:where(:root[data-theme="dark"]) .ims-nudge { background: #2b2614; border-color: #5a4b20; color: #f5d27a; }
+.ims-whys-card .ims-whys { margin: 0; }
+@media (max-width: 560px) { .ims-why-list li { grid-template-columns: 1fr; } .ims-why-list li::before { display: none; } }
