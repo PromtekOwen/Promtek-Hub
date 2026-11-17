@@ -2068,3 +2068,56 @@ dialog#bell::backdrop { background: rgba(9, 32, 48, .45); }
 .tok-entries summary { cursor: pointer; color: var(--blue-deep); font-weight: 600; font-size: .92rem; margin-bottom: .4rem; }
 .tok-actions { gap: .5rem; margin-top: .6rem; flex-wrap: wrap; }
 .tok-panel h3 { margin: 1rem 0 .4rem; }
+
+/* IMS stats: numbers, charts and the items behind them */
+.ims-period { align-items: center; }
+.ims-step { display: inline-flex; gap: .35rem; align-items: center; }
+.ims-step .btn { min-width: 2.4rem; padding: .45rem .6rem; }
+.ims-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+.ims-kpi { text-align: left; border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 14px; padding: .75rem .9rem; cursor: pointer;
+  display: grid; gap: .1rem; box-shadow: var(--shadow); font: inherit; }
+.ims-kpi:hover { border-color: var(--blue); }
+.ims-kpi span { font-size: .85rem; color: var(--muted); }
+.ims-kpi b { font-size: 1.7rem; line-height: 1.15; }
+.ims-kpi small { color: var(--muted); font-size: .8rem; }
+.ims-kpi.bad b { color: var(--danger); }
+.ims-month-n { font-variant-numeric: tabular-nums; }
+.ims-donut { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+.ims-donut svg { flex: none; }
+.ims-donut path { cursor: pointer; transition: opacity .12s; }
+.ims-donut svg:hover path:not(:hover) { opacity: .55; }
+.ims-donut path:focus-visible { outline: none; stroke-width: 28; }
+.ims-donut-n { font-size: 26px; font-weight: 700; fill: var(--ink); }
+.ims-donut-l { font-size: 12px; fill: var(--muted); }
+.ims-legend { list-style: none; margin: 0; padding: 0; display: grid; gap: .15rem; flex: 1; min-width: 12rem; }
+.ims-legend button { display: grid; grid-template-columns: .8rem minmax(0, 1fr) auto 2.6rem; gap: .5rem; align-items: center; width: 100%; text-align: left; text-decoration: none; color: var(--ink); padding: .15rem .25rem; border-radius: 6px; }
+.ims-legend button:hover { background: var(--tint); }
+.ims-legend i { width: .8rem; height: .8rem; border-radius: 3px; }
+.ims-legend small { color: var(--muted); text-align: right; }
+.ims-bar-btn { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(60px, 1fr) auto; gap: .5rem; align-items: center; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; padding: .15rem .25rem; border-radius: 6px; cursor: pointer; }
+.ims-bar-btn:hover { background: var(--tint); }
+.ims-bars li { display: block; }
+.ims-line { width: 100%; height: auto; display: block; }
+.ims-line-n { font-size: 12px; fill: var(--ink); font-weight: 600; }
+.ims-line-n.on { font-size: 14px; }
+.ims-line-m { font-size: 11px; fill: var(--muted); }
+.ims-kpis { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.ims-rag.blue { background: #dcebf8; color: #164f7e; }
+:where(:root[data-theme="dark"]) .ims-rag.blue { background: #173349; color: #9ccff2; }
+.ims-area-table button.linklike { font-weight: 700; }
+.ims-triage { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin-top: .6rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
+.ims-triage-pick { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.ims-triage-pick select { max-width: 16rem; }
+.ims-drill-card { cursor: default; }
+.ims-area-btn.red { border-color: #d4502f; background: #fde2dd; color: #8b2414; }
+.ims-area-btn.blue { border-color: #2f80c2; background: #dcebf8; color: #164f7e; }
+.ims-area-btn.green { border-color: #1f8a5b; background: #dcf3e6; color: #135c3b; }
+.ims-area-btn.on { box-shadow: 0 0 0 2px var(--ink) inset; }
+:where(:root[data-theme="dark"]) .ims-area-btn.red { background: #4a1f18; color: #ffb4a6; border-color: #a5442f; }
+:where(:root[data-theme="dark"]) .ims-area-btn.blue { background: #173349; color: #9ccff2; border-color: #2f80c2; }
+:where(:root[data-theme="dark"]) .ims-area-btn.green { background: #163a28; color: #8fe0b2; border-color: #2a7a52; }
+.ims-area-key { margin: -.3rem 0 .8rem; }
+.ims-dot { display: inline-block; width: .7rem; height: .7rem; border-radius: 50%; vertical-align: middle; margin: 0 .25rem 0 .6rem; }
+.ims-dot:first-child { margin-left: 0; }
+.ims-dot.red { background: #d4502f; } .ims-dot.blue { background: #2f80c2; } .ims-dot.green { background: #1f8a5b; }
+.ims-clean td { vertical-align: top; white-space: normal; font-size: .9rem; }

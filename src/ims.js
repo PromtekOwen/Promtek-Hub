@@ -567,13 +567,20 @@ export function collapse(rows) {
 export async function list(env, viewer, { done = false } = {}) {
   mustSee(viewer);
   const rows = await allRows(env);
-  const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && (done || !i.done));
+  const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && inIms(i) && (done || !i.done));
+  // How each area stands, from everything open in it: red for an open incident or
+  // non-conformity, blue for other open work, green for nothing open.
+  const openAll = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i) && !i.done);
+  const areaState = Object.fromEntries(AREAS.map((a) => {
+    const here = openAll.filter((i) => i.areas.includes(a.key));
+    return [a.key, { open: here.length, nc: here.filter(isNC).length, state: here.some(isNC) ? 'red' : here.length ? 'blue' : 'green' }];
+  }));
   const writes = await env.DB.prepare('SELECT target_key, kind, error FROM ims_writes WHERE done_at IS NULL').all().catch(() => ({ results: [] }));
   const conflicts = await env.DB.prepare('SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key').all().catch(() => ({ results: [] }));
   const conflictMap = Object.fromEntries(conflicts.results.map((c) => [c.group_key, c.n]));
   for (const i of items) if (conflictMap[i.key]) i.conflicts = conflictMap[i.key];
   return {
-    areas: AREAS.map(({ key, name }) => ({ key, name })), items, me: viewer.accountId || null,
+    areas: AREAS.map(({ key, name }) => ({ key, name, ...areaState[key] })), items, me: viewer.accountId || null,
     readAt: Number((await getState(env, 'ims_read_at')) || 0) || null,
     reading: Boolean(await getState(env, 'ims_full_started')),
     pending: writes.results.length, failing: writes.results.filter((w) => w.error).length,
@@ -583,6 +590,48 @@ export async function list(env, viewer, { done = false } = {}) {
 
 // ---------- the numbers ----------
 
+// Operational Improvements also holds product ideas and features; only its IMS work counts.
+export const SUGGEST_TYPES = ['IMS Task', '8D Report', 'Incident'];
+export const inIms = (i) => !(i.areas.length && i.areas.every((a) => a === 'SUGGEST') && !SUGGEST_TYPES.includes(i.type));
+// Incidents and non-conformities: what turns an area red.
+export const isNC = (i) => i.imsType === 'Non-Conformity' || i.type === 'Incident' || i.type === '8D Report';
+
+// Copies made before the Sync links were in place: the same summary and type, raised in
+// different areas within the hour. Counted once in the numbers, and listed to be linked up.
+const COPY_WINDOW_MS = 60 * 60 * 1000;
+export function likelyCopies(items) {
+  const bySum = new Map();
+  for (const i of items) {
+    if (i.subtask) continue;
+    const k = `${String(i.summary || '').trim().toLowerCase()}|${i.type}`;
+    (bySum.get(k) || bySum.set(k, []).get(k)).push(i);
+  }
+  const sets = [];
+  for (const list of bySum.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => ms(a.created) - ms(b.created));
+    let cur = [list[0]];
+    const flush = () => { if (cur.length > 1 && new Set(cur.flatMap((x) => x.areas)).size > 1) sets.push(cur); };
+    for (const i of list.slice(1)) {
+      // A copy lives in another area: one sharing an area with the set is its own item.
+      if (ms(i.created) - ms(cur[0].created) <= COPY_WINDOW_MS && !cur.some((x) => x.areas.some((a) => i.areas.includes(a)))) cur.push(i);
+      else { flush(); cur = [i]; }
+    }
+    flush();
+  }
+  return sets;
+}
+function mergeCopies(items) {
+  const gone = new Set();
+  const merged = new Map();
+  for (const set of likelyCopies(items)) {
+    const [first, ...rest] = set;
+    merged.set(first.key, { ...first, areas: [...new Set(set.flatMap((x) => x.areas))], alsoKeys: rest.map((x) => x.key) });
+    rest.forEach((x) => gone.add(x.key));
+  }
+  return items.filter((i) => !gone.has(i.key)).map((i) => merged.get(i.key) || i);
+}
+
 const monthOf = (iso) => (iso ? iso.slice(0, 7) : null);
 export function lastMonths(n, now = new Date()) {
   const out = [];
@@ -590,36 +639,67 @@ export function lastMonths(n, now = new Date()) {
   for (let i = n - 1; i >= 0; i--) out.push(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1)).toISOString().slice(0, 7));
   return out;
 }
-const tally = (xs) => { const m = {}; for (const x of xs) if (x) m[x] = (m[x] || 0) + 1; return Object.entries(m).sort((a, b) => b[1] - a[1]).map(([name, n]) => ({ name, n })); };
+const endOf = (m) => Date.UTC(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 1) - 1;
+// Counts with the items behind them, so any number can be opened.
+const tally = (pairs) => {
+  const m = new Map();
+  for (const [name, key] of pairs) { const e = m.get(name) || { name, n: 0, keys: [] }; e.n++; e.keys.push(key); m.set(name, e); }
+  return [...m.values()].sort((a, b) => (a.name === 'Not set') - (b.name === 'Not set') || b.n - a.n);
+};
+const NOT_SET = 'Not set';
 
-export function statsOf(items, { area = null, month = null, now = new Date() } = {}) {
-  const work = items.filter((i) => !NOT_WORK.includes(i.type) && (!area || i.areas.includes(area)));
-  const months = lastMonths(12, now);
-  const inMonth = (iso) => (month ? monthOf(iso) === month : months.includes(monthOf(iso)));
-  const open = work.filter((i) => !i.done);
-  const created = work.filter((i) => inMonth(i.created));
-  const resolved = work.filter((i) => i.done && inMonth(i.resolved));
-  const today = now.toISOString().slice(0, 10);
-  const days = resolved.map((i) => (ms(i.resolved) - ms(i.created)) / 86400000).filter((d) => d >= 0).sort((a, b) => a - b);
-  return {
-    months: months.map((m) => ({ month: m, created: work.filter((i) => monthOf(i.created) === m).length, resolved: work.filter((i) => i.done && monthOf(i.resolved) === m).length })),
-    totals: {
-      open: open.length, created: created.length, resolved: resolved.length,
-      overdue: open.filter((i) => i.target && i.target < today).length,
-      oldNonConformities: open.filter((i) => i.imsType === 'Non-Conformity' && ms(i.created) < now - 30 * 86400000).length,
-      rootCauseMissing: work.filter((i) => /^yes$/i.test(i.rootRequired || '') && !i.rootCause.length).length,
-      medianDaysToClose: days.length ? Math.round(days[Math.floor(days.length / 2)]) : null,
-    },
-    openByType: tally(open.map((i) => i.imsType || 'Not set')),
-    createdByType: tally(created.map((i) => i.imsType || 'Not set')),
-    rootCauses: tally(created.flatMap((i) => i.rootCause)),
-    rootCausesAll: tally(work.flatMap((i) => i.rootCause)),
-    subTypes: tally(open.flatMap((i) => i.subTypes)),
-    openByAssignee: tally(open.map((i) => i.assignee || 'Unassigned')),
-    openByArea: AREAS.map((a) => ({ key: a.key, name: a.name, n: open.filter((i) => i.areas.includes(a.key)).length,
-      incidents: open.filter((i) => i.areas.includes(a.key) && (i.type === 'Incident' || i.imsType === 'Non-Conformity')).length })),
-    openNonConformities: open.filter((i) => i.imsType === 'Non-Conformity').map((i) => ({ key: i.key, summary: i.summary, created: i.created, areas: i.areas })),
+export function statsOf(allItems, { area = null, month = null, now = new Date() } = {}) {
+  let work = mergeCopies(allItems.filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i)));
+  if (area) work = work.filter((i) => i.areas.includes(area));
+  const months = lastMonths(24, now);
+  const shown = months.slice(-12);
+  const end = month ? Math.min(endOf(month), +now) : +now;
+  const endDay = new Date(end).toISOString().slice(0, 10);
+  const closedBy = (i, t) => i.done && (!i.resolved || ms(i.resolved) <= t);
+  const openAt = (i, t) => ms(i.created) <= t && !closedBy(i, t);
+  const inPeriod = (iso) => Boolean(iso) && (month ? monthOf(iso) === month : shown.includes(monthOf(iso)));
+  const open = work.filter((i) => openAt(i, end));
+  const raised = work.filter((i) => inPeriod(i.created));
+  const closed = work.filter((i) => i.done && inPeriod(i.resolved));
+  const nc = (xs) => xs.filter(isNC);
+  const days = closed.map((i) => (ms(i.resolved) - ms(i.created)) / 86400000).filter((d) => d >= 0).sort((a, b) => a - b);
+  const keys = (xs) => xs.map((i) => i.key);
+  const sets = {
+    open: keys(open), overdue: keys(open.filter((i) => i.target && i.target < endDay)), raised: keys(raised), closed: keys(closed),
+    ncRaised: keys(nc(raised)), ncClosed: keys(nc(closed)), ncOpen: keys(nc(open)), ncOld: keys(nc(open).filter((i) => ms(i.created) < end - 30 * 86400000)),
+    rootMissing: keys([...new Set([...open, ...closed])].filter((i) => /^yes$/i.test(i.rootRequired || '') && !i.rootCause.length)),
   };
+  const used = new Set(Object.values(sets).flat());
+  const breakdown = (xs, f) => { const t = tally(xs.flatMap((i) => { const v = f(i); return (v.length ? v : [NOT_SET]).map((n) => [n, i.key]); })); t.forEach((e) => e.keys.forEach((k) => used.add(k))); return t; };
+  const out = {
+    months: shown.map((m) => {
+      const t = Math.min(endOf(m), +now);
+      return { month: m, raised: work.filter((i) => monthOf(i.created) === m).length, closed: work.filter((i) => i.done && monthOf(i.resolved) === m).length,
+        ncRaised: nc(work).filter((i) => monthOf(i.created) === m).length, ncClosed: nc(work).filter((i) => i.done && monthOf(i.resolved) === m).length,
+        open: work.filter((i) => openAt(i, t)).length, ncOpen: nc(work).filter((i) => openAt(i, t)).length };
+    }),
+    asAt: endDay,
+    totals: Object.fromEntries(Object.entries(sets).map(([k, v]) => [k, v.length])),
+    medianDaysToClose: days.length ? Math.round(days[Math.floor(days.length / 2)]) : null,
+    sets,
+    openByType: breakdown(open, (i) => (i.imsType ? [i.imsType] : [])),
+    raisedByType: breakdown(raised, (i) => (i.imsType ? [i.imsType] : [])),
+    rootCauses: breakdown(raised, (i) => i.rootCause),
+    rootCausesOpen: breakdown(open, (i) => i.rootCause),
+    subTypes: breakdown(open, (i) => i.subTypes),
+    openByAssignee: breakdown(open, (i) => (i.assignee ? [i.assignee] : [])).map((e) => (e.name === NOT_SET ? { ...e, name: 'Unassigned' } : e)),
+    openByArea: AREAS.map((a) => {
+      const here = open.filter((i) => i.areas.includes(a.key));
+      return { key: a.key, name: a.name, n: here.length, keys: keys(here), incidents: here.filter(isNC).length, incidentKeys: keys(here.filter(isNC)) };
+    }),
+  };
+  out.openByArea.forEach((a) => a.keys.forEach((k) => used.add(k)));
+  const byKey = new Map(work.map((i) => [i.key, i]));
+  out.items = Object.fromEntries([...used].map((k) => byKey.get(k)).filter(Boolean).map((i) => [i.key, {
+    key: i.key, summary: i.summary, type: i.type, imsType: i.imsType, status: i.status, done: i.done, areas: i.areas, assignee: i.assignee, assigneeId: i.assigneeId,
+    rootCause: i.rootCause, rootRequired: i.rootRequired, subTypes: i.subTypes, created: i.created, resolved: i.resolved, target: i.target, alsoKeys: i.alsoKeys || [],
+  }]));
+  return out;
 }
 
 export async function stats(env, viewer, { area = null, month = null } = {}) {
@@ -628,6 +708,29 @@ export async function stats(env, viewer, { area = null, month = null } = {}) {
   if (month && !/^\d{4}-\d{2}$/.test(month)) throw refuse('Give the month as YYYY-MM.');
   const items = collapse(await allRows(env));
   return { area, month, ...statsOf(items, { area, month }) };
+}
+
+// Everything to tidy by hand: items whose copies disagree, and copies that were never linked.
+export async function cleanup(env, viewer) {
+  mustSee(viewer);
+  const rows = await allRows(env);
+  const items = collapse(rows);
+  const byKey = new Map(items.map((i) => [i.key, i]));
+  const rowByKey = new Map(rows.map((r) => [r.issue_key, r]));
+  const { results } = await env.DB.prepare('SELECT group_key, field FROM ims_sync WHERE conflict = 1 ORDER BY group_key').all().catch(() => ({ results: [] }));
+  const groups = new Map();
+  for (const r of results) (groups.get(r.group_key) || groups.set(r.group_key, []).get(r.group_key)).push(r.field);
+  const show = (v) => (Array.isArray(v) ? v.join(', ') : v == null || v === '' ? 'Not set' : String(v));
+  const disagree = [...groups].map(([g, fields]) => {
+    const i = byKey.get(g);
+    if (!i) return null;
+    return { key: g, summary: i.summary, type: i.type, done: i.done, areas: i.areas,
+      fields: fields.map((f) => ({ field: f, label: SYNCED[f]?.label || f,
+        values: i.copies.map((c) => ({ key: c.key, project: c.project, value: f === 'status' ? c.status : f === 'assignee' ? (rowByKey.get(c.key)?.assignee_name || 'Unassigned') : show(JSON.parse(rowByKey.get(c.key)?.vals || '{}')[f]) })) })) };
+  }).filter(Boolean).sort((a, b) => Number(a.done) - Number(b.done) || a.key.localeCompare(b.key));
+  const unlinked = likelyCopies(items.filter((i) => !NOT_WORK.includes(i.type) && inIms(i)))
+    .map((set) => set.map((i) => ({ key: i.key, summary: i.summary, type: i.type, status: i.status, done: i.done, areas: i.areas, created: i.created })));
+  return { disagree, unlinked };
 }
 
 // ---------- one item ----------
