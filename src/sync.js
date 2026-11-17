@@ -446,6 +446,32 @@ export async function backdateRate(env, accountId, { preview = false } = {}) {
   return summary;
 }
 
+// Each finished week's record (its XP to date, and the time logged in it) worked out again
+// from the ledger, from one day on, for people whose time has been put right.
+export async function refreshSnapshots(env, accountIds, fromDate) {
+  for (const accountId of [...new Set(accountIds)]) {
+    const emp = await env.DB.prepare('SELECT opening_xp FROM employees WHERE account_id = ?').bind(accountId).first();
+    if (!emp) continue;
+    const { results: snaps } = await env.DB.prepare('SELECT week_start, xp, seconds, worklogs, days_logged FROM weekly_snapshots WHERE account_id = ? AND week_start >= ?')
+      .bind(accountId, mondayOf(fromDate)).all();
+    if (!snaps.length) continue;
+    const { results: rows } = await env.DB.prepare('SELECT work_date, xp, seconds FROM xp_ledger WHERE account_id = ?').bind(accountId).all();
+    const stmts = [];
+    for (const snap of snaps) {
+      const sunday = londonDate(Date.parse(`${snap.week_start}T12:00:00Z`) + 6 * 86_400_000);
+      const xp = (emp.opening_xp || 0) + rows.reduce((t, r) => t + (r.work_date <= sunday ? r.xp || 0 : 0), 0);
+      const inWeek = rows.filter((r) => r.work_date >= snap.week_start && r.work_date <= sunday);
+      const seconds = inWeek.reduce((t, r) => t + r.seconds, 0);
+      const days = new Set(inWeek.map((r) => r.work_date)).size;
+      if (xp !== snap.xp || seconds !== snap.seconds || inWeek.length !== snap.worklogs || days !== snap.days_logged) {
+        stmts.push(env.DB.prepare('UPDATE weekly_snapshots SET xp = ?, level = ?, seconds = ?, worklogs = ?, days_logged = ? WHERE account_id = ? AND week_start = ?')
+          .bind(xp, levelFromXp(xp), seconds, inWeek.length, days, accountId, snap.week_start));
+      }
+    }
+    await runBatches(env, stmts);
+  }
+}
+
 async function raiseUnmatchedAlert(env, accountIds) {
   const day = londonDate();
   await raiseAlert(env, {
@@ -583,8 +609,12 @@ export async function reconcileUser(env, accountId, from, to, { force = false } 
   ]));
   if (goneRows.length) {
     await applyOvertime(env, [...new Set(goneRows.map((r) => mondayOfDay(r.work_date)))].map((monday) => ({ accountId, monday }))).catch((err) => console.warn('Overtime not worked out:', err.message));
+    await refreshSnapshots(env, [accountId], goneRows.map((r) => r.work_date).sort()[0]).catch((err) => console.warn('Weekly records not updated:', err.message));
     await ledgerChanged(env);
   }
+  // Checked by hand: the weekly records are put right too, even if nothing needed taking off
+  // now (it may have been taken off before the records were kept in step).
+  if (force && !goneRows.length) await refreshSnapshots(env, [accountId], start).catch((err) => console.warn('Weekly records not updated:', err.message));
   const counted = worklogs.filter((w) => w.startDate >= start && w.startDate <= to);
   return {
     fetched: worklogs.length, deleted: goneRows.length,
@@ -614,6 +644,7 @@ export async function reconcileDay(env, day) {
   // A deleted worklog can take someone back under their hours, so the week is worked out again.
   if (gone.length) {
     await applyOvertime(env, goneRows.map((r) => ({ accountId: r.account_id, monday: mondayOfDay(day) }))).catch((err) => console.warn('Overtime not worked out:', err.message));
+    await refreshSnapshots(env, goneRows.map((r) => r.account_id), day).catch((err) => console.warn('Weekly records not updated:', err.message));
     await ledgerChanged(env);
   }
   return { day, fetched: worklogs.length, deleted: gone.length };
@@ -797,6 +828,7 @@ export async function runScheduled(rawEnv) {
       await attempt('Completed jobs', async () => (await import('./jobs.js')).scanCompleted(env));
       await attempt('Feedback round-up', async () => (await import('./feedback.js')).roundUp(env));
       await attempt('Notification emails', async () => (await import('./notify.js')).digest(env));
+      await attempt('Tool box talk reminders', async () => (await import('./training.js')).daily(env));
     }),
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {

@@ -481,6 +481,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/ims/stats') return json(await Ims.stats(env, user, { area: q('area') || null, month: q('month') || null }));
     if (method === 'GET' && pathname === '/api/ims/item') return json(await Ims.item(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/ims/options') return json(await Ims.options(env, user));
+    if (method === 'GET' && pathname === '/api/ims/raise-form') return json(await Ims.raiseForm(env, user, { type: url.searchParams.get('type'), home: url.searchParams.get('home') }));
     if (method === 'GET' && pathname === '/api/ims/meetings') return json(await Ims.meetings(env, user));
     if (method === 'GET' && pathname === '/api/ims/meeting') return json(await Ims.meeting(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/ims/attachment') return Ims.attachment(env, user, q('key'), q('id'));
@@ -503,6 +504,22 @@ async function route(request, env, url, user) {
       if (!form) return json({ error: 'That form didn\'t come through. Try again.' }, 400);
       return json(await Create.create(env, user, form));
     }
+  }
+  if (pathname.startsWith('/api/training/')) {
+    const T = await import('./training.js');
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (method === 'GET' && pathname === '/api/training/matrix') return json(await T.matrix(env, user, { division: url.searchParams.get('division') }));
+    if (method === 'GET' && pathname === '/api/training/talks') return json(await T.talks(env, user));
+    if (method === 'GET' && pathname === '/api/training/policies') return json(await T.policies(env, user));
+    if (method === 'GET' && pathname === '/api/training/options') return json(await T.options(env, user));
+    if (method === 'GET' && pathname === '/api/training/mine') return json(await T.mine(env, user));
+    if (method === 'POST' && pathname === '/api/training/record') return json(await T.setRecord(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/course') return json(await T.saveCourse(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/division') return json(await T.saveDivision(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/member') return json(await T.saveMember(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/talk') return json(body.id ? await T.updateTalk(env, user, body) : await T.createTalk(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/policy') return json(await T.savePolicy(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/acknowledge') return json(await T.acknowledge(env, user, body));
   }
   if (pathname.startsWith('/api/notifications')) {
     const Notify = await import('./notify.js');

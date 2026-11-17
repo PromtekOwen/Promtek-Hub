@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS training_divisions (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, position INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS training_courses (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, category TEXT, frequency TEXT, months INTEGER, about TEXT, active INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS training_division_courses (division_id INTEGER NOT NULL, course_id INTEGER NOT NULL, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (division_id, course_id));
+CREATE TABLE IF NOT EXISTS training_members (division_id INTEGER NOT NULL, person_key TEXT NOT NULL, name TEXT NOT NULL, note TEXT, position INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (division_id, person_key));
+CREATE TABLE IF NOT EXISTS training_records (person_key TEXT NOT NULL, course_id INTEGER NOT NULL, state TEXT NOT NULL, completed_on TEXT, expires_on TEXT, note TEXT, evidence TEXT, source TEXT, updated_by TEXT, updated_at TEXT, PRIMARY KEY (person_key, course_id));
+CREATE INDEX IF NOT EXISTS idx_training_records_course ON training_records(course_id);
+CREATE TABLE IF NOT EXISTS toolbox_talks (id INTEGER PRIMARY KEY AUTOINCREMENT, issue_key TEXT, title TEXT NOT NULL, about TEXT, starts_at TEXT NOT NULL, minutes INTEGER, location TEXT, meet_link TEXT, course_id INTEGER, audience TEXT NOT NULL, created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, cancelled INTEGER NOT NULL DEFAULT 0, jira_error TEXT);
+CREATE INDEX IF NOT EXISTS idx_toolbox_talks_starts ON toolbox_talks(starts_at);
+CREATE TABLE IF NOT EXISTS policies (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, about TEXT, links TEXT NOT NULL, audience TEXT NOT NULL, version TEXT, due_on TEXT, created_by TEXT, created_by_name TEXT, created_at TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS acknowledgements (kind TEXT NOT NULL, item_id INTEGER NOT NULL, account_id TEXT NOT NULL, name TEXT, at TEXT NOT NULL, PRIMARY KEY (kind, item_id, account_id));

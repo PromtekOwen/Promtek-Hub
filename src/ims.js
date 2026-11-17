@@ -76,21 +76,34 @@ const FIELD_NAMES = {
   actions: ['Corrective & Preventative Actions Taken', 'customfield_14687'],
   persons: ['Persons Involved Info', 'customfield_14685'],
   finalise: ['Finalise Teamwork', 'customfield_14686'],
+  incidentAt: ['Date & Time of Incident', null],
+  location: ['Location of Incident', null],
+  happened: ['What Happened?', null],
+  severity: ['Incident Severity', null],
+  injury: ['Description of Injury/Damage', null],
+  factors: ['Contributing Factors', null],
+  businessArea: ['Business Area', null],
+  customer: ['Customer', null],
+  address: ['Customer Address', null],
+  changeDesc: ['Change Description', null],
+  changeDocs: ['Change Documentation', null],
 };
+// Carried onto each copy as they are, beyond the fields kept in step.
+const COPIED_AS_IS = ['incidentAt', 'location', 'happened', 'severity', 'injury', 'factors', 'businessArea', 'customer', 'address', 'changeDesc', 'changeDocs'];
 let fieldCache = null;
 export async function fieldMap(env, call = (p) => jira(env, p)) {
   if (fieldCache && Date.now() - fieldCache.at < 6 * 3600 * 1000) return fieldCache.map;
-  const saved = JSON.parse((await getState(env, 'ims_fields')) || 'null');
+  const saved = JSON.parse((await getState(env, 'ims_fields_v2')) || 'null');
   if (saved && Date.now() - saved.at < 24 * 3600 * 1000) { fieldCache = saved; return saved.map; }
   const map = {};
   let all = [];
-  try { all = (await call('/rest/api/3/field')) || []; } catch { /* the known IDs */ }
+  try { const got = await call('/rest/api/3/field'); all = Array.isArray(got) ? got : []; } catch { /* the known IDs */ }
   for (const [k, [name, fallback]] of Object.entries(FIELD_NAMES)) {
     const found = all.filter((f) => String(f.name).toLowerCase() === name.toLowerCase());
     map[k] = (found.find((f) => f.id === fallback) || found[0])?.id || fallback;
   }
   fieldCache = { at: Date.now(), map };
-  await setState(env, 'ims_fields', JSON.stringify(fieldCache));
+  await setState(env, 'ims_fields_v2', JSON.stringify(fieldCache));
   return map;
 }
 
@@ -440,7 +453,7 @@ async function typeIdIn(call, project, name) {
 // A copy of the group's first item in another area's project, linked to it, in a folder of the same name if there is one.
 async function makeCopy(env, call, groupKey, areaKey, F) {
   const src = await call(`/rest/api/3/issue/${encodeURIComponent(groupKey)}?fields=${['summary', 'description', 'issuetype', 'assignee', 'priority', 'labels', 'parent', 'status',
-    ...['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'staff', 'containment', 'analysis', 'actions', 'persons', 'finalise'].map((k) => F[k]).filter(Boolean)].join(',')}`);
+    ...['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'staff', 'containment', 'analysis', 'actions', 'persons', 'finalise', ...COPIED_AS_IS].map((k) => F[k]).filter(Boolean)].join(',')}`);
   const f = src?.fields || {};
   const typeId = await typeIdIn(call, areaKey, f.issuetype?.name);
   if (!typeId) throw new Error(`${areaKey} has no ${f.issuetype?.name} type.`);
@@ -450,6 +463,11 @@ async function makeCopy(env, call, groupKey, areaKey, F) {
     const id = jiraFieldId(n, F); if (id && f[id] != null) fields[id] = writeValue(n, f[id]);
   }
   if (F.staff && f[F.staff]?.length) fields[F.staff] = f[F.staff].map((u) => ({ accountId: u.accountId }));
+  for (const n of COPIED_AS_IS) {
+    const v = F[n] ? f[F[n]] : null;
+    if (v == null || v === '') continue;
+    fields[F[n]] = Array.isArray(v) ? v.map((o) => (o && typeof o === 'object' && 'value' in o ? { value: o.value } : o)) : v && typeof v === 'object' && 'value' in v ? { value: v.value } : v;
+  }
   if (f.assignee) fields.assignee = { accountId: f.assignee.accountId };
   if (f.labels?.length) fields.labels = f.labels;
   if (f.parent?.fields?.summary) {
@@ -568,12 +586,12 @@ export async function list(env, viewer, { done = false } = {}) {
   mustSee(viewer);
   const rows = await allRows(env);
   const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && inIms(i) && (done || !i.done));
-  // How each area stands, from everything open in it: red for an open incident or
-  // non-conformity, blue for other open work, green for nothing open.
+  // How each area stands, from everything open in it: red for an open incident,
+  // non-conformity or 8D report, blue for other open work, green for nothing open.
   const openAll = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i) && !i.done);
   const areaState = Object.fromEntries(AREAS.map((a) => {
     const here = openAll.filter((i) => i.areas.includes(a.key));
-    return [a.key, { open: here.length, nc: here.filter(isNC).length, state: here.some(isNC) ? 'red' : here.length ? 'blue' : 'green' }];
+    return [a.key, { open: here.length, nc: here.filter(isNC).length, eightD: here.filter(is8D).length, state: here.some(isRed) ? 'red' : here.length ? 'blue' : 'green' }];
   }));
   const writes = await env.DB.prepare('SELECT target_key, kind, error FROM ims_writes WHERE done_at IS NULL').all().catch(() => ({ results: [] }));
   const conflicts = await env.DB.prepare('SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key').all().catch(() => ({ results: [] }));
@@ -593,8 +611,10 @@ export async function list(env, viewer, { done = false } = {}) {
 // Operational Improvements also holds product ideas and features; only its IMS work counts.
 export const SUGGEST_TYPES = ['IMS Task', '8D Report', 'Incident'];
 export const inIms = (i) => !(i.areas.length && i.areas.every((a) => a === 'SUGGEST') && !SUGGEST_TYPES.includes(i.type));
-// Incidents and non-conformities: what turns an area red.
-export const isNC = (i) => i.imsType === 'Non-Conformity' || i.type === 'Incident' || i.type === '8D Report';
+// Non-conformities and incidents; 8D reports are counted on their own. Any of them turns an area red.
+export const is8D = (i) => i.type === '8D Report';
+export const isNC = (i) => !is8D(i) && (i.imsType === 'Non-Conformity' || i.type === 'Incident');
+export const isRed = (i) => isNC(i) || is8D(i);
 
 // Copies made before the Sync links were in place: the same summary and type, raised in
 // different areas within the hour. Counted once in the numbers, and listed to be linked up.
@@ -647,6 +667,8 @@ const tally = (pairs) => {
   return [...m.values()].sort((a, b) => (a.name === 'Not set') - (b.name === 'Not set') || b.n - a.n);
 };
 const NOT_SET = 'Not set';
+const rootNeeded = (i) => /^yes$/i.test(i.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
+const rootCounts = (i) => !/^no$/i.test(i.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
 
 export function statsOf(allItems, { area = null, month = null, now = new Date() } = {}) {
   let work = mergeCopies(allItems.filter((i) => !NOT_WORK.includes(i.type) && !i.subtask && inIms(i)));
@@ -662,12 +684,14 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
   const raised = work.filter((i) => inPeriod(i.created));
   const closed = work.filter((i) => i.done && inPeriod(i.resolved));
   const nc = (xs) => xs.filter(isNC);
+  const e8 = (xs) => xs.filter(is8D);
   const days = closed.map((i) => (ms(i.resolved) - ms(i.created)) / 86400000).filter((d) => d >= 0).sort((a, b) => a - b);
   const keys = (xs) => xs.map((i) => i.key);
   const sets = {
     open: keys(open), overdue: keys(open.filter((i) => i.target && i.target < endDay)), raised: keys(raised), closed: keys(closed),
     ncRaised: keys(nc(raised)), ncClosed: keys(nc(closed)), ncOpen: keys(nc(open)), ncOld: keys(nc(open).filter((i) => ms(i.created) < end - 30 * 86400000)),
-    rootMissing: keys([...new Set([...open, ...closed])].filter((i) => /^yes$/i.test(i.rootRequired || '') && !i.rootCause.length)),
+    eightRaised: keys(e8(raised)), eightClosed: keys(e8(closed)), eightOpen: keys(e8(open)), eightOld: keys(e8(open).filter((i) => ms(i.created) < end - 30 * 86400000)),
+    rootMissing: keys([...new Set([...open, ...closed])].filter((i) => rootNeeded(i) && !i.rootCause.length)),
   };
   const used = new Set(Object.values(sets).flat());
   const breakdown = (xs, f) => { const t = tally(xs.flatMap((i) => { const v = f(i); return (v.length ? v : [NOT_SET]).map((n) => [n, i.key]); })); t.forEach((e) => e.keys.forEach((k) => used.add(k))); return t; };
@@ -676,7 +700,8 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
       const t = Math.min(endOf(m), +now);
       return { month: m, raised: work.filter((i) => monthOf(i.created) === m).length, closed: work.filter((i) => i.done && monthOf(i.resolved) === m).length,
         ncRaised: nc(work).filter((i) => monthOf(i.created) === m).length, ncClosed: nc(work).filter((i) => i.done && monthOf(i.resolved) === m).length,
-        open: work.filter((i) => openAt(i, t)).length, ncOpen: nc(work).filter((i) => openAt(i, t)).length };
+        eightRaised: e8(work).filter((i) => monthOf(i.created) === m).length, eightClosed: e8(work).filter((i) => i.done && monthOf(i.resolved) === m).length,
+        open: work.filter((i) => openAt(i, t)).length, ncOpen: nc(work).filter((i) => openAt(i, t)).length, eightOpen: e8(work).filter((i) => openAt(i, t)).length };
     }),
     asAt: endDay,
     totals: Object.fromEntries(Object.entries(sets).map(([k, v]) => [k, v.length])),
@@ -684,13 +709,15 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
     sets,
     openByType: breakdown(open, (i) => (i.imsType ? [i.imsType] : [])),
     raisedByType: breakdown(raised, (i) => (i.imsType ? [i.imsType] : [])),
-    rootCauses: breakdown(raised, (i) => i.rootCause),
-    rootCausesOpen: breakdown(open, (i) => i.rootCause),
+    // Items marked as not needing a root cause are left out of the root cause charts.
+    rootCauses: breakdown(raised.filter(rootCounts), (i) => i.rootCause),
+    rootCausesOpen: breakdown(open.filter(rootCounts), (i) => i.rootCause),
     subTypes: breakdown(open, (i) => i.subTypes),
     openByAssignee: breakdown(open, (i) => (i.assignee ? [i.assignee] : [])).map((e) => (e.name === NOT_SET ? { ...e, name: 'Unassigned' } : e)),
     openByArea: AREAS.map((a) => {
       const here = open.filter((i) => i.areas.includes(a.key));
-      return { key: a.key, name: a.name, n: here.length, keys: keys(here), incidents: here.filter(isNC).length, incidentKeys: keys(here.filter(isNC)) };
+      return { key: a.key, name: a.name, n: here.length, keys: keys(here), incidents: here.filter(isNC).length, incidentKeys: keys(here.filter(isNC)),
+        eightD: here.filter(is8D).length, eightDKeys: keys(here.filter(is8D)) };
     }),
   };
   out.openByArea.forEach((a) => a.keys.forEach((k) => used.add(k)));
@@ -887,14 +914,152 @@ export async function options(env, viewer) {
   allowed.rootCause ||= used('root_cause', true);
   allowed.rootRequired ||= ['Yes', 'No'];
   allowed.categories ||= AREAS.map((a) => a.name);
-  const { results: people } = await env.DB.prepare("SELECT account_id, name FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%' ORDER BY name").all();
+  const { results: people } = await env.DB.prepare("SELECT account_id, name, email, job_title, extension FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%' ORDER BY name").all();
   const statuses = [...new Set(rows.filter((r) => r.issuetype === 'IMS Task').map((r) => r.status))].sort();
   const folders = rows.filter((r) => r.issuetype === 'Folder' && isArea(r.issue_key)).map((r) => ({ key: r.issue_key, project: r.project_key, name: r.summary })).sort((a, b) => a.name.localeCompare(b.name));
-  return { allowed, people: people.map((p) => ({ id: p.account_id, name: p.name })), statuses, folders, areas: AREAS.map(({ key, name }) => ({ key, name })),
+  return { allowed, people: people.map((p) => ({ id: p.account_id, name: p.name, email: p.email || '', job: p.job_title || '', phone: p.extension || '' })), statuses, folders, areas: AREAS.map(({ key, name }) => ({ key, name })),
     meetings: meetingRows(rows).slice(0, 30).map(({ key, summary, date }) => ({ key, summary, date })) };
 }
 
 // ---------- raising an item ----------
+
+// The types an IMS item can be raised as, and what each asks for beyond the usual.
+export const RAISE_TYPES = ['IMS Task', 'Incident', '8D Report', 'Change Management'];
+const ROOT_BY_DEFAULT = ['Incident', '8D Report'];
+
+// What Jira asks for when raising a type in a project: each field's ID, shape and options,
+// found by name. Read once every six hours.
+const metaKept = new Map();
+export async function createMeta(env, project, typeName) {
+  const k = `${project}|${typeName}`;
+  const kept = metaKept.get(k);
+  if (kept && Date.now() - kept.at < 6 * 3600 * 1000) return kept.meta;
+  if (!/^[A-Z][A-Z0-9_]*$/.test(project)) throw refuse('That isn\'t an IMS area.');
+  const typeId = await typeIdIn((p) => jira(env, p), project, typeName);
+  if (!typeId) return null;
+  const byName = {};
+  let at = 0;
+  for (let page = 0; page < 5; page++) {
+    const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/createmeta/${project}/issuetypes/${typeId}?startAt=${at}&maxResults=100`, {
+      headers: { Authorization: `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`)}`, Accept: 'application/json' },
+    }).catch(() => null);
+    if (!res?.ok) break;
+    const data = await res.json();
+    const list = data.fields || data.values || [];
+    for (const f of list) byName[String(f.name).toLowerCase()] = { id: f.fieldId || f.key, name: f.name, schema: f.schema || {}, required: Boolean(f.required),
+      allowed: (f.allowedValues || []).map((v) => v.value ?? v.name).filter((v) => v != null) };
+    at += list.length;
+    if (!list.length || at >= (data.total ?? data.maxResults ?? at)) break;
+  }
+  const meta = { typeId, byName };
+  metaKept.set(k, { at: Date.now(), meta });
+  return meta;
+}
+
+// The type-specific choices for the form: severities, business areas, customers.
+export async function raiseForm(env, viewer, { type, home }) {
+  mustSee(viewer);
+  if (!RAISE_TYPES.includes(type)) throw refuse('Choose what type of item it is.');
+  if (!AREA_KEYS.includes(home)) throw refuse('Choose its main area.');
+  const meta = await createMeta(env, home, type);
+  if (!meta) return { type, home, missing: true };
+  const opt = (name) => meta.byName[name.toLowerCase()]?.allowed || [];
+  const has = (name) => Boolean(meta.byName[name.toLowerCase()]);
+  const out = { type, home, missing: false, fields: Object.fromEntries(Object.values(meta.byName).map((f) => [f.name, true])) };
+  out.severity = opt('Incident Severity');
+  out.businessArea = opt('Business Area');
+  out.customers = opt('Customer');
+  if (!out.customers.length && has('Customer')) {
+    const { customerProjects } = await import('./jira.js');
+    out.customers = (await customerProjects(env).catch(() => [])).map((p) => p.name).sort();
+    out.customerFree = true;
+  }
+  const { results } = await env.DB.prepare("SELECT account_id, name, email, job_title, extension FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%' ORDER BY name").all();
+  out.people = results.map((e) => ({ id: e.account_id, name: e.name, email: e.email || '', job: e.job_title || '', phone: e.extension || '' }));
+  return out;
+}
+
+// A table in Jira's document format: a header row, then a row for each entry.
+export function adfTable(headers, rows, { boldFirstColumn = false } = {}) {
+  const cell = (type, text, bold) => ({ type, attrs: {}, content: [{ type: 'paragraph', content: text ? [{ type: 'text', text: String(text), ...(bold ? { marks: [{ type: 'strong' }] } : {}) }] : [] }] });
+  return {
+    type: 'table', attrs: { isNumberColumnEnabled: false, layout: 'default' },
+    content: [
+      { type: 'tableRow', content: headers.map((h) => cell('tableHeader', h, true)) },
+      ...rows.map((r) => ({ type: 'tableRow', content: r.map((v, i) => cell('tableCell', v, boldFirstColumn && i === 0)) })),
+    ],
+  };
+}
+const docOf = (...nodes) => ({ type: 'doc', version: 1, content: nodes.filter(Boolean) });
+const wikiTable = (headers, rows) => [`|| ${headers.join(' || ')} ||`, ...rows.map((r) => `| ${r.map((v) => String(v || ' ').replace(/\|/g, '/').replace(/\n/g, ' ')).join(' | ')} |`)].join('\n');
+const clip = (v, n = 2000) => String(v ?? '').trim().slice(0, n);
+const isoDay = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '');
+const rowsOf = (list, keys, n = 30) => (Array.isArray(list) ? list : []).slice(0, n)
+  .map((r) => keys.map((k) => clip(r?.[k], 500))).filter((r) => r.some(Boolean));
+
+// One value in the shape its Jira field takes.
+function valueFor(meta, v) {
+  const s = meta.schema || {};
+  const custom = String(s.custom || '');
+  if (v && typeof v === 'object' && v.type === 'table') {
+    if (/textarea/.test(custom) || s.type === 'doc') return docOf(v);
+    return wikiTable(v.content[0].content.map((c) => c.content[0].content[0]?.text || ''), v.content.slice(1).map((r) => r.content.map((c) => c.content[0].content[0]?.text || '')));
+  }
+  if (s.type === 'option') return { value: String(v) };
+  if (s.type === 'array' && s.items === 'option') return (Array.isArray(v) ? v : [v]).filter(Boolean).map((x) => ({ value: String(x) }));
+  if (s.type === 'array' && s.items === 'user') return (Array.isArray(v) ? v : [v]).filter(Boolean).map((x) => ({ accountId: String(x) }));
+  if (s.type === 'user') return { accountId: String(v) };
+  if (s.type === 'date') return isoDay(v) || null;
+  if (s.type === 'datetime') {
+    const t = Date.parse(String(v));
+    return Number.isFinite(t) ? new Date(t).toISOString().replace('Z', '+0000') : null;
+  }
+  if (/textarea/.test(custom) || s.type === 'doc') return docOf(...String(v).split(/\n{2,}/).map((p) => ({ type: 'paragraph', content: p.split('\n').flatMap((l, i) => [...(i ? [{ type: 'hardBreak' }] : []), ...(l ? [{ type: 'text', text: l }] : [])]) })));
+  return String(v);
+}
+
+// The extra fields an Incident, 8D Report or Change Management item asks for, by Jira's names.
+function typeFields(typeName, input) {
+  const out = {};
+  const set = (name, v) => { if (v != null && v !== '' && !(Array.isArray(v) && !v.length)) out[name] = v; };
+  const containment = (rows) => adfTable(['Title', 'Description', 'Owners', 'Actioned Date'], rowsOf(rows, ['title', 'description', 'owners', 'actioned']));
+  const analysis = (rows) => adfTable(['Root Cause Analysis', 'Description', 'Investigators', 'Actioned Date'], rowsOf(rows, ['rca', 'description', 'investigators', 'actioned']));
+  if (typeName === 'Incident') {
+    const x = input.incident || {};
+    set('Date & Time of Incident', x.at ? String(x.at) : '');
+    set('Location of Incident', clip(x.location, 250));
+    set('What Happened?', clip(x.happened, 30000));
+    set('Incident Severity', clip(x.severity, 100));
+    set('Description of Injury/Damage', clip(x.injury, 30000));
+    set('Containment', containment(x.containment));
+    set('Contributing Factors', clip(x.factors, 30000));
+    set('Analysis & Planning of Corrective Actions', analysis(x.analysis));
+  }
+  if (typeName === '8D Report') {
+    const x = input.eightD || {};
+    set('Business Area', (Array.isArray(x.businessArea) ? x.businessArea : []).map(String).slice(0, 10));
+    set('Customer', clip(x.customer, 250));
+    set('Customer Address', clip(x.address, 1000));
+    set('Persons Involved Info', adfTable(['Name', 'Job Title', 'Telephone', 'Email'], rowsOf(x.persons, ['name', 'job', 'phone', 'email'])));
+    set('Containment', containment(x.containment));
+    set('Contributing Factors', clip(x.factors, 30000));
+    set('Analysis & Planning of Corrective Actions', analysis(x.analysis));
+    set('Corrective & Preventative Actions Taken', adfTable(['Title', 'Description', 'Owners', 'Due Date', 'Actioned Date', 'Reviewed Date'],
+      rowsOf(x.actions, ['title', 'description', 'owners', 'due', 'actioned', 'reviewed'])));
+    set('Finalise Teamwork', adfTable(['', '', ''], [['Initiated by', '', ''], ['Approved by', '', ''], ['Closed by', '', ''], ['Verified by', '', '']], { boldFirstColumn: true }));
+  }
+  if (typeName === 'Change Management') {
+    const d = input.change?.description || {};
+    const docs = input.change?.docs || {};
+    set('Change Description', adfTable(['Information Required', 'Change Details'], [
+      ['System / Service Affected', clip(d.system, 500)], ['Type of Change', clip(d.type, 500)], ['Scope / Components Affected', clip(d.scope, 1000)],
+      ['Summary of Change', clip(d.summary, 2000)], ['Requested By', clip(d.requestedBy, 250)]], { boldFirstColumn: true }));
+    set('Change Documentation', adfTable(['Information Required', 'Documentation / Link Details'], [
+      ['ISMS Procedure Reference', clip(docs.procedure, 500)], ['Implementation / SOP Link', clip(docs.sop, 1000)], ['Approval Evidence (File or Comment)', clip(docs.approval, 1000)],
+      ['Related Jira Issues / Tickets', clip(docs.related, 500)], ['Audit or Change Record Reference', clip(docs.audit, 500)]], { boldFirstColumn: true }));
+  }
+  return out;
+}
 
 export async function create(env, viewer, input) {
   mustSee(viewer);
@@ -903,33 +1068,52 @@ export async function create(env, viewer, input) {
   const home = AREA_KEYS.includes(input.home) && areas.includes(input.home) ? input.home : areas[0];
   const summary = String(input.summary || '').trim().replace(/\s+/g, ' ');
   if (summary.length < 3) throw refuse('Give it a summary.');
+  const typeName = RAISE_TYPES.includes(input.type) ? input.type : 'IMS Task';
+  // Root cause is always needed for incidents and 8D reports; for the rest, someone says.
+  const rootRequired = ROOT_BY_DEFAULT.includes(typeName) ? 'Yes' : String(input.rootRequired || '');
+  if (!['Yes', 'No'].includes(rootRequired)) throw refuse('Say whether a root cause is required.');
+  if (typeName === 'Incident') {
+    const x = input.incident || {};
+    if (!x.at) throw refuse('Give the date and time of the incident.');
+    if (!clip(x.happened)) throw refuse('Say what happened.');
+    if (!x.severity) throw refuse('Choose the incident severity.');
+  }
   const F = await fieldMap(env);
-  const call = (p, i) => jira(env, p, i);
-  const typeName = input.type === 'Change Management' || input.type === '8D Report' ? input.type : 'IMS Task';
-  const typeId = await typeIdIn(call, home, typeName);
-  if (!typeId) throw refuse(`${home} has no ${typeName} type.`);
+  const meta = await createMeta(env, home, typeName);
+  if (!meta) throw refuse(`${AREAS.find((a) => a.key === home)?.name || home} has no ${typeName} type in Jira.`);
+  const byName = (n) => meta.byName[String(n).toLowerCase()];
   const { adfFrom } = await import('./jiraview.js');
-  const fields = { project: { key: home }, issuetype: { id: typeId }, summary, description: adfFrom(String(input.description || summary)) };
+  const description = typeName === 'Incident' ? '' : String(input.description || '').trim();
+  const fields = { project: { key: home }, issuetype: { id: meta.typeId }, summary, ...(description || typeName !== 'Incident' ? { description: adfFrom(description || summary) } : {}) };
   const names = AREAS.filter((a) => areas.includes(a.key)).map((a) => a.name);
   fields[F.categories] = names.map((value) => ({ value }));
   if (input.imsType) fields[F.imsType] = { value: String(input.imsType) };
   if (input.subTypes?.length) fields[F.subTypes] = input.subTypes.map((value) => ({ value: String(value) }));
   if (input.rootCause?.length) fields[F.rootCause] = input.rootCause.map((value) => ({ value: String(value) }));
-  if (input.rootRequired && F.rootRequired) fields[F.rootRequired] = [{ value: String(input.rootRequired) }];
-  if (/^\d{4}-\d{2}-\d{2}$/.test(input.start || '')) fields[F.start] = input.start;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(input.target || '')) fields[F.target] = input.target;
+  const rr = byName('Is Root Cause Required?') || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array', items: 'option' } } : null);
+  if (rr) fields[rr.id] = valueFor(rr, rootRequired);
+  if (isoDay(input.start)) fields[F.start] = input.start;
+  if (isoDay(input.target)) fields[F.target] = input.target;
   if (input.assigneeId) fields.assignee = { accountId: String(input.assigneeId) };
-  if (input.folder) {
-    const folder = await env.DB.prepare("SELECT issue_key FROM ims_items WHERE issue_key = ? AND project_key = ? AND issuetype = 'Folder'").bind(String(input.folder), home).first();
-    if (folder) fields.parent = { key: folder.issue_key };
+  const staff = (Array.isArray(input.staffIds) ? input.staffIds : []).map(String).filter((x) => /^[\w:-]{6,128}$/.test(x)).slice(0, 30);
+  const staffMeta = byName('Promtek Staff Involved') || (F.staff ? { id: F.staff, schema: { type: 'array', items: 'user' } } : null);
+  if (staff.length && staffMeta) fields[staffMeta.id] = valueFor(staffMeta, staff);
+  const skipped = [];
+  for (const [name, v] of Object.entries(typeFields(typeName, input))) {
+    const m = byName(name);
+    if (!m) { skipped.push(name); continue; }
+    const val = valueFor(m, v);
+    if (val != null && val !== '') fields[m.id] = val;
   }
-  // 8D reports start with their tables, as Jira did.
-  if (typeName === '8D Report') Object.assign(fields, EIGHT_D(F));
   let made;
   try { made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }); } catch (err) {
     if (err.status !== 400) throw err;
-    for (const k of Object.keys(EIGHT_D(F))) delete fields[k];
-    delete fields.parent;
+    // Jira named the fields it wouldn't take: they're left off and noted, rather than losing the item.
+    let bad = {};
+    try { bad = JSON.parse(String(err.message).replace(/^[^{]*/, '')).errors || {}; } catch { bad = {}; }
+    const keys = Object.keys(bad).filter((k) => k in fields && !['project', 'issuetype', 'summary'].includes(k));
+    if (!keys.length) throw err;
+    for (const k of keys) { skipped.push(Object.values(meta.byName).find((f) => f.id === k)?.name || k); delete fields[k]; }
     made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
   }
   // The item names itself as its origin, so Jira's old copy rules leave it alone.
@@ -943,20 +1127,9 @@ export async function create(env, viewer, input) {
   const b = budget(env, 30);
   await applyWrites(env, b, { limit: areas.length }).catch(() => {});
   await setState(env, 'ims_read_at', Date.now() - READ_EVERY_MS);
-  await record(env, viewer, { area: 'IMS', action: 'raised an IMS item', subjectType: 'ims', subjectId: made.key, label: `${made.key} ${summary}`.slice(0, 120),
+  await record(env, viewer, { area: 'IMS', action: `raised ${typeName === 'Incident' ? 'an incident' : `a${/^[AEIOU8]/.test(typeName) ? 'n' : ''} ${typeName}`}`, subjectType: 'ims', subjectId: made.key, label: `${made.key} ${summary}`.slice(0, 120),
     changes: [{ label: 'Areas', before: '', after: names.join(', ') }] }).catch(() => {});
-  return { ok: true, key: made.key, copies: areas.length - 1 };
-}
-
-function EIGHT_D(F) {
-  const t = (s) => s;
-  return Object.fromEntries([
-    [F.persons, t('|| Name || Job Title || Telephone || Email ||\n| | | | |\n| | | | |')],
-    [F.containment, t('|| Title || Description || Owners || Actioned Date ||\n| | | | |\n| | | | |')],
-    [F.actions, t('|| Title || Description || Owners || Due Date || Actioned Date || Reviewed Date ||\n| | | | | | |\n| | | | | | |')],
-    [F.finalise, t('| Initiated by | | |\n| Approved by | | |\n| Closed by | | |\n| Verified by | | |')],
-    [F.analysis, t('|| Root Cause Analysis || Description || Investigators || Actioned Date ||\n| | | | |\n| | | | |')],
-  ].filter(([k]) => k));
+  return { ok: true, key: made.key, copies: areas.length - 1, skipped: [...new Set(skipped)] };
 }
 
 // ---------- management meetings ----------

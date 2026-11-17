@@ -457,6 +457,18 @@ const pages = {
     render: () => imsHtml(),
   },
 
+  '#/training': {
+    band: () => '<h1>Training & Policy</h1><p>Tool box talks coming up, and the talks and policies for you to acknowledge.</p>',
+    render: async () => {
+      // Those with the IMS tile have all of this on its Training and Policy tabs.
+      if (imsIsMine()) { imsTab = trTab === 'policy' ? 'policy' : 'training'; setTimeout(() => location.replace('#/ims')); return ''; }
+      const manage = (await trLoad('talks')).manage;
+      if (!manage) return trStaffHtml();
+      return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
+        `<button class="tab${trTab === k ? ' on' : ''}" data-tr-tab="${k}">${l}</button>`).join('')}</div></div>${await trainingHtml(trTab, 'tile')}`;
+    },
+  },
+
   '#/contracts': {
     band: () => '<h1>Service contracts</h1><p>Each customer\'s contract: its dates, visits and tokens.</p>',
     render: () => contractsHtml(),
@@ -1111,6 +1123,8 @@ let arrangeMode = false;
 function tileAccess(m) {
   const u = me.user;
   // Who can open each tile is set in Admin; the server works it out for each person.
+  // Training & Policy is the IMS tile as everyone else sees it: whoever has the IMS tile doesn't get both.
+  if (m.id === 'training' && imsIsMine()) return false;
   if (u.tiles && m.id in u.tiles) return u.isAdmin || u.tiles[m.id] ? 'open' : m.whenLocked === 'construction' ? 'locked' : false;
   const needs = m.needs || (m.adminOnly ? 'admin' : m.leadOnly ? 'oversight' : null);
   const hasNeed = !needs || u.isAdmin || [].concat(needs).some((n) => Boolean(u.can?.[n]));
@@ -1119,6 +1133,10 @@ function tileAccess(m) {
   return m.whenLocked === 'construction' ? 'locked' : false;
 }
 const allowedTile = (m) => Boolean(tileAccess(m));
+function imsIsMine() {
+  const ims = MODULES.find((x) => x.id === 'ims');
+  return Boolean(ims && tileAccess(ims) === 'open');
+}
 
 // ---------- folders of tiles ----------
 // Anyone can gather tiles into folders on their own home screen, as on a phone. A folder sits
@@ -12094,7 +12112,7 @@ async function imsLoadOptions() {
 }
 
 function imsTabsHtml() {
-  return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings']].map(([k, l]) =>
+  return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings'], ['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
     `<button class="tab${imsTab === k ? ' on' : ''}" data-ims-tab="${k}">${l}</button>`).join('')}</div>
     <button class="btn psc-new-btn" data-ims-new="1">＋ New IMS item</button></div>`;
 }
@@ -12106,6 +12124,7 @@ async function imsHtml() {
   const data = await imsLoad();
   const head = `${imsTabsHtml()}<div class="psc-headline"><p class="help">${data.reading ? 'Reading everything from Jira; the rest follows over the next few minutes.' : `Read from Jira ${data.readAt ? agoText(new Date(data.readAt).toISOString()) : 'not yet'}.`}${data.pending ? ` ${data.pending} change${data.pending === 1 ? '' : 's'} waiting to go to the other copies${data.failing ? `, ${data.failing} that Jira refused` : ''}.` : ''}</p>
     <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>`;
+  if (imsTab === 'training' || imsTab === 'policy') return `${imsTabsHtml()}${await trainingHtml(imsTab, 'ims')}`;
   if (imsCleanup) return head + await imsCleanupHtml();
   if (imsTab === 'stats') return head + await imsStatsHtml();
   if (imsTab === 'meetings') return head + await imsMeetingsHtml();
@@ -12122,10 +12141,10 @@ function imsItemsHtml(data) {
   const types = [...new Set(data.items.map((i) => i.imsType || 'Not set'))].sort();
   const people = [...new Map(data.items.filter((i) => i.assigneeId).map((i) => [i.assigneeId, i.assignee])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
   const today = new Date().toISOString().slice(0, 10);
-  const areaTitle = (a) => (a.state === 'red' ? `${a.nc} open incident${a.nc === 1 ? '' : 's'} or non-conformit${a.nc === 1 ? 'y' : 'ies'}` : a.state === 'blue' ? `${a.open} open` : 'Nothing open');
+  const areaTitle = (a) => (a.state === 'red' ? [a.nc ? `${a.nc} open incident${a.nc === 1 ? '' : 's'} or non-conformit${a.nc === 1 ? 'y' : 'ies'}` : '', a.eightD ? `${a.eightD} open 8D report${a.eightD === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ') : a.state === 'blue' ? `${a.open} open` : 'Nothing open');
   return `<div class="ims-areas-bar"><button class="chip${imsFilter.area === '' ? ' on' : ''}" data-ims-area="">All areas</button>${data.areas.map((a) =>
       `<button class="chip ims-area-btn ${a.state || ''}${imsFilter.area === a.key ? ' on' : ''}" data-ims-area="${esc(a.key)}" title="${esc(areaTitle(a))}">${esc(a.name)} <small>${a.open ?? data.items.filter((i) => i.areas.includes(a.key) && !i.done).length}</small></button>`).join('')}</div>
-    <p class="help ims-area-key"><span class="ims-dot red"></span> Open incident or non-conformity <span class="ims-dot blue"></span> Open tasks <span class="ims-dot green"></span> Nothing open</p>
+    <p class="help ims-area-key"><span class="ims-dot red"></span> Open incident, non-conformity or 8D report <span class="ims-dot blue"></span> Open tasks <span class="ims-dot green"></span> Nothing open</p>
     <div class="row con-tools psc-tools">
       <label class="con-tier">Type <select data-ims-filter="type"><option value="">All</option>${types.map((t) => `<option${imsFilter.type === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
       <label class="con-tier">Assignee <select data-ims-filter="who"><option value="">Anyone</option><option value="none"${imsFilter.who === 'none' ? ' selected' : ''}>Unassigned</option>${people.map(([id, n]) => `<option value="${esc(id)}"${imsFilter.who === id ? ' selected' : ''}>${esc(n)}${id === data.me ? ' (you)' : ''}</option>`).join('')}</select></label>
@@ -12297,6 +12316,7 @@ function imsDrillKeys(s, id) {
   if (kind === 'set') return s.sets[name] || [];
   if (kind === 'area') return s.openByArea.find((a) => a.key === name)?.keys || [];
   if (kind === 'areaNc') return s.openByArea.find((a) => a.key === name)?.incidentKeys || [];
+  if (kind === 'area8D') return s.openByArea.find((a) => a.key === name)?.eightDKeys || [];
   const rows = s[kind] || [];
   if (name === 'Other' && !rows.some((r) => r.name === 'Other')) return [...new Set(rows.filter((r) => r.name !== 'Not set').slice(8).flatMap((r) => r.keys))];
   return rows.find((r) => r.name === name)?.keys || [];
@@ -12360,18 +12380,23 @@ async function imsStatsHtml() {
       ${kpi('ncRaised', `Non-conformities raised in ${period}`, t.ncRaised, '', true)}
       ${kpi('ncClosed', `Non-conformities closed in ${period}`, t.ncClosed)}
       ${kpi('ncOpen', `Non-conformities open ${at}`, t.ncOpen, `${t.ncOld} over 30 days`, true)}
+      ${kpi('eightRaised', `8D reports raised in ${period}`, t.eightRaised, '', true)}
+      ${kpi('eightClosed', `8D reports closed in ${period}`, t.eightClosed)}
+      ${kpi('eightOpen', `8D reports open ${at}`, t.eightOpen, `${t.eightOld} over 30 days`, true)}
       ${kpi('rootMissing', 'Root cause still needed', t.rootMissing, '', true)}
     </div>
-    <div class="ims-grid">
+    <div class="ims-grid ims-wide">
       <section class="card"><h3 style="margin-top:0">Raised and closed each month</h3>${imsMonthBars(s.months, 'raised', 'closed', { labels: ['Raised', 'Closed'] })}</section>
       <section class="card"><h3 style="margin-top:0">Non-conformities each month</h3>${imsMonthBars(s.months, 'ncRaised', 'ncClosed', { labels: ['Raised', 'Closed'] })}
-        <p class="help">Non-conformities, incidents and 8D reports.</p></section>
+        <p class="help">Non-conformities and incidents.</p></section>
+      <section class="card"><h3 style="margin-top:0">8D reports each month</h3>${imsMonthBars(s.months, 'eightRaised', 'eightClosed', { labels: ['Raised', 'Closed'] })}</section>
     </div>
     <section class="card"><h3 style="margin-top:0">Open at the end of each month</h3>${imsOpenLine(s.months, 'open')}<p class="help">Choose a point, a bar or a month above to see that month.</p></section>
-    ${imsStats.area ? '' : `<section class="card"><h3 style="margin-top:0">Each area, ${esc(at)}</h3><div class="table-wrap"><table class="ims-area-table"><thead><tr><th>Area</th><th class="num">Open</th><th class="num">Incidents and non-conformities</th><th></th></tr></thead><tbody>
+    ${imsStats.area ? '' : `<section class="card"><h3 style="margin-top:0">Each area, ${esc(at)}</h3><div class="table-wrap"><table class="ims-area-table"><thead><tr><th>Area</th><th class="num">Open</th><th class="num">Incidents and non-conformities</th><th class="num">8D reports</th><th></th></tr></thead><tbody>
       ${s.openByArea.map((a) => `<tr><td>${imsAreaChip(a.key)} ${esc(a.name)}</td><td class="num"><button class="linklike" data-ims-drill="area:${a.key}" data-title="Open in ${esc(a.name)}">${a.n}</button></td>
         <td class="num"><button class="linklike" data-ims-drill="areaNc:${a.key}" data-title="Incidents and non-conformities open in ${esc(a.name)}">${a.incidents}</button></td>
-        <td><span class="ims-rag ${a.incidents ? 'red' : a.n ? 'blue' : 'green'}">${a.incidents ? 'Open incidents' : a.n ? 'Open tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div>
+        <td class="num"><button class="linklike" data-ims-drill="area8D:${a.key}" data-title="8D reports open in ${esc(a.name)}">${a.eightD}</button></td>
+        <td><span class="ims-rag ${a.incidents || a.eightD ? 'red' : a.n ? 'blue' : 'green'}">${a.incidents ? 'Open incidents' : a.eightD ? 'Open 8D reports' : a.n ? 'Open tasks' : 'Clear'}</span></td></tr>`).join('')}</tbody></table></div>
       <p class="help">Each area counts every item in it, so an item in several areas counts in each.</p></section>`}
     <div class="ims-grid">
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by IMS Task Type</h3>${imsDonut(s.openByType, 'openByType')}</section>
@@ -12434,33 +12459,148 @@ async function imsMeetingHtml() {
 
 // ---------- a new item ----------
 
+// What each kind of item asks for, a tab at a time.
+const IMS_TYPE_TABS = {
+  Incident: ['Incident', 'Result of Incident', 'Response'],
+  '8D Report': ['8D Information', 'Persons Involved - Team Approach', 'Description of Problem', 'Containment', 'Root Cause Analysis & Plan of Corrective Actions', 'Corrective & Preventative Actions'],
+};
+const IMS_TABLES = {
+  containment: { cols: [['title', 'Title'], ['description', 'Description'], ['owners', 'Owners'], ['actioned', 'Actioned Date', 'date']] },
+  analysis: { cols: [['rca', 'Root Cause Analysis'], ['description', 'Description'], ['investigators', 'Investigators'], ['actioned', 'Actioned Date', 'date']] },
+  actions: { cols: [['title', 'Title'], ['description', 'Description'], ['owners', 'Owners'], ['due', 'Due Date', 'date'], ['actioned', 'Actioned Date', 'date'], ['reviewed', 'Reviewed Date', 'date']] },
+  persons: { cols: [['name', 'Name'], ['job', 'Job Title'], ['phone', 'Telephone'], ['email', 'Email']] },
+};
+const imsBlankRow = (table) => Object.fromEntries(IMS_TABLES[table].cols.map(([k]) => [k, '']));
+const imsRaiseForms = new Map();
+async function imsRaiseForm(type, home) {
+  if (!['Incident', '8D Report', 'Change Management'].includes(type) || !home) return null;
+  const k = `${type}|${home}`;
+  if (!imsRaiseForms.has(k)) imsRaiseForms.set(k, await api(`/api/ims/raise-form?type=${encodeURIComponent(type)}&home=${encodeURIComponent(home)}`).catch((err) => ({ error: err.message })));
+  return imsRaiseForms.get(k);
+}
+function imsNewBlank(meeting = '') {
+  return { areas: [], home: '', type: 'IMS Task', imsType: '', assigneeId: me.user.accountId || '', staffIds: [], start: '', target: '', rootRequired: '', meeting, summary: '', description: '',
+    subTypes: [], rootCause: [], tab: 0,
+    incident: { at: '', location: '', happened: '', severity: '', injury: '', containment: [imsBlankRow('containment')], factors: '', analysis: [imsBlankRow('analysis')] },
+    eightD: { businessArea: [], customer: '', address: '', persons: [], containment: [imsBlankRow('containment')], factors: '', analysis: [imsBlankRow('analysis')], actions: [imsBlankRow('actions')] },
+    change: { description: { system: '', type: '', scope: '', summary: '', requestedBy: '' }, docs: { procedure: '', sop: '', approval: '', related: '', audit: '' } } };
+}
+const imsPath = (obj, path) => path.split('.').reduce((o, k) => (o == null ? o : o[k]), obj);
+function imsSetPath(obj, path, value) {
+  const keys = path.split('.');
+  const last = keys.pop();
+  const target = keys.reduce((o, k) => o[k], obj);
+  target[last] = value;
+}
+
+// A table filled in a row at a time, with Add another.
+function imsTableHtml(path, table) {
+  const rows = imsPath(imsNew, path) || [];
+  const cols = IMS_TABLES[table].cols;
+  return `<div class="ims-rows">${rows.map((r, i) => `<div class="ims-row-card">
+      <div class="ims-row-head"><strong>${i + 1}</strong>${rows.length > 1 || table === 'persons' ? `<button type="button" class="linklike" data-ims-row-remove="${path}" data-i="${i}">Remove</button>` : ''}</div>
+      <div class="ims-row-fields">${cols.map(([k, label, kind]) => `<label>${esc(label)}${kind === 'date' ? `<input type="date" data-ims-new-path="${path}.${i}.${k}" value="${esc(r[k] || '')}">`
+        : k === 'description' || k === 'rca' ? `<textarea rows="2" data-ims-new-path="${path}.${i}.${k}">${esc(r[k] || '')}</textarea>`
+        : `<input type="${k === 'email' ? 'email' : k === 'phone' ? 'tel' : 'text'}" data-ims-new-path="${path}.${i}.${k}" value="${esc(r[k] || '')}">`}</label>`).join('')}</div>
+    </div>`).join('')}
+    <button type="button" class="btn secondary" data-ims-row-add="${path}" data-table="${table}">＋ Add another</button></div>`;
+}
+
 async function imsNewHtml() {
   const o = await imsLoadOptions();
   const n = imsNew;
-  const folders = o.folders.filter((f) => f.project === n.home);
+  const home = n.home || n.areas[0] || '';
+  const form = await imsRaiseForm(n.type, home);
   const sel = (name, all, empty) => `<select data-ims-new-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${n[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
+  const selPath = (path, all, empty) => `<select data-ims-new-path="${path}"><option value="">${esc(empty)}</option>${all.map((v) => `<option${imsPath(n, path) === v ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`;
   const checks = (name, all) => `<div class="ims-checks">${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<label class="inline-check"><input type="checkbox" data-ims-new-check="${name}" value="${esc(val)}"${n[name].includes(val) ? ' checked' : ''}> ${esc(label)}</label>`; }).join('')}</div>`;
+  const checksPath = (path, all) => `<div class="ims-checks">${all.map((v) => `<label class="inline-check"><input type="checkbox" data-ims-new-multi="${path}" value="${esc(v)}"${(imsPath(n, path) || []).includes(v) ? ' checked' : ''}> ${esc(v)}</label>`).join('')}</div>`;
+  const text = (path, label, { rows = 0, placeholder = '' } = {}) => `<label>${esc(label)}${rows ? `<textarea rows="${rows}" data-ims-new-path="${path}" placeholder="${esc(placeholder)}">${esc(imsPath(n, path) || '')}</textarea>`
+    : `<input type="text" data-ims-new-path="${path}" value="${esc(imsPath(n, path) || '')}" placeholder="${esc(placeholder)}">`}</label>`;
+  const rootFixed = ['Incident', '8D Report'].includes(n.type);
+  const staffChips = n.staffIds.map((id) => o.people.find((p) => p.id === id)).filter(Boolean);
+  const rootCause = `<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>`;
+  const tabs = IMS_TYPE_TABS[n.type];
+  const tab = tabs ? Math.min(n.tab || 0, tabs.length - 1) : 0;
+  let body = '';
+  if (n.type === 'Incident') {
+    body = [
+      `<div class="psc-new-row"><label>Date & Time of Incident<input type="datetime-local" data-ims-new-path="incident.at" value="${esc(n.incident.at)}"></label>
+        ${text('incident.location', 'Location of Incident')}
+        <label>Incident Severity${selPath('incident.severity', form?.severity?.length ? form.severity : ['Level 1 - Negligable / No Impact', 'Level 2 - Minor', 'Level 3 - Moderate', 'Level 4 - Major', 'Level 5 - Critical / Catastrophic'], 'Choose')}</label></div>
+        ${text('incident.happened', 'What Happened?', { rows: 7, placeholder: 'The details of the incident' })}`,
+      text('incident.injury', 'Description of Injury/Damage', { rows: 7, placeholder: 'Any injury or damage that came from the incident' }),
+      `<h3>Containment</h3>${imsTableHtml('incident.containment', 'containment')}
+        ${rootCause}
+        ${text('incident.factors', 'Contributing Factors', { rows: 4 })}
+        <h3>Analysis & Planning of Corrective Actions</h3>${imsTableHtml('incident.analysis', 'analysis')}`,
+    ][tab];
+  } else if (n.type === '8D Report') {
+    const customers = form?.customers || [];
+    body = [
+      `<fieldset><legend>Business Area</legend>${checksPath('eightD.businessArea', form?.businessArea?.length ? form.businessArea : ['Operations', 'Software', 'Hardware', 'Engineering', 'Communication'])}</fieldset>
+        <label>Customer${customers.length && !form?.customerFree ? selPath('eightD.customer', customers, 'Choose the customer')
+          : `<input type="text" list="ims-customers" data-ims-new-path="eightD.customer" value="${esc(n.eightD.customer)}"><datalist id="ims-customers">${customers.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`}</label>
+        ${text('eightD.address', 'Customer Address', { rows: 3, placeholder: 'The address of the customer\'s site' })}`,
+      `<p class="help">Everyone in Promtek Staff Involved (at the top) is filled in here from the hub. Add anyone else, from the customer say, with Add another.</p>
+        <h3>Persons Involved Info</h3>${imsTableHtml('eightD.persons', 'persons')}`,
+      `<label>Description<textarea rows="8" data-ims-new-field="description" placeholder="What the problem is">${esc(n.description)}</textarea></label>`,
+      `<h3>Containment</h3>${imsTableHtml('eightD.containment', 'containment')}`,
+      `${rootCause}${text('eightD.factors', 'Contributing Factors', { rows: 4 })}
+        <h3>Analysis & Planning of Corrective Actions</h3>${imsTableHtml('eightD.analysis', 'analysis')}`,
+      `<h3>Corrective & Preventative Actions Taken</h3>${imsTableHtml('eightD.actions', 'actions')}`,
+    ][tab];
+  } else {
+    body = `<label>Description<textarea rows="6" data-ims-new-field="description" placeholder="What was found, why it matters, what's proposed">${esc(n.description)}</textarea></label>
+      ${n.type === 'Change Management' ? `<h3>Change Description</h3><div class="ims-kv">
+          ${text('change.description.system', 'System / Service Affected')}${text('change.description.type', 'Type of Change')}
+          ${text('change.description.scope', 'Scope / Components Affected')}${text('change.description.summary', 'Summary of Change', { rows: 2 })}
+          ${text('change.description.requestedBy', 'Requested By')}</div>
+        <h3>Change Documentation</h3><div class="ims-kv">
+          ${text('change.docs.procedure', 'ISMS Procedure Reference')}${text('change.docs.sop', 'Implementation / SOP Link')}
+          ${text('change.docs.approval', 'Approval Evidence (File or Comment)')}${text('change.docs.related', 'Related Jira Issues / Tickets')}
+          ${text('change.docs.audit', 'Audit or Change Record Reference')}</div>` : ''}
+      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
+      ${n.rootRequired === 'No' ? '' : rootCause}`;
+  }
+  const missing = form?.missing ? `<p class="bad">${esc(o.areas.find((a) => a.key === home)?.name || home)} has no ${esc(n.type)} type in Jira. Choose another main area, or add the type to that project.</p>` : '';
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-new-cancel="1">Back</button></div>
     <section class="card ims-form">
       <h2 style="margin-top:0">New IMS item</h2>
       <fieldset><legend>Areas it belongs to</legend>${checks('areas', o.areas.map((a) => [a.key, a.name]))}</fieldset>
       ${n.areas.length > 1 ? `<label>Main area <small class="muted">where it's raised; the others get a copy</small>${sel('home', o.areas.filter((a) => n.areas.includes(a.key)).map((a) => [a.key, a.name]), 'Choose')}</label>` : ''}
-      <div class="psc-new-row">
-        <label>Kind${sel('type', ['IMS Task', '8D Report', 'Change Management'], 'IMS Task')}</label>
-        <label>Folder${sel('folder', folders.map((f) => [f.key, f.name]), n.home ? 'No folder' : 'Choose an area first')}</label>
+      <div class="psc-new-row ims-top-row">
+        <label>Kind<select data-ims-new-field="type">${['IMS Task', 'Incident', '8D Report', 'Change Management'].map((t) => `<option${n.type === t ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
         <label>IMS Task Type${sel('imsType', o.allowed.imsType, 'Not set')}</label>
         <label>Assignee${sel('assigneeId', o.people.map((p) => [p.id, p.name]), 'Unassigned')}</label>
+        <label>Promtek Staff Involved<select data-ims-staff-add="1"><option value="">Add someone…</option>${o.people.filter((p) => !n.staffIds.includes(p.id)).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
         <label>Start date<input type="date" data-ims-new-field="start" value="${esc(n.start)}"></label>
         <label>Target end<input type="date" data-ims-new-field="target" value="${esc(n.target)}"></label>
-        <label>Root cause required${sel('rootRequired', o.allowed.rootRequired, 'Not set')}</label>
+        <label>Root cause required?${rootFixed ? `<input type="text" value="Yes, always for ${esc(n.type === 'Incident' ? 'incidents' : '8D reports')}" disabled>` : sel('rootRequired', ['Yes', 'No'], 'Choose')}</label>
         <label>From a meeting${sel('meeting', o.meetings.map((m) => [m.key, `${m.summary}${m.date ? ` (${m.date})` : ''}`]), 'Not from a meeting')}</label>
       </div>
-      <label>Summary<input type="text" data-ims-new-field="summary" maxlength="250" value="${esc(n.summary)}" placeholder="What needs doing, in a line"></label>
-      <label>Description<textarea rows="6" data-ims-new-field="description" placeholder="What was found, why it matters, what's proposed">${esc(n.description)}</textarea></label>
-      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
-      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}</fieldset>
-      <div class="row"><button class="btn" data-ims-create="1">Raise in Jira</button><button class="linklike" data-ims-new-cancel="1">Cancel</button></div>
+      ${staffChips.length ? `<div class="ims-staff">${staffChips.map((p) => `<span class="chip">${esc(p.name)} <button type="button" class="linklike" data-ims-staff-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button></span>`).join('')}</div>` : ''}
+      <label>Summary<input type="text" data-ims-new-field="summary" maxlength="250" value="${esc(n.summary)}" placeholder="What it is, in a line"></label>
+      ${missing}
+      ${tabs ? `<div class="tabs con-tabs ims-type-tabs">${tabs.map((l, i) => `<button type="button" class="tab${i === tab ? ' on' : ''}" data-ims-new-tab="${i}">${i + 1}. ${esc(l)}</button>`).join('')}</div>` : ''}
+      <div class="ims-type-body">${body}</div>
+      <div class="row">${tabs && tab > 0 ? `<button class="btn secondary" data-ims-new-tab="${tab - 1}">Back</button>` : ''}${tabs && tab < tabs.length - 1 ? `<button class="btn secondary" data-ims-new-tab="${tab + 1}">Next: ${esc(tabs[tab + 1])}</button>` : ''}
+        <button class="btn" data-ims-create="1">Raise in Jira</button><button class="linklike" data-ims-new-cancel="1">Cancel</button></div>
     </section>`;
+}
+
+// The people in Promtek Staff Involved, filled into the 8D's Persons Involved from the hub.
+function imsSyncPersons() {
+  const n = imsNew;
+  if (!n || !imsOptions) return;
+  const people = imsOptions.people;
+  const keep = n.eightD.persons.filter((r) => !r.personId || n.staffIds.includes(r.personId));
+  for (const id of n.staffIds) {
+    if (keep.some((r) => r.personId === id)) continue;
+    const p = people.find((x) => x.id === id);
+    if (p) keep.push({ personId: id, name: p.name, job: p.job || '', phone: p.phone || '', email: p.email || '' });
+  }
+  n.eightD.persons = keep;
 }
 
 function imsCapture() {
@@ -12470,6 +12610,11 @@ function imsCapture() {
   if (!target) return;
   const attr = imsNew ? 'imsNewField' : 'imsField';
   for (const el of box.querySelectorAll(imsNew ? '[data-ims-new-field]' : '[data-ims-field]')) target[el.dataset[attr]] = el.value;
+  if (imsNew) {
+    for (const el of box.querySelectorAll('[data-ims-new-path]')) imsSetPath(imsNew, el.dataset.imsNewPath, el.value);
+    const multi = new Set([...box.querySelectorAll('[data-ims-new-multi]')].map((el) => el.dataset.imsNewMulti));
+    for (const m of multi) imsSetPath(imsNew, m, [...box.querySelectorAll(`[data-ims-new-multi="${m}"]:checked`)].map((el) => el.value));
+  }
   const checkAttr = imsNew ? 'data-ims-new-check' : 'data-ims-check';
   const groups = new Set([...box.querySelectorAll(`[${checkAttr}]`)].map((el) => el.getAttribute(checkAttr)));
   for (const g of groups) target[g] = [...box.querySelectorAll(`[${checkAttr}="${g}"]:checked`)].map((el) => el.value);
@@ -12479,7 +12624,8 @@ async function imsClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('.jv-comment a, .jv-rich a')) return false;
   const tab = t('[data-ims-tab]');
-  if (tab) { imsTab = tab.dataset.imsTab; imsOpen = null; imsMeetingOpen = null; imsDrill = null; imsCleanup = null; return render(); }
+  if (tab) { imsTab = tab.dataset.imsTab; imsOpen = null; imsMeetingOpen = null; imsDrill = null; imsCleanup = null; trOpen = null; trDraft = null; trCell = null; return render(); }
+  if ((imsTab === 'training' || imsTab === 'policy') && await trClick(event)) return true;
   const area = t('[data-ims-area]');
   if (area) { imsFilter.area = area.dataset.imsArea; return render(); }
   if (t('[data-ims-refresh]')) {
@@ -12489,19 +12635,31 @@ async function imsClick(event) {
   }
   const newBtn = t('[data-ims-new]');
   if (newBtn) {
-    imsNew = { areas: [], home: '', type: '', folder: '', imsType: '', assigneeId: me.user.accountId || '', start: '', target: '', rootRequired: '', meeting: newBtn.dataset.meeting || '', summary: '', description: '', subTypes: [], rootCause: [] };
+    imsNew = imsNewBlank(newBtn.dataset.meeting || '');
     imsMeetingOpen = null; window.scrollTo(0, 0); return render();
   }
   if (t('[data-ims-new-cancel]')) { imsCapture(); if ((imsNew?.summary || imsNew?.description) && !confirm('Throw away this item?')) return true; imsNew = null; return render(); }
+  const ntab = t('[data-ims-new-tab]');
+  if (ntab && imsNew) { imsCapture(); imsNew.tab = Number(ntab.dataset.imsNewTab); window.scrollTo(0, 0); return render(); }
+  const addRow = t('[data-ims-row-add]');
+  if (addRow && imsNew) { imsCapture(); imsPath(imsNew, addRow.dataset.imsRowAdd).push(imsBlankRow(addRow.dataset.table)); return render(); }
+  const rmRow = t('[data-ims-row-remove]');
+  if (rmRow && imsNew) { imsCapture(); imsPath(imsNew, rmRow.dataset.imsRowRemove).splice(Number(rmRow.dataset.i), 1); return render(); }
+  const rmStaff = t('[data-ims-staff-remove]');
+  if (rmStaff && imsNew) { imsCapture(); imsNew.staffIds = imsNew.staffIds.filter((x) => x !== rmStaff.dataset.imsStaffRemove); imsSyncPersons(); return render(); }
   if (t('[data-ims-create]')) {
     imsCapture();
     const n = imsNew;
     if (!n.areas.length) { toast('Choose at least one area'); return true; }
     if (n.summary.trim().length < 3) { toast('Give it a summary'); return true; }
+    if (!['Incident', '8D Report'].includes(n.type) && !n.rootRequired) { toast('Say whether a root cause is required'); return true; }
+    if (n.type === 'Incident' && (!n.incident.at || !n.incident.happened.trim() || !n.incident.severity)) { toast('Give the date and time, what happened and the severity'); n.tab = 0; return render(); }
     const b = t('[data-ims-create]'); b.disabled = true; b.textContent = 'Raising…';
     try {
-      const r = await api('/api/ims/create', { method: 'POST', body: JSON.stringify({ ...n, home: n.home || n.areas[0], type: n.type || 'IMS Task' }) });
-      toast(`${r.key} raised${r.copies ? `, with ${r.copies} cop${r.copies === 1 ? 'y' : 'ies'}` : ''}`);
+      // The time of an incident is as it was here, sent with the offset so Jira has the right moment.
+      const payload = { ...n, home: n.home || n.areas[0], incident: { ...n.incident, at: n.incident.at ? new Date(n.incident.at).toISOString() : '' } };
+      const r = await api('/api/ims/create', { method: 'POST', body: JSON.stringify(payload) });
+      toast(`${r.key} raised${r.copies ? `, with ${r.copies} cop${r.copies === 1 ? 'y' : 'ies'}` : ''}${r.skipped?.length ? `. Jira had no field for: ${r.skipped.join(', ')}` : ''}`);
       imsNew = null; imsData = null; imsTab = 'items';
       return render();
     } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Raise in Jira'; return true; }
@@ -12577,6 +12735,7 @@ async function imsClick(event) {
 
 async function imsChange(event) {
   const el = event.target;
+  if ((imsTab === 'training' || imsTab === 'policy') && await trChange(event)) return true;
   if (el.matches('[data-ims-filter]') && el.dataset.imsFilter !== 'q') { imsFilter[el.dataset.imsFilter] = el.value; render(); return true; }
   if (el.matches('[data-ims-done]')) { imsDone = el.checked; render(); return true; }
   if (el.matches('[data-ims-differ]')) { imsFilter.differ = el.checked; if (el.checked) imsDone = true; render(); return true; }
@@ -12593,10 +12752,16 @@ async function imsChange(event) {
     await imsLoad();
     render(); return true;
   }
-  if (imsNew && (el.matches('[data-ims-new-check="areas"]') || el.matches('[data-ims-new-field="home"]'))) {
+  if (imsNew && (el.matches('[data-ims-new-check="areas"]') || el.matches('[data-ims-new-field="home"]') || el.matches('[data-ims-new-field="type"]') || el.matches('[data-ims-new-field="rootRequired"]'))) {
     imsCapture();
     if (!imsNew.areas.includes(imsNew.home)) imsNew.home = imsNew.areas[0] || '';
-    imsNew.folder = '';
+    if (el.matches('[data-ims-new-field="type"]')) imsNew.tab = 0;
+    render(); return true;
+  }
+  if (imsNew && el.matches('[data-ims-staff-add]') && el.value) {
+    imsCapture();
+    if (!imsNew.staffIds.includes(el.value)) imsNew.staffIds.push(el.value);
+    imsSyncPersons();
     render(); return true;
   }
   if (el.id === 'ims-minutes' && el.files?.length) {
@@ -14232,6 +14397,11 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/condor' && !settingsOpen && await condorClick(event) !== false) return;
   if (currentRoute() === '#/psc' && settingsOpen !== '#/psc' && await pscClick(event) !== false) return;
   if (currentRoute() === '#/ims' && !settingsOpen && await imsClick(event) !== false) return;
+  if (currentRoute() === '#/training' && !settingsOpen && !notifyOpen) {
+    const tt = event.target.closest('[data-tr-tab]');
+    if (tt) { trTab = tt.dataset.trTab; trOpen = null; trDraft = null; trCell = null; render(); return; }
+    if (await trClick(event)) return;
+  }
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (event.target.closest('[data-acc-rule]') && await accessClick(event) !== false) return;
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
@@ -14606,6 +14776,7 @@ view.addEventListener('change', async (event) => {
   if (currentRoute() === '#/capacity' && capTileChange(event)) return;
   if (currentRoute() === '#/psc' && !settingsOpen && await pscChange(event)) return;
   if (currentRoute() === '#/ims' && !settingsOpen && await imsChange(event)) return;
+  if (currentRoute() === '#/training' && !settingsOpen && await trChange(event)) return;
   if (event.target.id === 'avatar-input' && personEdit) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -14693,10 +14864,14 @@ let cameByNav = false;          // the next draw follows going to a page, not so
 const SUB_VIEWS = {
   '#/psc': { open: () => pscOpen || (pscNew ? 'new' : null), close: () => { pscOpen = null; pscNew = null; },
     reopen: (v) => { if (v === 'new') pscNew = { orgName: '', type: '', summary: '', description: '', assigneeId: null, condor: false, files: [] }; else pscOpen = v; } },
-  '#/ims': { open: () => imsOpen || imsMeetingOpen || (imsNew ? 'new' : null) || (imsCleanup ? 'cleanup' : null) || (imsDrill ? `drill|${imsDrill.id}|${imsDrill.title}` : null),
-    close: () => { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; imsCleanup = null; imsDrill = null; },
+  '#/training': { open: () => (trOpen && !['new-talk', 'new-policy', 'edit-policy', 'course', 'member'].includes(trOpen) ? trOpen : null),
+    close: () => { trOpen = null; trDraft = null; }, reopen: (v) => { trOpen = v; if (v.startsWith('policy-')) trTab = 'policy'; } },
+  '#/ims': { open: () => imsOpen || imsMeetingOpen || (imsNew ? 'new' : null) || (imsCleanup ? 'cleanup' : null) || (imsDrill ? `drill|${imsDrill.id}|${imsDrill.title}` : null)
+    || (trOpen && (imsTab === 'training' || imsTab === 'policy') && /^(talk|policy)-/.test(trOpen) ? `tr|${trOpen}` : null),
+    close: () => { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; imsCleanup = null; imsDrill = null; trOpen = null; trDraft = null; },
     reopen: (v) => {
-      if (v === 'cleanup') imsCleanup = {};
+      if (v.startsWith('tr|')) { trOpen = v.slice(3); imsTab = v.startsWith('tr|policy') ? 'policy' : 'training'; }
+      else if (v === 'cleanup') imsCleanup = {};
       else if (v.startsWith('drill|')) { const [, id, title] = v.split('|'); imsDrill = { id, title }; imsTab = 'stats'; }
       else if (/^PROMTEK-/.test(v)) imsMeetingOpen = v; else if (v !== 'new') { imsOpen = v; imsItemData = null; imsEdit = null; }
     } },
@@ -14802,11 +14977,509 @@ async function syncAndRefresh(announce = false) {
   }
 }
 
+// ---------- Training & Policy ----------
+// The same views on the Training & Policy tile (everyone: their own talks, training and
+// policies) and in the IMS's Training and Policy tabs (management: everything, and setting them up).
+
+let trTab = 'training';        // on the tile: 'training' or 'policy'
+let trOpen = null;             // 'talk-5', 'policy-3', 'new-talk', 'new-policy', 'course', 'member'
+let trDraft = null;            // a form being filled in
+let trDivision = '';
+let trOnlyProblems = false;
+let trCell = null;             // { personKey, courseId } being edited
+let trCache = { talks: null, policies: null, matrix: null, options: null, at: 0 };
+let trShowPast = false;
+
+async function trLoad(what, force = false) {
+  if (force || Date.now() - trCache.at > 60000) trCache = { talks: null, policies: null, matrix: null, options: null, at: Date.now() };
+  if (what === 'talks' && !trCache.talks) trCache.talks = await api('/api/training/talks');
+  if (what === 'policies' && !trCache.policies) trCache.policies = await api('/api/training/policies');
+  if (what === 'options' && !trCache.options) trCache.options = await api('/api/training/options');
+  if (what === 'matrix' && (!trCache.matrix || trCache.matrix.forDivision !== trDivision)) {
+    trCache.matrix = await api(`/api/training/matrix${trDivision !== '' ? `?division=${encodeURIComponent(trDivision)}` : ''}`);
+    if (trDivision === '' && trCache.matrix.division) trDivision = String(trCache.matrix.division);
+    trCache.matrix.forDivision = trDivision;
+  }
+  return trCache[what];
+}
+const trWhen = (iso) => new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+function trCountdown(iso) {
+  const days = Math.round((Date.parse(`${new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Europe/London' })}T12:00:00Z`) - Date.parse(`${todayIso()}T12:00:00Z`)) / 86400000);
+  if (Date.parse(iso) < Date.now()) return 'held';
+  return days <= 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`;
+}
+
+// Who something is for: everyone, teams, matrix divisions, named people.
+function trAudienceHtml(a, o) {
+  const people = (a.people || []).map((id) => o.people.find((p) => p.id === id)).filter(Boolean);
+  return `<fieldset class="tr-audience"><legend>Who it's for</legend>
+      <label class="inline-check"><input type="checkbox" data-tr-aud="everyone"${a.everyone ? ' checked' : ''}> Everyone</label>
+      ${a.everyone ? '' : `<div class="tr-aud-group"><span class="muted">Teams</span><div class="ims-checks">${o.teams.map((t) => `<label class="inline-check"><input type="checkbox" data-tr-aud="teams" value="${esc(t)}"${(a.teams || []).includes(t) ? ' checked' : ''}> ${esc(t)}</label>`).join('')}</div></div>
+      ${o.divisions.length ? `<div class="tr-aud-group"><span class="muted">Training matrix divisions</span><div class="ims-checks">${o.divisions.map((d) => `<label class="inline-check"><input type="checkbox" data-tr-aud="divisions" value="${d.id}"${(a.divisions || []).map(String).includes(String(d.id)) ? ' checked' : ''}> ${esc(d.name)}</label>`).join('')}</div></div>` : ''}
+      <div class="tr-aud-group"><span class="muted">People</span>
+        <select data-tr-aud-add="1"><option value="">Add someone…</option>${o.people.filter((p) => !(a.people || []).includes(p.id)).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>
+        ${people.length ? `<div class="ims-staff">${people.map((p) => `<span class="chip">${esc(p.name)} <button type="button" class="linklike" data-tr-aud-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button></span>`).join('')}</div>` : ''}</div>`}
+    </fieldset>`;
+}
+function trCaptureAudience(box, a) {
+  a.everyone = Boolean(box.querySelector('[data-tr-aud="everyone"]')?.checked);
+  if (box.querySelector('[data-tr-aud="teams"]')) a.teams = [...box.querySelectorAll('[data-tr-aud="teams"]:checked')].map((el) => el.value);
+  if (box.querySelector('[data-tr-aud="divisions"]')) a.divisions = [...box.querySelectorAll('[data-tr-aud="divisions"]:checked')].map((el) => Number(el.value));
+}
+function trCapture() {
+  const box = view.querySelector('.tr-form');
+  if (!box || !trDraft) return;
+  for (const el of box.querySelectorAll('[data-tr-field]')) trDraft[el.dataset.trField] = el.value;
+  for (const el of box.querySelectorAll('[data-tr-link]')) { const [i, k] = el.dataset.trLink.split('.'); trDraft.links[Number(i)][k] = el.value; }
+  if (trDraft.audience) trCaptureAudience(box, trDraft.audience);
+}
+
+// ----- tool box talks -----
+
+function trTalkCard(t) {
+  return `<article class="card tr-card${t.upcoming ? '' : ' done'}" data-tr-open="talk-${t.id}" tabindex="0">
+      <div class="psc-top">${t.key ? `<span class="psc-key">${esc(t.key)}</span>` : ''}<span class="muted">Tool box talk</span>
+        <span class="psc-chip ${t.upcoming ? 'plain' : ''}">${t.upcoming ? esc(trCountdown(t.startsAt)) : 'Held'}</span>
+        ${t.forMe ? (t.acknowledged ? '<span class="psc-chip ok">Acknowledged</span>' : t.started ? '<span class="psc-chip bad">To acknowledge</span>' : '') : ''}</div>
+      <h3 class="psc-title">${esc(t.title)}</h3>
+      <div class="ims-meta"><span>${esc(trWhen(t.startsAt))}${t.minutes ? ` · ${t.minutes} min` : ''}</span>${t.location ? `<span class="muted">${esc(t.location)}</span>` : ''}
+        ${t.people ? `<span class="muted">${t.done} of ${t.count} acknowledged</span>` : ''}</div>
+      ${t.link && t.upcoming ? `<div class="row" style="margin-top:.5rem"><a class="btn secondary" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a></div>` : ''}
+    </article>`;
+}
+
+function trTalkHtml(t, manage) {
+  const ackable = t.forMe && t.started && !t.acknowledged;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card">
+      <div class="psc-top">${t.key ? `<a class="psc-key" href="${esc(me.jiraBaseUrl)}/browse/${esc(t.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(t.key)}</a>` : ''}<span class="muted">Tool box talk · arranged by ${esc(t.by || '')}</span></div>
+      <h2 style="margin:.3rem 0">${esc(t.title)}</h2>
+      <p><strong>${esc(trWhen(t.startsAt))}</strong>${t.minutes ? `, ${t.minutes} minutes` : ''} <span class="psc-chip plain">${esc(trCountdown(t.startsAt))}</span>${t.location ? `<br>${esc(t.location)}` : ''}</p>
+      ${t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : '<p class="muted">No meeting link yet.</p>'}
+      ${t.about ? `<div class="jv-rich"><p>${esc(t.about).replace(/\n/g, '<br>')}</p></div>` : ''}
+      ${t.forMe ? `<div class="jv-note">${t.acknowledged ? `<p style="margin:0">You acknowledged this talk ${esc(agoText(t.acknowledged))}.</p>`
+        : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="talk" data-id="${t.id}">Acknowledge</button></div>`
+        : '<p style="margin:0">Once the talk has started you can acknowledge it here.</p>'}</div>` : ''}
+      ${manage ? `<h3>Who it's for (${t.done} of ${t.count} acknowledged)</h3>${trWhoHtml(t.people)}
+        <h3>Change it</h3>
+        <div class="tr-form psc-new-row">
+          <label>Meeting link<input type="url" id="tr-talk-link" value="${esc(t.link || '')}" placeholder="https://meet.google.com/…"></label>
+          <label>Date and time<input type="datetime-local" id="tr-talk-at" value="${esc(new Date(new Date(t.startsAt).getTime() - new Date(t.startsAt).getTimezoneOffset() * 60000).toISOString().slice(0, 16))}"></label>
+        </div>
+        <div class="row"><button class="btn secondary" data-tr-talk-save="${t.id}">Save changes</button><button class="btn secondary danger-outline" data-tr-talk-cancel="${t.id}">Cancel the talk</button></div>` : ''}
+    </section>`;
+}
+
+function trWhoHtml(people) {
+  const done = people.filter((p) => p.at);
+  const not = people.filter((p) => !p.at);
+  return `<div class="tr-who">
+      <div><h4>Not yet (${not.length})</h4>${not.length ? `<ul>${not.map((p) => `<li>${esc(p.name)}</li>`).join('')}</ul>` : '<p class="muted">Everyone has.</p>'}</div>
+      <div><h4>Acknowledged (${done.length})</h4>${done.length ? `<ul>${done.map((p) => `<li>${esc(p.name)} <small class="muted">${esc(shortDate(p.at.slice(0, 10)))}</small></li>`).join('')}</ul>` : '<p class="muted">Nobody yet.</p>'}</div>
+    </div>`;
+}
+
+async function trNewTalkHtml() {
+  const o = await trLoad('options');
+  const d = trDraft;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card tr-form">
+      <h2 style="margin-top:0">New tool box talk</h2>
+      <p class="help">It's raised in Jira as an Internal Training item in Compliance & Training, on the day of the talk. Everyone it's for is told now and reminded each morning until it.</p>
+      <label>Title<input type="text" data-tr-field="title" maxlength="200" value="${esc(d.title)}" placeholder="What the talk covers"></label>
+      <div class="psc-new-row">
+        <label>Date and time<input type="datetime-local" data-tr-field="at" value="${esc(d.at)}"></label>
+        <label>Length (minutes)<input type="number" min="5" max="480" step="5" data-tr-field="minutes" value="${esc(d.minutes)}"></label>
+        <label>Where<input type="text" data-tr-field="location" value="${esc(d.location)}" placeholder="Workshop, or online"></label>
+        <label>Meeting link<input type="url" data-tr-field="meetLink" value="${esc(d.meetLink)}" placeholder="https://meet.google.com/…"></label>
+      </div>
+      <label>Counts as this training in the matrix<select data-tr-field="courseId"><option value="">None</option>${o.courses.map((c) => `<option value="${c.id}"${String(d.courseId) === String(c.id) ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+      <label>About it<textarea rows="4" data-tr-field="about">${esc(d.about)}</textarea></label>
+      ${trAudienceHtml(d.audience, o)}
+      <div class="row"><button class="btn" data-tr-talk-create="1">Create tool box talk</button><button class="linklike" data-tr-close="1">Cancel</button></div>
+    </section>`;
+}
+
+// ----- policies -----
+
+function trPolicyCard(p) {
+  return `<article class="card tr-card${p.archived ? ' done' : ''}" data-tr-open="policy-${p.id}" tabindex="0">
+      <div class="psc-top"><span class="muted">Policy${p.version ? ` · version ${esc(p.version)}` : ''}</span>
+        ${p.archived ? '<span class="psc-chip">Archived</span>' : ''}
+        ${p.forMe ? (p.acknowledged ? '<span class="psc-chip ok">Acknowledged</span>' : '<span class="psc-chip bad">To acknowledge</span>') : ''}
+        ${p.dueOn && !p.acknowledged ? `<span class="psc-chip plain">By ${esc(fullDate(p.dueOn))}</span>` : ''}</div>
+      <h3 class="psc-title">${esc(p.title)}</h3>
+      ${p.people ? `<div class="ims-meta"><span class="muted">${p.done} of ${p.count} acknowledged</span></div>` : ''}
+    </article>`;
+}
+
+function trPolicyHtml(p, manage) {
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card">
+      <div class="psc-top"><span class="muted">Policy${p.version ? ` · version ${esc(p.version)}` : ''} · published by ${esc(p.by || '')} ${esc(agoText(p.createdAt))}</span></div>
+      <h2 style="margin:.3rem 0">${esc(p.title)}</h2>
+      ${p.dueOn ? `<p>To acknowledge by <strong>${esc(fullDate(p.dueOn))}</strong>.</p>` : ''}
+      ${p.about ? `<div class="jv-rich"><p>${esc(p.about).replace(/\n/g, '<br>')}</p></div>` : ''}
+      <h3>The documents</h3>
+      <ul class="tr-links">${p.links.map((l) => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener" data-tr-doc="1">📄 ${esc(l.label || l.url)}</a></li>`).join('')}</ul>
+      ${p.forMe ? `<div class="jv-note">${p.acknowledged ? `<p style="margin:0">You acknowledged this policy ${esc(agoText(p.acknowledged))}.</p>`
+        : `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I have read and understood this policy</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="policy" data-id="${p.id}">Acknowledge</button></div>`}</div>` : ''}
+      ${manage ? `<h3>Who needs to acknowledge it (${p.done} of ${p.count})</h3>${trWhoHtml(p.people)}
+        <div class="row"><button class="btn secondary" data-tr-policy-edit="${p.id}">Edit</button><button class="btn secondary" data-tr-policy-archive="${p.id}">${p.archived ? 'Bring it back' : 'Archive it'}</button></div>` : ''}
+    </section>`;
+}
+
+async function trPolicyFormHtml() {
+  const o = await trLoad('options');
+  const d = trDraft;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card tr-form">
+      <h2 style="margin-top:0">${d.id ? 'Edit policy' : 'New policy to acknowledge'}</h2>
+      <p class="help">Kept in the hub only. Everyone it's for is told, and reminded each Monday until they've acknowledged it.${d.id ? ' Changing the version asks everyone to acknowledge it again.' : ''}</p>
+      <label>Title<input type="text" data-tr-field="title" maxlength="200" value="${esc(d.title)}"></label>
+      <div class="psc-new-row">
+        <label>Version<input type="text" data-tr-field="version" maxlength="40" value="${esc(d.version)}" placeholder="e.g. AD5/V2"></label>
+        <label>Acknowledge by<input type="date" data-tr-field="dueOn" value="${esc(d.dueOn)}"></label>
+      </div>
+      <label>What it is, in short<textarea rows="3" data-tr-field="about">${esc(d.about)}</textarea></label>
+      <fieldset><legend>Links to the documents</legend>
+        ${d.links.map((l, i) => `<div class="psc-new-row tr-link-row"><label>Name<input type="text" data-tr-link="${i}.label" value="${esc(l.label)}" placeholder="Information Security Policy"></label>
+          <label>Link<input type="url" data-tr-link="${i}.url" value="${esc(l.url)}" placeholder="https://docs.google.com/…"></label>
+          ${d.links.length > 1 ? `<button type="button" class="linklike" data-tr-link-remove="${i}">Remove</button>` : ''}</div>`).join('')}
+        <button type="button" class="btn secondary" data-tr-link-add="1">＋ Add another</button>
+      </fieldset>
+      ${trAudienceHtml(d.audience, o)}
+      <div class="row"><button class="btn" data-tr-policy-save="1">${d.id ? 'Save' : 'Publish policy'}</button><button class="linklike" data-tr-close="1">Cancel</button></div>
+    </section>`;
+}
+
+// ----- the training matrix -----
+
+const TR_STATUS = { ok: 'In date', soon: 'Due soon', expired: 'Expired', missing: 'Required, not done', na: 'Not applicable', optional: 'Optional', blank: 'Not recorded' };
+function trCellText(c) {
+  if (c.status === 'na') return 'N/A';
+  if (c.status === 'optional') return c.note === 'Not held' ? '✕' : 'O';
+  if (c.status === 'missing') return 'Req';
+  if (c.status === 'blank') return '';
+  if (c.completed) return new Date(`${c.completed}T12:00:00Z`).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  if (c.expires) return `to ${new Date(`${c.expires}T12:00:00Z`).toLocaleDateString('en-GB', { month: '2-digit', year: '2-digit' })}`;
+  return '✓';
+}
+
+async function trMatrixHtml() {
+  const m = await trLoad('matrix');
+  const rows = trOnlyProblems ? m.rows.filter((r) => r.counts.expired || r.counts.soon || r.counts.missing) : m.rows;
+  const courses = trOnlyProblems ? m.courses.filter((c) => c.bad || c.soon) : m.courses;
+  const cats = [];
+  for (const c of courses) { const last = cats.at(-1); if (last && last.name === (c.category || '')) last.n++; else cats.push({ name: c.category || '', n: 1 }); }
+  const cell = (r, c) => {
+    const v = r.cells[c.id] || { status: 'blank' };
+    const tip = [r.name, c.name, TR_STATUS[v.status], v.completed ? `Done ${fullDate(v.completed)}` : '', v.due ? `Due ${fullDate(v.due)}` : '', v.note || ''].filter(Boolean).join(' · ');
+    return `<td class="tr-cell s-${v.status}${trCell && trCell.personKey === r.key && trCell.courseId === c.id ? ' on' : ''}"${m.manage ? ` data-tr-cell="${esc(r.key)}|${c.id}" tabindex="0"` : ''} title="${esc(tip)}">${esc(trCellText(v))}${v.evidence ? '<sup>📎</sup>' : ''}</td>`;
+  };
+  const editor = trCell ? trCellEditorHtml(m) : '';
+  return `<section class="tr-matrix-wrap">
+      <div class="row con-tools psc-tools">
+        ${m.divisions.length ? `<div class="ims-areas-bar" style="margin:0"><button class="chip${trDivision === 'all' || (!m.manage && !trDivision) ? ' on' : ''}" data-tr-division="${m.manage ? 'all' : ''}">${m.manage ? 'Every division' : 'All mine'}</button>${m.divisions.map((d) => `<button class="chip${String(trDivision) === String(d.id) ? ' on' : ''}" data-tr-division="${d.id}">${esc(d.name)}</button>`).join('')}</div>` : ''}
+        <label class="inline-check"><input type="checkbox" data-tr-problems="1"${trOnlyProblems ? ' checked' : ''}> Only what needs doing</label>
+        ${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}
+        ${m.manage ? '<button class="btn secondary" data-tr-open="course">＋ Course</button><button class="btn secondary" data-tr-open="member">＋ Person</button>' : ''}
+      </div>
+      <div class="tr-totals"><span class="tr-key s-expired">${m.totals.expired} expired</span><span class="tr-key s-soon">${m.totals.soon} due in the next ${m.dueSoonDays} days</span><span class="tr-key s-missing">${m.totals.missing} required, not done</span>
+        <span class="tr-key s-ok">In date</span><span class="tr-key s-na">Not applicable</span></div>
+      ${editor}
+      ${!m.rows.length ? `<div class="card"><p class="muted" style="margin:0">${m.manage ? 'Nothing in the matrix yet. Run the import from the setup notes, or add courses and people.' : 'You\'re not in the training matrix yet.'}</p></div>`
+        : `<div class="tr-matrix"><table>
+        <thead><tr><th class="tr-name" rowspan="2">Name</th>${cats.map((c) => `<th colspan="${c.n}" class="tr-cat">${esc(c.name)}</th>`).join('')}</tr>
+          <tr>${courses.map((c) => `<th class="tr-course" title="${esc(`${c.name}${c.frequency ? ` · ${c.frequency}` : ''}`)}"><span>${esc(c.name)}</span>${c.frequency ? `<small>${esc(c.frequency)}</small>` : ''}${c.bad ? `<b class="tr-bad">${c.bad}</b>` : ''}</th>`).join('')}</tr></thead>
+        <tbody>${rows.map((r) => `<tr><th class="tr-name" scope="row">${esc(r.name)}${r.note ? `<small>${esc(r.note)}</small>` : ''}
+            ${!r.linked && m.manage ? `<select class="tr-link-person" data-tr-link-person="${esc(r.key)}"><option value="">Match to…</option>${m.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>` : ''}
+            ${r.counts.expired + r.counts.missing ? `<b class="tr-bad">${r.counts.expired + r.counts.missing}</b>` : ''}</th>
+          ${courses.map((c) => cell(r, c)).join('')}</tr>`).join('')}</tbody></table></div>`}
+      <p class="help">Each date is when the training was done; the colour shows when it's due again, from how often the course is needed. "to 10/28" is a certificate valid until then. ${m.manage ? 'Choose a cell to change it.' : ''}</p>
+    </section>`;
+}
+
+function trCellEditorHtml(m) {
+  const r = m.rows.find((x) => x.key === trCell.personKey);
+  const c = m.courses.find((x) => x.id === trCell.courseId);
+  if (!r || !c) return '';
+  const v = r.cells[c.id] || {};
+  const state = trCell.state ?? (v.state || 'done');
+  return `<div class="card tr-form tr-cell-editor">
+      <h3 style="margin-top:0">${esc(r.name)}: ${esc(c.name)}</h3>
+      <p class="muted" style="margin-top:0">${esc(c.frequency || 'No set frequency')}${v.due ? ` · due ${esc(fullDate(v.due))}` : ''}</p>
+      <div class="psc-new-row">
+        <label>State<select id="tr-cell-state">${[['done', 'Done'], ['required', 'Required, not done'], ['optional', 'Optional'], ['na', 'Not applicable']].map(([k, l]) => `<option value="${k}"${state === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Done on<input type="date" id="tr-cell-done" value="${esc(v.completed || '')}"></label>
+        <label>Valid until <small class="muted">(certificates)</small><input type="date" id="tr-cell-exp" value="${esc(v.expires || '')}"></label>
+        <label>Evidence link<input type="url" id="tr-cell-evidence" value="${esc(v.evidence || '')}" placeholder="https://…"></label>
+      </div>
+      <label>Note<input type="text" id="tr-cell-note" value="${esc(v.note || '')}"></label>
+      <div class="row"><button class="btn" data-tr-cell-save="1">Save</button><button class="btn secondary" data-tr-cell-clear="1">Clear</button><button class="linklike" data-tr-cell-close="1">Close</button></div>
+    </div>`;
+}
+
+async function trCourseFormHtml() {
+  const m = await trLoad('matrix');
+  const d = trDraft;
+  const cats = [...new Set(m.allCourses.map((c) => c.category).filter(Boolean))];
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card tr-form">
+      <h2 style="margin-top:0">${d.id ? 'Edit course' : 'Add a course to the matrix'}</h2>
+      ${m.allCourses.length ? `<label>Edit an existing one<select data-tr-course-pick="1"><option value="">A new course</option>${m.allCourses.map((c) => `<option value="${c.id}"${String(d.id) === String(c.id) ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
+      <label>Name<input type="text" data-tr-field="name" value="${esc(d.name)}"></label>
+      <div class="psc-new-row">
+        <label>Category<input type="text" list="tr-cats" data-tr-field="category" value="${esc(d.category)}"><datalist id="tr-cats">${cats.map((c) => `<option value="${esc(c)}">`).join('')}</datalist></label>
+        <label>How often<input type="text" data-tr-field="frequency" value="${esc(d.frequency)}" placeholder="Yearly, Every 3 years, On entry"></label>
+        <label>Due again after (months)<input type="number" min="0" max="240" data-tr-field="months" value="${esc(d.months ?? '')}" placeholder="From how often"></label>
+      </div>
+      <fieldset><legend>In these divisions</legend><div class="ims-checks">${m.divisions.map((x) => `<label class="inline-check"><input type="checkbox" data-tr-course-div="1" value="${x.id}"${(d.divisions || []).includes(x.id) ? ' checked' : ''}> ${esc(x.name)}</label>`).join('')}</div>
+        <div class="row"><input type="text" id="tr-new-division" placeholder="A new division"><button type="button" class="btn secondary" data-tr-division-add="1">Add division</button></div></fieldset>
+      <div class="row"><button class="btn" data-tr-course-save="1">Save course</button><button class="linklike" data-tr-close="1">Cancel</button></div>
+    </section>`;
+}
+
+async function trMemberFormHtml() {
+  const m = await trLoad('matrix');
+  const o = await trLoad('options');
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
+    <section class="card tr-form">
+      <h2 style="margin-top:0">Add someone to the matrix</h2>
+      <div class="psc-new-row">
+        <label>Person<select id="tr-member-person"><option value="">Choose…</option>${o.people.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select></label>
+        <label>Division<select id="tr-member-division">${m.divisions.map((d) => `<option value="${d.id}"${String(trDivision) === String(d.id) ? ' selected' : ''}>${esc(d.name)}</option>`).join('')}</select></label>
+        <label>Entry requirement or role<input type="text" id="tr-member-note"></label>
+      </div>
+      <div class="row"><button class="btn" data-tr-member-save="1">Add</button><button class="linklike" data-tr-close="1">Cancel</button></div>
+    </section>`;
+}
+
+// ----- putting it together -----
+
+// mode: 'training' or 'policy'. host: 'ims' (management's IMS tabs) or 'tile'.
+// What everyone without the IMS tile sees: talks coming up, and what's theirs to acknowledge.
+async function trStaffHtml() {
+  const [t, p] = await Promise.all([trLoad('talks'), trLoad('policies')]);
+  const talk = t.talks.find((x) => `talk-${x.id}` === trOpen);
+  if (talk) return trTalkHtml(talk, false);
+  const policy = p.policies.find((x) => `policy-${x.id}` === trOpen);
+  if (policy) return trPolicyHtml(policy, false);
+  const upcoming = t.talks.filter((x) => x.upcoming && x.forMe);
+  const talksToAck = t.talks.filter((x) => !x.upcoming && x.forMe && !x.acknowledged);
+  const policiesToAck = p.policies.filter((x) => x.forMe && !x.acknowledged && !x.archived);
+  const none = (text) => `<div class="card"><p class="muted" style="margin:0">${text}</p></div>`;
+  return `<h2>Tool box talks coming up</h2>
+    <div class="psc-list">${upcoming.map(trTalkCard).join('') || none('None arranged for you.')}</div>
+    <h2>Tool box talks to acknowledge</h2>
+    <div class="psc-list">${talksToAck.map(trTalkCard).join('') || none('None to acknowledge.')}</div>
+    <h2>Policies to acknowledge</h2>
+    <div class="psc-list">${policiesToAck.map(trPolicyCard).join('') || none('None to acknowledge.')}</div>`;
+}
+
+async function trainingHtml(mode, host) {
+  if (trOpen === 'new-talk') return trNewTalkHtml();
+  if (trOpen === 'new-policy' || trOpen === 'edit-policy') return trPolicyFormHtml();
+  if (trOpen === 'course') return trCourseFormHtml();
+  if (trOpen === 'member') return trMemberFormHtml();
+  if (trOpen?.startsWith('talk-')) {
+    const d = await trLoad('talks');
+    const t = d.talks.find((x) => `talk-${x.id}` === trOpen);
+    if (t) return trTalkHtml(t, d.manage);
+  }
+  if (trOpen?.startsWith('policy-')) {
+    const d = await trLoad('policies');
+    const p = d.policies.find((x) => `policy-${x.id}` === trOpen);
+    if (p) return trPolicyHtml(p, d.manage);
+  }
+  if (mode === 'policy') {
+    const d = await trLoad('policies');
+    const mine = d.policies.filter((p) => p.forMe && !p.acknowledged && !p.archived);
+    const rest = d.policies.filter((p) => !mine.includes(p));
+    return `${d.manage ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-policy="1">＋ New policy to acknowledge</button></div>' : ''}
+      ${mine.length ? `<h2>For you to acknowledge</h2><div class="psc-list">${mine.map(trPolicyCard).join('')}</div>` : ''}
+      <h2>${d.manage ? 'Every policy' : 'Acknowledged'}</h2>
+      <div class="psc-list">${rest.map(trPolicyCard).join('') || `<div class="card"><p class="muted" style="margin:0">${d.manage ? 'No policies yet.' : 'Nothing yet.'}</p></div>`}</div>`;
+  }
+  const d = await trLoad('talks');
+  const upcoming = d.talks.filter((t) => t.upcoming);
+  const toAck = d.talks.filter((t) => !t.upcoming && t.forMe && !t.acknowledged);
+  const past = d.talks.filter((t) => !t.upcoming && !toAck.includes(t));
+  return `${d.manage ? '<div class="row" style="justify-content:flex-end;margin-bottom:.8rem"><button class="btn" data-tr-new-talk="1">＋ Create tool box talk</button></div>' : ''}
+    ${toAck.length ? `<h2>To acknowledge</h2><div class="psc-list">${toAck.map(trTalkCard).join('')}</div>` : ''}
+    <h2>Tool box talks coming up</h2>
+    <div class="psc-list">${upcoming.map(trTalkCard).join('') || '<div class="card"><p class="muted" style="margin:0">None arranged.</p></div>'}</div>
+    ${past.length ? `<h2>Held</h2><div class="psc-list">${(trShowPast ? past : past.slice(0, 4)).map(trTalkCard).join('')}</div>
+      ${past.length > 4 && !trShowPast ? `<button class="linklike" data-tr-past="1">Show all ${past.length}</button>` : ''}` : ''}
+    <h2>${d.manage ? 'Training matrix' : 'Your training'}</h2>
+    ${await trMatrixHtml()}`;
+}
+
+async function trClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-tr-join], [data-tr-doc], [data-jv-out]')) return false;
+  const reload = async (what) => { trCache[what] = null; if (what === 'matrix') trCache.matrix = null; };
+  const open = t('[data-tr-open]');
+  if (open) {
+    trOpen = open.dataset.trOpen;
+    trDraft = trOpen === 'course' ? { name: '', category: '', frequency: '', months: '', divisions: trDivision ? [Number(trDivision)] : [] } : null;
+    trCell = null; window.scrollTo(0, 0); render(); return true;
+  }
+  if (t('[data-tr-close]')) { trOpen = null; trDraft = null; render(); return true; }
+  if (t('[data-tr-past]')) { trShowPast = true; render(); return true; }
+  if (t('[data-tr-new-talk]')) {
+    trOpen = 'new-talk';
+    trDraft = { title: '', about: '', at: '', minutes: '30', location: '', meetLink: '', courseId: '', audience: { everyone: false, teams: [], divisions: [], people: [] } };
+    window.scrollTo(0, 0); render(); return true;
+  }
+  if (t('[data-tr-new-policy]')) {
+    trOpen = 'new-policy';
+    trDraft = { title: '', about: '', version: '', dueOn: '', links: [{ label: '', url: '' }], audience: { everyone: true, teams: [], divisions: [], people: [] } };
+    window.scrollTo(0, 0); render(); return true;
+  }
+  const rmAud = t('[data-tr-aud-remove]');
+  if (rmAud && trDraft) { trCapture(); trDraft.audience.people = trDraft.audience.people.filter((x) => x !== rmAud.dataset.trAudRemove); render(); return true; }
+  if (t('[data-tr-link-add]')) { trCapture(); trDraft.links.push({ label: '', url: '' }); render(); return true; }
+  const rmLink = t('[data-tr-link-remove]');
+  if (rmLink) { trCapture(); trDraft.links.splice(Number(rmLink.dataset.trLinkRemove), 1); render(); return true; }
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  const create = t('[data-tr-talk-create]');
+  if (create) {
+    trCapture();
+    if (!trDraft.at) { toast('Give the date and time of the talk'); return true; }
+    await busy(create, async () => {
+      const r = await api('/api/training/talk', { method: 'POST', body: JSON.stringify({ ...trDraft, startsAt: new Date(trDraft.at).toISOString() }) });
+      toast(`${r.key} created; ${r.people} ${r.people === 1 ? 'person' : 'people'} told`);
+      trOpen = `talk-${r.id}`; trDraft = null; await reload('talks'); render();
+    });
+    return true;
+  }
+  const tsave = t('[data-tr-talk-save]');
+  if (tsave) {
+    const at = view.querySelector('#tr-talk-at')?.value;
+    await busy(tsave, async () => {
+      await api('/api/training/talk', { method: 'POST', body: JSON.stringify({ id: Number(tsave.dataset.trTalkSave), meetLink: view.querySelector('#tr-talk-link')?.value || '', ...(at ? { startsAt: new Date(at).toISOString() } : {}) }) });
+      toast('Saved'); await reload('talks'); render();
+    });
+    return true;
+  }
+  const tcancel = t('[data-tr-talk-cancel]');
+  if (tcancel) {
+    if (!confirm('Cancel this tool box talk? It comes off everyone\'s list and the reminders stop. The Jira item stays as it is.')) return true;
+    await busy(tcancel, async () => { await api('/api/training/talk', { method: 'POST', body: JSON.stringify({ id: Number(tcancel.dataset.trTalkCancel), cancel: true }) }); trOpen = null; await reload('talks'); render(); });
+    return true;
+  }
+  const ack = t('[data-tr-ack]');
+  if (ack) {
+    if (!view.querySelector('#tr-ack-ok')?.checked) { toast('Tick the box to confirm first'); return true; }
+    await busy(ack, async () => {
+      await api('/api/training/acknowledge', { method: 'POST', body: JSON.stringify({ kind: ack.dataset.trAck, id: Number(ack.dataset.id) }) });
+      toast('Acknowledged'); await reload(ack.dataset.trAck === 'talk' ? 'talks' : 'policies'); trCache.matrix = null; render();
+    });
+    return true;
+  }
+  const psave = t('[data-tr-policy-save]');
+  if (psave) {
+    trCapture();
+    await busy(psave, async () => {
+      const r = await api('/api/training/policy', { method: 'POST', body: JSON.stringify(trDraft) });
+      toast(trDraft.id ? 'Saved' : `Published; ${r.people} ${r.people === 1 ? 'person' : 'people'} told`);
+      trOpen = `policy-${r.id}`; trDraft = null; await reload('policies'); render();
+    });
+    return true;
+  }
+  const pedit = t('[data-tr-policy-edit]');
+  if (pedit) {
+    const p = (await trLoad('policies')).policies.find((x) => x.id === Number(pedit.dataset.trPolicyEdit));
+    trDraft = { id: p.id, title: p.title, about: p.about || '', version: p.version || '', dueOn: p.dueOn || '', links: p.links.length ? p.links : [{ label: '', url: '' }],
+      audience: { everyone: false, teams: [], divisions: [], people: [], ...p.audience }, archived: p.archived };
+    trOpen = 'edit-policy'; render(); return true;
+  }
+  const parch = t('[data-tr-policy-archive]');
+  if (parch) {
+    const p = (await trLoad('policies')).policies.find((x) => x.id === Number(parch.dataset.trPolicyArchive));
+    await busy(parch, async () => {
+      await api('/api/training/policy', { method: 'POST', body: JSON.stringify({ id: p.id, title: p.title, about: p.about, version: p.version, dueOn: p.dueOn, links: p.links, audience: p.audience, archived: !p.archived }) });
+      await reload('policies'); render();
+    });
+    return true;
+  }
+  const div = t('[data-tr-division]');
+  if (div) { trDivision = div.dataset.trDivision; trCell = null; render(); return true; }
+  const c = t('[data-tr-cell]');
+  if (c) { const [personKey, courseId] = c.dataset.trCell.split('|'); trCell = { personKey, courseId: Number(courseId) }; render(); return true; }
+  if (t('[data-tr-cell-close]')) { trCell = null; render(); return true; }
+  const csave = t('[data-tr-cell-save]') || t('[data-tr-cell-clear]');
+  if (csave) {
+    const clear = Boolean(t('[data-tr-cell-clear]'));
+    const v = (id) => view.querySelector(id)?.value || '';
+    await busy(csave, async () => {
+      await api('/api/training/record', { method: 'POST', body: JSON.stringify({ personKey: trCell.personKey, courseId: trCell.courseId, state: clear ? 'clear' : v('#tr-cell-state'),
+        completedOn: v('#tr-cell-done'), expiresOn: v('#tr-cell-exp'), note: v('#tr-cell-note'), evidence: v('#tr-cell-evidence') }) });
+      toast('Saved'); trCell = null; trCache.matrix = null; render();
+    });
+    return true;
+  }
+  if (t('[data-tr-csv]')) {
+    const m = await trLoad('matrix');
+    const cellOut = (r, co) => { const v = r.cells[co.id] || {}; return v.status === 'blank' ? '' : `${TR_STATUS[v.status]}${v.completed ? ` ${v.completed}` : ''}${v.due ? ` (due ${v.due})` : ''}`; };
+    const q = (x) => (/[",\n]/.test(String(x)) ? `"${String(x).replace(/"/g, '""')}"` : String(x));
+    const csv = [['Name', ...m.courses.map((co) => co.name)], ['How often', ...m.courses.map((co) => co.frequency || '')], ...m.rows.map((r) => [r.name, ...m.courses.map((co) => cellOut(r, co))])]
+      .map((r) => r.map(q).join(',')).join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
+    a.download = `Training matrix ${todayIso()}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    return true;
+  }
+  const dadd = t('[data-tr-division-add]');
+  if (dadd) {
+    trCapture();
+    const name = view.querySelector('#tr-new-division')?.value || '';
+    await busy(dadd, async () => { await api('/api/training/division', { method: 'POST', body: JSON.stringify({ name }) }); trCache.matrix = null; trCache.options = null; render(); });
+    return true;
+  }
+  const csv2 = t('[data-tr-course-save]');
+  if (csv2) {
+    trCapture();
+    trDraft.divisions = [...view.querySelectorAll('[data-tr-course-div]:checked')].map((el) => Number(el.value));
+    await busy(csv2, async () => { await api('/api/training/course', { method: 'POST', body: JSON.stringify(trDraft) }); toast('Saved'); trOpen = null; trDraft = null; trCache.matrix = null; trCache.options = null; render(); });
+    return true;
+  }
+  const msave = t('[data-tr-member-save]');
+  if (msave) {
+    const v = (id) => view.querySelector(id)?.value || '';
+    if (!v('#tr-member-person')) { toast('Choose someone'); return true; }
+    await busy(msave, async () => { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: v('#tr-member-person'), divisionId: v('#tr-member-division'), note: v('#tr-member-note') }) }); toast('Added'); trOpen = null; trCache.matrix = null; render(); });
+    return true;
+  }
+  return false;
+}
+
+async function trChange(event) {
+  const el = event.target;
+  if (el.matches('[data-tr-aud], [data-tr-field]') && trDraft) { trCapture(); if (el.dataset.trAud === 'everyone') render(); return true; }
+  if (el.matches('[data-tr-aud-add]') && el.value && trDraft) { trCapture(); trDraft.audience.people = [...new Set([...(trDraft.audience.people || []), el.value])]; render(); return true; }
+  if (el.matches('[data-tr-problems]')) { trOnlyProblems = el.checked; render(); return true; }
+  if (el.matches('[data-tr-link-person]') && el.value) {
+    try { await api('/api/training/member', { method: 'POST', body: JSON.stringify({ personKey: el.dataset.trLinkPerson, linkTo: el.value }) }); toast('Matched'); } catch (err) { toast(err.message); }
+    trCache.matrix = null; render(); return true;
+  }
+  if (el.matches('[data-tr-course-pick]')) {
+    const m = await trLoad('matrix');
+    const c = m.allCourses.find((x) => String(x.id) === el.value);
+    trDraft = c ? { id: c.id, name: c.name, category: c.category || '', frequency: c.frequency || '', months: c.months ?? '', divisions: c.divisions || [] }
+      : { name: '', category: '', frequency: '', months: '', divisions: [] };
+    render(); return true;
+  }
+  return false;
+}
+
 // ---------- Notifications: the bell, and what each tile tells you about ----------
 
 // Tiles with something to tell you about, by page. Home holds "everything else".
 const NOTIFY_TILES = { '#/': 'hub', '#/psc': 'psc', '#/ims': 'ims', '#/quotes': 'quotes', '#/jobs': 'jobs', '#/xp': 'xp', '#/time': 'time',
-  '#/condor': 'condor', '#/contracts': 'contracts', '#/nearmiss': 'nearmiss', '#/feedback': 'feedback', '#/vehicles': 'vehicles', '#/requests': 'requests' };
+  '#/condor': 'condor', '#/contracts': 'contracts', '#/training': 'training', '#/nearmiss': 'nearmiss', '#/feedback': 'feedback', '#/vehicles': 'vehicles', '#/requests': 'requests' };
 const NOTIFY_ROUTE = Object.fromEntries(Object.entries(NOTIFY_TILES).map(([r, t]) => [t, r]));
 const notifyTileName = (tile) => (tile === 'hub' ? 'Everything else' : MODULES.find((m) => m.id === tile)?.name || tile.toUpperCase());
 let notifyOpen = null;            // the page whose notification settings are open
@@ -15023,6 +15696,7 @@ const NOTIFY_OPENERS = {
   '#/psc': (k) => { pscNew = null; pscOpen = k; },
   '#/ims': (k) => { imsNew = null; imsMeetingOpen = null; imsOpen = k; imsItemData = null; imsEdit = null; },
   '#/contracts': (k) => { conOpen = k; },
+  '#/training': (k) => { trOpen = k; trTab = k.startsWith('policy-') ? 'policy' : 'training'; trCache.at = 0; },
   '#/nearmiss': (k) => { nmOpenId = k; },
 };
 let pendingOpen = null;

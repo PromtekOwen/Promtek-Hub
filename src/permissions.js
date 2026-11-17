@@ -49,6 +49,7 @@ export const PERMISSIONS = {
   contractInsights: { name: 'Contract insights', about: 'Insights across every service contract', groups: ['management'], leads: ['Service'], tile: 'contracts' },
   nearMissReview: { name: 'Near miss reports', about: 'Read every near miss reported, note what was done and close them, and hear about each new one', groups: [], tile: 'nearmiss' },
   feedbackReview: { name: 'Feedback moderation', about: 'Read anonymous feedback before it\'s posted, post or turn it down, and reply to writers', groups: [], tile: 'feedback' },
+  trainingManage: { name: 'Manage training and policies', about: 'Arrange tool box talks, publish policies, keep the training matrix and see who has acknowledged each', groups: ['management'], tile: 'training' },
   developer: { name: 'Developer tools', about: 'Sync and Bitbucket status, connection tests, error details and viewing the hub as someone else', groups: ['developer'] },
   admin: { name: 'Admin', about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [], fixed: true },
 };
@@ -66,6 +67,7 @@ export const TILES = {
   pow: { name: 'Point of work' },
   psc: { name: 'PSC', groups: ['management', 'lead'], teams: ['Service'] },
   ims: { name: 'IMS', groups: ['management'] },
+  training: { name: 'Training & Policy' },
   contracts: { name: 'Service contracts', groups: ['management', 'lead'], teams: ['Service'] },
   capacity: { name: 'Capacity', groups: ['management', 'lead'] },
   wip: { name: 'WIP', groups: ['management'] },

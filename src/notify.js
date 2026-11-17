@@ -17,6 +17,12 @@ export const EVENTS = {
     { id: 'psc-response', label: 'First look overdue', about: 'Nobody has looked at a PSC by the time its contract asks', app: true, email: true },
     { id: 'psc-waiting', label: 'Customer waiting on us', about: 'A customer replied and nobody has answered in time', app: true, email: true },
   ],
+  training: [
+    { id: 'talk-new', label: 'Tool box talk arranged', about: 'You\'re asked to a tool box talk or training', app: true, email: true },
+    { id: 'talk-upcoming', label: 'Tool box talk countdown', about: 'Each morning until a talk you\'re asked to, with the link to join', app: true, email: false },
+    { id: 'policy-new', label: 'Policy to acknowledge', about: 'A policy is published that you need to read and acknowledge', app: true, email: true },
+    { id: 'policy-reminder', label: 'Policy reminders', about: 'Each Monday, for policies you haven\'t acknowledged yet', app: true, email: false },
+  ],
   ims: [
     { id: 'ims-new', label: 'New IMS item', about: 'An item is raised in an area (copies of it are not counted again)', app: false, email: false, scope: 'all', scopes: ['all'] },
     { id: 'ims-assigned', label: 'Assigned to me', about: 'An IMS item, or a copy of one, is given to you', app: true, email: true },

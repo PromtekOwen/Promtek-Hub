@@ -104,7 +104,14 @@ export const MODULES = [
     name: 'IMS',
     route: '#/ims',
     icon: icon('<path d="M12 3.5l7.5 3v5.5c0 4.2-3.1 7.5-7.5 8.5-4.4-1-7.5-4.3-7.5-8.5V6.5z"/><path d="M8.5 12l2.4 2.4 4.6-4.9"/>'),
-    detail: () => 'Internal management: items, meetings and how each area is doing',
+    detail: () => 'Internal management: items, meetings, training and policies, and how each area is doing',
+  },
+  {
+    id: 'training',
+    name: 'Training & Policy',
+    route: '#/training',
+    icon: icon('<path d="M3 8.5L12 4l9 4.5-9 4.5z"/><path d="M7 10.5v4.2c0 1.6 2.2 3 5 3s5-1.4 5-3v-4.2"/><path d="M21 8.5v5"/>'),
+    detail: () => 'Tool box talks coming up, and talks and policies to acknowledge',
   },
   {
     id: 'wip',

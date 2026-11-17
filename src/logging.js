@@ -1,6 +1,6 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
 import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue, getIssue, blockedForLookup } from './jira.js';
-import { raiseAlert, londonDate, processWorklogs, ledgerChanged, noteDeleted } from './sync.js';
+import { raiseAlert, londonDate, processWorklogs, ledgerChanged, noteDeleted, refreshSnapshots } from './sync.js';
 import { normalise } from './tempo.js';
 import { applyOvertime, mondayOfDay } from './overtime.js';
 import { record } from './audit.js';
@@ -486,6 +486,7 @@ export async function deleteWorklog(env, viewer, worklogId) {
   ]);
   await noteDeleted(env, [row]);
   await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
+  await refreshSnapshots(env, [viewer.accountId], row.work_date).catch(() => {});
   await ledgerChanged(env);
   await record(env, viewer, { area: 'My time', action: 'removed a time log', subjectType: 'worklog', subjectId: id, label: row.description || id,
     changes: [{ label: 'Time', before: `${Math.round(row.seconds / 60)}m on ${row.work_date}`, after: '' }] }).catch(() => {});
