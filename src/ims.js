@@ -531,6 +531,7 @@ export async function run(env, { force = false } = {}) {
         await stampGroups(env, groups);
         out.sync = await syncGroups(env, groups);
         out.main = await moveMainItems(env, b);
+        out.onboarding = await startOnboarding(env, b);
       }
     }
   } catch (err) {
@@ -606,6 +607,7 @@ export async function list(env, viewer, { done = false } = {}) {
     pending: writes.results.length, failing: writes.results.filter((w) => w.error).length,
     disagreeing: conflicts.results.length,
     main: await mainNote(env),
+    onboarding: await getState(env, 'ims_onboarding_note').then((x) => JSON.parse(x || 'null')).catch(() => null),
   };
 }
 
@@ -701,6 +703,50 @@ export async function moveMainItems(env, b) {
   await setState(env, 'ims_main_note', JSON.stringify({ at: Date.now(), moved: moved.length ? moved : prev?.moved || [], movedAt: moved.length ? Date.now() : prev?.movedAt || null, failed }));
   return { moved: moved.length, failed: failed.length };
 }
+// Preboarding: Jira's automation adds its sub-tasks; once every one is done, Onboarding is added
+// alongside Preboarding, which starts Jira's next automation. Done once: an item with Onboarding is left.
+export const PREBOARDING = 'Preboarding';
+export const ONBOARDING = 'Onboarding';
+export const PREBOARDING_AREA = 'IS';
+export async function startOnboarding(env, b) {
+  const { results: rows } = await env.DB.prepare('SELECT * FROM ims_items').all();
+  const waiting = rows.filter((r) => !r.subtask && listOf(r.sub_types).includes(PREBOARDING) && !listOf(r.sub_types).includes(ONBOARDING));
+  if (!waiting.length) return { added: 0 };
+  const F = await fieldMap(env, (p) => b.call(p));
+  if (!F.subTypes) return { added: 0 };
+  const done = new Set();
+  let added = 0; const failed = [];
+  for (const r of waiting) {
+    const groupKey = r.group_key || r.issue_key;
+    if (done.has(groupKey)) continue;
+    done.add(groupKey);
+    const members = rows.filter((m) => (m.group_key || m.issue_key) === groupKey && !m.subtask);
+    const keys = new Set(members.map((m) => m.issue_key));
+    const kids = rows.filter((k) => k.subtask && keys.has(k.parent_key) && k.issuetype !== 'Meeting (Subtask)');
+    if (!kids.length || !kids.every((k) => k.status_cat === 'done')) continue;
+    const subs = [...new Set([...listOf(r.sub_types), ONBOARDING])].sort();
+    if (b.left() < members.length + 2) break;
+    try {
+      for (const m of members) await b.call(`/rest/api/3/issue/${encodeURIComponent(m.issue_key)}`, { method: 'PUT', body: JSON.stringify({ fields: { [F.subTypes]: subs.map((value) => ({ value })) } }) });
+    } catch (err) {
+      if (err instanceof OutOfCalls) throw err;
+      failed.push({ key: groupKey, error: String(err.message || err).slice(0, 200) });
+      continue;
+    }
+    for (const m of members) {
+      const vals = { ...JSON.parse(m.vals || '{}'), subTypes: subs };
+      await env.DB.prepare('UPDATE ims_items SET sub_types = ?, vals = ? WHERE issue_key = ?').bind(JSON.stringify(subs), JSON.stringify(vals), m.issue_key).run();
+    }
+    await saveBase(env, groupKey, { subTypes: { value: subs, conflict: false } });
+    await record(env, { email: 'hub', employee: { name: 'The hub' } }, { area: 'IMS', action: 'added Onboarding, the preboarding sub-tasks being done', subjectType: 'ims', subjectId: groupKey,
+      label: `${groupKey} ${r.summary}`.slice(0, 120), changes: [{ label: 'Sub-type', before: listOf(r.sub_types).join(', '), after: subs.join(', ') }] }).catch(() => {});
+    added++;
+  }
+  if (added) await changed(env);
+  await setState(env, 'ims_onboarding_note', JSON.stringify({ at: Date.now(), failed }));
+  return { added, failed: failed.length };
+}
+
 async function mainNote(env) {
   try { return JSON.parse((await getState(env, 'ims_main_note')) || 'null'); } catch { return null; }
 }
@@ -1033,7 +1079,7 @@ export async function comment(env, viewer, { key, text }) {
 
 export async function options(env, viewer) {
   mustSee(viewer);
-  const saved = JSON.parse((await getState(env, 'ims_options')) || 'null');
+  const saved = JSON.parse((await getState(env, 'ims_options_v2')) || 'null');
   let allowed = saved && Date.now() - saved.at < 12 * 3600 * 1000 ? saved.allowed : null;
   if (!allowed) {
     allowed = {};
@@ -1046,13 +1092,14 @@ export async function options(env, viewer) {
         if (vals) allowed[n] = vals.map((v) => v.value).filter(Boolean);
       }
     }
-    await setState(env, 'ims_options', JSON.stringify({ at: Date.now(), allowed }));
+    await setState(env, 'ims_options_v2', JSON.stringify({ at: Date.now(), allowed }));
   }
   // Anything not offered by Jira is filled from what's in use.
   const rows = await allRows(env);
   const used = (col, multi) => [...new Set(rows.flatMap((r) => (multi ? listOf(r[col]) : [r[col]])).filter(Boolean))].sort();
   allowed.imsType ||= used('ims_type');
   allowed.subTypes ||= used('sub_types', true);
+  for (const x of [PREBOARDING, ONBOARDING]) if (!allowed.subTypes.includes(x)) allowed.subTypes = [...allowed.subTypes, x].sort();
   allowed.rootCause ||= used('root_cause', true);
   allowed.rootRequired ||= ['Yes', 'No'];
   allowed.categories ||= AREAS.map((a) => a.name);
@@ -1214,6 +1261,7 @@ export async function create(env, viewer, input) {
   // Root cause is always needed for incidents and 8D reports; for the rest, someone says.
   const rootRequired = ROOT_BY_DEFAULT.includes(typeName) ? 'Yes' : String(input.rootRequired || '');
   if (!['Yes', 'No'].includes(rootRequired)) throw refuse('Say whether a root cause is required.');
+  if ((input.subTypes || []).includes(PREBOARDING) && !(areas.length === 1 && areas[0] === PREBOARDING_AREA)) throw refuse('Preboarding is only for items in Information Security on its own.');
   if (typeName === 'Incident') {
     const x = input.incident || {};
     if (!x.at) throw refuse('Give the date and time of the incident.');

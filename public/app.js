@@ -12133,7 +12133,8 @@ async function imsHtml() {
     <button class="btn secondary" data-ims-refresh="1">Refresh</button></div>
     ${data.main?.failed?.length ? `<div class="jv-note warn" style="margin-bottom:.8rem"><p style="margin:0"><strong>Jira wouldn't move ${data.main.failed.length === 1 ? 'a category' : `${data.main.failed.length} categories`} on the IMS Main Board.</strong></p>
       <ul style="margin:.3rem 0 0">${data.main.failed.map((f) => `<li><a href="${esc(me.jiraBaseUrl)}/browse/${esc(f.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(f.key)}</a> to ${esc(f.to)}: ${esc(f.error)}</li>`).join('')}</ul>
-      <p class="help" style="margin:.3rem 0 0">The hub tries again at each read.</p></div>` : ''}`;
+      <p class="help" style="margin:.3rem 0 0">The hub tries again at each read.</p></div>` : ''}
+    ${data.onboarding?.failed?.length ? `<div class="jv-note" style="margin-bottom:.8rem"><p style="margin:0"><strong>Jira wouldn't add Onboarding to ${data.onboarding.failed.map((f) => esc(f.key)).join(', ')}</strong> once preboarding was done: ${esc(data.onboarding.failed[0].error)}. The hub tries again at each read.</p></div>` : ''}`;
   if (imsTab === 'training' || imsTab === 'policy') { const body = await trainingHtml(imsTab, 'ims'); return `${imsTabsHtml()}${body}`; }
   if (imsCleanup) return head + await imsCleanupHtml();
   if (imsTab === 'stats') return head + await imsStatsHtml();
@@ -12228,7 +12229,11 @@ async function imsItemHtml() {
   const e = imsEdit;
   if (!imsWhys || imsWhys.key !== i.key) imsWhys = { key: i.key, problem: d.whys?.problem || '', list: d.whys?.list?.length ? [...d.whys.list] : [''], text: d.whys?.text || '' };
   const hasWhys = Boolean(d.whys && (d.whys.problem || d.whys.list?.length));
-  const showWhys = d.whysField && (hasWhys || d.whys?.text || !/^no$/i.test(e.rootRequired || ''));
+  // Root cause and its 5 Whys show when a root cause is required (always for incidents and 8D reports),
+  // or when either is already filled in, so nothing recorded is hidden.
+  const rootWanted = /^yes$/i.test(e.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
+  const showRoot = rootWanted || i.rootCause.length > 0 || hasWhys;
+  const showWhys = d.whysField && (rootWanted || hasWhys || Boolean(d.whys?.text));
   const checks = (name, all) => `<div class="ims-checks">${all.map((x) => `<label class="inline-check"><input type="checkbox" data-ims-check="${name}" value="${esc(x)}"${e[name].includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')}</div>`;
   const sel = (name, all, empty) => `<select data-ims-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${e[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
   const statuses = [...new Set([i.status, ...o.statuses])];
@@ -12250,14 +12255,14 @@ async function imsItemHtml() {
         <label>Status${sel('status', statuses, 'Status')}</label>
         <label>Assignee${sel('assignee', o.people.map((p) => [p.id, p.name]), 'Unassigned')}</label>
         <label>IMS Task Type${sel('imsType', o.allowed.imsType, 'Not set')}</label>
-        <label>Root cause required${sel('rootRequired', o.allowed.rootRequired, 'Not set')}</label>
+        <label>Root cause required${['Incident', '8D Report'].includes(i.type) ? '<input type="text" value="Yes, always" disabled>' : sel('rootRequired', o.allowed.rootRequired, 'Not set')}</label>
         <label>Start date<input type="date" data-ims-field="start" value="${esc(e.start)}"></label>
         <label>Target end<input type="date" data-ims-field="target" value="${esc(e.target)}"></label>
       </div>
       <fieldset><legend>Areas</legend>${checks('categories', o.allowed.categories)}<p class="help">Adding an area makes a copy in its project. Taking one away leaves its copy where it is.</p></fieldset>
       <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
-      <fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
-        ${showWhys && e.rootCause.length && !hasWhys ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (below) shows how this root cause was reached.</p>' : ''}</fieldset>
+      ${showRoot ? `<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
+        ${showWhys && e.rootCause.length && !hasWhys ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (below) shows how this root cause was reached.</p>' : ''}</fieldset>` : ''}
       <div class="row"><button class="btn" data-ims-save="1">Save to every copy</button><button class="linklike" data-ims-reset="1">Undo changes</button></div>
     </section>
     ${showWhys ? `<section class="card ims-whys-card">${imsWhysHtml(imsWhys, 'item')}
@@ -12586,6 +12591,12 @@ async function imsNewHtml() {
   const text = (path, label, { rows = 0, placeholder = '' } = {}) => `<label>${esc(label)}${rows ? `<textarea rows="${rows}" data-ims-new-path="${path}" placeholder="${esc(placeholder)}">${esc(imsPath(n, path) || '')}</textarea>`
     : `<input type="text" data-ims-new-path="${path}" value="${esc(imsPath(n, path) || '')}" placeholder="${esc(placeholder)}">`}</label>`;
   const rootFixed = ['Incident', '8D Report'].includes(n.type);
+  // Onboarding is added by the hub once preboarding is done; Preboarding is for Information Security alone.
+  const onlyIS = n.areas.length === 1 && n.areas[0] === 'IS';
+  const subOptions = o.allowed.subTypes.filter((x) => x !== 'Onboarding' && (x !== 'Preboarding' || onlyIS));
+  n.subTypes = n.subTypes.filter((x) => subOptions.includes(x));
+  const subTypeBlock = `<fieldset><legend>Sub-type</legend>${checks('subTypes', subOptions)}
+    ${n.subTypes.includes('Preboarding') ? '<p class="help" style="margin-bottom:0">Jira adds the preboarding sub-tasks. Once they\'re all done, the hub adds Onboarding to start the next steps.</p>' : ''}</fieldset>`;
   const staffChips = n.staffIds.map((id) => o.people.find((p) => p.id === id)).filter(Boolean);
   const rootCause = `${imsWhysHtml(n.whys, 'new')}<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
     ${n.rootCause.length && !(n.whys.problem || n.whys.list.some((x) => x.trim())) ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (above) shows how this root cause was reached.</p>' : ''}</fieldset>`;
@@ -12629,8 +12640,7 @@ async function imsNewHtml() {
           ${text('change.docs.procedure', 'ISMS Procedure Reference')}${text('change.docs.sop', 'Implementation / SOP Link')}
           ${text('change.docs.approval', 'Approval Evidence (File or Comment)')}${text('change.docs.related', 'Related Jira Issues / Tickets')}
           ${text('change.docs.audit', 'Audit or Change Record Reference')}</div>` : ''}
-      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
-      ${n.rootRequired === 'No' ? '' : rootCause}`;
+      ${n.rootRequired === 'Yes' ? rootCause : ''}`;
   }
   const missing = form?.missing ? `<p class="bad">${esc(o.areas.find((a) => a.key === home)?.name || home)} has no ${esc(n.type)} type in Jira. Choose another main area, or add the type to that project.</p>` : '';
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-new-cancel="1">Back</button></div>
@@ -12649,6 +12659,7 @@ async function imsNewHtml() {
         <label>From a meeting${sel('meeting', o.meetings.map((m) => [m.key, `${m.summary}${m.date ? ` (${m.date})` : ''}`]), 'Not from a meeting')}</label>
       </div>
       ${staffChips.length ? `<div class="ims-staff">${staffChips.map((p) => `<span class="chip">${esc(p.name)} <button type="button" class="linklike" data-ims-staff-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button></span>`).join('')}</div>` : ''}
+      ${subTypeBlock}
       <label>Summary<input type="text" data-ims-new-field="summary" maxlength="250" value="${esc(n.summary)}" placeholder="What it is, in a line"></label>
       ${missing}
       ${tabs ? `<div class="tabs con-tabs ims-type-tabs">${tabs.map((l, i) => `<button type="button" class="tab${i === tab ? ' on' : ''}" data-ims-new-tab="${i}">${i + 1}. ${esc(l)}</button>`).join('')}</div>` : ''}
@@ -12874,7 +12885,8 @@ async function imsChange(event) {
     await imsLoad();
     render(); return true;
   }
-  if (imsNew && (el.matches('[data-ims-new-check="areas"]') || el.matches('[data-ims-new-field="home"]') || el.matches('[data-ims-new-field="type"]') || el.matches('[data-ims-new-field="rootRequired"]'))) {
+  if (!imsNew && imsEdit && el.matches('[data-ims-field="rootRequired"]')) { imsCapture(); imsWhysCapture('item'); render(); return true; }
+  if (imsNew && (el.matches('[data-ims-new-check="areas"]') || el.matches('[data-ims-new-check="subTypes"]') || el.matches('[data-ims-new-field="home"]') || el.matches('[data-ims-new-field="type"]') || el.matches('[data-ims-new-field="rootRequired"]'))) {
     imsCapture();
     if (!imsNew.areas.includes(imsNew.home)) imsNew.home = imsNew.areas[0] || '';
     if (el.matches('[data-ims-new-field="type"]')) imsNew.tab = 0;
