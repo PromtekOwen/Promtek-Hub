@@ -11,6 +11,7 @@ export function normalise(wl) {
     startDate: wl.startDate,
     startTime: wl.startTime || null,
     loggedAt: wl.createdAt || null,
+    updatedAt: wl.updatedAt || null,
     description: wl.description || '',
   };
 }
@@ -32,6 +33,23 @@ export async function fetchWorklogs(env, query) {
     next = data.metadata?.next || null;
   }
   if (next) throw new Error('Tempo returned more results than expected for one sync; nothing was changed.');
+  return out;
+}
+
+// One person's worklogs over some days.
+export async function fetchUserWorklogs(env, accountId, { from, to }) {
+  let next = `${TEMPO}/worklogs/user/${encodeURIComponent(accountId)}?${new URLSearchParams({ from, to, limit: '1000' })}`;
+  const out = [];
+  let pages = 0;
+  while (next && pages < MAX_PAGES) {
+    pages++;
+    const res = await fetch(next, { headers: { Authorization: `Bearer ${env.TEMPO_API_TOKEN}`, Accept: 'application/json' } });
+    if (!res.ok) throw new Error(`Tempo ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const data = await res.json();
+    out.push(...(data.results || []).map(normalise));
+    next = data.metadata?.next || null;
+  }
+  if (next) throw new Error('Tempo returned more results than expected; nothing was changed.');
   return out;
 }
 

@@ -288,7 +288,9 @@ const pages = {
       if (!me.linked) return notLinkedCard();
       if (timeEdit) return timeEditHtml();
       const monday = addDays(mondayOf(todayIso()), weekOffset * 7);
-      const [data, toil] = await Promise.all([api(`/api/time?week=${monday}`), api('/api/toil').catch(() => null)]);
+      // The week is checked against Tempo first, so the balance is worked out from what's really there.
+      const data = await api(`/api/time?week=${monday}`);
+      const toil = await api('/api/toil').catch(() => null);
       timeWeek = data;
       // The days they work, plus any other day with time logged on it.
       const week = Array.from({ length: 7 }, (_, i) => addDays(monday, i));

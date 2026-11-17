@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, canTile, loadAccessConfig, saveAccessConfig, rulesFrom, cleanRule, defaultTileRule, defaultPermissionRule, groupsOf, teamsOf, leadOf, TILES, PERMISSIONS, GROUPS, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, backdateRate } from './sync.js';
+import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, backdateRate, reconcileUser } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -1338,6 +1338,14 @@ async function getTime(env, user, url) {
   const monday = /^\d{4}-\d{2}-\d{2}$/.test(requested || '') ? requested : weekStart();
   const sunday = londonDate(Date.parse(`${monday}T12:00:00Z`) + 6 * 86_400_000);
   const today = londonDate();
+  // The week is checked against Tempo as it's opened (once every couple of minutes at most),
+  // so time removed in Tempo, however long ago it was logged, is gone from it here too.
+  const checkKey = `time_checked:${emp.account_id}`;
+  const [lastWeek, lastAt] = String((await getState(env, checkKey)) || '|0').split('|');
+  if (monday <= today && (lastWeek !== monday || Date.now() - Number(lastAt || 0) > 2 * 60 * 1000)) {
+    await setState(env, checkKey, `${monday}|${Date.now()}`);
+    try { await reconcileUser(env, emp.account_id, monday, sunday < today ? sunday : today); } catch (err) { console.warn('Week not checked against Tempo:', err.message); }
+  }
   const { results } = await env.DB.prepare(
     `SELECT l.worklog_id, l.work_date, l.start_time, l.seconds, l.description, l.xp, l.overtime_seconds, j.issue_key, j.summary
        FROM xp_ledger l LEFT JOIN jobs j ON j.issue_id = l.issue_id

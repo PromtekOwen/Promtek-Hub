@@ -1,5 +1,5 @@
 // Keeps the XP ledger in step with Tempo and the employee list in step with Jira.
-import { fetchWorklogs } from './tempo.js';
+import { fetchWorklogs, fetchUserWorklogs } from './tempo.js';
 import { metered, addReads, readsToday, monthSoFar, overBudget, tidyReads, utcDay, utcMonth, daysInMonth, queryName, MONTHLY_READ_LIMIT, MONTHLY_WRITE_LIMIT, BACKGROUND_SHARE, PACE_ALERT } from './d1-meter.js';
 import { searchJql, getIssue, findFieldId } from './jira.js';
 import { rateFor, historyFor } from './xprates.js';
@@ -10,7 +10,7 @@ import { xpWith, applyOvertime, mondayOfDay } from './overtime.js';
 const CHUNK = 50;                 // D1 allows up to 100 bound parameters per query
 const JOB_CACHE_MS = 60 * 60 * 1000;
 const POLL_OVERLAP_MS = 3 * 60 * 1000;
-const RECONCILE_DAYS = 14;
+const RECONCILE_DAYS = 62;
 
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 const placeholders = (n) => Array(n).fill('?').join(',');
@@ -117,6 +117,22 @@ async function loadJobs(env, issueIds) {
 // ---------- XP ledger ----------
 
 // A backfill of past time leaves Promtek Staff Involved and the unmatched-time alert alone.
+// Whether the ledger keeps Tempo's own last-changed time (schema-064).
+let stampKept = null;
+async function keepsStamp(env) {
+  if (stampKept === null) stampKept = await env.DB.prepare('SELECT tempo_updated_at FROM xp_ledger LIMIT 1').all().then(() => true, () => false);
+  return stampKept;
+}
+
+// Worklogs removed from the hub. Tempo's search can go on returning one for a few
+// minutes after it's gone, so these are never read back in.
+export async function noteDeleted(env, rows) {
+  if (!rows.length) return;
+  const now = new Date().toISOString();
+  await runBatches(env, rows.map((r) => env.DB.prepare('INSERT OR IGNORE INTO deleted_worklogs (worklog_id, account_id, deleted_at) VALUES (?, ?, ?)')
+    .bind(String(r.worklog_id), r.account_id || null, now))).catch((err) => console.warn('Deleted worklogs not noted:', err.message));
+}
+
 export async function processWorklogs(env, worklogs, { backfill = false } = {}) {
   const ledgerStart = await getState(env, 'ledger_start');
   if (!ledgerStart) return { processed: 0, changed: 0 };
@@ -124,8 +140,18 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
   // Only worklogs dated on/after go-live: earlier time is already in opening_xp.
   // Time logged ahead (a holiday booked into Tempo, say) counts from its day, not before.
   const today = londonDate();
-  const wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart && w.startDate <= today);
+  let wls = worklogs.filter((w) => w.accountId && w.issueId && w.startDate && w.startDate >= ledgerStart && w.startDate <= today);
   if (!wls.length) return { processed: 0, changed: 0 };
+  // Anything removed from the hub stays removed, whatever Tempo's search still says.
+  const deleted = new Set();
+  for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
+    const { results } = await env.DB.prepare(`SELECT worklog_id FROM deleted_worklogs WHERE worklog_id IN (${placeholders(part.length)})`).bind(...part).all()
+      .catch(() => ({ results: [] }));
+    results.forEach((r) => deleted.add(String(r.worklog_id)));
+  }
+  if (deleted.size) wls = wls.filter((w) => !deleted.has(w.id));
+  if (!wls.length) return { processed: 0, changed: 0 };
+  const stamp = await keepsStamp(env);
 
   const { results: empRows } = await env.DB.prepare('SELECT account_id, elo, elo_week, condor_elo, condor_elo_week, baseline FROM employees').all();
   const employees = new Map(empRows.map((e) => [e.account_id, e]));
@@ -142,7 +168,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
   const existing = new Map();
   for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
     const { results } = await env.DB.prepare(
-      `SELECT worklog_id, account_id, engineer_elo, seconds, xp, work_date, issue_id, overtime_seconds, start_time FROM xp_ledger WHERE worklog_id IN (${placeholders(part.length)})`
+      `SELECT worklog_id, account_id, engineer_elo, seconds, xp, work_date, issue_id, overtime_seconds, start_time${stamp ? ', tempo_updated_at' : ''} FROM xp_ledger WHERE worklog_id IN (${placeholders(part.length)})`
     ).bind(...part).all();
     for (const row of results) existing.set(row.worklog_id, row);
   }
@@ -171,6 +197,8 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
 
     const job = jobs.get(wl.issueId) || {};
     const prev = existing.get(wl.id);
+    // An older copy of a worklog already changed (Tempo's search catching up) never undoes the change.
+    if (prev?.tempo_updated_at && wl.updatedAt && wl.updatedAt < prev.tempo_updated_at) continue;
     // The engineer's ELO is captured when the time is first logged, from the
     // value frozen on Monday, so later changes never rewrite XP already earned.
     // Condor development is judged against the developer's Condor rating, not their customer ELO.
@@ -188,6 +216,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
 
     if (prev && prev.xp === xp && prev.seconds === wl.seconds && prev.work_date === wl.startDate && prev.issue_id === wl.issueId
       && (prev.start_time || null) === startTime) {
+      if (stamp && wl.updatedAt && wl.updatedAt !== prev.tempo_updated_at) stmts.push(env.DB.prepare('UPDATE xp_ledger SET tempo_updated_at = ? WHERE worklog_id = ?').bind(wl.updatedAt, wl.id));
       continue;
     }
     changed++;
@@ -203,6 +232,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
          logged_at = excluded.logged_at, updated_at = excluded.updated_at`
     ).bind(wl.id, wl.accountId, wl.issueId, wl.startDate, wl.seconds, wl.description.slice(0, 500),
       jobElo ?? null, engineerElo, override, rate, xp, overtime, startTime, wl.loggedAt || now, now, now));
+    if (stamp) stmts.push(env.DB.prepare('UPDATE xp_ledger SET tempo_updated_at = ? WHERE worklog_id = ?').bind(wl.updatedAt || now, wl.id));
     stmts.push(env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(wl.id));
   }
 
@@ -212,6 +242,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
     try { await applyOvertime(env, weeks); } catch (err) { console.warn('Overtime not worked out:', err.message); }
   }
   if (changed) await ledgerChanged(env);
+  if (!backfill && weeks.length) await markDirty(env, wls.map((w) => w.startDate)).catch(() => {});
   // Kept apart from the ledger's own writes, so a problem here never holds up XP.
   if (involved.length) {
     try { await runBatches(env, noteStatements(env, involved)); } catch (err) { console.warn('Staff involved not noted:', err.message); }
@@ -473,6 +504,7 @@ export async function catchUpToday(env) {
   await setState(env, 'ledger_day', today);
   const worklogs = await fetchWorklogs(env, { from: today, to: today });
   const result = await processWorklogs(env, worklogs);
+  await env.DB.prepare('DELETE FROM deleted_worklogs WHERE deleted_at < ?').bind(new Date(Date.now() - 60 * 86_400_000).toISOString()).run().catch(() => {});
   const out = await env.DB.batch([
     env.DB.prepare('DELETE FROM xp_ledger WHERE work_date > ?').bind(today),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE work_date > ?').bind(today),
@@ -490,22 +522,77 @@ export async function catchUpToday(env) {
   return { fetched: worklogs.length, changed: result.changed, removed: out[0].meta?.changes || 0, overtime };
 }
 
-// Re-check one of the last 14 days per run, removing XP for deleted worklogs.
+// Re-check one of the last two months' days per run, removing time deleted in Tempo.
 export async function reconcileNextDay(env) {
-  const ledgerStart = await getState(env, 'ledger_start');
-  if (!ledgerStart) return { skipped: 'Ledger not started yet' };
   const offset = Number((await getState(env, 'reconcile_offset')) || 0);
   await setState(env, 'reconcile_offset', (offset + 1) % RECONCILE_DAYS);
+  return reconcileDay(env, londonDate(Date.now() - offset * 86_400_000));
+}
 
-  const day = londonDate(Date.now() - offset * 86_400_000);
+// Today and yesterday are re-read every few minutes, so time removed in Tempo
+// comes off balances quickly rather than when its day next comes round. So are a few
+// older days that have just had time logged or changed on them: time is often moved
+// about on a day, and what was taken off goes with what was put on.
+export async function reconcileRecent(env) {
+  const out = [];
+  for (const back of [0, 1]) out.push(await reconcileDay(env, londonDate(Date.now() - back * 86_400_000)));
+  let dirty = [];
+  try { dirty = JSON.parse((await getState(env, 'reconcile_dirty')) || '[]'); } catch { dirty = []; }
+  const now = dirty.slice(0, 3);
+  await setState(env, 'reconcile_dirty', JSON.stringify(dirty.slice(3)));
+  for (const d of now) out.push(await reconcileDay(env, d));
+  return out;
+}
+
+async function markDirty(env, days) {
+  const recent = [londonDate(), londonDate(Date.now() - 86_400_000)];
+  const add = [...new Set(days)].filter((d) => !recent.includes(d));
+  if (!add.length) return;
+  let dirty = [];
+  try { dirty = JSON.parse((await getState(env, 'reconcile_dirty')) || '[]'); } catch { dirty = []; }
+  await setState(env, 'reconcile_dirty', JSON.stringify([...new Set([...dirty, ...add])].slice(-60)));
+}
+
+// Time logged in the last few minutes may not be in Tempo's search yet, so it isn't
+// taken as deleted just because the search hasn't caught up.
+const FRESH_MS = 10 * 60 * 1000;
+const fresh = (r) => [r.logged_at, r.updated_at].some((t) => t && Date.now() - Date.parse(t) < FRESH_MS);
+
+// One person's time over some days, read straight from Tempo: anything the hub holds
+// that Tempo no longer has is taken off. Run when they look at a week on My time.
+export async function reconcileUser(env, accountId, from, to) {
+  const ledgerStart = await getState(env, 'ledger_start');
+  if (!ledgerStart || !accountId) return { skipped: true };
+  const start = from < ledgerStart ? ledgerStart : from;
+  if (start > to) return { skipped: true };
+  const worklogs = await fetchUserWorklogs(env, accountId, { from: start, to });
+  await processWorklogs(env, worklogs);
+  const live = new Set(worklogs.map((w) => w.id));
+  const { results } = await env.DB.prepare('SELECT worklog_id, account_id, work_date, logged_at, updated_at FROM xp_ledger WHERE account_id = ? AND work_date BETWEEN ? AND ?')
+    .bind(accountId, start, to).all();
+  const goneRows = results.filter((r) => !live.has(r.worklog_id) && !fresh(r));
+  await runBatches(env, goneRows.flatMap((r) => [
+    env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(r.worklog_id),
+    env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(r.worklog_id),
+  ]));
+  if (goneRows.length) {
+    await applyOvertime(env, [...new Set(goneRows.map((r) => mondayOfDay(r.work_date)))].map((monday) => ({ accountId, monday }))).catch((err) => console.warn('Overtime not worked out:', err.message));
+    await ledgerChanged(env);
+  }
+  return { fetched: worklogs.length, deleted: goneRows.length };
+}
+
+export async function reconcileDay(env, day) {
+  const ledgerStart = await getState(env, 'ledger_start');
+  if (!ledgerStart) return { skipped: 'Ledger not started yet' };
   if (day < ledgerStart) return { skipped: `${day} is before the ledger start` };
 
   const worklogs = await fetchWorklogs(env, { from: day, to: day });
   await processWorklogs(env, worklogs);
 
   const live = new Set(worklogs.map((w) => w.id));
-  const { results } = await env.DB.prepare('SELECT worklog_id, account_id FROM xp_ledger WHERE work_date = ?').bind(day).all();
-  const goneRows = results.filter((r) => !live.has(r.worklog_id));
+  const { results } = await env.DB.prepare('SELECT worklog_id, account_id, logged_at, updated_at FROM xp_ledger WHERE work_date = ?').bind(day).all();
+  const goneRows = results.filter((r) => !live.has(r.worklog_id) && !fresh(r));
   const gone = goneRows.map((r) => r.worklog_id);
   await runBatches(env, gone.flatMap((id) => [
     env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
@@ -568,6 +655,7 @@ export async function snapshotWeek(env, weekStart) {
 // Tempo sync, then the next job in turn; a job with nothing to do (no calls
 // made) hands over to the one after, so quiet jobs never waste a run.
 const RECONCILE_EVERY_MS = 10 * 60 * 1000;
+const RECONCILE_RECENT_MS = 3 * 60 * 1000;
 const SLOTS = ['orders', 'categories', 'elo', 'bitbucket', 'mes', 'mes-sync', 'stage-split', 'stage-types', 'tracker', 'hourly-scan', 'hourly-jobs', 'hourly-quotes', 'contracts', 'psc', 'ims', 'staff', 'lists', 'wip', 'wip-history', 'invoice-history', 'capacity', 'alerts'];
 
 export async function runScheduled(rawEnv) {
@@ -659,6 +747,10 @@ export async function runScheduled(rawEnv) {
   if (Date.now() - Number((await getState(env, 'reconcile_at')) || 0) >= RECONCILE_EVERY_MS) {
     await setState(env, 'reconcile_at', Date.now());
     await attempt('Deletion check', () => reconcileNextDay(env));
+  }
+  if (Date.now() - Number((await getState(env, 'reconcile_recent_at')) || 0) >= RECONCILE_RECENT_MS) {
+    await setState(env, 'reconcile_recent_at', Date.now());
+    await attempt('Deletion check, today', () => reconcileRecent(env));
   }
 
   const hourKey = new Date().toISOString().slice(0, 13);

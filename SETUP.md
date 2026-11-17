@@ -342,6 +342,12 @@ Run `schema-057.sql` in the D1 console first (for admin adjustments to overtime 
 
 It runs from when they started logging consistently: the first working day with time logged that begins a steady run (time on at least three working days in four over the next four weeks), so odd logs while people were getting used to Tempo, and the time before, never count against them. After that, a working day with nothing logged takes a full day off; a red note above the balance says how many hours that is and lists the days, so logging them (including holiday and sickness, to their PMB items) puts it back. Admin, Overtime and TOIL shows each person's days with nothing logged too.
 
+**Changed or removed time.** Run `schema-064.sql` in the D1 console first.
+- Time removed from the hub stays removed, and time shortened from the hub stays shortened, even while Tempo's search still shows the old version for a few minutes. If Tempo saves a change as a new worklog, the old one goes.
+- Opening a week on My time checks that person's week against Tempo first: anything Tempo no longer has is taken off, however long ago it was logged, and the overtime balance is worked out from what's left.
+- Today and yesterday are re-checked against Tempo every 3 minutes, as are older days that have just had time logged or changed on them. Every day in the last two months is re-checked in turn, about every 10 hours.
+- Time logged or changed in the last 10 minutes is never taken as deleted, as Tempo's search can take a few minutes to show it.
+
 **Lunch and breaks (PMB-1)** aren't working time: they don't count towards anyone's daily or weekly hours, the overtime balance, the week on My time and the home screen, or 1.5x XP for time over contracted hours. They still show, striped, in the day's bar and the day strip on Log time. On first run after this update, every week since overtime began is worked out again without lunch. "How it's worked out" lists each week's change.
 
 **Admin, Overtime and TOIL** lists everyone's balance. Opening someone adds or takes off hours (a minus number takes off), with a date and what it's for, to bring in a balance kept elsewhere or put one right; adjustments can be removed. An adjustment dated before their balance's start doesn't count. Every adjustment is in the audit log under TOIL.

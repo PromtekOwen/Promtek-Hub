@@ -1,6 +1,6 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
 import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue, getIssue, blockedForLookup } from './jira.js';
-import { raiseAlert, londonDate, processWorklogs, ledgerChanged } from './sync.js';
+import { raiseAlert, londonDate, processWorklogs, ledgerChanged, noteDeleted } from './sync.js';
 import { normalise } from './tempo.js';
 import { applyOvertime, mondayOfDay } from './overtime.js';
 import { record } from './audit.js';
@@ -423,6 +423,9 @@ async function ownWorklog(env, viewer, worklogId) {
   const res = await fetch(`${TEMPO}/worklogs/${id}`, { headers: tempoHeaders(env) });
   if (res.status === 404) {
     await env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id).run();
+    await noteDeleted(env, [row]);
+    await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
+    await ledgerChanged(env);
     throw refuse('That time log has already gone from Tempo.', 404);
   }
   if (!res.ok) throw new Error(`Tempo ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -453,6 +456,14 @@ export async function updateWorklog(env, viewer, { worklogId, seconds, date, sta
   const res = await fetch(`${TEMPO}/worklogs/${id}`, { method: 'PUT', headers: tempoHeaders(env), body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`Tempo wouldn't accept that (${res.status}): ${(await res.text()).slice(0, 200)}`);
   const saved = normalise(await res.json());
+  // Tempo can save a change as a new worklog: the old one goes, so it isn't counted twice.
+  if (saved.id && saved.id !== id) {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
+      env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(id),
+    ]);
+    await noteDeleted(env, [row]);
+  }
   await processWorklogs(env, [saved]);
   // Moved out of today or before: the week it left is worked out again too.
   if (mondayOfDay(row.work_date) !== mondayOfDay(day)) await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
@@ -473,6 +484,7 @@ export async function deleteWorklog(env, viewer, worklogId) {
     env.DB.prepare('DELETE FROM xp_ledger WHERE worklog_id = ?').bind(id),
     env.DB.prepare('DELETE FROM unmatched_worklogs WHERE worklog_id = ?').bind(id),
   ]);
+  await noteDeleted(env, [row]);
   await applyOvertime(env, [{ accountId: viewer.accountId, monday: mondayOfDay(row.work_date) }]).catch(() => {});
   await ledgerChanged(env);
   await record(env, viewer, { area: 'My time', action: 'removed a time log', subjectType: 'worklog', subjectId: id, label: row.description || id,
