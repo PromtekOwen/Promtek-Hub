@@ -705,16 +705,26 @@ export function collapse(rows) {
 export async function list(env, viewer, { done = false } = {}) {
   mustSee(viewer);
   const rows = await allRows(env);
-  const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !GAP_TYPES.includes(i.type) && inIms(i) && (done || !i.done));
-  // How each area stands, from everything open in it: red for an open incident,
+  const all = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !GAP_TYPES.includes(i.type) && inIms(i));
+  // Sub-tasks are opened from their item, not listed; searching finds the item they're under.
+  const groupOf = new Map(rows.map((r) => [r.issue_key, r.group_key || r.issue_key]));
+  const subText = new Map();
+  for (const i of all) if (i.subtask && i.parent) {
+    const g = groupOf.get(i.parent) || i.parent;
+    subText.set(g, `${subText.get(g) || ''} ${i.key} ${i.copies.map((c) => c.key).join(' ')} ${i.summary} ${i.assignee || ''}`);
+  }
+  const items = all.filter((i) => !i.subtask && (done || !i.done));
+  for (const i of items) if (subText.has(i.key)) i.subText = subText.get(i.key).trim().slice(0, 4000);
+  // How each area stands, from everything open in it (sub-tasks too): red for an open incident,
   // non-conformity or 8D report, blue for other open work, green for nothing open.
   const areaState = areaStates(rows);
+  const openIn = (k) => items.filter((i) => !i.done && i.areas.includes(k)).length;
   const writes = await env.DB.prepare('SELECT target_key, kind, error FROM ims_writes WHERE done_at IS NULL').all().catch(() => ({ results: [] }));
   const conflicts = await liveConflicts(env, 'SELECT group_key, COUNT(*) AS n FROM ims_sync WHERE conflict = 1 GROUP BY group_key');
   const conflictMap = Object.fromEntries(conflicts.results.map((c) => [c.group_key, c.n]));
   for (const i of items) if (conflictMap[i.key]) i.conflicts = conflictMap[i.key];
   return {
-    areas: AREAS.map(({ key, name }) => ({ key, name, ...areaState[key] })), items, me: viewer.accountId || null,
+    areas: AREAS.map(({ key, name }) => ({ key, name, ...areaState[key], listed: openIn(key) })), items, me: viewer.accountId || null,
     readAt: Number((await getState(env, 'ims_read_at')) || 0) || null,
     reading: Boolean(await getState(env, 'ims_full_started')),
     pending: writes.results.length, failing: writes.results.filter((w) => w.error).length,

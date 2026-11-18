@@ -12177,14 +12177,14 @@ function imsItemsHtml(data) {
   const items = data.items.filter((i) => (!imsFilter.area || i.areas.includes(imsFilter.area)) && (!imsFilter.type || (i.imsType || 'Not set') === imsFilter.type)
     && (!imsFilter.who || (imsFilter.who === 'none' ? !i.assigneeId : i.assigneeId === imsFilter.who))
     && (!imsFilter.differ || i.conflicts)
-    && (!q || `${i.key} ${i.summary} ${i.assignee || ''} ${i.copies.map((c) => c.key).join(' ')}`.toLowerCase().includes(q)))
+    && (!q || `${i.key} ${i.summary} ${i.assignee || ''} ${i.copies.map((c) => c.key).join(' ')} ${i.subText || ''}`.toLowerCase().includes(q)))
     .sort((a, b) => Number(a.done) - Number(b.done) || String(b.updated).localeCompare(String(a.updated)));
   const types = [...new Set(data.items.map((i) => i.imsType || 'Not set'))].sort();
   const people = [...new Map(data.items.filter((i) => i.assigneeId).map((i) => [i.assigneeId, i.assignee])).entries()].sort((a, b) => a[1].localeCompare(b[1]));
   const today = new Date().toISOString().slice(0, 10);
-  const areaTitle = (a) => (a.state === 'red' ? [a.nc ? `${a.nc} open incident${a.nc === 1 ? '' : 's'} or non-conformit${a.nc === 1 ? 'y' : 'ies'}` : '', a.eightD ? `${a.eightD} open 8D report${a.eightD === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ') : a.state === 'blue' ? `${a.open} open` : 'Nothing open');
+  const areaTitle = (a) => (a.state === 'red' ? [a.nc ? `${a.nc} open incident${a.nc === 1 ? '' : 's'} or non-conformit${a.nc === 1 ? 'y' : 'ies'}` : '', a.eightD ? `${a.eightD} open 8D report${a.eightD === 1 ? '' : 's'}` : ''].filter(Boolean).join(', ') : a.state === 'blue' ? `${a.listed ?? a.open} open` : 'Nothing open');
   return `<div class="ims-areas-bar"><button class="chip${imsFilter.area === '' ? ' on' : ''}" data-ims-area="">All areas</button>${data.areas.map((a) =>
-      `<button class="chip ims-area-btn ${a.state || ''}${imsFilter.area === a.key ? ' on' : ''}" data-ims-area="${esc(a.key)}" title="${esc(areaTitle(a))}">${esc(a.name)} <small>${a.open ?? data.items.filter((i) => i.areas.includes(a.key) && !i.done).length}</small></button>`).join('')}</div>
+      `<button class="chip ims-area-btn ${a.state || ''}${imsFilter.area === a.key ? ' on' : ''}" data-ims-area="${esc(a.key)}" title="${esc(areaTitle(a))}">${esc(a.name)} <small>${a.listed ?? data.items.filter((i) => i.areas.includes(a.key) && !i.done).length}</small></button>`).join('')}</div>
     <p class="help ims-area-key"><span class="ims-dot red"></span> Open incident, non-conformity or 8D report <span class="ims-dot blue"></span> Open tasks <span class="ims-dot green"></span> Nothing open</p>
     <div class="row con-tools psc-tools">
       <label class="con-tier">Type <select data-ims-filter="type"><option value="">All</option>${types.map((t) => `<option${imsFilter.type === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
