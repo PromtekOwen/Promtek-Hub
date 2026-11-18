@@ -242,6 +242,11 @@ The hub raises an alert when someone logs time in Tempo but isn't in the employe
 
 The Admin page shows each alert as **Emailed**, **Sending**, **Not emailed yet**, or **Held until …** for someone who has chosen emails only in their working hours.
 
+**What Admin shows about sending:**
+- **The last try:** when it was, how many went, and, if any didn't, why. For example: the relay can't be reached; it answered with an error; or it said **Rejected**, which means `ALERT_WEBHOOK_SECRET` doesn't match `SHARED_SECRET` in the relay script.
+- **Send the N waiting now:** sends any still waiting straight away and says how it went.
+- **Last background run:** if this, at the top of Admin, is old or says Not yet, the Worker's scheduled trigger isn't running (the `triggers` in `wrangler.jsonc`), and nothing waiting goes until it does.
+
 **PSC changes:** tickets changed in Jira are read every couple of minutes, between the hub's fuller PSC runs, so their notifications aren't kept waiting.
 
 ## Part 11: Point of work risk assessments

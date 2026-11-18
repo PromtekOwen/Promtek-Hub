@@ -1355,7 +1355,7 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && pathname === '/api/admin/library-add') return json(await Obs.addLibraryEntry(env, body));
     if (method === 'POST' && pathname === '/api/admin/library-remove') return json(await Obs.removeLibraryEntry(env, body.id));
-    if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env));
+    if (method === 'POST' && pathname === '/api/admin/send-alerts') return json(await sendAlerts(env, { limit: 45 }));
 
     if (method === 'POST' && pathname === '/api/admin/sync-now') return json(await pollRecent(env, { force: true }));
     if (method === 'POST' && pathname === '/api/admin/xp-rate-check') return json(await (await import('./sync.js')).checkXpRates(env, { force: true }));
@@ -1588,6 +1588,8 @@ async function adminOverview(env) {
     alerts: alerts.results,
     jobs,
     mailRelay: Boolean(env.ALERT_WEBHOOK_URL),
+    mailLast: JSON.parse((await getState(env, 'alert_send_last').catch(() => null)) || 'null'),
+    mailWaiting: (await env.DB.prepare('SELECT COUNT(*) AS n FROM alerts WHERE sent_at IS NULL').first().catch(() => null))?.n || 0,
     state: Object.fromEntries(state.results.map((r) => [r.key, r.value])),
   };
 }

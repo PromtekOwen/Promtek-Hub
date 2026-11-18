@@ -850,8 +850,11 @@ const pages = {
         <h2>Alerts</h2>
         <div class="card">
           <p class="muted" style="margin-top:0">${data.mailRelay
-            ? 'Alerts are emailed once an hour through the mail relay.'
-            : 'No mail relay is set up, so alerts only appear here. Add ALERT_WEBHOOK_URL to send them by email.'}</p>
+            ? 'Emails go through the mail relay as soon as they\'re raised, and any waiting are tried every couple of minutes.'
+            : '<strong>No mail relay is set up</strong>, so nothing is emailed: alerts only appear here. Add ALERT_WEBHOOK_URL (Part 10, Alert emails) to send them.'}</p>
+          ${data.mailRelay ? `<p style="margin:.2rem 0">${data.mailLast ? `Last tried ${esc(agoText(data.mailLast.at))}: ${data.mailLast.sent} of ${data.mailLast.tried} sent.` : 'Not tried yet.'}
+            ${data.mailLast?.error ? `<br><strong class="bad">${esc(data.mailLast.error)}</strong>` : ''}</p>
+            ${data.mailWaiting ? `<div class="row" style="margin:.4rem 0 .8rem"><button class="btn secondary" data-admin-send-alerts="1">Send the ${data.mailWaiting} waiting now</button></div>` : ''}` : ''}
           ${data.alerts.length ? `<ul class="list" style="box-shadow:none">${data.alerts.map((a) => `<li>
               <span class="title">${esc(a.subject)}</span>
               <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
@@ -1286,6 +1289,16 @@ function homeAdminRedraw(focusField) {
 
 async function homeAdminClick(event) {
   const t = (sel) => event.target.closest(sel);
+  const sendBtn = t('[data-admin-send-alerts]');
+  if (sendBtn) {
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      const r = await api('/api/admin/send-alerts', { method: 'POST', body: '{}' });
+      toast(r.skipped ? r.skipped : r.error ? `${r.sent} sent. ${r.error}` : `${r.sent} sent`);
+    } catch (err) { toast(err.message); }
+    render();
+    return true;
+  }
   if (!t('#home-admin')) return false;
   const d = homeDraft;
   const set = t('[data-hm-set]');

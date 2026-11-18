@@ -500,22 +500,34 @@ export async function sendAlerts(env, { limit = 15 } = {}) {
   if (!results.length) return { sent: 0 };
   let sent = 0;
   let stopped = false;
+  let problem = null;
   for (let i = 0; i < results.length; i += 5) {
     const part = results.slice(i, i + 5);
     if (stopped) { await env.DB.prepare(`UPDATE alerts SET sent_at = NULL WHERE id IN (${part.map(() => '?').join(',')})`).bind(...part.map((x) => x.id)).run(); continue; }
     const done = await Promise.all(part.map(async (alert) => {
-      const res = await fetch(env.ALERT_WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
-      }).catch(() => null);
-      await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(res?.ok ? new Date().toISOString() : null, alert.id).run();
-      return Boolean(res?.ok);
+      let ok = false;
+      try {
+        const res = await fetch(env.ALERT_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
+        });
+        // The relay answers in words: Sent, Rejected (the secret doesn't match) or Error: and why.
+        const said = (await res.text().catch(() => '')).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        ok = res.ok && !/^(rejected|error)/i.test(said);
+        if (!ok) problem = !res.ok ? `The mail relay answered ${res.status}${said ? `: ${said.slice(0, 160)}` : ''}`
+          : /^rejected/i.test(said) ? 'The mail relay rejected the hub: ALERT_WEBHOOK_SECRET doesn\'t match SHARED_SECRET in the relay script.'
+            : `The mail relay couldn't send it: ${said.slice(0, 200)}`;
+      } catch (err) { problem = `The mail relay couldn't be reached: ${String(err.message).slice(0, 160)}`; }
+      await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(ok ? new Date().toISOString() : null, alert.id).run();
+      return ok;
     }));
     sent += done.filter(Boolean).length;
     if (done.includes(false)) stopped = true;
   }
-  return { sent };
+  // How the last go went, for Admin.
+  await setState(env, 'alert_send_last', JSON.stringify({ at: new Date().toISOString(), sent, tried: results.length, error: problem })).catch(() => {});
+  return { sent, tried: results.length, error: problem };
 }
 
 // Emails someone's action has just raised go straight away, after the reply, rather than
@@ -759,6 +771,11 @@ export async function runScheduled(rawEnv) {
   const month = await monthSoFar(rawEnv);
   const allowed = (await getState(env, 'd1_carry_on_month')) === utcMonth();
   const fmt = (v) => Math.round(v).toLocaleString('en-GB');
+  // Waiting emails go first thing every run, whatever else the run does or doesn't get to.
+  if (env.ALERT_WEBHOOK_URL) {
+    const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) LIMIT 1').bind(new Date().toISOString()).first().catch(() => null);
+    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6 }));
+  }
   if (overBudget(month) && !allowed) {
     await attempt('Tempo sync', () => pollRecent(env, { force: true }));
     if ((await getState(env, 'd1_paused_month')) !== utcMonth()) {
@@ -947,7 +964,7 @@ export async function runScheduled(rawEnv) {
   // this run, a PSC change say, goes within minutes rather than waiting for its turn.
   if (env.ALERT_WEBHOOK_URL) {
     const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) LIMIT 1').bind(new Date().toISOString()).first().catch(() => null);
-    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 8 }));
+    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6 }));
   }
   await finish();
 }
