@@ -153,6 +153,18 @@ export default {
       const as = real.can?.developer ? viewAsCookie(request) : null;
       if (as) {
         const viewer = await viewAs(env, real, as);
+        const helper = remoteHelper(env, real);
+        if (viewer) viewer.viewingAs = { ...viewer.viewingAs, canEdit: helper, editing: helper && viewAsEditing(request) };
+        if (viewer?.viewingAs.editing) {
+          // Owen, helping: changes go through as them, each noted in the audit log as made by him.
+          viewer.helpedBy = { name: real.employee?.name || real.email, email: real.email };
+          if (!['GET', 'HEAD'].includes(request.method) && url.pathname.startsWith('/api/prefs/')) return json({ ok: true });
+          if (['/api/tablet/pin'].includes(url.pathname) || url.pathname.startsWith('/api/jira-connect')) return json({ error: 'That has to be done by them, from their own sign-in.' }, 403);
+          // In Jira the change is Owen's, not theirs.
+          const acting = !['GET', 'HEAD'].includes(request.method) && real.accountId && JiraAuth.configured(env) && JiraAuth.actsAsUser(request.method, url.pathname)
+            ? { ...env, JIRA_ACTOR: { accountId: real.accountId, email: real.email } } : env;
+          return await route(request, acting, url, viewer);
+        }
         if (viewer) {
           // Guides marked as seen and tile layouts are theirs; those are let go quietly.
           if (!['GET', 'HEAD'].includes(request.method) && url.pathname.startsWith('/api/prefs/')) return json({ ok: true });
@@ -213,6 +225,10 @@ async function resolveViewer(env, user) {
 // ---------- viewing as someone else ----------
 
 const VIEW_AS_COOKIE = 'hub_view_as';
+// Changing things while viewing as someone, to help them: only the people named here (Owen to begin with).
+const VIEW_AS_EDIT_COOKIE = 'hub_view_as_edit';
+const remoteHelper = (env, real) => String(env.REMOTE_HELP_EMAILS || 'owen.hume@promtek.com').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).includes(String(real?.email || '').toLowerCase());
+const viewAsEditing = (request) => /(?:^|;\s*)hub_view_as_edit=1(?:;|$)/.test(request.headers.get('cookie') || '');
 function viewAsCookie(request) {
   const m = (request.headers.get('cookie') || '').match(new RegExp(`(?:^|;\\s*)${VIEW_AS_COOKIE}=([^;]+)`));
   const v = m ? decodeURIComponent(m[1]) : '';
@@ -250,7 +266,23 @@ async function devRoute(request, env, url, real) {
     const cookie = id
       ? `${VIEW_AS_COOKIE}=${encodeURIComponent(id)}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=28800`
       : `${VIEW_AS_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`;
-    return new Response(JSON.stringify({ ok: true, name }), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'set-cookie': cookie } });
+    // A new person, or stopping, always starts with changes off.
+    const headers = new Headers({ 'content-type': 'application/json', 'cache-control': 'no-store' });
+    headers.append('set-cookie', cookie);
+    headers.append('set-cookie', `${VIEW_AS_EDIT_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`);
+    return new Response(JSON.stringify({ ok: true, name }), { headers });
+  }
+  // Letting changes through while viewing as someone, to fix things for them.
+  if (request.method === 'POST' && url.pathname === '/api/dev/view-as-edit') {
+    if (!remoteHelper(env, real)) return json({ error: 'Only Owen can make changes while viewing as someone.' }, 403);
+    const as = viewAsCookie(request);
+    if (!as) return json({ error: 'View the hub as someone first.' }, 400);
+    const body = await request.json().catch(() => ({}));
+    const on = Boolean(body.on);
+    const emp = await env.DB.prepare('SELECT name FROM employees WHERE account_id = ?').bind(as).first();
+    await Audit.record(env, real, { area: 'Developer', action: on ? 'Started making changes as someone else, to help them' : 'Stopped making changes as someone else', subjectType: 'employee', subjectId: as, label: emp?.name || as });
+    return new Response(JSON.stringify({ ok: true, on }), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store',
+      'set-cookie': on ? `${VIEW_AS_EDIT_COOKIE}=1; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=3600` : `${VIEW_AS_EDIT_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0` } });
   }
   return json({ error: 'Not found' }, 404);
 }

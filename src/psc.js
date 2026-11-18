@@ -9,7 +9,7 @@ import { jira, searchPage, customerProjects, statusAllowed } from './jira.js';
 import * as Contacts from './psccontacts.js';
 import { staffIds } from './psccontacts.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
-import { leadsOfTeam, canTile } from './permissions.js';
+import { canTile } from './permissions.js';
 import { orgMatcher, tokenCounts, holidaysFor, chargeOf, CHARGE } from './contracts.js';
 
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
@@ -481,8 +481,10 @@ async function retryWrites(env, b) {
       const attempts = w.attempts + 1;
       await env.DB.prepare('UPDATE psc_writes SET attempts = ?, error = ? WHERE id = ?').bind(attempts, String(err.message).slice(0, 400), w.id).run();
       if (attempts === 3 && w.kind !== 'reporter') {
-        await raiseAlert(env, { kind: 'psc-write', dedupe: `psc-write:${w.id}`, subject: `The hub couldn't update ${w.issue_key} in Jira`,
-          body: `${w.label || w.kind} on ${w.issue_key}, asked for by ${w.created_by}, hasn't gone through:\n\n${err.message}\n\nThe hub keeps trying.` });
+        for (const to of await serviceLeads(env)) {
+          await raiseAlert(env, { kind: 'psc-write', dedupe: `psc-write:${w.id}:${to || 'default'}`, recipient: to, subject: `The hub couldn't update ${w.issue_key} in Jira`,
+            body: `${w.label || w.kind} on ${w.issue_key}, asked for by ${w.created_by}, hasn't gone through:\n\n${err.message}\n\nThe hub keeps trying.` });
+        }
       }
     }
   }
@@ -853,8 +855,9 @@ export async function refresh(env, viewer) {
 // ---------- background job ----------
 
 async function serviceLeads(env) {
-  const leads = (await leadsOfTeam(env, 'Service')).map((e) => e.email).filter(Boolean);
-  return leads.length ? leads : [null];
+  const { serviceAlertEmails } = await import('./permissions.js');
+  const to = await serviceAlertEmails(env);
+  return to.length ? to : [null];
 }
 
 const hoursText = (msv) => { const m = Math.round(msv / 60000); if (m >= 2880) return `${Math.round(m / 1440)} days`; return m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`; };
@@ -1094,8 +1097,10 @@ export async function autoCopy(env, b, ctx) {
       if (!(await env.DB.prepare('SELECT 1 FROM psc_copy_requests WHERE issue_key = ?').bind(r.issue_key).first())) {
         await noteCopy(env, r.issue_key, { org: r.org, status: 'failed', error: String(err.message).slice(0, 300), requested_by: 'The hub', requested_at: new Date().toISOString() });
       }
-      await raiseAlert(env, { kind: 'psc-copy', dedupe: `psc-copy:${r.issue_key}`, subject: `${r.issue_key} couldn't be copied to the customer's project`,
-        body: `${r.issue_key} (${r.summary}) has the Organization ${r.org}, but the hub couldn't have it copied:\n\n${err.message}\n\nOpen it on the PSC tile to try again.` }).catch(() => {});
+      for (const to of await serviceLeads(env).catch(() => [null])) {
+        await raiseAlert(env, { kind: 'psc-copy', dedupe: `psc-copy:${r.issue_key}:${to || 'default'}`, recipient: to, subject: `${r.issue_key} couldn't be copied to the customer's project`,
+          body: `${r.issue_key} (${r.summary}) has the Organization ${r.org}, but the hub couldn't have it copied:\n\n${err.message}\n\nOpen it on the PSC tile to try again.` }).catch(() => {});
+      }
     }
   }
   return { made };

@@ -236,6 +236,17 @@ export async function leadsOfTeam(env, team) {
   return results.filter((e) => groupsOf(e).includes('lead') && (team ? leadOf(e).includes(team) : leadOf(e).length));
 }
 
+// Who looks after the Service team's alerts (PSCs and service contracts): its leads, and
+// management in the team; failing those, everyone in the team. Never the other admins and managers.
+export async function serviceAlertEmails(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM employees WHERE active = 1 AND email IS NOT NULL AND account_id NOT LIKE 'pending%'").all();
+  const inTeam = results.filter((e) => teamsOf(e).includes('Service'));
+  const heads = results.filter((e) => (groupsOf(e).includes('lead') && leadOf(e).includes('Service')) || (groupsOf(e).includes('management') && teamsOf(e).includes('Service')));
+  return [...new Set((heads.length ? heads : inTeam).map((e) => String(e.email).toLowerCase()))];
+}
+// In the Service team, or leading it: who PSC and service contract alerts are for.
+export const forService = (who) => (who?.teams || []).includes('Service') || (who?.leads || []).includes('Service');
+
 // Someone's supervisor, a lead of one of their teams, Management or an admin:
 // the people who may see and decide private things such as modifiers.
 export function managesPerson(viewer, person) {

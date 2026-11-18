@@ -2,7 +2,7 @@
 // (the bell at the top of every page) and by email, at once or as one email each morning.
 // Every alert the hub sends to a person comes through here, so their choices always apply;
 // alerts for the hub's own address (things for an admin to fix) go out as before.
-import { access, loadAccessConfig } from './permissions.js';
+import { access, loadAccessConfig, forService } from './permissions.js';
 
 // What each tile can tell you about. app and email are the starting choices; scope is
 // whether it's about every item or only those assigned to you, where that applies.
@@ -182,6 +182,7 @@ export async function routeAlert(env, { kind, dedupe, subject, body, recipient, 
 const defaultLink = (tile) => (tile === 'hub' ? '#/' : `#/${tile}`);
 
 // Something everyone who can open a tile may want to hear about: each hears as they've chosen.
+const SERVICE_TILES = ['psc', 'contracts'];
 export async function fanOut(env, { tile, kind, dedupe, subject, body, link = null, ref = {} }) {
   const ev = eventOf(tile, kind);
   if (!ev) return 0;
@@ -193,7 +194,10 @@ export async function fanOut(env, { tile, kind, dedupe, subject, body, link = nu
   const saved = new Map(results.map((r) => { try { return [r.account_id, JSON.parse(r.prefs)]; } catch { return [r.account_id, {}]; } }));
   let sent = 0;
   for (const emp of people) {
-    if (!access(emp, { config, fallbackAdmin: admins.includes(String(emp.email).toLowerCase()) }).tiles[tile]) continue;
+    const a = access(emp, { config, fallbackAdmin: admins.includes(String(emp.email).toLowerCase()) });
+    if (!a.tiles[tile]) continue;
+    // PSCs and service contracts are only for the Service team and those leading it.
+    if (SERVICE_TILES.includes(tile) && !forService(a)) continue;
     const prefs = withDefaults(tile, saved.get(emp.account_id));
     const choice = prefs.events[kind];
     if (!choice || (!choice.app && !choice.email)) continue;

@@ -146,7 +146,8 @@ async function moveTo(b, key, target, via = []) {
 // ---------- who hears about contracts ----------
 
 export async function recipients(env) {
-  const leads = (await leadsOfTeam(env, 'Service')).map((e) => e.email).filter(Boolean);
+  const { serviceAlertEmails } = await import('./permissions.js');
+  const leads = await serviceAlertEmails(env);
   let extra = [];
   try { extra = JSON.parse((await getState(env, 'contracts_recipients')) || '[]'); } catch { /* none */ }
   const all = [...new Set([...leads, ...extra].map((e) => String(e).toLowerCase()))];
@@ -1433,7 +1434,7 @@ export async function settings(env, viewer) {
   let extra = [];
   try { extra = JSON.parse((await getState(env, 'contracts_recipients')) || '[]'); } catch { /* none */ }
   const { results: people } = await env.DB.prepare('SELECT * FROM employees WHERE active = 1 AND email IS NOT NULL ORDER BY name').all();
-  const leads = (await leadsOfTeam(env, 'Service')).map((e) => e.email?.toLowerCase());
+  const leads = await (await import('./permissions.js')).serviceAlertEmails(env);
   const st = await loadState(env);
   const { results: mapped } = await env.DB.prepare('SELECT * FROM contract_org_map ORDER BY org').all();
   const orgs = new Map();

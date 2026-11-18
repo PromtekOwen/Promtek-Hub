@@ -15215,9 +15215,20 @@ function viewAsBar() {
   const bar = document.createElement('div');
   bar.className = 'practice-bar viewas-bar';
   bar.setAttribute('role', 'note');
-  bar.innerHTML = `<span>Viewing as <strong>${esc(v.name)}</strong>${what ? ` (${esc(what)})` : ''}. You see what they see; nothing can be changed.</span>
-    <button class="btn secondary">Stop viewing as ${esc(v.name.split(' ')[0])}</button>`;
-  bar.querySelector('button').addEventListener('click', async (event) => {
+  if (v.editing) bar.classList.add('editing');
+  bar.innerHTML = `<span>Viewing as <strong>${esc(v.name)}</strong>${what ? ` (${esc(what)})` : ''}. ${v.editing
+      ? '<strong>Changes are on:</strong> anything you do is done as them, and noted in the audit log as yours.'
+      : 'You see what they see; nothing can be changed.'}</span>
+    ${v.canEdit ? `<button class="btn secondary" data-viewas-edit="${v.editing ? '0' : '1'}">${v.editing ? 'Turn changes off' : 'Make changes for them'}</button>` : ''}
+    <button class="btn secondary" data-viewas-stop="1">Stop viewing as ${esc(v.name.split(' ')[0])}</button>`;
+  bar.querySelector('[data-viewas-edit]')?.addEventListener('click', async (event) => {
+    const on = event.target.dataset.viewasEdit === '1';
+    if (on && !confirm(`Make changes as ${v.name}? Anything you do (logging time, changing items, filling in forms) is done as them until you turn it off or stop viewing as them. Each change is noted in the audit log as made by you.`)) return;
+    event.target.disabled = true;
+    try { await api('/api/dev/view-as-edit', { method: 'POST', body: JSON.stringify({ on }) }); location.reload(); }
+    catch (err) { toast(err.message); event.target.disabled = false; }
+  });
+  bar.querySelector('[data-viewas-stop]').addEventListener('click', async (event) => {
     event.target.disabled = true;
     try { await api('/api/dev/view-as', { method: 'POST', body: JSON.stringify({ accountId: null }) }); location.reload(); }
     catch (err) { toast(err.message); event.target.disabled = false; }

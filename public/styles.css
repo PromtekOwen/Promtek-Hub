@@ -2578,3 +2578,4 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
   .coshh-sheet { height: 55vh; }
 }
 .coshh-sheet-links li { justify-items: start; } .coshh-sheet-links button { text-align: left; }
+.viewas-bar.editing { background: #8a1f1f; }

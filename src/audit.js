@@ -58,7 +58,9 @@ export async function record(env, viewer, { area, action, subjectType = null, su
     `INSERT INTO audit_log (at, actor_email, actor_name, area, action, subject_type, subject_id, subject_label, changes, note)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(new Date().toISOString(), viewer?.email || null, viewer?.employee?.name || null, area, action, subjectType,
-    subjectId == null ? null : String(subjectId), label, JSON.stringify(changes), note).run();
+    subjectId == null ? null : String(subjectId), label, JSON.stringify(changes),
+    // A change made for someone while viewing the hub as them says who really made it.
+    viewer?.helpedBy ? [note, `Made by ${viewer.helpedBy.name} while viewing the hub as them`].filter(Boolean).join('. ') : note).run();
 }
 
 // Pages by id so the log stays quick however long it grows.

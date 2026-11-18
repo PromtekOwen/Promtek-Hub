@@ -193,7 +193,9 @@ async function systemAlerts(env, viewer) {
     }
   }
 
-  if ((viewer.teams || []).includes('Service') || viewer.isLead) {
+  // PSCs and service contracts are the Service team's: its members and those leading it.
+  const service = (viewer.teams || []).includes('Service') || (viewer.leads || []).includes('Service');
+  if (service) {
     const row = await env.DB.prepare(
       `SELECT COUNT(*) AS n FROM psc_items p WHERE p.done = 0 AND p.assignee_id IS NULL AND p.team_first_at IS NULL
           AND p.issuetype NOT IN ('Snag', 'Sub-Snag') AND NOT (p.project_key = 'PSC' AND p.org IS NOT NULL)
@@ -212,7 +214,7 @@ async function systemAlerts(env, viewer) {
     if (modifiers.length) out.push({ key: 'modifiers', tone: 'info', title: `${plural(modifiers.length, 'request')} to take something into account`, body: `From ${listWords([...new Set(modifiers.map((m) => m.name || 'someone'))].slice(0, 3))}.`, link: '#/jobs' });
   }
 
-  if (viewer.isAdmin || (viewer.leads || []).includes('Service')) {
+  if (service) {
     const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_flags WHERE resolved_at IS NULL').first().catch(() => ({ n: 0 }));
     if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Dates, acceptance or PSCs missing an Organization.', link: '#/contracts' });
   }

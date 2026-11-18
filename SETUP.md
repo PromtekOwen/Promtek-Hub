@@ -127,6 +127,12 @@ Employees are managed in the hub, under **Admin, Employees**. Each person has on
 
 **Removing someone** offers two things: hide them and keep their XP history, or remove them and it entirely.
 
+**Viewing as someone, and helping them.** Developers can view the hub as someone else (account menu, View as someone else). It's read-only: you see what they see, and nothing can be changed. Owen alone (set `REMOTE_HELP_EMAILS` to change who) also sees **Make changes for them** on the bar at the top.
+- **What it does:** with it on, the bar turns red and anything done goes through as that person. That includes logging or fixing their time, filling in their forms, changing items, and acknowledging on their behalf.
+- **The record:** each change is in the audit log under their name, with "Made by Owen Hume while viewing the hub as them". Jira changes are made as Owen, not as them.
+- **Turning it off:** it turns itself off after an hour, when you view as someone else, or when you stop viewing as them. **Turn changes off** stops it straight away.
+- **What still needs their own sign-in:** setting their tablet PIN and connecting their Jira account.
+
 **Who's using the hub** (Admin, admins only) lists each tile with how many times it was opened and by how many people over the last 7, 30 or 90 days, including tiles nobody has opened, and each person with when they last opened the hub, how many days they've used it, and the tile they use most. A page counts once every few minutes per person, so moving around inside it doesn't add up, and a developer viewing as someone isn't counted. Counts are kept for 400 days.
 
 ### The company chart
@@ -529,7 +535,7 @@ The **Service contracts** tile shows each customer's Service Contract item from 
 
 **Insights** show renewals, token use against each contract's progress, visits falling behind, time that can't reach a contract (last 90 days), and where service time went by customer and engineer (last 30 days). Each total opens to the time logs behind it.
 
-**Alerts** go to the Service team leads, plus anyone added under the settings cog. Anything Jira refuses is retried, and after three tries appears in Needs attention and is emailed.
+**Alerts** go to the Service team's leads and any Management in the Service team (everyone in the Service team if there are none), plus anyone added under the settings cog. PSC and service contract alerts aren't sent to other admins or managers. That covers the home screen alerts (new PSCs to pick up, contract problems), the bell notifications and these emails. Anything Jira refuses is retried, and after three tries appears in Needs attention and is emailed.
 
 **Logging time** to a Service Contract item first asks whether it was really a contracted visit, and offers that customer's visits instead.
 
@@ -570,7 +576,7 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 **Order.** Late items first, then new items due within the hour, then customers waiting on us, then other new items by when they're due; within each, Platinum, Gold, Silver, then no contract.
 
-**Emails.** The Service team lead hears when an item passes its first-look deadline. The owner (or the lead, if no one has it) hears when a customer has been waiting longer than that.
+**Emails.** The Service team's leads (and Management in the Service team; everyone in the team if there are none) hear when an item passes its first-look deadline, or when a change can't be made in Jira or a ticket can't be copied. The owner (or the lead, if no one has it) hears when a customer has been waiting longer than that.
 
 **Settings** (cog, admin only): the first-look target for each tier (Platinum 1 hour, Gold 2, Silver 4, no contract 8 to start with), the day shift (08:00 to 17:00), and how many days without an update before an item is quiet.
 
