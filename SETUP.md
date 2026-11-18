@@ -695,6 +695,8 @@ Anywhere, choosing a person's course opens it to record training. **＋ Course**
 
 **A talk's documents.** The presentation or any other document can be attached when the talk is created, or later from the talk (**Attach a document**, up to 50 MB each). They're kept as attachments on the talk's Internal Training item in Jira, so they're there too. Everyone the talk is for sees them on the talk, on the Training & Policy tile or the IMS tile. PDFs and pictures are read right on the page; PowerPoint and Word files open in PowerPoint or Word (browsers can't show them), so a PDF copy saved alongside lets everyone read it in the hub. Management can remove them. (The hub's pages now allow frames from the hub itself, for the PDF reader; nothing from anywhere else.)
 
+**Sending the acknowledgement link.** Once a talk has started, management see **Send people straight to the acknowledgement** on it (and on every policy): a link to copy into an email or chat message. It opens that talk or policy, ready to acknowledge, for anyone it's for: on the Training & Policy tile for staff, or the IMS tile's Training or Policy tab for management. It asks them to sign in first if they need to.
+
 **Policies.** Publish a policy with links to its documents, a version, who must read it and an acknowledge-by date. Nothing is made in Jira. Each person ticks "I have read and understood this policy" and acknowledges it. Management see who has and hasn't. A new version asks everyone again. Those who haven't acknowledged are reminded on Mondays.
 
 **Notifications.** The tile's bell chooses how new talks, talk reminders, new policies and policy reminders arrive, like other tiles.

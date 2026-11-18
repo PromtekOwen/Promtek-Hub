@@ -460,8 +460,20 @@ const pages = {
   '#/training': {
     band: () => '<h1>Training & Policy</h1><p>Tool box talks coming up, and the talks and policies for you to acknowledge.</p>',
     render: async () => {
+      // A link can open one talk or policy, as #/training?talk=12, ready to acknowledge.
+      const asked = /^(talk|policy)=(\d+)$/.exec(location.hash.split('?')[1] || '');
+      if (asked) {
+        trOpen = `${asked[1]}-${asked[2]}`; trTab = asked[1] === 'policy' ? 'policy' : 'training'; trView = 'talks';
+        history.replaceState(history.state, '', `${location.pathname}${location.search}#/training`);
+      }
       // Those with the IMS tile have all of this on its Training and Policy tabs.
-      if (imsIsMine()) { imsTab = trTab === 'policy' ? 'policy' : 'training'; setTimeout(() => location.replace('#/ims')); return ''; }
+      // Swapped in place, not navigated, so whatever's open (from a link or an alert) stays open.
+      if (imsIsMine()) {
+        imsTab = trTab === 'policy' ? 'policy' : 'training'; imsOpen = null; imsNew = null; imsMeetingOpen = null;
+        history.replaceState({ ...history.state, hubSub: null }, '', `${location.pathname}${location.search}#/ims`);
+        setTimeout(render);
+        return '';
+      }
       const manage = (await trLoad('talks')).manage;
       if (!manage) return trStaffHtml();
       return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
@@ -15618,6 +15630,14 @@ function trDocsHtml(t, manage) {
     </div>`;
 }
 
+// A link straight to a talk or policy, ready to acknowledge, for management to send round.
+function trShareHtml(kind, id, what) {
+  const url = `${location.origin}/#/training?${kind}=${id}`;
+  return `<div class="jv-note tr-share"><p style="margin:0"><strong>Send people straight to the acknowledgement</strong></p>
+      <div class="tr-share-row"><input type="text" readonly value="${esc(url)}" aria-label="Link to acknowledge this ${what}" data-tr-share-url="1"><button class="btn" data-tr-copy-link="${esc(url)}">Copy link</button></div>
+      <p class="help" style="margin:0">Paste it into an email or a chat message. It opens this ${what} for anyone it's for, ready to acknowledge (after signing in, if they need to).</p></div>`;
+}
+
 function trTalkHtml(t, manage) {
   const ackable = t.forMe && t.started && !t.acknowledged;
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
@@ -15625,12 +15645,13 @@ function trTalkHtml(t, manage) {
       <div class="psc-top">${t.key ? `<a class="psc-key" href="${esc(me.jiraBaseUrl)}/browse/${esc(t.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(t.key)}</a>` : ''}<span class="muted">Tool box talk · arranged by ${esc(t.by || '')}</span></div>
       <h2 style="margin:.3rem 0">${esc(t.title)}</h2>
       <p><strong>${esc(trWhen(t.startsAt))}</strong>${t.minutes ? `, ${t.minutes} minutes` : ''} <span class="psc-chip plain">${esc(trCountdown(t.startsAt))}</span>${t.location ? `<br>${esc(t.location)}` : ''}</p>
-      ${t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : '<p class="muted">No meeting link yet.</p>'}
+      ${t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : t.upcoming ? '<p class="muted">No meeting link yet.</p>' : ''}
       ${t.about ? `<div class="jv-rich"><p>${esc(t.about).replace(/\n/g, '<br>')}</p></div>` : ''}
       ${trDocsHtml(t, manage)}
       ${t.forMe ? `<div class="jv-note">${t.acknowledged ? `<p style="margin:0">You acknowledged this talk ${esc(agoText(t.acknowledged))}.</p>`
         : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="talk" data-id="${t.id}">Acknowledge</button></div>`
         : '<p style="margin:0">Once the talk has started you can acknowledge it here.</p>'}</div>` : ''}
+      ${manage && t.started ? trShareHtml('talk', t.id, 'tool box talk') : ''}
       ${manage ? `<h3>Who it's for (${t.done} of ${t.count} acknowledged)</h3>${trWhoHtml(t.people)}
         <h3>Change it</h3>
         <div class="tr-form psc-new-row">
@@ -15699,6 +15720,7 @@ function trPolicyHtml(p, manage) {
       <ul class="tr-links">${p.links.map((l) => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener" data-tr-doc="1">📄 ${esc(l.label || l.url)}</a></li>`).join('')}</ul>
       ${p.forMe ? `<div class="jv-note">${p.acknowledged ? `<p style="margin:0">You acknowledged this policy ${esc(agoText(p.acknowledged))}.</p>`
         : `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I have read and understood this policy</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="policy" data-id="${p.id}">Acknowledge</button></div>`}</div>` : ''}
+      ${manage ? trShareHtml('policy', p.id, 'policy') : ''}
       ${manage ? `<h3>Who needs to acknowledge it (${p.done} of ${p.count})</h3>${trWhoHtml(p.people)}
         <div class="row"><button class="btn secondary" data-tr-policy-edit="${p.id}">Edit</button><button class="btn secondary" data-tr-policy-archive="${p.id}">${p.archived ? 'Bring it back' : 'Archive it'}</button></div>` : ''}
     </section>`;
@@ -16148,6 +16170,13 @@ async function trClick(event) {
   const rmLink = t('[data-tr-link-remove]');
   if (rmLink) { trCapture(); trDraft.links.splice(Number(rmLink.dataset.trLinkRemove), 1); render(); return true; }
   const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  const copy = t('[data-tr-copy-link]');
+  if (copy) {
+    try { await navigator.clipboard.writeText(copy.dataset.trCopyLink); toast('Link copied'); }
+    catch { const box = copy.parentElement.querySelector('[data-tr-share-url]'); box?.select(); toast('Select the link and copy it'); }
+    return true;
+  }
+  if (event.target.matches('[data-tr-share-url]')) { event.target.select(); return true; }
   const view_ = t('[data-tr-doc-view]');
   if (view_) { const [id, fid] = view_.dataset.trDocView.split('|'); trViewing[id] = trShowing(id)?.id === fid ? null : fid; render(); return true; }
   const docRem = t('[data-tr-doc-remove]');

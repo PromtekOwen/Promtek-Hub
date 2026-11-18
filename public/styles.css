@@ -2406,3 +2406,7 @@ button.ims-since:hover { border-color: var(--blue); }
 .tr-doc-add { width: fit-content; position: relative; cursor: pointer; }
 .tr-doc-add input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
 .danger-text { color: var(--danger); }
+
+.tr-share { display: grid; gap: .55rem; margin: .8rem 0; }
+.tr-share-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+.tr-share-row input { flex: 1 1 18rem; min-width: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; }
