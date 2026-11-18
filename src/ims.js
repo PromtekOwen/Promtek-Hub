@@ -386,9 +386,61 @@ export async function syncGroups(env, groups) {
   return { queued };
 }
 
+// Sub-tasks kept in step: one under each copy of their parent. A sub-task is kept in step once
+// the hub made it, it has copies already, or it was made in Jira after the hub started doing this;
+// sub-tasks from before are left where they are.
+export async function queueSubtaskCopies(env, groups) {
+  let from = await getState(env, 'ims_subtasks_from');
+  if (!from) { from = new Date().toISOString(); await setState(env, 'ims_subtasks_from', from); }
+  const { results: all } = await env.DB.prepare('SELECT issue_key, group_key, project_key, status_cat, subtask, parent_key, origin_key, created_at FROM ims_items').all();
+  const byKey = new Map(all.map((r) => [r.issue_key, r]));
+  const gOf = (r) => r.group_key || r.issue_key;
+  const parents = new Set();
+  for (const g of groups) for (const m of g.members) {
+    if (!m.subtask) parents.add(g.key);
+    else if (byKey.has(m.parent_key)) parents.add(gOf(byKey.get(m.parent_key)));
+  }
+  if (!parents.size) return 0;
+  const copiesOf = new Map();
+  const kidsOf = new Map();
+  for (const r of all) {
+    if (!r.subtask && parents.has(gOf(r))) copiesOf.set(gOf(r), [...(copiesOf.get(gOf(r)) || []), r]);
+  }
+  for (const r of all) {
+    if (!r.subtask || !byKey.has(r.parent_key)) continue;
+    const pg = gOf(byKey.get(r.parent_key));
+    if (!parents.has(pg)) continue;
+    const m = kidsOf.get(pg) || new Map();
+    m.set(gOf(r), [...(m.get(gOf(r)) || []), r]);
+    kidsOf.set(pg, m);
+  }
+  const { results: queued } = await env.DB.prepare("SELECT group_key, target_key FROM ims_writes WHERE kind = 'copy' AND (done_at IS NULL OR error IS NULL)").all();
+  const waiting = new Set(queued.map((w) => `${w.group_key}|${w.target_key}`));
+  const at = (iso) => { const t = Date.parse(iso || ''); return Number.isFinite(t) ? new Date(t).toISOString() : ''; };
+  let n = 0;
+  for (const [pg, kids] of kidsOf) {
+    const copies = (copiesOf.get(pg) || []).filter((c) => isArea(c.issue_key) && c.status_cat !== 'done');
+    if (!copies.length) continue;
+    for (const [gk, members] of kids) {
+      const kept = members.length > 1 || members.some((m) => m.origin_key) || members.every((m) => at(m.created_at) >= from);
+      if (!kept) continue;
+      const have = new Set(members.map((m) => m.project_key));
+      for (const c of copies) {
+        if (have.has(c.project_key) || waiting.has(`${gk}|${c.project_key}`)) continue;
+        await env.DB.prepare('INSERT INTO ims_writes (group_key, kind, source_key, target_key, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(gk, 'copy', gk, c.project_key, '{}', new Date().toISOString()).run();
+        have.add(c.project_key); waiting.add(`${gk}|${c.project_key}`);
+        n++;
+      }
+    }
+  }
+  return n;
+}
+
 const added = (before, after) => (after || []).filter((x) => !(before || []).includes(x));
 
 async function queueMissingCopies(env, g, categories) {
+  if (g.members.some((m) => m.subtask)) return 0;  // sub-tasks follow their parent's copies instead
   const have = new Set(g.members.map((m) => m.project_key));
   let n = 0;
   for (const name of categories || []) {
@@ -450,8 +502,42 @@ async function typeIdIn(call, project, name) {
   if (!typeIds.has(k)) {
     const p = await call(`/rest/api/3/project/${encodeURIComponent(project)}`);
     for (const t of p?.issueTypes || []) typeIds.set(`${project}|${t.name}`, String(t.id));
+    const subs = (p?.issueTypes || []).filter((t) => t.subtask);
+    const sub = subs.find((t) => t.name === SUBTASK_TYPE) || subs.find((t) => /^sub-?task$/i.test(t.name)) || subs[0];
+    if (sub) typeIds.set(`${project}|:subtask`, { id: String(sub.id), name: sub.name });
   }
   return typeIds.get(k) || null;
+}
+// The type a sub-task is made as: the parent area's own sub-task type.
+export const SUBTASK_TYPE = 'Internal Sub-Task';
+async function subtaskTypeIn(call, project, preferred) {
+  const id = preferred ? await typeIdIn(call, project, preferred) : null;
+  if (id && typeof id === 'string') return { id, name: preferred };
+  return (await typeIdIn(call, project, ':subtask')) || null;
+}
+
+// Makes an issue, leaving off any field Jira won't take (named back), but never the essentials.
+async function postIssue(call, fields, keep = ['project', 'issuetype', 'summary', 'parent']) {
+  try { return { made: await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }), left: [] }; } catch (err) {
+    if (err.status !== 400) throw err;
+    let bad = {};
+    try { bad = JSON.parse(String(err.message).replace(/^[^{]*/, '')).errors || {}; } catch { bad = {}; }
+    const left = Object.keys(bad).filter((k) => k in fields && !keep.includes(k));
+    if (!left.length) throw err;
+    for (const k of left) delete fields[k];
+    return { made: await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }), left };
+  }
+}
+
+// The copy of a parent item in an area: the one in the parent's group made in that area's project.
+async function parentCopyIn(env, parentKey, areaKey) {
+  if (!parentKey) return null;
+  const p = await env.DB.prepare('SELECT issue_key, group_key, project_key FROM ims_items WHERE issue_key = ?').bind(parentKey).first();
+  if (!p) return null;
+  if (p.project_key === areaKey) return p.issue_key;
+  const g = p.group_key || p.issue_key;
+  const c = await env.DB.prepare('SELECT issue_key FROM ims_items WHERE (group_key = ? OR issue_key = ?) AND project_key = ? AND subtask = 0 ORDER BY created_at LIMIT 1').bind(g, g, areaKey).first();
+  return c?.issue_key || null;
 }
 
 // A copy of the group's first item in another area's project, linked to it, in a folder of the same name if there is one.
@@ -459,9 +545,26 @@ async function makeCopy(env, call, groupKey, areaKey, F) {
   const src = await call(`/rest/api/3/issue/${encodeURIComponent(groupKey)}?fields=${['summary', 'description', 'issuetype', 'assignee', 'priority', 'labels', 'parent', 'status',
     ...['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'staff', 'containment', 'analysis', 'actions', 'persons', 'finalise', 'fiveWhys', ...COPIED_AS_IS].map((k) => F[k]).filter(Boolean)].join(',')}`);
   const f = src?.fields || {};
-  const typeId = await typeIdIn(call, areaKey, f.issuetype?.name);
-  if (!typeId) throw new Error(`${areaKey} has no ${f.issuetype?.name} type.`);
+  const isSub = Boolean(f.issuetype?.subtask);
+  // A sub-task goes under its parent's copy in that area, as that area's sub-task type.
+  let underParent = null;
+  if (isSub) {
+    underParent = await parentCopyIn(env, f.parent?.key, areaKey);
+    if (!underParent) throw new Error(`Waiting for ${f.parent?.key || 'its parent'} to have a copy in ${areaKey}.`);
+    const twin = await env.DB.prepare('SELECT issue_key, group_key FROM ims_items WHERE parent_key = ? AND subtask = 1 AND lower(summary) = lower(?) LIMIT 1').bind(underParent, f.summary || '').first();
+    if (twin && (twin.group_key || twin.issue_key) !== groupKey) {
+      // Already there (made in Jira by hand, say): joined to the others rather than made twice.
+      await call(`/rest/api/3/issue/${encodeURIComponent(twin.issue_key)}`, { method: 'PUT', body: JSON.stringify({ fields: { [F.origin]: groupKey } }) }).catch(() => {});
+      const { syncLinkType, linkBody } = await import('./psc-handoff.js');
+      await call('/rest/api/3/issueLink', { method: 'POST', body: JSON.stringify(linkBody(await syncLinkType(env), groupKey, twin.issue_key)) });
+      return twin.issue_key;
+    }
+  }
+  const type = isSub ? await subtaskTypeIn(call, areaKey, f.issuetype?.name) : null;
+  const typeId = isSub ? type?.id : await typeIdIn(call, areaKey, f.issuetype?.name);
+  if (!typeId) throw new Error(`${areaKey} has no ${isSub ? 'sub-task' : f.issuetype?.name} type.`);
   const fields = { project: { key: areaKey }, issuetype: { id: typeId }, summary: f.summary, [F.origin]: groupKey };
+  if (underParent) fields.parent = { key: underParent };
   if (f.description) fields.description = f.description;
   for (const n of ['imsType', 'subTypes', 'categories', 'rootCause', 'rootRequired', 'start', 'target', 'containment', 'analysis', 'actions', 'persons', 'finalise', 'fiveWhys']) {
     const id = jiraFieldId(n, F); if (id && f[id] != null) fields[id] = writeValue(n, f[id]);
@@ -474,15 +577,18 @@ async function makeCopy(env, call, groupKey, areaKey, F) {
   }
   if (f.assignee) fields.assignee = { accountId: f.assignee.accountId };
   if (f.labels?.length) fields.labels = f.labels;
-  if (f.parent?.fields?.summary) {
+  if (!isSub && f.parent?.fields?.summary) {
     const folder = await env.DB.prepare("SELECT issue_key FROM ims_items WHERE project_key = ? AND issuetype = 'Folder' AND lower(summary) = lower(?) LIMIT 1").bind(areaKey, f.parent.fields.summary).first();
     if (folder) fields.parent = { key: folder.issue_key };
   }
   let made;
-  try { made = await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }); } catch (err) {
-    if (err.status !== 400) throw err;
-    delete fields.parent;
-    made = await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
+  if (isSub) made = (await postIssue(call, fields)).made;
+  else {
+    try { made = await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }); } catch (err) {
+      if (err.status !== 400) throw err;
+      delete fields.parent;
+      made = await call('/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
+    }
   }
   const { syncLinkType, linkBody } = await import('./psc-handoff.js');
   await call('/rest/api/3/issueLink', { method: 'POST', body: JSON.stringify(linkBody(await syncLinkType(env), groupKey, made.key)) });
@@ -532,6 +638,7 @@ export async function run(env, { force = false } = {}) {
         const groups = await groupsFor(env, keys);
         await stampGroups(env, groups);
         out.sync = await syncGroups(env, groups);
+        out.subtasks = await queueSubtaskCopies(env, groups).catch((err) => { console.warn('IMS sub-tasks:', err.message); return null; });
         out.main = await moveMainItems(env, b);
         out.onboarding = await startOnboarding(env, b);
         out.gaps = await import('./gaps.js').then((G) => G.sweep(env)).catch(() => null);
@@ -575,7 +682,10 @@ export function collapse(rows) {
   for (const [key, members] of groups) {
     members.sort((a, b) => ms(a.created_at) - ms(b.created_at));
     const rep = members.find((m) => m.issue_key === key) || members[0];
-    const kids = members.flatMap((m) => children.get(m.issue_key) || []).filter((c) => c.subtask);
+    // Each sub-task once, however many copies of it there are.
+    const kidGroups = new Map();
+    for (const c of members.flatMap((m) => children.get(m.issue_key) || [])) if (c.subtask && !kidGroups.has(c.group_key || c.issue_key)) kidGroups.set(c.group_key || c.issue_key, c);
+    const kids = [...kidGroups.values()];
     const folder = rep.parent_key ? byKey.get(rep.parent_key) : null;
     out.push({
       key: rep.issue_key, summary: rep.summary, type: rep.issuetype, subtask: Boolean(rep.subtask), status: rep.status, done: isDone(rep),
@@ -902,7 +1012,8 @@ export async function cleanup(env, viewer) {
   const disagree = [...groups].map(([g, fields]) => {
     const i = byKey.get(g);
     if (!i) return null;
-    return { key: g, summary: i.summary, type: i.type, done: i.done, areas: i.areas,
+    const latest = [...i.copies].sort((a, b) => String(rowByKey.get(b.key)?.updated_at || '').localeCompare(String(rowByKey.get(a.key)?.updated_at || '')))[0]?.key || null;
+    return { key: g, summary: i.summary, type: i.type, done: i.done, areas: i.areas, latest,
       fields: fields.map((f) => ({ field: f, label: SYNCED[f]?.label || f,
         values: i.copies.map((c) => ({ key: c.key, project: c.project, value: f === 'status' ? c.status : f === 'assignee' ? (rowByKey.get(c.key)?.assignee_name || 'Unassigned') : show(JSON.parse(rowByKey.get(c.key)?.vals || '{}')[f]) })) })) };
   }).filter(Boolean).sort((a, b) => Number(a.done) - Number(b.done) || a.key.localeCompare(b.key));
@@ -922,7 +1033,28 @@ export async function item(env, viewer, key) {
   const groupKey = row.group_key || row.issue_key;
   const { results: members } = await env.DB.prepare('SELECT * FROM ims_items WHERE group_key = ? OR issue_key = ?').bind(groupKey, groupKey).all();
   const keys = members.map((m) => m.issue_key);
-  const { results: kids } = await env.DB.prepare(`SELECT issue_key, summary, status, status_cat, issuetype, assignee_name, project_key FROM ims_items WHERE parent_key IN (${ph(keys.length)}) ORDER BY created_at`).bind(...keys).all();
+  const { results: kids } = await env.DB.prepare(`SELECT issue_key, group_key, summary, status, status_cat, issuetype, assignee_name, project_key, target_end, vals, created_at FROM ims_items WHERE subtask = 1 AND parent_key IN (${ph(keys.length)}) ORDER BY created_at`).bind(...keys).all();
+  // Each sub-task once, with the areas it has a copy in.
+  const subs = new Map();
+  for (const x of kids) {
+    if (NOT_WORK.includes(x.issuetype)) continue;
+    const gk = x.group_key || x.issue_key;
+    const s = subs.get(gk);
+    if (s) { s.areas = [...new Set([...s.areas, x.project_key])]; s.copies.push(x.issue_key); continue; }
+    subs.set(gk, { key: x.issue_key, summary: x.summary, status: x.status, done: x.status_cat === 'done', assignee: x.assignee_name, target: x.target_end, whys: hasWhys(x),
+      areas: [x.project_key], copies: [x.issue_key] });
+  }
+  for (const s of subs.values()) {
+    // Shown from the copy in this item's own area where there is one.
+    const own = kids.find((x) => s.copies.includes(x.issue_key) && x.project_key === row.project_key);
+    if (own) Object.assign(s, { key: own.issue_key, status: own.status, done: own.status_cat === 'done', assignee: own.assignee_name });
+  }
+  // A sub-task's parent, for the way back.
+  let parent = null;
+  if (row.subtask && row.parent_key) {
+    const p = await env.DB.prepare('SELECT issue_key, group_key, summary, issuetype FROM ims_items WHERE issue_key = ?').bind(row.parent_key).first();
+    if (p && !NOT_WORK.includes(p.issuetype)) parent = { key: p.issue_key, summary: p.summary, type: p.issuetype };
+  }
   const base = await baseOf(env, groupKey);
   const conflicts = base.filter((b) => b.conflict).map((b) => ({
     field: b.field, label: SYNCED[b.field]?.label || b.field,
@@ -935,12 +1067,21 @@ export async function item(env, viewer, key) {
   const meetings = JSON.parse(row.links || '[]').filter((l) => l.key.startsWith(`${MAIN}-`));
   const F = await fieldMap(env);
   let whys = null;
+  let whysOnScreen = Boolean(F.fiveWhys);
+  let moves = null;
   if (F.fiveWhys) {
     const got = await jira(env, `/rest/api/3/issue/${encodeURIComponent(groupKey)}?fields=${F.fiveWhys}`).catch(() => null);
     whys = whysFrom(got?.fields?.[F.fiveWhys]);
   }
-  return { whys, whysField: Boolean(F.fiveWhys), item: rep, copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status, updated: m.updated_at })),
-    subtasks: kids.filter((x) => !NOT_WORK.includes(x.issuetype)), conflicts, waiting, view, meetings };
+  if (row.subtask) {
+    // A sub-task's screen may not have the 5 Whys, and its workflow its own statuses.
+    const meta = await jira(env, `/rest/api/3/issue/${encodeURIComponent(groupKey)}/editmeta`).catch(() => null);
+    if (meta?.fields && F.fiveWhys) whysOnScreen = F.fiveWhys in meta.fields;
+    const t = await jira(env, `/rest/api/3/issue/${encodeURIComponent(groupKey)}/transitions`).catch(() => null);
+    if (t?.transitions) moves = [...new Set([rep.status, ...t.transitions.map((x) => x.to?.name).filter(Boolean)])];
+  }
+  return { whys, whysField: Boolean(F.fiveWhys), whysOnScreen, moves, parent, item: rep, copies: members.map((m) => ({ key: m.issue_key, project: m.project_key, status: m.status, updated: m.updated_at })),
+    subtasks: [...subs.values()], conflicts, waiting, view, meetings };
 }
 
 // ---------- changing it, everywhere ----------
@@ -1006,6 +1147,71 @@ export async function edit(env, viewer, { key, changes = {} }) {
   return { ok: true, copies: members.length, failed };
 }
 
+// ---------- sub-tasks ----------
+
+// A sub-task under an item: made under its first copy, then copied under each of the others,
+// so every area's copy has it and the copies are kept in step like any other item.
+export async function addSubtask(env, viewer, input = {}) {
+  mustSee(viewer);
+  const row = await env.DB.prepare('SELECT * FROM ims_items WHERE issue_key = ?').bind(String(input.parent || '').toUpperCase()).first();
+  if (!row || !isArea(row.issue_key)) throw refuse('That item isn\'t in the IMS list.', 404);
+  if (row.subtask) throw refuse('A sub-task can\'t have sub-tasks of its own.');
+  const summary = String(input.summary || '').trim().replace(/\s+/g, ' ').slice(0, 250);
+  if (summary.length < 3) throw refuse('Give the sub-task a summary.');
+  const rootRequired = String(input.rootRequired || '');
+  if (rootRequired && !['Yes', 'No'].includes(rootRequired)) throw refuse('Say whether a root cause is required.');
+  const groupKey = row.group_key || row.issue_key;
+  const { results: members } = await env.DB.prepare('SELECT * FROM ims_items WHERE (group_key = ? OR issue_key = ?) AND subtask = 0 ORDER BY created_at').bind(groupKey, groupKey).all();
+  const home = members.find((m) => m.issue_key === groupKey) || members[0] || row;
+  const b = budget(env, 40);
+  const call = (p, i) => b.call(p, i);
+  const F = await fieldMap(env, (p) => b.call(p));
+  const type = await subtaskTypeIn(call, home.project_key, SUBTASK_TYPE);
+  if (!type) throw refuse(`${AREAS.find((a) => a.key === home.project_key)?.name || home.project_key} has no sub-task type in Jira.`);
+  const meta = await createMeta(env, home.project_key, type.name).catch(() => null);
+  const onForm = (id) => !meta || Object.values(meta.byName).some((f) => f.id === id);
+  const { adfFrom } = await import('./jiraview.js');
+  const description = String(input.description || '').trim();
+  const fields = { project: { key: home.project_key }, issuetype: { id: type.id }, parent: { key: home.issue_key }, summary };
+  if (description) fields.description = adfFrom(description);
+  if (input.assigneeId) fields.assignee = { accountId: String(input.assigneeId) };
+  if (isoDay(input.start) && F.start && onForm(F.start)) fields[F.start] = input.start;
+  if (isoDay(input.target) && F.target && onForm(F.target)) fields[F.target] = input.target;
+  const cats = listOf(home.categories);
+  if (cats.length && F.categories && onForm(F.categories)) fields[F.categories] = cats.map((value) => ({ value }));
+  const rr = meta?.byName['is root cause required?'] || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array', items: 'option' } } : null);
+  if (rootRequired && rr && onForm(rr.id)) fields[rr.id] = valueFor(rr, rootRequired);
+  const whys = whysAdf(input.whys);
+  const whysId = meta?.byName['5 whys']?.id || F.fiveWhys;
+  if (whys && whysId) fields[whysId] = whys;
+  const { made, left } = await postIssue(call, fields);
+  const skipped = left.map((k) => (k === whysId ? '5 Whys' : k === rr?.id ? 'Root cause required' : Object.values(meta?.byName || {}).find((f) => f.id === k)?.name || k));
+  // It names itself as its origin, so the copies made from it are one sub-task.
+  await call(`/rest/api/3/issue/${made.key}`, { method: 'PUT', body: JSON.stringify({ fields: { [F.origin]: made.key } }) }).catch(() => {});
+  // In the list straight away, under its parent.
+  try {
+    const { list } = await fieldsList(env, b);
+    const got = await call(`/rest/api/3/issue/${made.key}?fields=${list}`);
+    if (got?.key) {
+      const r = rowOf(got, F);
+      r.origin_key ||= made.key;
+      await saveRows(env, [r]);
+      await env.DB.prepare('UPDATE ims_items SET group_key = ?, sync_seen = 1 WHERE issue_key = ?').bind(made.key, made.key).run();
+    }
+  } catch { /* the next read brings it in */ }
+  const areas = [...new Set(members.map((m) => m.project_key))].filter((k) => k !== home.project_key && isArea(`${k}-1`));
+  for (const a of areas) {
+    await env.DB.prepare('INSERT INTO ims_writes (group_key, kind, source_key, target_key, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(made.key, 'copy', made.key, a, '{}', new Date().toISOString()).run();
+  }
+  if (areas.length && b.left() > 8) await applyWrites(env, b, { limit: areas.length }).catch(() => {});
+  await setState(env, 'ims_read_at', Date.now() - READ_EVERY_MS);
+  await changed(env);
+  await record(env, viewer, { area: 'IMS', action: 'added a sub-task', subjectType: 'ims', subjectId: made.key, label: `${made.key} ${summary}`.slice(0, 120),
+    changes: [{ label: 'Under', before: '', after: groupKey }] }).catch(() => {});
+  return { ok: true, key: made.key, copies: areas.length, skipped: [...new Set(skipped)] };
+}
+
 // Copies that disagreed when first seen: one is chosen, and the others follow it.
 export async function resolveConflict(env, viewer, { group, field, from }) {
   mustSee(viewer);
@@ -1051,19 +1257,22 @@ export async function dismiss(env, viewer, { key }) {
   return { ok: true };
 }
 
-// Every disagreement settled the same way: each item's original (its first copy) is taken as right.
-export async function resolveAll(env, viewer, { field = null } = {}) {
+// Every disagreement settled the same way: each item's most recently updated copy is taken as right.
+export async function resolveAll(env, viewer, { field = null, group = null } = {}) {
   mustSee(viewer);
   if (field && !SYNCED[field]) throw refuse('That isn\'t a field the hub keeps in step.');
-  const { results } = await liveConflicts(env, `SELECT group_key, field FROM ims_sync WHERE conflict = 1${field ? ' AND field = ?' : ''}`, field ? [field] : []);
+  const where = [field && 'field = ?', group && 'group_key = ?'].filter(Boolean).map((w) => ` AND ${w}`).join('');
+  const { results } = group
+    ? await env.DB.prepare(`SELECT group_key, field FROM ims_sync WHERE conflict = 1${where}`).bind(...[field, String(group)].filter(Boolean)).all()
+    : await liveConflicts(env, `SELECT group_key, field FROM ims_sync WHERE conflict = 1${where}`, field ? [field] : []);
   let n = 0;
   for (const r of results) {
-    const src = await env.DB.prepare('SELECT issue_key FROM ims_items WHERE issue_key = ?').bind(r.group_key).first();
+    const src = await env.DB.prepare('SELECT issue_key FROM ims_items WHERE group_key = ? OR issue_key = ? ORDER BY updated_at DESC, issue_key LIMIT 1').bind(r.group_key, r.group_key).first();
     if (!src) continue;
     await resolveConflict(env, viewer, { group: r.group_key, field: r.field, from: src.issue_key });
     n++;
   }
-  await record(env, viewer, { area: 'IMS', action: 'made every copy match its original', subjectType: 'ims', subjectId: field || 'all', label: `${n} disagreements` }).catch(() => {});
+  await record(env, viewer, { area: 'IMS', action: group ? 'made its copies match the latest' : 'made every copy match its latest version', subjectType: 'ims', subjectId: group || field || 'all', label: `${n} disagreements` }).catch(() => {});
   return { ok: true, settled: n };
 }
 
@@ -1283,7 +1492,7 @@ export async function create(env, viewer, input) {
   if (input.imsType) fields[F.imsType] = { value: String(input.imsType) };
   if (input.subTypes?.length) fields[F.subTypes] = input.subTypes.map((value) => ({ value: String(value) }));
   if (input.rootCause?.length) fields[F.rootCause] = input.rootCause.map((value) => ({ value: String(value) }));
-  const whys = rootRequired === 'No' ? null : whysAdf(input.whys);
+  const whys = whysAdf(input.whys);
   const whysId = byName('5 Whys')?.id || F.fiveWhys;
   if (whys && whysId) fields[whysId] = whys;
   const rr = byName('Is Root Cause Required?') || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array', items: 'option' } } : null);

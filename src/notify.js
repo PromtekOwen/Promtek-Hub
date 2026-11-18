@@ -20,6 +20,7 @@ export const EVENTS = {
   training: [
     { id: 'talk-new', label: 'Tool box talk arranged', about: 'You\'re asked to a tool box talk or training', app: true, email: true },
     { id: 'talk-upcoming', label: 'Tool box talk countdown', about: 'Each morning until a talk you\'re asked to, with the link to join', app: true, email: false },
+    { id: 'talk-ack', label: 'Tool box talk to acknowledge', about: 'A talk you were asked to has finished: the link to acknowledge it', app: true, email: true },
     { id: 'policy-new', label: 'Policy to acknowledge', about: 'A policy is published that you need to read and acknowledge', app: true, email: true },
     { id: 'policy-reminder', label: 'Policy reminders', about: 'Each Monday, for policies you haven\'t acknowledged yet', app: true, email: false },
   ],

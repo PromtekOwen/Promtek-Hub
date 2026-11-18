@@ -99,6 +99,14 @@ async function systemAlerts(env, viewer) {
   const today = londonDate();
 
   if (me) {
+    // Tool box talks they were at but haven't acknowledged: until they do, with no way to dismiss it.
+    const talks = await import('./training.js').then((T) => T.outstandingTalks(env, me)).catch(() => []);
+    for (const t of talks.slice(0, 3)) {
+      out.push({ key: `talk-ack:${t.id}`, tone: 'important', title: `Please acknowledge the tool box talk: ${t.title}`,
+        body: 'Confirm you attended and understood it, and say how you found it.', link: `#/training?talk=${t.id}` });
+    }
+    if (talks.length > 3) out.push({ key: 'talk-ack:more', tone: 'important', title: `${talks.length - 3} more tool box talks to acknowledge`, body: 'They\'re on your Training & Policy tile.', link: '#/training' });
+
     const { results: asks } = await env.DB.prepare(
       `SELECT r.id, r.discipline, q.title, q.customer, e.name AS asker FROM quote_requests r
          JOIN quotes q ON q.id = r.quote_id LEFT JOIN employees e ON e.account_id = r.requested_by

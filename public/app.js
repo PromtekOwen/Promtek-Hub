@@ -12194,7 +12194,7 @@ function imsItemsHtml(data) {
       ${data.disagreeing ? `<label class="inline-check psc-check"><input type="checkbox" data-ims-differ${imsFilter.differ ? ' checked' : ''}> Copies differ</label>` : ''}
     </div>
     ${data.disagreeing ? `<div class="jv-note" style="margin-bottom:.8rem"><p style="margin:0 0 .4rem"><strong>${data.disagreeing} item${data.disagreeing === 1 ? '\'s' : 's\''} copies disagree.</strong></p>
-      <div class="row"><button class="btn secondary" data-ims-cleanup="open">See the list</button><button class="btn secondary" data-ims-resolve-all="1">Make every copy match its original</button></div></div>` : ''}
+      <div class="row"><button class="btn secondary" data-ims-cleanup="open">See the list</button><button class="btn secondary" data-ims-resolve-all="1">Make every copy match its latest version</button></div></div>` : ''}
     <p class="muted"><small>${items.length} item${items.length === 1 ? '' : 's'}</small></p>
     <div class="psc-list">${items.slice(0, 300).map((i) => `<article class="card ims-card${i.done ? ' done' : ''}" data-ims-open="${esc(i.key)}" tabindex="0" role="button">
         <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}${i.imsType ? ` · ${esc(i.imsType)}` : ''}</span>
@@ -12213,6 +12213,7 @@ function imsItemsHtml(data) {
 // From the problem, "why?" asked of each answer until it reaches something that, fixed, stops it
 // happening again. Optional, with nudges: an answer about what someone did, or stopping early.
 let imsWhys = null;            // { key, problem, list, text } on an item's page
+let imsSub = null;             // a new sub-task being written, on its parent's page
 const IMS_BLAME = /\b(forgot|forgotten|forget|didn'?t|did not|wasn'?t|was not|weren'?t|human error|operator error|user error|careless|mistake|fail(ed|s)? to|not paying attention|ignored|lazy|negligen\w*|should have|neglected)\b/i;
 function imsWhysNudge(list) {
   const filled = list.map((x) => String(x || '').trim()).filter(Boolean);
@@ -12236,13 +12237,46 @@ function imsWhysHtml(w, scope) {
       ${list.length < 12 ? `<div><button type="button" class="btn secondary" data-ims-why-add="${scope}">＋ Ask why again</button></div>` : ''}
     </div>`;
 }
+const imsWhysOf = (scope) => (scope === 'new' ? imsNew?.whys : scope === 'sub' ? imsSub?.whys : imsWhys);
+function imsSubCapture() {
+  const box = view.querySelector('.ims-sub-form');
+  if (!box || !imsSub) return;
+  for (const el of box.querySelectorAll('[data-ims-sub]')) imsSub[el.dataset.imsSub] = el.value;
+  imsWhysCapture('sub');
+}
 function imsWhysCapture(scope) {
   const box = view.querySelector(`[data-ims-whys="${scope}"]`);
   if (!box) return;
-  const target = scope === 'new' ? imsNew?.whys : imsWhys;
+  const target = imsWhysOf(scope);
   if (!target) return;
   target.problem = box.querySelector(scope === 'new' ? '[data-ims-new-path="whys.problem"]' : '[data-ims-why="problem"]')?.value || '';
   target.list = [...box.querySelectorAll(scope === 'new' ? '[data-ims-new-path^="whys.list."]' : '[data-ims-why^="list."]')].map((el) => el.value);
+}
+
+// The item's sub-tasks, each once with the areas it's in, and a new one written under it.
+function imsSubtasksHtml(d, o) {
+  const i = d.item;
+  const n = imsSub && imsSub.parent === i.key ? imsSub : null;
+  const list = d.subtasks.length ? `<ul class="ims-subs">${d.subtasks.map((x) => `<li><button class="ims-sub" data-ims-open="${esc(x.key)}">
+      <span class="ims-sub-main"><span class="psc-key">${esc(x.key)}</span> ${esc(x.summary)}</span>
+      <span class="ims-sub-meta">${x.areas.map((a) => imsAreaChip(a)).join('')}<span class="psc-chip plain${x.done ? ' ok' : ''}">${esc(x.status)}</span>${x.assignee ? `<small class="muted">${esc(x.assignee)}</small>` : ''}${x.whys ? '<small class="muted">5 Whys</small>' : ''}</span>
+    </button></li>`).join('')}</ul>` : '<p class="muted" style="margin:0">No sub-tasks yet.</p>';
+  const sel = (name, all, empty) => `<select data-ims-sub="${name}">${empty != null ? `<option value="">${esc(empty)}</option>` : ''}${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${n[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
+  const form = n ? `<div class="ims-sub-form">
+      <h3>New sub-task</h3>
+      <label>Summary<input type="text" data-ims-sub="summary" maxlength="250" value="${esc(n.summary)}" placeholder="What needs doing, in a line"></label>
+      <div class="psc-new-row">
+        <label>Assignee${sel('assigneeId', o.people.map((p) => [p.id, p.name]), 'Unassigned')}</label>
+        <label>Start date<input type="date" data-ims-sub="start" value="${esc(n.start)}"></label>
+        <label>Target end<input type="date" data-ims-sub="target" value="${esc(n.target)}"></label>
+        <label>Root cause required?${sel('rootRequired', ['No', 'Yes'], null)}</label>
+      </div>
+      <label>Description<textarea rows="4" data-ims-sub="description" placeholder="Anything whoever does it needs to know">${esc(n.description)}</textarea></label>
+      ${d.whysField ? imsWhysHtml(n.whys, 'sub') : ''}
+      ${d.copies.length > 1 ? `<p class="help">Made under ${esc(i.key)}, with a copy under each of its other ${d.copies.length - 1} cop${d.copies.length === 2 ? 'y' : 'ies'}, kept in step.</p>` : ''}
+      <div class="row"><button class="btn" data-ims-sub-save="1">Add the sub-task</button><button class="linklike" data-ims-sub-cancel="1">Cancel</button></div>
+    </div>` : '<div class="row" style="margin-top:.8rem"><button class="btn secondary" data-ims-sub-new="1">＋ Add a sub-task</button></div>';
+  return `<section class="card ims-subs-card"><h3 style="margin-top:0">Sub-tasks${d.subtasks.length ? ` <small class="muted">${d.subtasks.filter((x) => x.done).length} of ${d.subtasks.length} done</small>` : ''}</h3>${list}${form}</section>`;
 }
 
 async function imsItemHtml() {
@@ -12263,13 +12297,17 @@ async function imsItemHtml() {
   // or when either is already filled in, so nothing recorded is hidden.
   const rootWanted = /^yes$/i.test(e.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
   const showRoot = rootWanted || i.rootCause.length > 0 || hasWhys;
-  const showWhys = d.whysField && (rootWanted || hasWhys || Boolean(d.whys?.text));
+  // Every task and sub-task has its 5 Whys.
+  const showWhys = d.whysField;
+  const isSub = i.subtask;
   const checks = (name, all) => `<div class="ims-checks">${all.map((x) => `<label class="inline-check"><input type="checkbox" data-ims-check="${name}" value="${esc(x)}"${e[name].includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')}</div>`;
   const sel = (name, all, empty) => `<select data-ims-field="${name}"><option value="">${esc(empty)}</option>${all.map((x) => { const [val, label] = Array.isArray(x) ? x : [x, x]; return `<option value="${esc(val)}"${e[name] === val ? ' selected' : ''}>${esc(label)}</option>`; }).join('')}</select>`;
-  const statuses = [...new Set([i.status, ...o.statuses])];
-  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-back="1">All items</button></div>
+  const statuses = d.moves?.length ? d.moves : [...new Set([i.status, ...o.statuses])];
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-back="1">All items</button>
+      ${d.parent ? `<button class="btn secondary" data-ims-open="${esc(d.parent.key)}">↑ ${esc(d.parent.key)} ${esc(d.parent.summary.length > 50 ? `${d.parent.summary.slice(0, 50)}…` : d.parent.summary)}</button>` : ''}</div>
     <section class="card">
       <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}</span><span class="psc-chip plain">${esc(i.status)}</span></div>
+      ${d.parent ? `<p class="muted" style="margin:.2rem 0 0">Sub-task of <button class="linklike" data-ims-open="${esc(d.parent.key)}">${esc(d.parent.key)} ${esc(d.parent.summary)}</button></p>` : ''}
       <h2 style="margin:.3rem 0 .6rem">${esc(i.summary)}</h2>
       <div class="ims-copies">${d.copies.map((c) => `<span class="ims-copy">${imsAreaChip(c.project)} ${jiraLink(c.key)} <small class="muted">${esc(c.status)}</small></span>`).join('')}</div>
       ${d.copies.length > 1 ? `<p class="help">A copy in each of ${d.copies.length} areas. Changes here are made to them all; changes made in Jira reach the others within about 10 minutes.</p>` : ''}
@@ -12289,16 +12327,17 @@ async function imsItemHtml() {
         <label>Start date<input type="date" data-ims-field="start" value="${esc(e.start)}"></label>
         <label>Target end<input type="date" data-ims-field="target" value="${esc(e.target)}"></label>
       </div>
-      <fieldset><legend>Areas</legend>${checks('categories', o.allowed.categories)}<p class="help">Adding an area makes a copy in its project. Taking one away leaves its copy where it is.</p></fieldset>
-      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>
+      ${isSub ? `<p class="help">A copy sits under each copy of ${d.parent ? esc(d.parent.key) : 'its parent'}. Changes here are made to them all.</p>` : `<fieldset><legend>Areas</legend>${checks('categories', o.allowed.categories)}<p class="help">Adding an area makes a copy in its project, with its sub-tasks. Taking one away leaves its copy where it is.</p></fieldset>
+      <fieldset><legend>Sub-type</legend>${checks('subTypes', o.allowed.subTypes)}</fieldset>`}
       ${showRoot ? `<fieldset><legend>Root cause</legend>${checks('rootCause', o.allowed.rootCause)}
         ${showWhys && e.rootCause.length && !hasWhys ? '<p class="ims-nudge soft" style="margin-bottom:0">A 5 Whys (below) shows how this root cause was reached.</p>' : ''}</fieldset>` : ''}
       <div class="row"><button class="btn" data-ims-save="1">Save to every copy</button><button class="linklike" data-ims-reset="1">Undo changes</button></div>
     </section>
     ${showWhys ? `<section class="card ims-whys-card">${imsWhysHtml(imsWhys, 'item')}
-      <div class="row" style="margin-top:.9rem"><button class="btn" data-ims-whys-save="1">Save the 5 Whys${d.copies.length > 1 ? ' to every copy' : ''}</button>
-        ${hasWhys ? '<button class="btn secondary danger-outline" data-ims-whys-clear="1">Clear it</button>' : ''}</div></section>` : ''}
-    ${d.subtasks.length ? `<section class="card"><h3 style="margin-top:0">Sub-tasks</h3><ul class="jv-links">${d.subtasks.map((s) => `<li>${jiraLink(s.issue_key)} ${esc(s.summary)} <small class="muted">${esc(s.status)}${s.assignee_name ? ` · ${esc(s.assignee_name)}` : ''}</small></li>`).join('')}</ul></section>` : ''}
+      ${d.whysOnScreen === false ? `<p class="notice" style="margin:.9rem 0 0">Jira's ${esc(i.type)} screen in this area has no 5 Whys field, so it can't be saved here yet. Add <strong>5 Whys</strong> to that screen in Jira's project settings.</p>`
+        : `<div class="row" style="margin-top:.9rem"><button class="btn" data-ims-whys-save="1">Save the 5 Whys${d.copies.length > 1 ? ' to every copy' : ''}</button>
+        ${hasWhys ? '<button class="btn secondary danger-outline" data-ims-whys-clear="1">Clear it</button>' : ''}</div>`}</section>` : ''}
+    ${isSub ? '' : imsSubtasksHtml(d, o)}
     <section class="card jv">
       ${d.meetings.length ? `<p style="margin-top:0"><span class="muted">From the meeting</span> ${d.meetings.map((m) => `<button class="linklike" data-ims-meeting="${esc(m.key)}">${esc(m.key)}</button>`).join(', ')}</p>` : ''}
       <h3 style="margin-top:0">Description</h3>
@@ -12517,11 +12556,11 @@ async function imsCleanupHtml() {
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-cleanup="close">Back to the items</button></div>
     <h2 style="margin:0 0 .3rem">Copies to tidy up</h2>
     <section class="card"><h3 style="margin-top:0">Copies that disagree (${d.disagree.length})</h3>
-      <p class="muted">Each item's copies have a different value for the fields shown. Open one to choose which copy is right, or put them right in Jira. <strong>Dismiss</strong> leaves the copies as they are and takes the item off this list; it comes back only if another field starts to disagree.</p>
+      <p class="muted">Each item's copies have a different value for the fields shown. Open one to choose which copy is right, or put them right in Jira. <strong>Match the latest</strong> makes the others match the copy updated most recently (marked latest). <strong>Dismiss</strong> leaves the copies as they are and takes the item off this list; it comes back only if another field starts to disagree.</p>
       ${d.disagree.length ? `<div class="table-wrap"><table class="ims-clean"><thead><tr><th>Item</th><th>Field</th><th>Each copy</th></tr></thead><tbody>
         ${d.disagree.map((g) => g.fields.map((f, n) => `<tr>${n ? '' : `<td rowspan="${g.fields.length}"><button class="linklike" data-ims-open="${esc(g.key)}">${esc(g.key)}</button> ${esc(g.summary)}<br>${g.areas.map(imsAreaChip).join('')}${g.done ? ' <small class="muted">complete</small>' : ''}
-            <div><button class="btn secondary ims-dismiss" data-ims-dismiss="${esc(g.key)}" title="Leave the copies as they are and take this off the list">Dismiss</button></div></td>`}
-          <td>${esc(f.label)}</td><td>${f.values.map((v) => `<div><a href="${esc(me.jiraBaseUrl)}/browse/${esc(v.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(v.key)}</a>: ${esc(v.value)}</div>`).join('')}</td></tr>`).join('')).join('')}
+            <div class="row" style="gap:.4rem;margin-top:.4rem"><button class="btn secondary" data-ims-match-latest="${esc(g.key)}" title="Make every copy match ${esc(g.latest || '')}, the one updated most recently">Match the latest</button><button class="btn secondary ims-dismiss" data-ims-dismiss="${esc(g.key)}" title="Leave the copies as they are and take this off the list">Dismiss</button></div></td>`}
+          <td>${esc(f.label)}</td><td>${f.values.map((v) => `<div><a href="${esc(me.jiraBaseUrl)}/browse/${esc(v.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(v.key)}</a>: ${esc(v.value)}${v.key === g.latest ? ' <small class="psc-chip plain">latest</small>' : ''}</div>`).join('')}</td></tr>`).join('')).join('')}
       </tbody></table></div>` : '<p class="muted">None.</p>'}
     </section>
     <section class="card"><h3 style="margin-top:0">Probably copies, but not linked (${d.unlinked.length})</h3>
@@ -13016,7 +13055,7 @@ async function imsNewHtml() {
           ${text('change.docs.procedure', 'ISMS Procedure Reference')}${text('change.docs.sop', 'Implementation / SOP Link')}
           ${text('change.docs.approval', 'Approval Evidence (File or Comment)')}${text('change.docs.related', 'Related Jira Issues / Tickets')}
           ${text('change.docs.audit', 'Audit or Change Record Reference')}</div>` : ''}
-      ${n.rootRequired === 'Yes' ? rootCause : ''}`;
+      ${n.rootRequired === 'Yes' ? rootCause : imsWhysHtml(n.whys, 'new')}`;
   }
   const missing = form?.missing ? `<p class="bad">${esc(o.areas.find((a) => a.key === home)?.name || home)} has no ${esc(n.type)} type in Jira. Choose another main area, or add the type to that project.</p>` : '';
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-new-cancel="1">Back</button></div>
@@ -13060,6 +13099,7 @@ function imsSyncPersons() {
 }
 
 function imsCapture() {
+  if (!imsNew) { imsSubCapture(); imsWhysCapture('item'); }
   const box = view.querySelector('.ims-form');
   if (!box) return;
   const target = imsNew || imsEdit;
@@ -13133,11 +13173,30 @@ async function imsClick(event) {
   if (open) { imsOpen = open.dataset.imsOpen; imsItemData = null; imsEdit = null; imsMeetingOpen = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-ims-back]')) { imsOpen = null; imsItemData = null; imsEdit = null; return render(); }
   if (t('[data-ims-reset]')) { imsEdit = null; return render(); }
+  if (t('[data-ims-sub-new]')) {
+    imsCapture();
+    imsSub = { parent: imsItemData.item.key, summary: '', description: '', assigneeId: me.user.accountId || '', start: '', target: '', rootRequired: 'No', whys: { problem: '', list: [''] } };
+    await render(); view.querySelector('[data-ims-sub="summary"]')?.focus(); return true;
+  }
+  if (t('[data-ims-sub-cancel]')) { imsCapture(); if ((imsSub?.summary || imsSub?.description) && !confirm('Throw away this sub-task?')) return true; imsSub = null; return render(); }
+  if (t('[data-ims-sub-save]')) {
+    imsCapture();
+    const n = imsSub;
+    if (!n || n.summary.trim().length < 3) { toast('Give the sub-task a summary'); return true; }
+    const b = t('[data-ims-sub-save]'); b.disabled = true; b.textContent = 'Adding…';
+    try {
+      const whys = n.whys.problem.trim() || n.whys.list.some((x) => x.trim()) ? n.whys : null;
+      const r = await api('/api/ims/subtask', { method: 'POST', body: JSON.stringify({ ...n, whys }) });
+      toast(`${r.key} added${r.copies ? `, with ${r.copies} cop${r.copies === 1 ? 'y' : 'ies'} under the other copies` : ''}${r.skipped?.length ? `. Jira had no field for: ${r.skipped.join(', ')}` : ''}`);
+      imsSub = null; imsItemData = null; imsData = null;
+    } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Add the sub-task'; return true; }
+    return render();
+  }
   const wadd = t('[data-ims-why-add]');
   if (wadd) {
     const scope = wadd.dataset.imsWhyAdd;
-    if (scope === 'new') imsCapture(); imsWhysCapture(scope);
-    const w = scope === 'new' ? imsNew.whys : imsWhys;
+    imsCapture(); imsWhysCapture(scope);
+    const w = imsWhysOf(scope);
     w.list.push('');
     await render();
     view.querySelectorAll(`[data-ims-whys="${scope}"] .ims-why-list textarea`)[w.list.length - 1]?.focus();
@@ -13146,8 +13205,8 @@ async function imsClick(event) {
   const wrem = t('[data-ims-why-remove]');
   if (wrem) {
     const scope = wrem.dataset.imsWhyRemove;
-    if (scope === 'new') imsCapture(); imsWhysCapture(scope);
-    const w = scope === 'new' ? imsNew.whys : imsWhys;
+    imsCapture(); imsWhysCapture(scope);
+    const w = imsWhysOf(scope);
     w.list.splice(Number(wrem.dataset.i), 1);
     if (!w.list.length) w.list.push('');
     return render();
@@ -13183,7 +13242,7 @@ async function imsClick(event) {
     return render();
   }
   if (t('[data-ims-resolve-all]')) {
-    if (!confirm(`Make every copy match its original, for all ${imsData.disagreeing} items? Copies are changed in Jira over the next while.`)) return true;
+    if (!confirm(`Make every copy match the copy updated most recently, for all ${imsData.disagreeing} items? Copies are changed in Jira over the next while.`)) return true;
     try { const r = await api('/api/ims/resolve-all', { method: 'POST', body: '{}' }); toast(`${r.settled} settled; the copies follow over the next while`); } catch (err) { toast(err.message); }
     await imsLoad(true); return render();
   }
@@ -13213,6 +13272,13 @@ async function imsClick(event) {
   if (t('[data-ims-drill-back]')) { imsDrill = null; return render(); }
   const sw = t('[data-ims-switch]');
   if (sw) { const [k, v] = sw.dataset.imsSwitch.split(':'); if (k === 'trend') imsTrend = v; else imsPie[k] = v; return render(); }
+  const mlat = t('[data-ims-match-latest]');
+  if (mlat) {
+    mlat.disabled = true;
+    try { const r = await api('/api/ims/resolve-all', { method: 'POST', body: JSON.stringify({ group: mlat.dataset.imsMatchLatest }) }); toast(r.settled ? 'The other copies follow it within a few minutes' : 'Nothing left to settle'); } catch (err) { toast(err.message); mlat.disabled = false; return true; }
+    if (imsCleanup?.data) imsCleanup.data.disagree = imsCleanup.data.disagree.filter((g) => g.key !== mlat.dataset.imsMatchLatest);
+    imsData = null; return render();
+  }
   const dis = t('[data-ims-dismiss]');
   if (dis) {
     dis.disabled = true;
@@ -13294,7 +13360,7 @@ view.addEventListener('input', (event) => {
     const list = [...whysBox.querySelectorAll('.ims-why-list textarea')].map((el) => el.value);
     const nudge = whysBox.querySelector('.ims-why-nudge');
     if (nudge) nudge.innerHTML = imsWhysNudge(list);
-    if (whysBox.dataset.imsWhys === 'item') imsWhysCapture('item');
+    if (['item', 'sub'].includes(whysBox.dataset.imsWhys)) imsWhysCapture(whysBox.dataset.imsWhys);
   }
   if (event.target.id === 'ims-search') {
     imsFilter.q = event.target.value;
@@ -15529,8 +15595,9 @@ let trCache = { talks: null, policies: null, matrix: null, all: null, options: n
 let trShowPast = false;
 
 async function trLoad(what, force = false) {
-  if (force || Date.now() - trCache.at > 60000) trCache = { talks: null, policies: null, matrix: null, all: null, options: null, at: Date.now() };
+  if (force || Date.now() - trCache.at > 60000) trCache = { talks: null, policies: null, matrix: null, all: null, options: null, record: null, at: Date.now() };
   if (what === 'talks' && !trCache.talks) trCache.talks = await api('/api/training/talks');
+  if (what === 'record' && !trCache.record) trCache.record = await api('/api/training/talk-record');
   if (what === 'policies' && !trCache.policies) trCache.policies = await api('/api/training/policies');
   if (what === 'options' && !trCache.options) trCache.options = await api('/api/training/options');
   if (what === 'matrix' && (!trCache.matrix || trCache.matrix.forDivision !== trDivision)) {
@@ -15601,7 +15668,10 @@ function trShowing(id) {
   return files.find((f) => f.id === trViewing[id]) || files.find(trReadable) || null;
 }
 async function trFilesFor(id) {
-  if (!trFiles[id]) trFiles[id] = (await api(`/api/training/talk/files?id=${id}`).catch(() => ({ files: [] }))).files;
+  if (!trFiles[id]) {
+    try { trFiles[id] = (await api(`/api/training/talk/files?id=${id}`)).files; delete trFiles[`err${id}`]; }
+    catch (err) { trFiles[id] = []; trFiles[`err${id}`] = err.message; }
+  }
   return trFiles[id];
 }
 async function trUpload(id, files) {
@@ -15615,9 +15685,11 @@ async function trUpload(id, files) {
 }
 function trDocsHtml(t, manage) {
   const files = trFiles[t.id] || [];
-  if (!files.length && !manage) return '';
+  if (!files.length && !manage && !trFiles[`err${t.id}`]) return '';
   const showing = trShowing(t.id);
-  return `<div class="tr-docs"><h3>Documents</h3>
+  const err = trFiles[`err${t.id}`];
+  return `<div class="tr-docs"><div class="tr-docs-head"><h3>Documents</h3><button class="linklike" data-tr-doc-refresh="${t.id}">Check again</button></div>
+      ${err ? `<p class="ims-nudge">${esc(err)}</p>` : ''}
       ${files.length ? `<ul class="tr-doc-list">${files.map((f) => `<li class="${showing?.id === f.id ? 'on' : ''}">
           <span class="tr-doc-icon" aria-hidden="true">${/\.pptx?$/i.test(f.name) ? 'P' : /\.docx?$/i.test(f.name) ? 'W' : /\.pdf$/i.test(f.name) ? 'PDF' : /\.xlsx?$/i.test(f.name) ? 'X' : '📎'}</span>
           <span class="tr-doc-name"><strong>${esc(f.name)}</strong><small class="muted">${esc(trSize(f.size || 0))}</small></span>
@@ -15645,13 +15717,19 @@ function trTalkHtml(t, manage) {
       <div class="psc-top">${t.key ? `<a class="psc-key" href="${esc(me.jiraBaseUrl)}/browse/${esc(t.key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(t.key)}</a>` : ''}<span class="muted">Tool box talk · arranged by ${esc(t.by || '')}</span></div>
       <h2 style="margin:.3rem 0">${esc(t.title)}</h2>
       <p><strong>${esc(trWhen(t.startsAt))}</strong>${t.minutes ? `, ${t.minutes} minutes` : ''} <span class="psc-chip plain">${esc(trCountdown(t.startsAt))}</span>${t.location ? `<br>${esc(t.location)}` : ''}</p>
-      ${t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : t.upcoming ? '<p class="muted">No meeting link yet.</p>' : ''}
+      ${!t.upcoming ? '' : t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : '<p class="muted">No meeting link yet.</p>'}
+      ${t.imported ? '<p class="muted">Brought in from the old Training and Awareness spreadsheet.</p>' : ''}${manage && t.jiraNote ? `<p class="ims-nudge">${esc(t.jiraNote)}</p>` : ''}
       ${t.about ? `<div class="jv-rich"><p>${esc(t.about).replace(/\n/g, '<br>')}</p></div>` : ''}
       ${trDocsHtml(t, manage)}
       ${t.forMe ? `<div class="jv-note">${t.acknowledged ? `<p style="margin:0">You acknowledged this talk ${esc(agoText(t.acknowledged))}.</p>`
-        : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="talk" data-id="${t.id}">Acknowledge</button></div>`
+        : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label>
+          <div class="tr-faces-wrap"><p class="tr-faces-q">Please select how you found this tool box talk</p>
+            <div class="tr-faces" role="group" aria-label="How you found it">${TR_FACES.map(([k, f, l]) => `<button type="button" class="tr-face${trFace === k ? ' on' : ''}" data-tr-face="${k}" aria-pressed="${trFace === k}"><span aria-hidden="true">${f}</span>${l}</button>`).join('')}</div>
+            <label>Feedback <small class="muted">(optional)</small><textarea id="tr-ack-comment" rows="3" maxlength="2000" placeholder="Anything that was good, or could be better"></textarea></label></div>
+          <div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="talk" data-id="${t.id}">Acknowledge</button></div>`
         : '<p style="margin:0">Once the talk has started you can acknowledge it here.</p>'}</div>` : ''}
       ${manage && t.started ? trShareHtml('talk', t.id, 'tool box talk') : ''}
+      ${manage && t.started ? trFeedbackHtml(t.feedback) : ''}
       ${manage ? `<h3>Who it's for (${t.done} of ${t.count} acknowledged)</h3>${trWhoHtml(t.people)}
         <h3>Change it</h3>
         <div class="tr-form psc-new-row">
@@ -15662,12 +15740,23 @@ function trTalkHtml(t, manage) {
     </section>`;
 }
 
+const TR_FACES = [['good', '😊', 'Good'], ['ok', '😐', 'OK'], ['poor', '☹️', 'Poor']];
+let trFace = null;               // the face chosen on the acknowledgement
+let trTalksSub = 'list';         // 'list' or 'record' under Tool box talks
+function trFeedbackHtml(f) {
+  if (!f || !(f.good + f.ok + f.poor)) return '';
+  const total = f.good + f.ok + f.poor;
+  return `<h3>How people found it</h3>
+    <div class="tr-fb">${TR_FACES.map(([k, face, l]) => `<div class="tr-fb-item"><span class="tr-fb-face" aria-hidden="true">${face}</span><b>${f[k]}</b><small>${l}</small><i style="width:${Math.round((f[k] / total) * 100)}%"></i></div>`).join('')}</div>
+    ${f.comments.length ? `<ul class="tr-fb-comments">${f.comments.map((c) => `<li><span aria-hidden="true">${TR_FACES.find(([k]) => k === c.rating)?.[1] || ''}</span><div><p style="margin:0">${esc(c.comment)}</p><small class="muted">${esc(c.name || '')} · ${esc(shortDate(String(c.at).slice(0, 10)))}</small></div></li>`).join('')}</ul>` : ''}`;
+}
+
 function trWhoHtml(people) {
   const done = people.filter((p) => p.at);
   const not = people.filter((p) => !p.at);
   return `<div class="tr-who">
       <div><h4>Not yet (${not.length})</h4>${not.length ? `<ul>${not.map((p) => `<li>${esc(p.name)}</li>`).join('')}</ul>` : '<p class="muted">Everyone has.</p>'}</div>
-      <div><h4>Acknowledged (${done.length})</h4>${done.length ? `<ul>${done.map((p) => `<li>${esc(p.name)} <small class="muted">${esc(shortDate(p.at.slice(0, 10)))}</small></li>`).join('')}</ul>` : '<p class="muted">Nobody yet.</p>'}</div>
+      <div><h4>Acknowledged (${done.length})</h4>${done.length ? `<ul>${done.map((p) => `<li>${esc(p.name)} <small class="muted">${esc(shortDate(p.at.slice(0, 10)))}</small>${p.rating ? ` <span title="${esc(TR_FACES.find(([k]) => k === p.rating)?.[2] || '')}">${TR_FACES.find(([k]) => k === p.rating)?.[1] || ''}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">Nobody yet.</p>'}</div>
     </div>`;
 }
 
@@ -15679,6 +15768,8 @@ async function trNewTalkHtml() {
       <h2 style="margin-top:0">New tool box talk</h2>
       <p class="help">It's raised in Jira as an Internal Training item in Compliance & Training, on the day of the talk. Everyone it's for is told now and reminded each morning until it.</p>
       <label>Title<input type="text" data-tr-field="title" maxlength="200" value="${esc(d.title)}" placeholder="What the talk covers"></label>
+      <label>Topic <small class="muted">(for the record of who's had it: pick an earlier one if it's a repeat)</small><input type="text" data-tr-field="topic" maxlength="200" value="${esc(d.topic || '')}" list="tr-topics" placeholder="The same as the title, if left blank">
+        <datalist id="tr-topics">${(o.topics || []).map((x) => `<option value="${esc(x)}">`).join('')}</datalist></label>
       <div class="psc-new-row">
         <label>Date and time<input type="datetime-local" data-tr-field="at" value="${esc(d.at)}"></label>
         <label>Length (minutes)<input type="number" min="5" max="480" step="5" data-tr-field="minutes" value="${esc(d.minutes)}"></label>
@@ -15818,8 +15909,35 @@ function trViewsHtml(m) {
     ${m?.manage && trView !== 'talks' ? `<div class="tr-tools"><button class="btn secondary" data-tr-open="course">＋ Course</button>${m.rows.length ? '<button class="btn secondary" data-tr-csv="1">Download CSV</button>' : ''}</div>` : ''}</div>`;
 }
 
+// Each tool box talk topic, everyone, and when they last acknowledged it: due again after a year.
+const TR_REC = { ok: 'In date', soon: 'Due again within a month', expired: 'A year or more ago', missing: 'Not acknowledged', none: 'Not asked' };
+async function trRecordHtml() {
+  const r = await trLoad('record');
+  if (!r.topics.length) return '<div class="card"><p class="muted" style="margin:0">No tool box talks have been held yet.</p></div>';
+  const q = trFind.trim().toLowerCase();
+  const rows = r.rows.filter((x) => (!q || x.name.toLowerCase().includes(q)) && (!trOnlyProblems || x.counts.expired || x.counts.missing || x.counts.soon));
+  const when = (at) => {
+    if (!at) return '';
+    if (at.length === 10) return new Date(`${at}T12:00:00Z`).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
+    const d = new Date(at);
+    return `${d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' })}<small>${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</small>`;
+  };
+  const stat = (k, label) => `<div class="tr-stat s-${k === 'soon' ? 'soon' : k}" style="cursor:default"><b>${r.totals[k] || 0}</b><span>${label}</span></div>`;
+  return `<div class="tr-stats tr-rec-stats">${stat('expired', 'acknowledged a year or more ago')}${stat('soon', 'due again within a month')}${stat('missing', 'not acknowledged')}</div>
+    <div class="row con-tools psc-tools tr-filter"><input type="search" data-tr-find="1" value="${esc(trFind)}" placeholder="Find someone" aria-label="Find someone">
+      <label class="inline-check"><input type="checkbox" data-tr-problems="1"${trOnlyProblems ? ' checked' : ''}> Only those with something to do</label></div>
+    <p class="help tr-legend">${['ok', 'soon', 'expired', 'missing'].map((k) => `<span class="tr-sw-key"><i class="tr-sw s-${k}"></i>${TR_REC[k]}</span>`).join('')}<span class="tr-sw-key"><i class="tr-sw" style="background:var(--line)"></i>Not asked to it</span></p>
+    <div class="tr-matrix tr-rec"><table>
+      <thead><tr><th class="tr-name">Name</th>${r.topics.map((c) => `<th class="tr-rec-head" title="${esc(`${c.name}: last held ${fullDate(c.last.slice(0, 10))}, ${c.talks} talk${c.talks === 1 ? '' : 's'}`)}"><span>${esc(c.name)}</span><small>last ${esc(shortDate(c.last.slice(0, 10)))}</small></th>`).join('')}</tr></thead>
+      <tbody>${rows.map((x) => `<tr><th class="tr-name" scope="row"><span class="tr-name-btn" style="cursor:default">${esc(x.name)}</span></th>${r.topics.map((c) => {
+        const v = x.cells[c.key] || { status: 'none' };
+        return `<td class="tr-rec-cell s-${v.status}" title="${esc(`${x.name}, ${c.name}: ${TR_REC[v.status]}${v.at ? `, ${v.at.length === 10 ? fullDate(v.at) : new Date(v.at).toLocaleString('en-GB')}` : ''}`)}">${v.at ? when(v.at) : v.status === 'missing' ? '✕' : '–'}</td>`;
+      }).join('')}</tr>`).join('') || `<tr><td colspan="${r.topics.length + 1}" class="muted" style="padding:1rem">Nobody matches.</td></tr>`}</tbody></table></div>
+    <p class="help">Each topic is due again a year after someone last acknowledged it. A talk given again on the same topic counts towards it.</p>`;
+}
+
 async function trOverviewHtml() {
-  const [m, talks] = await Promise.all([trLoadAll(), trLoad('talks')]);
+  const [m, talks, rec] = await Promise.all([trLoadAll(), trLoad('talks'), trLoad('record').catch(() => null)]);
   if (!m.rows.length) return '<div class="card"><p class="muted" style="margin:0">Nothing in the training matrix yet. Run the import from the setup notes, or add courses and people.</p></div>';
   const all = m.rows.flatMap((r) => trTheirCells(r, m).map((x) => ({ ...x, r })));
   const score = trScore(all.map((x) => x.v));
@@ -15848,6 +15966,10 @@ async function trOverviewHtml() {
         <ul class="tr-divs">${divs.map(({ d, s, people }) => `<li><button class="tr-div" data-tr-division-go="${d.id}"><span class="tr-div-name"><strong>${esc(d.name)}</strong><small>${people} ${people === 1 ? 'person' : 'people'}${s.expired + s.missing ? ` · ${s.expired + s.missing} to sort` : ''}</small></span>
             <span class="tr-meter t-${trTone(s.pct)}"><i style="width:${s.pct ?? 0}%"></i></span><b>${s.pct == null ? '–' : `${s.pct}%`}</b></button></li>`).join('')}</ul>
         <p class="help">Choose a division to see its matrix.</p></section>
+      ${rec && rec.topics.length ? `<section class="card"><h3 style="margin-top:0">Tool box talks</h3>
+        <ul class="tr-divs">${[['expired', 'acknowledged a year or more ago'], ['soon', 'due again within a month'], ['missing', 'not acknowledged']].map(([k, l]) => `<li><button class="tr-div" data-tr-record="1"><span class="tr-badge s-${k}" aria-hidden="true">${k === 'missing' ? '✕' : '!'}</span><span class="tr-div-name"><strong>${rec.totals[k] || 0}</strong><small>${l}</small></span></button></li>`).join('')}</ul>
+        <p class="help">Across ${rec.topics.length} topic${rec.topics.length === 1 ? '' : 's'}: ${esc(rec.topics.slice(0, 4).map((x) => x.name).join(', '))}${rec.topics.length > 4 ? '…' : ''}.</p>
+        <button class="btn secondary" data-tr-record="1">See who's had each one</button></section>` : ''}
     </div>`;
 }
 
@@ -16087,7 +16209,9 @@ async function trainingHtml(mode, host) {
   };
   if (!d.manage) return talksHtml();
   const m = await trLoadAll();
-  const body = trView === 'talks' ? talksHtml() : trView === 'people' ? await trPeopleHtml() : trView === 'courses' ? await trCoursesHtml()
+  const talksWithRecord = async () => `<div class="ims-switch tr-sub" role="group">${[['list', 'Talks'], ['record', 'Who\'s had each one']].map(([k, l]) => `<button class="${trTalksSub === k ? 'on' : ''}" data-tr-talks-sub="${k}" aria-pressed="${trTalksSub === k}">${l}</button>`).join('')}</div>
+    ${trTalksSub === 'record' ? await trRecordHtml() : talksHtml()}`;
+  const body = trView === 'talks' ? await talksWithRecord() : trView === 'people' ? await trPeopleHtml() : trView === 'courses' ? await trCoursesHtml()
     : trView === 'matrix' ? await trMatrixHtml() : await trOverviewHtml();
   return `${trViewsHtml(m)}${body}${trCell ? trCellEditorHtml() : ''}`;
 }
@@ -16099,6 +16223,8 @@ async function trClick(event) {
   const open = t('[data-tr-open]');
   if (open) {
     trOpen = open.dataset.trOpen;
+    // A talk's documents are read from Jira afresh each time it's opened, so ones added there show.
+    if (/^talk-\d+$/.test(trOpen)) delete trFiles[trOpen.slice(5)];
     trDraft = trOpen === 'course' ? { name: '', category: '', frequency: '', months: '', divisions: trDivision ? [Number(trDivision)] : [] } : null;
     trCell = null; window.scrollTo(0, 0); render(); return true;
   }
@@ -16170,6 +16296,13 @@ async function trClick(event) {
   const rmLink = t('[data-tr-link-remove]');
   if (rmLink) { trCapture(); trDraft.links.splice(Number(rmLink.dataset.trLinkRemove), 1); render(); return true; }
   const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  if (t('[data-tr-record]')) { trView = 'talks'; trTalksSub = 'record'; window.scrollTo(0, 0); render(); return true; }
+  const docRefresh = t('[data-tr-doc-refresh]');
+  if (docRefresh) { delete trFiles[docRefresh.dataset.trDocRefresh]; render(); return true; }
+  const face = t('[data-tr-face]');
+  if (face) { trFace = face.dataset.trFace; view.querySelectorAll('[data-tr-face]').forEach((b) => { b.classList.toggle('on', b === face); b.setAttribute('aria-pressed', String(b === face)); }); return true; }
+  const sub = t('[data-tr-talks-sub]');
+  if (sub) { trTalksSub = sub.dataset.trTalksSub; render(); return true; }
   const copy = t('[data-tr-copy-link]');
   if (copy) {
     try { await navigator.clipboard.writeText(copy.dataset.trCopyLink); toast('Link copied'); }
@@ -16219,8 +16352,12 @@ async function trClick(event) {
   const ack = t('[data-tr-ack]');
   if (ack) {
     if (!view.querySelector('#tr-ack-ok')?.checked) { toast('Tick the box to confirm first'); return true; }
+    const isTalk = ack.dataset.trAck === 'talk';
+    if (isTalk && !trFace) { toast('Choose how you found the tool box talk'); return true; }
     await busy(ack, async () => {
-      await api('/api/training/acknowledge', { method: 'POST', body: JSON.stringify({ kind: ack.dataset.trAck, id: Number(ack.dataset.id) }) });
+      await api('/api/training/acknowledge', { method: 'POST', body: JSON.stringify({ kind: ack.dataset.trAck, id: Number(ack.dataset.id),
+        ...(isTalk ? { rating: trFace, comment: view.querySelector('#tr-ack-comment')?.value || '' } : {}) }) });
+      trFace = null; trCache.record = null; homeFeedAt = 0;
       toast('Acknowledged'); await reload(ack.dataset.trAck === 'talk' ? 'talks' : 'policies'); trCache.matrix = trCache.all = null; render();
     });
     return true;

@@ -282,6 +282,22 @@ function talkWhen(iso) {
   return new Date(iso).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+// The Internal Training item's statuses: confirmed when it's arranged, provided once the talk is over.
+const TALK_STATUS = { confirmed: [/training date confirmed/i, /date confirmed/i], provided: [/training provided/i, /provided/i] };
+async function moveTalk(env, key, patterns) {
+  try {
+    const t = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`))?.transitions || [];
+    const issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}?fields=status`).catch(() => null);
+    if (patterns.some((p) => p.test(issue?.fields?.status?.name || ''))) return true;
+    for (const p of patterns) {
+      const to = t.find((x) => p.test(String(x.to?.name || x.name || '')));
+      if (to) { await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: to.id } }) }); return true; }
+    }
+  } catch { /* noted by the caller */ }
+  return false;
+}
+const talkEnds = (t) => Date.parse(t.starts_at) + (t.minutes || 30) * 60000;
+
 export async function createTalk(env, viewer, input) {
   mustManage(viewer);
   const title = clip(input.title, 200).replace(/\s+/g, ' ');
@@ -310,7 +326,9 @@ export async function createTalk(env, viewer, input) {
   const fields = { project: { key: TALK_PROJECT }, issuetype: { id: meta.typeId }, summary: title, description: adfFrom(text) };
   if (F.categories) fields[F.categories] = [{ value: 'Compliance & Training' }];
   if (F.start) fields[F.start] = day;
-  if (F.target) fields[F.target] = day;
+  // The Target end date is the day of the talk.
+  const target = by('Target end date') || by('Target end') || (F.target ? { id: F.target } : null);
+  if (target) fields[target.id] = day;
   const who = by('Who Requires the Training');
   if (who && ids.length) fields[who.id] = who.schema?.type === 'array' ? ids.slice(0, 100).map((accountId) => ({ accountId })) : { accountId: ids[0] };
   const linkField = by('Link');
@@ -329,9 +347,12 @@ export async function createTalk(env, viewer, input) {
     made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) });
   }
   if (F.origin) await jira(env, `/rest/api/3/issue/${made.key}`, { method: 'PUT', body: JSON.stringify({ fields: { [F.origin]: made.key } }) }).catch(() => {});
-  const r = await env.DB.prepare(`INSERT INTO toolbox_talks (issue_key, title, about, starts_at, minutes, location, meet_link, course_id, audience, created_by, created_by_name, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(made.key, title, clip(input.about, 5000) || null, startsAt, minutes, clip(input.location, 200) || null,
-    link || null, courseId, JSON.stringify(audience), viewer.accountId || null, viewer.employee?.name || viewer.email, new Date().toISOString()).first();
+  const moved = await moveTalk(env, made.key, TALK_STATUS.confirmed);
+  const topic = clip(input.topic, 200).replace(/\s+/g, ' ') || title;
+  const r = await env.DB.prepare(`INSERT INTO toolbox_talks (issue_key, title, topic, about, starts_at, minutes, location, meet_link, course_id, audience, created_by, created_by_name, created_at, jira_error)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(made.key, title, topic, clip(input.about, 5000) || null, startsAt, minutes, clip(input.location, 200) || null,
+    link || null, courseId, JSON.stringify(audience), viewer.accountId || null, viewer.employee?.name || viewer.email, new Date().toISOString(),
+    moved ? null : 'Jira wouldn\'t move it to Training Date Confirmed').first();
   await tellTalk(env, { id: r.id, title, starts_at: startsAt, minutes, meet_link: link, location: input.location }, ids, 'talk-new');
   await record(env, viewer, { area: 'Training', action: 'arranged a tool box talk', subjectType: 'talk', subjectId: String(r.id), label: `${made.key} ${title}`.slice(0, 120),
     changes: [{ label: 'When', before: '', after: talkWhen(startsAt) }, { label: 'For', before: '', after: `${ids.length} people` }] }).catch(() => {});
@@ -393,6 +414,12 @@ export async function talks(env, viewer) {
   const { results } = await env.DB.prepare('SELECT * FROM toolbox_talks WHERE cancelled = 0 ORDER BY starts_at DESC LIMIT 200').all();
   const acks = await acksFor(env, 'talk', results.map((t) => t.id));
   const names = new Map(list.map((p) => [p.id, p.name]));
+  // What people thought of each talk, for management.
+  const feedback = new Map();
+  if (manage && results.length) {
+    const { results: fb } = await env.DB.prepare(`SELECT item_id, account_id, name, at, rating, comment FROM acknowledgements WHERE kind = 'talk' AND (rating IS NOT NULL OR comment IS NOT NULL)`).all().catch(() => ({ results: [] }));
+    for (const f of fb) (feedback.get(f.item_id) || feedback.set(f.item_id, []).get(f.item_id)).push(f);
+  }
   const now = Date.now();
   const out = [];
   for (const t of results) {
@@ -401,16 +428,26 @@ export async function talks(env, viewer) {
     if (!manage && !mine) continue;
     const ack = acks.get(t.id) || new Map();
     out.push({
-      id: t.id, key: t.issue_key, title: t.title, about: t.about, startsAt: t.starts_at, minutes: t.minutes, location: t.location, link: t.meet_link, courseId: t.course_id,
-      upcoming: Date.parse(t.starts_at) + (t.minutes || 30) * 60000 > now, started: Date.parse(t.starts_at) <= now,
+      id: t.id, key: t.issue_key, title: t.title, topic: t.topic || t.title, imported: t.source === 'import', about: t.about, startsAt: t.starts_at, minutes: t.minutes, location: t.location,
+      // Once the talk is over, the meeting link is put away.
+      link: talkEnds(t) > now || manage ? t.meet_link : null, courseId: t.course_id, jiraNote: manage ? t.jira_error : null,
+      upcoming: talkEnds(t) > now, started: Date.parse(t.starts_at) <= now,
       audience: manage ? json(t.audience, {}) : null, forMe: mine, acknowledged: ack.has(viewer.accountId) ? ack.get(viewer.accountId) : null,
       count: ids.length, done: ids.filter((id) => ack.has(id)).length,
-      people: manage ? ids.map((id) => ({ id, name: names.get(id) || id, at: ack.get(id) || null })).sort((a, b) => Boolean(a.at) - Boolean(b.at) || a.name.localeCompare(b.name)) : null,
+      people: manage ? ids.map((id) => ({ id, name: names.get(id) || id, at: ack.get(id) || null, rating: (feedback.get(t.id) || []).find((f) => f.account_id === id)?.rating || null }))
+        .sort((a, b) => Boolean(a.at) - Boolean(b.at) || a.name.localeCompare(b.name)) : null,
+      feedback: manage ? feedbackOf(feedback.get(t.id) || []) : null,
       by: t.created_by_name,
     });
   }
   out.sort((a, b) => (a.upcoming === b.upcoming ? (a.upcoming ? a.startsAt.localeCompare(b.startsAt) : b.startsAt.localeCompare(a.startsAt)) : a.upcoming ? -1 : 1));
   return { talks: out, manage };
+}
+
+const RATINGS = ['good', 'ok', 'poor'];
+function feedbackOf(rows) {
+  const counts = Object.fromEntries(RATINGS.map((r) => [r, rows.filter((f) => f.rating === r).length]));
+  return { ...counts, comments: rows.filter((f) => f.comment).sort((a, b) => String(b.at).localeCompare(String(a.at))).map((f) => ({ name: f.name, rating: f.rating, comment: f.comment, at: f.at })) };
 }
 
 // ---------- policies ----------
@@ -478,7 +515,7 @@ export async function policies(env, viewer) {
 
 // ---------- acknowledging ----------
 
-export async function acknowledge(env, viewer, { kind, id }) {
+export async function acknowledge(env, viewer, { kind, id, rating = null, comment = '' }) {
   mustSee(viewer);
   if (!viewer.accountId) throw refuse('Your account isn\'t linked to an employee record yet.');
   const item = kind === 'talk' ? await env.DB.prepare('SELECT * FROM toolbox_talks WHERE id = ? AND cancelled = 0').bind(Number(id)).first()
@@ -487,9 +524,11 @@ export async function acknowledge(env, viewer, { kind, id }) {
   const ids = await audienceIds(env, json(item.audience, {}));
   if (!ids.has(viewer.accountId)) throw refuse('That isn\'t one for you to acknowledge.', 403);
   if (kind === 'talk' && Date.parse(item.starts_at) > Date.now()) throw refuse('A tool box talk is acknowledged once it has started.');
+  if (kind === 'talk' && !RATINGS.includes(rating)) throw refuse('Choose how you found the tool box talk.');
   const at = new Date().toISOString();
   const name = viewer.employee?.name || viewer.email;
-  await env.DB.prepare('INSERT OR IGNORE INTO acknowledgements (kind, item_id, account_id, name, at) VALUES (?, ?, ?, ?, ?)').bind(kind, item.id, viewer.accountId, name, at).run();
+  await env.DB.prepare('INSERT OR IGNORE INTO acknowledgements (kind, item_id, account_id, name, at, rating, comment) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(kind, item.id, viewer.accountId, name, at, kind === 'talk' ? rating : null, kind === 'talk' ? clip(comment, 2000) || null : null).run();
   // A talk that covers a course in the matrix counts as that course done, on the day of the talk.
   if (kind === 'talk' && item.course_id) {
     const day = londonDate(Date.parse(item.starts_at));
@@ -559,7 +598,8 @@ export async function options(env, viewer) {
     env.DB.prepare('SELECT id, name FROM training_divisions ORDER BY position, name').all(),
     env.DB.prepare('SELECT id, name, category FROM training_courses WHERE active = 1 ORDER BY position, name').all(),
   ]);
-  return { teams: TEAMS, divisions, courses, people: (await people(env)).map(({ id, name }) => ({ id, name })), manage: canManage(viewer) };
+  const { results: topics } = await env.DB.prepare("SELECT DISTINCT COALESCE(topic, title) AS topic FROM toolbox_talks WHERE cancelled = 0 ORDER BY 1").all().catch(() => ({ results: [] }));
+  return { teams: TEAMS, divisions, courses, topics: topics.map((t) => t.topic), people: (await people(env)).map(({ id, name }) => ({ id, name })), manage: canManage(viewer) };
 }
 
 // ---------- a talk's documents ----------
@@ -582,7 +622,9 @@ const jiraAuth = (env) => `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}
 export async function talkFiles(env, viewer, id) {
   const t = await talkFor(env, viewer, id);
   if (!t.issue_key) return { files: [] };
-  const issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(t.issue_key)}?fields=attachment`).catch(() => null);
+  let issue;
+  try { issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(t.issue_key)}?fields=attachment`); }
+  catch (err) { throw refuse(`Jira wouldn't list the documents: ${String(err.message || err).slice(0, 160)}`, 502); }
   return { files: (issue?.fields?.attachment || []).map((a) => ({ id: String(a.id), name: a.filename, size: a.size, mime: a.mimeType, at: a.created }))
     .sort((a, b) => String(a.at).localeCompare(String(b.at))) };
 }
@@ -634,4 +676,97 @@ export async function talkFile(env, viewer, id, fileId, download = false) {
   // The browser's own PDF reader needs to run; anything else is shown with nothing able to run.
   if (!pdf) headers['content-security-policy'] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox";
   return new Response(res.body, { headers });
+}
+
+// ---------- once a talk is over ----------
+
+// Each hour: a talk that's finished moves to Training Provided in Jira, and everyone it was for who
+// hasn't acknowledged it is emailed the link and shown an alert on their home screen until they do.
+// Talks brought in from the old spreadsheet, or over more than three days before this first ran, aren't chased.
+export async function concludeTalks(env) {
+  const now = Date.now();
+  const { results } = await env.DB.prepare("SELECT * FROM toolbox_talks WHERE cancelled = 0 AND concluded_at IS NULL AND (source IS NULL OR source != 'import')").all().catch(() => ({ results: [] }));
+  const due = results.filter((t) => talkEnds(t) <= now);
+  if (!due.length) return { concluded: 0 };
+  const list = await people(env);
+  const origin = String(env.HUB_URL || (await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'hub_origin'").first().catch(() => null))?.value || '').replace(/\/$/, '');
+  const { toPerson } = await import('./notify.js');
+  let told = 0;
+  for (const t of due) {
+    const moved = t.issue_key ? await moveTalk(env, t.issue_key, TALK_STATUS.provided) : true;
+    const chase = now - talkEnds(t) < 3 * 86400000;
+    if (chase) {
+      const ids = [...await audienceIds(env, json(t.audience, {}), list)];
+      const { results: acked } = await env.DB.prepare("SELECT account_id FROM acknowledgements WHERE kind = 'talk' AND item_id = ?").bind(t.id).all();
+      const done = new Set(acked.map((a) => a.account_id));
+      const link = `${origin}/#/training?talk=${t.id}`;
+      for (const id of ids.filter((x) => !done.has(x))) {
+        const ok = await toPerson(env, id, { tile: 'training', kind: 'talk-ack', dedupe: `talk-ack:${t.id}`, subject: `Please acknowledge the tool box talk: ${t.title}`,
+          body: `The tool box talk "${t.title}" has finished. Please confirm you attended and understood it, and say how you found it:\n${link}`, link: `#/training?talk=${t.id}`, ref: { key: `talk-${t.id}` } }).catch(() => false);
+        if (ok) told++;
+      }
+    }
+    await env.DB.prepare('UPDATE toolbox_talks SET concluded_at = ?, jira_error = ? WHERE id = ?').bind(new Date().toISOString(), moved ? null : 'Jira wouldn\'t move it to Training Provided', t.id).run();
+  }
+  return { concluded: due.length, told };
+}
+
+// Talks someone still has to acknowledge, once they're over: for the alert on their home screen.
+export async function outstandingTalks(env, accountId) {
+  if (!accountId) return [];
+  const since = new Date(Date.now() - 400 * 86400000).toISOString();
+  const { results } = await env.DB.prepare(`SELECT t.* FROM toolbox_talks t WHERE t.cancelled = 0 AND (t.source IS NULL OR t.source != 'import') AND t.starts_at >= ?
+    AND NOT EXISTS (SELECT 1 FROM acknowledgements a WHERE a.kind = 'talk' AND a.item_id = t.id AND a.account_id = ?) ORDER BY t.starts_at`).bind(since, accountId).all().catch(() => ({ results: [] }));
+  const now = Date.now();
+  const over = results.filter((t) => talkEnds(t) <= now);
+  if (!over.length) return [];
+  const list = await people(env);
+  const out = [];
+  for (const t of over) if ((await audienceIds(env, json(t.audience, {}), list)).has(accountId)) out.push({ id: t.id, title: t.title, startsAt: t.starts_at });
+  return out;
+}
+
+// ---------- the record: each topic, everyone, and when they last acknowledged it ----------
+
+// A topic is due again a year after it was last acknowledged; amber in the month before.
+export async function talkRecord(env, viewer) {
+  mustManage(viewer);
+  const now = Date.now();
+  const { results: talks } = await env.DB.prepare('SELECT * FROM toolbox_talks WHERE cancelled = 0 ORDER BY starts_at').all();
+  const held = talks.filter((t) => Date.parse(t.starts_at) <= now);
+  const list = await people(env);
+  const topics = new Map();
+  for (const t of held) {
+    const key = (t.topic || t.title).trim();
+    const k = key.toLowerCase();
+    const topic = topics.get(k) || { name: key, talks: [], audience: new Set(), last: null };
+    topic.talks.push(t.id);
+    for (const id of await audienceIds(env, json(t.audience, {}), list)) topic.audience.add(id);
+    topic.last = t.starts_at > (topic.last || '') ? t.starts_at : topic.last;
+    topics.set(k, topic);
+  }
+  const ids = [...topics.values()].flatMap((x) => x.talks);
+  const acks = new Map();
+  for (let i = 0; i < ids.length; i += 90) {
+    const chunk = ids.slice(i, i + 90);
+    const { results } = await env.DB.prepare(`SELECT item_id, account_id, at FROM acknowledgements WHERE kind = 'talk' AND item_id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk).all();
+    for (const a of results) acks.set(`${a.item_id}|${a.account_id}`, a.at);
+  }
+  const YEAR = 365 * 86400000; const MONTH = 30 * 86400000;
+  const cols = [...topics.values()].sort((a, b) => String(b.last).localeCompare(String(a.last)));
+  const rows = list.map((p) => {
+    const cells = {};
+    const counts = { ok: 0, soon: 0, expired: 0, missing: 0 };
+    for (const c of cols) {
+      const last = c.talks.map((id) => acks.get(`${id}|${p.id}`)).filter(Boolean).sort().at(-1) || null;
+      let status = 'none';
+      if (last) { const age = now - Date.parse(last.length === 10 ? `${last}T12:00:00Z` : last); status = age >= YEAR ? 'expired' : age >= YEAR - MONTH ? 'soon' : 'ok'; }
+      else if (c.audience.has(p.id)) status = 'missing';
+      if (counts[status] != null) counts[status]++;
+      cells[c.name.toLowerCase()] = { at: last, status };
+    }
+    return { id: p.id, name: p.name, cells, counts };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  return { topics: cols.map((c) => ({ key: c.name.toLowerCase(), name: c.name, last: c.last, talks: c.talks.length, people: c.audience.size })), rows,
+    totals: rows.reduce((t, r) => { for (const k of Object.keys(r.counts)) t[k] = (t[k] || 0) + r.counts[k]; return t; }, {}) };
 }

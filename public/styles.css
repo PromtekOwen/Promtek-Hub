@@ -2410,3 +2410,49 @@ button.ims-since:hover { border-color: var(--blue); }
 .tr-share { display: grid; gap: .55rem; margin: .8rem 0; }
 .tr-share-row { display: flex; gap: .5rem; flex-wrap: wrap; }
 .tr-share-row input { flex: 1 1 18rem; min-width: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: .85rem; }
+
+/* Tool box talks: feedback, the record, documents heading */
+.tr-faces-wrap { display: grid; gap: .6rem; margin-top: .8rem; }
+.tr-faces-q { margin: 0; font-weight: 600; }
+.tr-faces { display: flex; gap: .5rem; flex-wrap: wrap; }
+.tr-face { display: grid; justify-items: center; gap: .1rem; min-width: 5.5rem; padding: .5rem .8rem; border: 1.5px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); font: inherit; font-weight: 600; font-size: .85rem; cursor: pointer; }
+.tr-face span { font-size: 2rem; line-height: 1.1; }
+.tr-face:hover { border-color: var(--blue); }
+.tr-face.on { border-color: var(--blue); background: var(--tint); box-shadow: 0 0 0 2px var(--blue) inset; }
+.tr-fb { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; }
+.tr-fb-item { position: relative; display: grid; justify-items: center; gap: .05rem; padding: .6rem; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.tr-fb-face { font-size: 1.7rem; }
+.tr-fb-item b { font-size: 1.3rem; }
+.tr-fb-item small { color: var(--muted); }
+.tr-fb-item i { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--blue); }
+.tr-fb-comments { list-style: none; padding: 0; margin: .7rem 0 0; display: grid; gap: .5rem; }
+.tr-fb-comments li { display: flex; gap: .6rem; align-items: flex-start; padding: .55rem .75rem; background: var(--tint); border-radius: 10px; }
+.tr-fb-comments li > span { font-size: 1.3rem; }
+.tr-docs-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+.tr-sub { margin-bottom: 1rem; }
+.tr-rec-stats { margin-bottom: 1rem; }
+.tr-rec .tr-name { min-width: 11rem; }
+.tr-rec-head { vertical-align: bottom; text-align: center; padding: .4rem .35rem !important; min-width: 6.2rem; max-width: 8rem; white-space: normal !important; font-size: .78rem; font-weight: 700; }
+.tr-rec-head small { display: block; font-weight: 400; color: var(--muted); }
+.tr-rec-cell { text-align: center; font-size: .78rem; padding: .3rem .25rem !important; font-variant-numeric: tabular-nums; }
+.tr-rec-cell small { display: block; font-size: .68rem; opacity: .75; }
+.tr-rec-cell.s-ok { background: #dcf3e6; color: #135c3b; }
+.tr-rec-cell.s-soon { background: #fdf0c8; color: #7a5600; }
+.tr-rec-cell.s-expired { background: #fde2dd; color: #8b2414; font-weight: 700; }
+.tr-rec-cell.s-missing { background: #fff; color: #c0392b; font-weight: 700; box-shadow: inset 0 0 0 1.5px #f2a39b; }
+.tr-rec-cell.s-none { color: var(--muted); }
+:where(:root[data-theme="dark"]) .tr-rec-cell.s-ok { background: #163a28; color: #8fe0b2; }
+:where(:root[data-theme="dark"]) .tr-rec-cell.s-soon { background: #45380f; color: #f5d27a; }
+:where(:root[data-theme="dark"]) .tr-rec-cell.s-expired { background: #4a1f18; color: #ffb4a6; }
+:where(:root[data-theme="dark"]) .tr-rec-cell.s-missing { background: transparent; color: #ffb4a6; }
+
+/* An IMS item's sub-tasks */
+.ims-subs { list-style: none; margin: 0; padding: 0; display: grid; gap: .4rem; }
+.ims-sub { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem .8rem; align-items: center; text-align: left; font: inherit; color: var(--ink);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: .55rem .75rem; cursor: pointer; }
+.ims-sub:hover, .ims-sub:focus-visible { border-color: var(--blue); background: var(--tint); }
+.ims-sub-main { min-width: 0; flex: 1 1 16rem; }
+.ims-sub-meta { display: inline-flex; flex-wrap: wrap; gap: .3rem .45rem; align-items: center; }
+.ims-sub-form { display: grid; gap: .8rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.ims-sub-form h3 { margin: 0; }
+.ims-sub-form label { display: grid; gap: .3rem; }

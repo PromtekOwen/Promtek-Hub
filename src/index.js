@@ -487,6 +487,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/ims/meeting') return json(await Ims.meeting(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/ims/attachment') return Ims.attachment(env, user, q('key'), q('id'));
     if (method === 'POST' && pathname === '/api/ims/edit') return json(await Ims.edit(env, user, body));
+    if (method === 'POST' && pathname === '/api/ims/subtask') return json(await Ims.addSubtask(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/resolve') return json(await Ims.resolveConflict(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/resolve-all') return json(await Ims.resolveAll(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/comment') return json(await Ims.comment(env, user, body));
@@ -522,6 +523,7 @@ async function route(request, env, url, user) {
     // A tool box talk's document comes as the file itself, not JSON.
     if (method === 'POST' && pathname === '/api/training/talk/file') return json(await T.addTalkFile(env, user, url.searchParams.get('id'), url.searchParams.get('name'), request));
     if (method === 'GET' && pathname === '/api/training/talk/files') return json(await T.talkFiles(env, user, url.searchParams.get('id')));
+    if (method === 'GET' && pathname === '/api/training/talk-record') return json(await T.talkRecord(env, user));
     if (method === 'GET' && pathname === '/api/training/talk/file') return T.talkFile(env, user, url.searchParams.get('id'), url.searchParams.get('file'), url.searchParams.get('download') === '1');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/training/matrix') return json(await T.matrix(env, user, { division: url.searchParams.get('division') }));
