@@ -89,6 +89,9 @@ async function createIssue(env, typeName, { summary, parent = null, values = {},
   // Gap analysis items never need a root cause.
   const rr = meta.byName['is root cause required?'];
   if (rr && !(rr.id in fields)) fields[rr.id] = rr.schema?.type === 'array' ? [{ value: 'No' }] : { value: 'No' };
+  // And they're always an Opportunity for Improvement.
+  const it = meta.byName['ims task type'];
+  if (it && !(it.id in fields)) fields[it.id] = it.schema?.type === 'array' ? [{ value: 'Opportunity for Improvement' }] : { value: 'Opportunity for Improvement' };
   const base = { project: { key: PROJECT }, issuetype: { id: meta.typeId }, summary: clip(summary, 250), ...(parent ? { parent: { key: parent } } : {}), ...(assignee ? { assignee: { accountId: assignee } } : {}) };
   let made = null;
   const refused = await withoutRefused(meta, fields, async (f) => { made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields: { ...base, ...f } }) }); });

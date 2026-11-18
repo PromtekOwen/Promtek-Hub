@@ -318,6 +318,9 @@ export async function createTalk(env, viewer, input) {
   // A tool box talk never needs a root cause.
   const rr = by('Is Root Cause Required?') || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array' } } : null);
   if (rr) fields[rr.id] = rr.schema?.type === 'array' ? [{ value: 'No' }] : { value: 'No' };
+  // And it's always a Management Task.
+  const it = by('IMS Task Type');
+  if (it) fields[it.id] = it.schema?.type === 'array' ? [{ value: 'Management Task' }] : { value: 'Management Task' };
   let made;
   try { made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }); } catch (err) {
     if (err.status !== 400) throw err;
