@@ -2481,3 +2481,10 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
   padding: .4rem .9rem; font: inherit; font-weight: 600; cursor: pointer; }
 
 .tablet-pin-label { display: grid; gap: .3rem; padding: 0 .35rem .6rem; }
+
+/* Asking someone to connect their own Jira account */
+.jira-connect-dialog { max-width: 30rem; width: calc(100% - 32px); border: 0; border-radius: 18px; padding: 1.6rem 1.5rem; background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+.jira-connect-dialog::backdrop { background: rgba(10, 30, 45, .55); }
+.jira-connect-dialog h2 { margin: 0 0 .6rem; }
+.jira-connect-dialog p { margin: 0 0 1.2rem; line-height: 1.5; }
+.jira-connect-dialog .btn { display: inline-block; text-decoration: none; }

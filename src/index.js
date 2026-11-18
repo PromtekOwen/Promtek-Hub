@@ -92,7 +92,7 @@ function connectPage(message, ok) {
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Jira account</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1b2a35;background:#f4f7f9">
 <h1 style="font-size:1.4rem">${ok ? 'Connected' : 'Not connected'}</h1><p>${escHtml(message)}</p>
-<p><a href="/#/" style="color:#0b6aa6;font-weight:600">Back to the hub</a>${ok ? '' : ' · <a href="/api/jira-connect/start" style="color:#0b6aa6;font-weight:600">Try again</a>'}</p></body></html>`,
+<p><a href="${ok ? '/#/' : '/?jira-skip=1#/'}" style="color:#0b6aa6;font-weight:600">Back to the hub</a>${ok ? '' : ' · <a href="/api/jira-connect/start" style="color:#0b6aa6;font-weight:600">Try again</a>'}</p></body></html>`,
   { status: ok ? 200 : 400, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" } });
 }
 
@@ -1388,6 +1388,8 @@ async function getMe(env, user) {
     ledgerStart: await getState(env, 'ledger_start'),
     viewingAs: user.viewingAs || null,
     tablet: user.tablet ? { idleMinutes: Tablet.idleMinutes(env) } : null,
+    // Their own Jira account, connected so their changes show as them: asked for until it is.
+    jiraConnect: user.tablet || user.viewingAs ? null : await JiraAuth.status(env, user).then((s) => (s.available && !s.connected ? { needed: true, problem: s.problem } : null)).catch(() => null),
     // Replies waiting on the viewer's own anonymous feedback, worked out without anyone else knowing which posts are theirs.
     feedbackUnread: user.viewingAs ? 0 : await (await import('./feedback.js')).unreadFor(env, user).catch(() => 0),
   };

@@ -763,7 +763,7 @@ Reading from Jira always uses the hub's account.
    - `ATLASSIAN_CLIENT_SECRET`, as a secret: `npx wrangler secret put ATLASSIAN_CLIENT_SECRET`.
 6. Run `schema-069.sql` in the D1 console.
 
-**Connecting:** until someone connects, their home screen alerts say **Connect your Jira account**. **Connect** takes them to Atlassian once, to allow the hub, and back. The hub checks the Atlassian account is theirs, on Promtek's Jira, before keeping it. If Atlassian says the app needs approving, a site admin approves it once in admin.atlassian.com under Connected apps.
+**Connecting:** until someone connects, the hub asks as soon as it opens, in a box that can't be closed: **Connect my Jira account**. Their home screen alerts say the same. **Connect** takes them to Atlassian once, to allow the hub, and back. The hub checks the Atlassian account is theirs, on Promtek's Jira, before keeping it. If connecting doesn't work (the page says why), **Back to the hub** lets them carry on until they next open it. If Atlassian says the app needs approving, a site admin approves it once in admin.atlassian.com under Connected apps. Nobody is asked on the shared tablet, or while viewing as someone else.
 
 **How it keeps working:**
 - **Storage:** each person's access is kept locked (encrypted with a key made from the client secret) and renewed as it runs out.

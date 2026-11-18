@@ -156,6 +156,32 @@ async function serverApi(path, options = {}) {
   return data;
 }
 
+// ---------- connecting their own Jira account ----------
+// Until someone has connected it, the hub asks as soon as it opens, so their changes show as them in Jira.
+// Coming back from a connection that didn't work, it lets them carry on for now.
+function jiraConnectPrompt() {
+  if (!me?.jiraConnect?.needed || PRACTICE) return;
+  const params = new URLSearchParams(location.search);
+  if (params.has('jira-skip')) {
+    try { sessionStorage.setItem('hub_jira_skip', '1'); } catch { /* private mode */ }
+    history.replaceState(history.state, '', `${location.pathname}${location.hash}`);
+  }
+  let skipped = false;
+  try { skipped = sessionStorage.getItem('hub_jira_skip') === '1'; } catch { skipped = false; }
+  if (skipped) return;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'jira-connect-dialog';
+  dlg.setAttribute('aria-labelledby', 'jira-connect-title');
+  dlg.innerHTML = `<h2 id="jira-connect-title">${me.jiraConnect.problem ? 'Reconnect your Jira account' : 'Connect your Jira account'}</h2>
+    <p>${me.jiraConnect.problem ? 'The hub can no longer make changes in Jira as you.' : 'Changes you make in the hub, such as updating IMS items or moving tickets on, need to show as you in Jira\'s history.'}
+      Atlassian will ask you to sign in with your Promtek account and allow the hub, once.</p>
+    <a class="btn" href="/api/jira-connect/start">${me.jiraConnect.problem ? 'Reconnect' : 'Connect my Jira account'}</a>`;
+  // There's no closing it: connecting is the way on.
+  dlg.addEventListener('cancel', (e) => e.preventDefault());
+  document.body.appendChild(dlg);
+  dlg.showModal();
+}
+
 // ---------- the shared tablet ----------
 // Signed in as the tablet's own account; whoever is using it taps their name and PIN.
 let tabletPicking = false;
@@ -16938,6 +16964,7 @@ async function start() {
   if (me.viewingAs) viewAsBar();
   if (me.tablet) tabletInUse();
   await render();
+  jiraConnectPrompt();
   notePage();
   logFab();
   if (PRACTICE) startTour(PRACTICE_ROUTE, { practice: true });
