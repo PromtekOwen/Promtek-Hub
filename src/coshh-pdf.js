@@ -1,6 +1,6 @@
 // The COSHH assessment as a PDF, laid out like the paper form (SP 04/A): the same boxes in the
 // same order, filled in, with the product's photos in the containers box.
-import { Pdf, A4, wrap } from './pdf.js';
+import { Pdf, A4, wrap, widthOf } from './pdf.js';
 import { WHERE_USED, HAZARDS, PPE, DISPOSAL } from './coshh.js';
 
 const GREY = [0.85, 0.85, 0.85];
@@ -32,6 +32,17 @@ function cell(doc, x, top, w, h, { fill = null, lines = [], size = 8.5, bold = f
 const wrapped = (text, size, width, bold = false) => (String(text || '').split('\n').flatMap((p) => wrap(p, size, width, bold)));
 function heightFor(texts, size = 8.5, min = 16) {
   return Math.max(min, ...texts.map(([t, w, bold]) => wrapped(t, size, w - PAD * 2, bold).length * size * 1.2 + PAD * 2));
+}
+
+function breakAnywhere(text, size, width) {
+  const out = [];
+  let line = '';
+  for (const ch of String(text || '')) {
+    if (line && widthOf(line + ch, size) > width) { out.push(line); line = ''; }
+    line += ch;
+  }
+  if (line) out.push(line);
+  return out;
 }
 
 // A tick or a cross, drawn.
@@ -74,7 +85,11 @@ export async function buildCoshhPdf(item, photos = []) {
   cell(doc, L + 135, top, 32, 18, { fill: GREY, lines: ['Rev'], bold: true });
   cell(doc, L + 167, top, 35, 18, { lines: [String(item.rev || 1)], align: 'center' });
   cell(doc, L + 202, top, 150, 18, { fill: GREY, lines: ['MSDS Ref. Number(s)'], bold: true, align: 'right' });
-  cell(doc, L + 352, top, W - 352, 18, { lines: wrapped(d.msds, 8.5, W - 352 - PAD * 2).slice(0, 1) });
+  // A link to the sheet is broken anywhere to fit, on two small lines.
+  const msdsW = W - 352 - PAD * 2;
+  const isLink = /^https?:\/\//i.test(String(d.msds || ''));
+  const msdsLines = isLink ? breakAnywhere(d.msds, 6, msdsW).slice(0, 2) : wrapped(d.msds, 8.5, msdsW).slice(0, 1);
+  cell(doc, L + 352, top, W - 352, 18, { lines: msdsLines, size: isLink ? 6 : 8.5, colour: isLink ? BLUE : INK });
   top -= 18;
 
   // Product, and whether it's still in use.

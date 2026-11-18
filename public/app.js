@@ -3815,6 +3815,7 @@ async function coshhItemHtml() {
           <label>Assessment date<input type="date" id="coshh-imp-date" value="${esc(i.assessedOn || '')}"></label>
         </div><div class="row" style="margin-top:.6rem"><button class="btn secondary" data-coshh-imp-save="${i.id}">Save these</button></div>` : ''}
       ${!imported && i.status !== 'draft' ? `<dl class="psc-facts coshh-facts">
+        ${d.msds ? `<div><dt>Safety data sheet</dt><dd>${coshhIsUrl(d.msds) ? `<a href="${esc(d.msds)}" target="_blank" rel="noopener">Open the sheet</a>` : esc(d.msds)}</dd></div>` : ''}
         <div><dt>Used for</dt><dd>${esc(d.usedFor || '—')}</dd></div>
         <div><dt>Where it's used</dt><dd>${esc(label(o.where, d.where))}</dd></div>
         <div><dt>Hazards</dt><dd>${esc(label(o.hazards, d.hazards))}</dd></div>
@@ -3843,13 +3844,24 @@ function coshhFormHtml() {
   };
   const chips = (field, list, { diamond = false } = {}) => `<div class="chips">${list.map(([k, l]) => `<button type="button" class="chip${d[field].includes(k) ? ' on' : ''}${diamond ? ' coshh-haz' : ''}" data-coshh-chip="${field}" data-value="${k}">${diamond ? COSHH_DIAMOND : ''}${esc(l)}</button>`).join('')}</div>`;
   const yn = (field) => `<span class="segment">${[['yes', 'Yes'], ['no', 'No']].map(([k, l]) => `<button type="button" class="seg${d[field] === k ? ' on' : ''}" data-coshh-seg="${field}" data-value="${k}">${l}</button>`).join('')}</span>`;
+  if (coshhSheet) setTimeout(coshhMountSheet, 0);
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-coshh-cancel="1">Back</button></div>
+    ${coshhSheet ? '<div class="coshh-split"><aside class="coshh-sheet-slot" id="coshh-sheet-slot"></aside><div class="coshh-split-form">' : ''}
     <section class="card coshh-form">
       <h2 style="margin-top:0">${f.revise ? 'Revise the assessment' : 'New COSHH assessment'}</h2>
       ${f.revise ? '<p class="help">Completing it makes the next Rev of the same COSHH number, dated today, with an empty review table.</p>' : ''}
       <h3>The product</h3>
       <label><span>Principal product name <span class="req">*</span></span><input type="text" data-coshh-f="product" maxlength="200" value="${esc(f.product)}" placeholder="As it's named on the label"></label>
-      <div class="psc-new-row">${text('data.otherNames', 'Other names / manufacturers')}${text('data.msds', 'MSDS ref. number(s)', { max: 200, placeholder: 'From the safety data sheet' })}${text('data.appearance', 'Appearance (under normal conditions)', { max: 300, placeholder: 'Clear liquid, white powder…' })}</div>
+      <div class="coshh-msds">
+        ${text('data.msds', 'MSDS ref. number(s) or the safety data sheet\'s link', { max: 400, placeholder: 'https://… or the sheet\'s reference' })}
+        <div class="row">
+          <button type="button" class="btn secondary" data-coshh-sds-search="1">🔍 Search for its safety data sheet</button>
+          <button type="button" class="btn secondary" data-coshh-sds-paste="1">Paste link</button>
+          ${coshhIsUrl(d.msds) && !coshhSheet ? '<button type="button" class="btn secondary" data-coshh-sds-open="1">Open beside the form</button>' : ''}
+        </div>
+        <p class="help">Search opens a web search for the product's sheet. Open the sheet's PDF, copy its address, then tap <strong>Paste link</strong>: it's shown beside the form to copy from.</p>
+      </div>
+      <div class="psc-new-row">${text('data.otherNames', 'Other names / manufacturers')}${text('data.appearance', 'Appearance (under normal conditions)', { max: 300, placeholder: 'Clear liquid, white powder…' })}</div>
       <h3>Its container</h3>
       ${text('data.containers', 'Normal container(s)', { placeholder: '500ml trigger spray, 5 litre drum…' })}
       <div class="coshh-photos edit">${f.photos.map((p) => `<span class="coshh-photo"><img src="/api/coshh/photo?id=${p.id}" alt=""><button type="button" class="linklike" data-coshh-photo-remove="${p.id}">Remove</button></span>`).join('')}
@@ -3882,8 +3894,115 @@ function coshhFormHtml() {
       <div class="row" style="margin-top:1rem"><button class="btn" data-coshh-submit="1">Complete and file it</button>
         <button class="btn secondary" data-coshh-save="1">Save for later</button>
         ${f.id ? `<a class="linklike" href="/api/coshh/file?id=${f.id}" target="_blank" rel="noopener" data-coshh-preview="1">Preview the PDF</a>` : ''}</div>
-    </section>`;
+    </section>${coshhSheet ? '</div></div>' : ''}`;
 }
+
+// ---------- the safety data sheet beside the form ----------
+// Fetched through the hub and drawn here with PDF.js, so its words can be selected and copied
+// into the form, all inside the hub (the tablet stays pinned to it).
+let coshhSheet = null;       // { url, el, pdf, scale }
+const coshhIsUrl = (v) => /^https?:\/\/\S+\.\S+/i.test(String(v || '').trim());
+let coshhPdfjs = null;
+async function coshhPdfLib() {
+  if (!coshhPdfjs) {
+    coshhPdfjs = await import('/vendor/pdfjs/pdf.min.js');
+    coshhPdfjs.GlobalWorkerOptions.workerSrc = '/vendor/pdfjs/pdf.worker.min.js';
+  }
+  return coshhPdfjs;
+}
+function coshhMountSheet() {
+  const slot = document.getElementById('coshh-sheet-slot');
+  if (!slot || !coshhSheet) return;
+  if (coshhSheet.el.parentElement !== slot) slot.appendChild(coshhSheet.el);
+}
+function coshhSheetHead() {
+  const s = coshhSheet;
+  let host = s.url;
+  try { host = new URL(s.url).hostname.replace(/^www\./, ''); } catch { /* as it is */ }
+  return `<div class="coshh-sheet-bar">
+      <strong title="${esc(s.url)}">${esc(host)}</strong>
+      <span class="coshh-sheet-tools">
+        ${s.pdf ? '<button type="button" class="chip-btn" data-coshh-sds-zoom="-1" aria-label="Smaller">−</button><button type="button" class="chip-btn" data-coshh-sds-zoom="1" aria-label="Bigger">＋</button>' : ''}
+        <a class="chip-btn" href="${esc(s.url)}" target="_blank" rel="noopener">Open the original</a>
+        <button type="button" class="chip-btn" data-coshh-sds-close="1">Close the sheet</button>
+      </span>
+    </div>`;
+}
+async function coshhOpenSheet(url) {
+  const u = String(url || '').trim();
+  if (!coshhIsUrl(u)) { toast('Copy the sheet\'s full address first, starting https://'); return; }
+  coshhCapture();
+  // The link goes in the form, unless something other than a link is there already.
+  if (!coshhForm.data.msds || coshhIsUrl(coshhForm.data.msds)) coshhForm.data.msds = u;
+  const el = document.createElement('div');
+  el.className = 'coshh-sheet';
+  coshhSheet = { url: u, el, pdf: null, scale: null };
+  el.innerHTML = `${coshhSheetHead()}<div class="coshh-sheet-body"><p class="muted coshh-sheet-note">Fetching the sheet…</p></div>`;
+  coshhSaveSoon();
+  await render();
+  coshhMountSheet();
+  const mine = coshhSheet;
+  try {
+    const res = await fetch(`/api/coshh/sheet?url=${encodeURIComponent(u)}`);
+    if (mine !== coshhSheet) return;
+    const type = res.headers.get('content-type') || '';
+    if (!res.ok || !type.includes('pdf')) {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'The sheet couldn\'t be fetched.');
+      // A web page: its PDF links, to choose from.
+      const body = el.querySelector('.coshh-sheet-body');
+      body.innerHTML = data.links?.length ? `<p class="coshh-sheet-note">That's a web page, not the sheet itself. These are the PDFs on it: choose the safety data sheet.</p>
+          <ul class="coshh-sheet-links">${data.links.map((l) => `<li><button type="button" class="linklike" data-coshh-sds-pick="${esc(l.url)}">${esc(l.text)}</button><small class="muted">${esc(l.url.split('/').pop().slice(0, 60))}</small></li>`).join('')}</ul>`
+        : '<p class="coshh-sheet-note">That\'s a web page with no PDF the hub can find on it. Open the original, find the sheet\'s PDF, and copy that address instead.</p>';
+      return;
+    }
+    const pdfjs = await coshhPdfLib();
+    mine.pdf = await pdfjs.getDocument({ data: new Uint8Array(await res.arrayBuffer()), isEvalSupported: false }).promise;
+    if (mine !== coshhSheet) return;
+    el.querySelector('.coshh-sheet-bar').outerHTML = coshhSheetHead();
+    coshhMountSheet();
+    await coshhDrawSheet();
+  } catch (err) {
+    if (mine !== coshhSheet) return;
+    el.querySelector('.coshh-sheet-body').innerHTML = `<p class="bad coshh-sheet-note">${esc(err.message)}</p><p class="coshh-sheet-note"><a href="${esc(u)}" target="_blank" rel="noopener">Open the original</a> instead.</p>`;
+  }
+}
+async function coshhDrawSheet() {
+  const s = coshhSheet;
+  if (!s?.pdf) return;
+  const body = s.el.querySelector('.coshh-sheet-body');
+  const width = Math.max(260, body.clientWidth - 16);
+  const pdfjs = await coshhPdfLib();
+  body.innerHTML = '<p class="help coshh-sheet-tip">Hold on the words to select them, then Copy and paste them into the form.</p>';
+  const pages = Math.min(s.pdf.numPages, 40);
+  for (let n = 1; n <= pages; n++) {
+    if (coshhSheet !== s) return;
+    const page = await s.pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    s.scale ||= width / base.width;
+    const viewport = page.getViewport({ scale: s.scale });
+    const ratio = window.devicePixelRatio || 1;
+    const wrap = document.createElement('div');
+    wrap.className = 'coshh-page';
+    wrap.style.width = `${Math.floor(viewport.width)}px`;
+    wrap.style.height = `${Math.floor(viewport.height)}px`;
+    wrap.style.setProperty('--total-scale-factor', String(s.scale));
+    wrap.style.setProperty('--scale-factor', String(s.scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.floor(viewport.width * ratio);
+    canvas.height = Math.floor(viewport.height * ratio);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+    const text = document.createElement('div');
+    text.className = 'textLayer';
+    wrap.append(canvas, text);
+    body.appendChild(wrap);
+    await page.render({ canvasContext: canvas.getContext('2d'), canvas, viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise;
+    await new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container: text, viewport }).render().catch(() => {});
+  }
+  if (s.pdf.numPages > pages) body.insertAdjacentHTML('beforeend', `<p class="muted coshh-sheet-note">The first ${pages} of ${s.pdf.numPages} pages. Open the original for the rest.</p>`);
+}
+
 
 // What's typed, kept as it's typed.
 function coshhCapture() {
@@ -3966,10 +4085,31 @@ async function coshhClick(event) {
   if (t('[data-coshh-cancel]')) {
     coshhCapture();
     clearTimeout(coshhSaveTimer);
-    if (coshhForm.revise) { const id = coshhForm.id; coshhForm = null; coshhView = { kind: 'item', id }; return render(); }
+    if (coshhForm.revise) { const id = coshhForm.id; coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id }; return render(); }
     await coshhSave().catch(() => {});
-    coshhForm = null; coshhView = null; await coshhLoad(true); return render();
+    coshhForm = null; coshhSheet = null; coshhView = null; await coshhLoad(true); return render();
   }
+  if (t('[data-coshh-sds-search]')) {
+    coshhCapture();
+    const name = coshhForm.product.trim();
+    if (!name) { toast('Type the product name first'); return true; }
+    window.open(`https://www.google.com/search?q=${encodeURIComponent(`"${name}" safety data sheet pdf`)}`, '_blank', 'noopener');
+    return true;
+  }
+  if (t('[data-coshh-sds-paste]')) {
+    let v = '';
+    try { v = (await navigator.clipboard.readText()).trim(); } catch { toast('Paste the link into the box instead (hold on it, then Paste)'); return true; }
+    if (!coshhIsUrl(v)) { toast('What\'s copied isn\'t a link. Copy the sheet\'s address first.'); return true; }
+    coshhCapture(); coshhForm.data.msds = v;
+    await coshhOpenSheet(v);
+    return true;
+  }
+  if (t('[data-coshh-sds-open]')) { coshhCapture(); await coshhOpenSheet(coshhForm.data.msds); return true; }
+  const pick = t('[data-coshh-sds-pick]');
+  if (pick) { coshhCapture(); coshhForm.data.msds = pick.dataset.coshhSdsPick; await coshhOpenSheet(pick.dataset.coshhSdsPick); return true; }
+  if (t('[data-coshh-sds-close]')) { coshhCapture(); coshhSheet = null; return render(); }
+  const zoom = t('[data-coshh-sds-zoom]');
+  if (zoom && coshhSheet?.scale) { coshhSheet.scale = Math.min(3, Math.max(0.4, coshhSheet.scale * (zoom.dataset.coshhSdsZoom === '1' ? 1.2 : 1 / 1.2))); coshhDrawSheet(); return true; }
   const chip = t('[data-coshh-chip]');
   if (chip) {
     coshhCapture();
@@ -3992,7 +4132,7 @@ async function coshhClick(event) {
   if (rmPhoto) return busy(rmPhoto, async () => { coshhCapture(); await api('/api/coshh/photo-remove', { method: 'POST', body: JSON.stringify({ photoId: Number(rmPhoto.dataset.coshhPhotoRemove) }) }); coshhForm.photos = coshhForm.photos.filter((p) => p.id !== Number(rmPhoto.dataset.coshhPhotoRemove)); render(); });
   if (t('[data-coshh-preview]')) { coshhCapture(); await coshhSave().catch(() => {}); return false; }
   const save = t('[data-coshh-save]');
-  if (save) return busy(save, async () => { await coshhSave({ quiet: false }); coshhForm = null; coshhView = null; await coshhLoad(true); render(); });
+  if (save) return busy(save, async () => { await coshhSave({ quiet: false }); coshhForm = null; coshhSheet = null; coshhView = null; await coshhLoad(true); render(); });
   const submit = t('[data-coshh-submit]');
   if (submit) {
     coshhCapture();
@@ -4001,7 +4141,7 @@ async function coshhClick(event) {
       submit.textContent = 'Filing it…';
       const r = await api('/api/coshh/submit', { method: 'POST', body: JSON.stringify({ id: coshhForm.id, product: coshhForm.product, data: coshhForm.data }) });
       toast(r.filed ? `COSHH ${r.no} Rev ${r.rev} completed and filed in Confluence` : `COSHH ${r.no} completed. ${r.fileNote || ''}`);
-      coshhForm = null; coshhView = { kind: 'item', id: r.id }; coshhItem = null; await coshhLoad(true); window.scrollTo(0, 0); render();
+      coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id: r.id }; coshhItem = null; await coshhLoad(true); window.scrollTo(0, 0); render();
     }).finally(() => { if (document.body.contains(submit)) submit.textContent = 'Complete and file it'; });
   }
   const edit = t('[data-coshh-edit]');
@@ -16208,6 +16348,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/eotq') { eotqImport = null; eotqView = 'nominate'; eotqEditing = null; eotqRound = null; eotqChanging = false; eotqTurnout = false; }
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
+  if (currentRoute() !== '#/coshh') coshhSheet = null;
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; logScreen = null; }
   if (accountDialog.open) accountDialog.close();
   notifyOnPage();

@@ -284,6 +284,14 @@ The **COSHH** tile holds an assessment for each substance Promtek keeps, filled 
 - precautions and disposal;
 - the three questions at the end, and the risk (low, medium or high).
 
+**The safety data sheet.** Under the product name:
+- **Search for its safety data sheet** opens a web search for it in a new tab. On a tablet pinned to the hub that may not be allowed; find the sheet on a phone or computer instead and copy its address.
+- **Paste link** takes the sheet's address you've copied, puts it in **MSDS ref. number(s)** (unless a reference is already typed there) and shows the sheet beside the form, or above it on a narrow screen. Its words can be selected (hold on them on the tablet) and copied into the form. **−** and **＋** change its size, and **Close the sheet** puts the form back to full width.
+- **A product's web page rather than its PDF:** the hub lists the PDFs on that page, the likeliest sheet first, to choose from.
+- **Sheets the hub can't fetch:** it shows a few suppliers' sheets only in a browser (behind a login, or refused); **Open the original** opens them in a tab instead. A scanned sheet shows, but has no words to copy.
+- **On the form and the PDF:** the link is kept, shown as **Open the sheet** on the item, and printed small on the PDF.
+- **How the hub fetches it:** the hub fetches the sheet from the web itself, only from public addresses, and shows it with PDF.js (Mozilla's free PDF viewer, in `public/vendor/pdfjs`, Apache 2.0 licence). Nothing else is needed: no account, key or outside service.
+
 **Saving and completing:**
 - **Drafts:** it's saved as a draft as it's filled in (**Your drafts**). **Preview the PDF** shows it as it stands.
 - **Who and when:** **Complete and file it** puts in whoever is signed in as the assessor, dates it today, and numbers it. The next number follows the highest in the list, starting at 1001.

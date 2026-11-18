@@ -425,3 +425,61 @@ export async function remindReviews(env) {
   for (const r of due) await env.DB.prepare('UPDATE coshh_items SET review_told = ? WHERE id = ?').bind(r.next_review_on, r.id).run();
   return { told: due.length, managers: managers.length };
 }
+
+// ---------- the safety data sheet, beside the form ----------
+
+// Somewhere on the public web: http(s), a named host, nothing on this machine or a private network.
+export function publicUrl(raw) {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch { return null; }
+  if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password) return null;
+  const host = u.hostname.toLowerCase();
+  if (!host.includes('.') || host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return null;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const [a, b] = host.split('.').map(Number);
+    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return null;
+  }
+  if (host.startsWith('[') || host.includes(':')) return null;
+  if (u.port && !['80', '443'].includes(u.port)) return null;
+  return u;
+}
+
+const SHEET_MAX = 20 * 1024 * 1024;
+const decode = (s) => String(s).replace(/&amp;/g, '&').replace(/&#x2F;/gi, '/').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+
+// The sheet itself, fetched here so it can be shown inside the hub. A web page rather than the PDF
+// comes back as the PDF links on it, to choose from.
+export async function sheet(env, viewer, raw) {
+  mustSee(viewer);
+  const u = publicUrl(raw);
+  if (!u) throw refuse('That isn\'t a web address the hub can open. Copy the sheet\'s full address, starting https://');
+  let res;
+  try {
+    res = await fetch(u.toString(), { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PromtekHub/1.0; COSHH safety data sheet viewer)', Accept: 'application/pdf,text/html;q=0.9,*/*;q=0.5' } });
+  } catch { throw refuse('That site couldn\'t be reached. Open the sheet with the link instead.', 502); }
+  if (!res.ok) throw refuse(`That site said no (${res.status}). Some suppliers only let a browser open their sheets: open it with the link instead.`, 502);
+  const type = String(res.headers.get('content-type') || '').toLowerCase();
+  const size = Number(res.headers.get('content-length') || 0);
+  if (size > SHEET_MAX) throw refuse('That file is too big to show here. Open it with the link instead.');
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  if (bytes.length > SHEET_MAX) throw refuse('That file is too big to show here. Open it with the link instead.');
+  const isPdf = type.includes('pdf') || (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46);
+  if (isPdf) return { kind: 'pdf', bytes, url: res.url || u.toString() };
+  if (!type.includes('html')) throw refuse('That isn\'t a PDF or a web page. Open it with the link instead.');
+  // A page about the product: the PDFs it links to, the likeliest first.
+  const html = new TextDecoder().decode(bytes.slice(0, 2_000_000));
+  const base = res.url || u.toString();
+  const found = new Map();
+  for (const m of html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"'#]+)["'][^>]*>([\s\S]{0,300}?)<\/a>/gi)) {
+    let href;
+    try { href = new URL(decode(m[1]), base).toString(); } catch { continue; }
+    const text = m[2].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const pdfish = /\.pdf(\?|$)/i.test(href);
+    const sds = /\b(m?sds|safety[\s-]*data|data[\s-]*sheet|sicherheitsdatenblatt)\b/i.test(`${href} ${text}`);
+    if (!pdfish && !sds) continue;
+    if (!publicUrl(href) || found.has(href)) continue;
+    found.set(href, { url: href, text: text || href.split('/').pop(), score: (pdfish ? 1 : 0) + (sds ? 2 : 0) });
+  }
+  const links = [...found.values()].sort((a, b) => b.score - a.score).slice(0, 12).map(({ url, text }) => ({ url, text }));
+  return { kind: 'page', url: base, links };
+}

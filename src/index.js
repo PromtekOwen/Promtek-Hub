@@ -1040,6 +1040,11 @@ async function route(request, env, url, user) {
       return new Response(f.bytes, { headers: { 'content-type': f.type, 'content-disposition': `${q('download') ? 'attachment' : 'inline'}; filename="${safe}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
     }
     if (method === 'POST' && pathname === '/api/coshh/photo') return json(await C.addPhoto(env, user, q('id'), request));
+    if (method === 'GET' && pathname === '/api/coshh/sheet') {
+      const r = await C.sheet(env, user, q('url'));
+      if (r.kind === 'pdf') return new Response(r.bytes, { headers: { 'content-type': 'application/pdf', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff', 'x-sheet-url': encodeURI(r.url), 'content-disposition': 'inline' } });
+      return json(r);
+    }
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     const post = { save: C.save, submit: C.submit, review: C.review, 'in-house': C.setInHouse, locations: C.setLocations, details: C.setDetails, remove: C.remove,
       'photo-remove': C.removePhoto, refile: C.refile, import: C.importFromConfluence };
