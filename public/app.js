@@ -15574,6 +15574,50 @@ function trTalkCard(t) {
     </article>`;
 }
 
+// A talk's documents: kept on its Jira item. PDFs and pictures are read in the page; PowerPoint and Word
+// files open in their own app, as browsers can't show them.
+let trFiles = {};               // talk id → its documents
+let trViewing = {};             // talk id → the document shown in the page
+let trNewFiles = [];            // chosen on the new-talk form, attached once it's made
+const trReadable = (f) => /\.pdf$/i.test(f.name) || /^application\/pdf$/i.test(f.mime || '') || /^image\/(png|jpe?g|gif|webp)$/i.test(f.mime || '');
+const trFileUrl = (id, f, download = false) => `/api/training/talk/file?id=${id}&file=${encodeURIComponent(f.id)}${download ? '&download=1' : ''}`;
+const trSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+// The document shown in the page: the one chosen, or at first the first one that can be read here.
+function trShowing(id) {
+  const files = trFiles[id] || [];
+  if (trViewing[id] === null) return null;
+  return files.find((f) => f.id === trViewing[id]) || files.find(trReadable) || null;
+}
+async function trFilesFor(id) {
+  if (!trFiles[id]) trFiles[id] = (await api(`/api/training/talk/files?id=${id}`).catch(() => ({ files: [] }))).files;
+  return trFiles[id];
+}
+async function trUpload(id, files) {
+  let done = 0;
+  for (const f of files) {
+    try { await api(`/api/training/talk/file?id=${id}&name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f, headers: { 'content-type': f.type || 'application/octet-stream' } }); done++; }
+    catch (err) { toast(`${f.name}: ${err.message}`); }
+  }
+  delete trFiles[id];
+  return done;
+}
+function trDocsHtml(t, manage) {
+  const files = trFiles[t.id] || [];
+  if (!files.length && !manage) return '';
+  const showing = trShowing(t.id);
+  return `<div class="tr-docs"><h3>Documents</h3>
+      ${files.length ? `<ul class="tr-doc-list">${files.map((f) => `<li class="${showing?.id === f.id ? 'on' : ''}">
+          <span class="tr-doc-icon" aria-hidden="true">${/\.pptx?$/i.test(f.name) ? 'P' : /\.docx?$/i.test(f.name) ? 'W' : /\.pdf$/i.test(f.name) ? 'PDF' : /\.xlsx?$/i.test(f.name) ? 'X' : '📎'}</span>
+          <span class="tr-doc-name"><strong>${esc(f.name)}</strong><small class="muted">${esc(trSize(f.size || 0))}</small></span>
+          <span class="tr-doc-acts">${trReadable(f) ? `<button class="btn secondary" data-tr-doc-view="${t.id}|${esc(f.id)}">${showing?.id === f.id ? 'Hide' : 'Read here'}</button>` : ''}
+            <a class="btn secondary" href="${trFileUrl(t.id, f, !trReadable(f))}" target="_blank" rel="noopener">${trReadable(f) ? 'Open' : /\.pptx?$/i.test(f.name) ? 'Open in PowerPoint' : /\.docx?$/i.test(f.name) ? 'Open in Word' : 'Download'}</a>
+            ${manage ? `<button class="linklike danger-text" data-tr-doc-remove="${t.id}|${esc(f.id)}">Remove</button>` : ''}</span></li>`).join('')}</ul>` : '<p class="muted">No documents yet.</p>'}
+      ${showing ? (/^image\//i.test(showing.mime || '') ? `<img class="tr-doc-img" src="${trFileUrl(t.id, showing)}" alt="${esc(showing.name)}">` : `<iframe class="tr-doc-frame" src="${trFileUrl(t.id, showing)}#view=FitH" title="${esc(showing.name)}"></iframe>`) : ''}
+      ${manage ? `<label class="btn secondary tr-doc-add">＋ Attach a document<input type="file" multiple data-tr-doc-add="${t.id}" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp"></label>
+        <p class="help">PDFs and pictures can be read here in the hub. PowerPoint and Word files open in PowerPoint or Word; save a copy as a PDF too and everyone can read it here. Up to 50 MB each.</p>` : ''}
+    </div>`;
+}
+
 function trTalkHtml(t, manage) {
   const ackable = t.forMe && t.started && !t.acknowledged;
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-tr-close="1">Back</button></div>
@@ -15583,6 +15627,7 @@ function trTalkHtml(t, manage) {
       <p><strong>${esc(trWhen(t.startsAt))}</strong>${t.minutes ? `, ${t.minutes} minutes` : ''} <span class="psc-chip plain">${esc(trCountdown(t.startsAt))}</span>${t.location ? `<br>${esc(t.location)}` : ''}</p>
       ${t.link ? `<p><a class="btn" href="${esc(t.link)}" target="_blank" rel="noopener" data-tr-join="1">Join the meeting</a> <small class="muted">${esc(t.link)}</small></p>` : '<p class="muted">No meeting link yet.</p>'}
       ${t.about ? `<div class="jv-rich"><p>${esc(t.about).replace(/\n/g, '<br>')}</p></div>` : ''}
+      ${trDocsHtml(t, manage)}
       ${t.forMe ? `<div class="jv-note">${t.acknowledged ? `<p style="margin:0">You acknowledged this talk ${esc(agoText(t.acknowledged))}.</p>`
         : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="talk" data-id="${t.id}">Acknowledge</button></div>`
         : '<p style="margin:0">Once the talk has started you can acknowledge it here.</p>'}</div>` : ''}
@@ -15622,6 +15667,10 @@ async function trNewTalkHtml() {
       <label>Counts as this training in the matrix<select data-tr-field="courseId"><option value="">None</option>${o.courses.map((c) => `<option value="${c.id}"${String(d.courseId) === String(c.id) ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
       <label>About it<textarea rows="4" data-tr-field="about">${esc(d.about)}</textarea></label>
       ${trAudienceHtml(d.audience, o)}
+      <div><span class="person-birthday-label">Documents <small class="muted">(optional)</small></span>
+        ${trNewFiles.length ? `<ul class="tr-doc-list">${trNewFiles.map((f, i) => `<li><span class="tr-doc-name"><strong>${esc(f.name)}</strong><small class="muted">${esc(trSize(f.size))}</small></span><span class="tr-doc-acts"><button class="linklike" data-tr-newfile-remove="${i}">Remove</button></span></li>`).join('')}</ul>` : ''}
+        <label class="btn secondary tr-doc-add">＋ Attach the presentation or document<input type="file" multiple data-tr-newfile-add="1" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp"></label>
+        <p class="help">Attached to the talk's Jira item once it's made. PDFs can be read in the hub; PowerPoint and Word files open in their own app.</p></div>
       <div class="row"><button class="btn" data-tr-talk-create="1">Create tool box talk</button><button class="linklike" data-tr-close="1">Cancel</button></div>
     </section>`;
 }
@@ -15963,7 +16012,7 @@ async function trMemberFormHtml() {
 async function trStaffHtml() {
   const [t, p] = await Promise.all([trLoad('talks'), trLoad('policies')]);
   const talk = t.talks.find((x) => `talk-${x.id}` === trOpen);
-  if (talk) return trTalkHtml(talk, false);
+  if (talk) { await trFilesFor(talk.id); return trTalkHtml(talk, false); }
   const policy = p.policies.find((x) => `policy-${x.id}` === trOpen);
   if (policy) return trPolicyHtml(policy, false);
   const upcoming = t.talks.filter((x) => x.upcoming && x.forMe);
@@ -15986,7 +16035,7 @@ async function trainingHtml(mode, host) {
   if (trOpen?.startsWith('talk-')) {
     const d = await trLoad('talks');
     const t = d.talks.find((x) => `talk-${x.id}` === trOpen);
-    if (t) return trTalkHtml(t, d.manage);
+    if (t) { await trFilesFor(t.id); return trTalkHtml(t, d.manage); }
   }
   if (trOpen?.startsWith('policy-')) {
     const d = await trLoad('policies');
@@ -16031,7 +16080,7 @@ async function trClick(event) {
     trDraft = trOpen === 'course' ? { name: '', category: '', frequency: '', months: '', divisions: trDivision ? [Number(trDivision)] : [] } : null;
     trCell = null; window.scrollTo(0, 0); render(); return true;
   }
-  if (t('[data-tr-close]')) { trOpen = null; trDraft = null; render(); return true; }
+  if (t('[data-tr-close]')) { trOpen = null; trDraft = null; trNewFiles = []; render(); return true; }
   const tview = t('[data-tr-view]');
   if (tview) { trView = tview.dataset.trView; trPerson = null; trCourse = null; trCell = null; trCog = null; render(); return true; }
   const af = t('[data-tr-act-filter]');
@@ -16099,6 +16148,17 @@ async function trClick(event) {
   const rmLink = t('[data-tr-link-remove]');
   if (rmLink) { trCapture(); trDraft.links.splice(Number(rmLink.dataset.trLinkRemove), 1); render(); return true; }
   const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  const view_ = t('[data-tr-doc-view]');
+  if (view_) { const [id, fid] = view_.dataset.trDocView.split('|'); trViewing[id] = trShowing(id)?.id === fid ? null : fid; render(); return true; }
+  const docRem = t('[data-tr-doc-remove]');
+  if (docRem) {
+    const [id, fid] = docRem.dataset.trDocRemove.split('|');
+    if (docRem.dataset.sure !== '1') { docRem.dataset.sure = '1'; docRem.textContent = 'Remove it? Press again'; return true; }
+    await busy(docRem, async () => { await api('/api/training/talk/file/remove', { method: 'POST', body: JSON.stringify({ id: Number(id), fileId: fid }) }); toast('Removed'); delete trFiles[id]; render(); });
+    return true;
+  }
+  const nfRem = t('[data-tr-newfile-remove]');
+  if (nfRem) { trCapture(); trNewFiles.splice(Number(nfRem.dataset.trNewfileRemove), 1); render(); return true; }
   const create = t('[data-tr-talk-create]');
   if (create) {
     trCapture();
@@ -16106,6 +16166,8 @@ async function trClick(event) {
     await busy(create, async () => {
       const r = await api('/api/training/talk', { method: 'POST', body: JSON.stringify({ ...trDraft, startsAt: new Date(trDraft.at).toISOString() }) });
       toast(`${r.key} created; ${r.people} ${r.people === 1 ? 'person' : 'people'} told`);
+      if (trNewFiles.length) { const n = await trUpload(r.id, trNewFiles); if (n) toast(`${n} document${n === 1 ? '' : 's'} attached`); }
+      trNewFiles = [];
       trOpen = `talk-${r.id}`; trDraft = null; await reload('talks'); render();
     });
     return true;
@@ -16213,6 +16275,22 @@ async function trClick(event) {
 }
 
 async function trChange(event) {
+  const docAdd = event.target.closest?.('[data-tr-doc-add]');
+  if (docAdd && docAdd.files?.length) {
+    const id = docAdd.dataset.trDocAdd;
+    toast('Attaching…');
+    const n = await trUpload(id, [...docAdd.files]);
+    if (n) toast(`${n} document${n === 1 ? '' : 's'} attached`);
+    render(); return true;
+  }
+  const nf = event.target.closest?.('[data-tr-newfile-add]');
+  if (nf && nf.files?.length) {
+    trCapture();
+    const big = [...nf.files].find((f) => f.size > 50 * 1024 * 1024);
+    if (big) toast(`${big.name} is over 50 MB`);
+    trNewFiles = [...trNewFiles, ...[...nf.files].filter((f) => f.size <= 50 * 1024 * 1024)];
+    render(); return true;
+  }
   const el = event.target;
   if (el.matches('[data-tr-aud], [data-tr-field]') && trDraft) { trCapture(); if (el.dataset.trAud === 'everyone') render(); return true; }
   if (el.matches('[data-tr-aud-add]') && el.value && trDraft) { trCapture(); trDraft.audience.people = [...new Set([...(trDraft.audience.people || []), el.value])]; render(); return true; }

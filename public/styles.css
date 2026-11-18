@@ -2389,3 +2389,20 @@ button.ims-since:hover { border-color: var(--blue); }
 .gap-past-row { margin-top: .8rem; }
 .gap-past-row h4 { margin: 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
 .gap-mine { border-left: 4px solid var(--gold); }
+
+/* Tool box talk documents */
+.tr-docs { margin: 1rem 0; display: grid; gap: .7rem; }
+.tr-docs h3 { margin: 0; }
+.tr-doc-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .4rem; }
+.tr-doc-list li { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 12px; }
+.tr-doc-list li.on { border-color: var(--blue); background: var(--tint); }
+.tr-doc-icon { flex: none; display: grid; place-items: center; min-width: 2.4rem; height: 2.4rem; padding: 0 .3rem; border-radius: 8px; background: var(--tint); color: var(--blue-deep); font-weight: 800; font-size: .78rem; }
+.tr-doc-name { flex: 1 1 12rem; min-width: 0; display: grid; }
+.tr-doc-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-doc-acts { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.tr-doc-acts .btn { padding: .35rem .8rem; font-size: .88rem; }
+.tr-doc-frame { width: 100%; height: min(75vh, 46rem); border: 1px solid var(--line); border-radius: 12px; background: #fff; }
+.tr-doc-img { max-width: 100%; border-radius: 12px; border: 1px solid var(--line); }
+.tr-doc-add { width: fit-content; position: relative; cursor: pointer; }
+.tr-doc-add input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; }
+.danger-text { color: var(--danger); }

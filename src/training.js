@@ -558,3 +558,77 @@ export async function options(env, viewer) {
   ]);
   return { teams: TEAMS, divisions, courses, people: (await people(env)).map(({ id, name }) => ({ id, name })), manage: canManage(viewer) };
 }
+
+// ---------- a talk's documents ----------
+// Kept as attachments on its Internal Training item in Jira, so they're with it there too. Anyone the
+// talk is for can read them; management add and remove them.
+
+const MAX_FILE = 50 * 1024 * 1024;
+async function talkFor(env, viewer, id) {
+  mustSee(viewer);
+  const t = await env.DB.prepare('SELECT * FROM toolbox_talks WHERE id = ?').bind(Number(id)).first();
+  if (!t || t.cancelled) throw refuse('That tool box talk isn\'t there.', 404);
+  if (!canManage(viewer)) {
+    const ids = new Set(await audienceIds(env, json(t.audience, {}), await people(env)));
+    if (!ids.has(viewer.accountId)) throw refuse('That tool box talk isn\'t for you.', 403);
+  }
+  return t;
+}
+const jiraAuth = (env) => `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`)}`;
+
+export async function talkFiles(env, viewer, id) {
+  const t = await talkFor(env, viewer, id);
+  if (!t.issue_key) return { files: [] };
+  const issue = await jira(env, `/rest/api/3/issue/${encodeURIComponent(t.issue_key)}?fields=attachment`).catch(() => null);
+  return { files: (issue?.fields?.attachment || []).map((a) => ({ id: String(a.id), name: a.filename, size: a.size, mime: a.mimeType, at: a.created }))
+    .sort((a, b) => String(a.at).localeCompare(String(b.at))) };
+}
+
+export async function addTalkFile(env, viewer, id, name, request) {
+  mustManage(viewer);
+  const t = await talkFor(env, viewer, id);
+  if (!t.issue_key) throw refuse('This talk has no Jira item to keep the document on.');
+  const bytes = await request.arrayBuffer();
+  if (!bytes.byteLength) throw refuse('That file is empty.');
+  if (bytes.byteLength > MAX_FILE) throw refuse('That file is over 50 MB. Save a smaller copy (a PDF, say) and attach that.');
+  const filename = clip(name, 200).replace(/[\\/:*?"<>|\r\n]/g, '_') || 'document';
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type: request.headers.get('content-type') || 'application/octet-stream' }), filename);
+  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(t.issue_key)}/attachments`, {
+    method: 'POST', headers: { Authorization: jiraAuth(env), 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body: form });
+  if (!res.ok) throw refuse(`Jira wouldn't take the file (${res.status}).`, 502);
+  await record(env, viewer, { area: 'Training', action: 'attached a document to a tool box talk', subjectType: 'talk', subjectId: String(t.id), label: `${t.title}: ${filename}` }).catch(() => {});
+  return { ok: true };
+}
+
+export async function removeTalkFile(env, viewer, { id, fileId }) {
+  mustManage(viewer);
+  const t = await talkFor(env, viewer, id);
+  const { files } = await talkFiles(env, viewer, id);
+  const f = files.find((x) => x.id === String(fileId));
+  if (!f) throw refuse('That document isn\'t on this talk.', 404);
+  await jira(env, `/rest/api/3/attachment/${encodeURIComponent(f.id)}`, { method: 'DELETE' });
+  await record(env, viewer, { area: 'Training', action: 'removed a document from a tool box talk', subjectType: 'talk', subjectId: String(t.id), label: `${t.title}: ${f.name}` }).catch(() => {});
+  return { ok: true };
+}
+
+// The file itself. PDFs and pictures open in the page; anything else downloads to open in its own app.
+export async function talkFile(env, viewer, id, fileId, download = false) {
+  const t = await talkFor(env, viewer, id);
+  const { files } = await talkFiles(env, viewer, id);
+  const f = files.find((x) => x.id === String(fileId));
+  if (!f) throw refuse('That document isn\'t on this talk.', 404);
+  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/attachment/content/${encodeURIComponent(f.id)}`, { headers: { Authorization: jiraAuth(env) }, redirect: 'follow' });
+  if (!res.ok) throw refuse(`Jira wouldn't hand over the file (${res.status}).`, 502);
+  const safe = String(f.name || 'document').replace(/["\\\r\n]/g, '_');
+  const pdf = /^application\/pdf$/i.test(f.mime || '') || /\.pdf$/i.test(f.name || '');
+  const image = /^image\/(png|jpe?g|gif|webp)$/i.test(f.mime || '');
+  const inline = !download && (pdf || image);
+  const headers = { 'content-type': pdf ? 'application/pdf' : f.mime || 'application/octet-stream', 'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${safe}"`,
+    'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=300', 'x-frame-options': 'SAMEORIGIN' };
+  // Only the hub itself may show it in a frame.
+  if (pdf) headers['content-security-policy'] = "frame-ancestors 'self'";
+  // The browser's own PDF reader needs to run; anything else is shown with nothing able to run.
+  if (!pdf) headers['content-security-policy'] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox";
+  return new Response(res.body, { headers });
+}

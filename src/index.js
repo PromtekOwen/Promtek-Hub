@@ -519,6 +519,10 @@ async function route(request, env, url, user) {
   }
   if (pathname.startsWith('/api/training/')) {
     const T = await import('./training.js');
+    // A tool box talk's document comes as the file itself, not JSON.
+    if (method === 'POST' && pathname === '/api/training/talk/file') return json(await T.addTalkFile(env, user, url.searchParams.get('id'), url.searchParams.get('name'), request));
+    if (method === 'GET' && pathname === '/api/training/talk/files') return json(await T.talkFiles(env, user, url.searchParams.get('id')));
+    if (method === 'GET' && pathname === '/api/training/talk/file') return T.talkFile(env, user, url.searchParams.get('id'), url.searchParams.get('file'), url.searchParams.get('download') === '1');
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/training/matrix') return json(await T.matrix(env, user, { division: url.searchParams.get('division') }));
     if (method === 'GET' && pathname === '/api/training/talks') return json(await T.talks(env, user));
@@ -532,6 +536,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/training/talk') return json(body.id ? await T.updateTalk(env, user, body) : await T.createTalk(env, user, body));
     if (method === 'POST' && pathname === '/api/training/policy') return json(await T.savePolicy(env, user, body));
     if (method === 'POST' && pathname === '/api/training/acknowledge') return json(await T.acknowledge(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/talk/file/remove') return json(await T.removeTalkFile(env, user, body));
   }
   if (pathname.startsWith('/api/notifications')) {
     const Notify = await import('./notify.js');
