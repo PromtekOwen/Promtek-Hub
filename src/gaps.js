@@ -86,6 +86,9 @@ async function withoutRefused(meta, fields, attempt) {
 async function createIssue(env, typeName, { summary, parent = null, values = {}, assignee = null }) {
   const { meta, fields, missing } = await jiraFields(env, typeName, values);
   if (!meta) throw refuse(`Compliance & Training has no ${typeName} type in Jira.`);
+  // Gap analysis items never need a root cause.
+  const rr = meta.byName['is root cause required?'];
+  if (rr && !(rr.id in fields)) fields[rr.id] = rr.schema?.type === 'array' ? [{ value: 'No' }] : { value: 'No' };
   const base = { project: { key: PROJECT }, issuetype: { id: meta.typeId }, summary: clip(summary, 250), ...(parent ? { parent: { key: parent } } : {}), ...(assignee ? { assignee: { accountId: assignee } } : {}) };
   let made = null;
   const refused = await withoutRefused(meta, fields, async (f) => { made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields: { ...base, ...f } }) }); });

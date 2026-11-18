@@ -315,6 +315,9 @@ export async function createTalk(env, viewer, input) {
   if (who && ids.length) fields[who.id] = who.schema?.type === 'array' ? ids.slice(0, 100).map((accountId) => ({ accountId })) : { accountId: ids[0] };
   const linkField = by('Link');
   if (linkField && link) fields[linkField.id] = link;
+  // A tool box talk never needs a root cause.
+  const rr = by('Is Root Cause Required?') || (F.rootRequired ? { id: F.rootRequired, schema: { type: 'array' } } : null);
+  if (rr) fields[rr.id] = rr.schema?.type === 'array' ? [{ value: 'No' }] : { value: 'No' };
   let made;
   try { made = await jira(env, '/rest/api/3/issue', { method: 'POST', body: JSON.stringify({ fields }) }); } catch (err) {
     if (err.status !== 400) throw err;
