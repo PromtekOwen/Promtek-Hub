@@ -101,7 +101,7 @@ async function systemAlerts(env, viewer) {
   if (me) {
     // Their own Jira account, so what they change in the hub shows as them in Jira.
     const jiraLink = await import('./jiraauth.js').then((A) => A.status(env, viewer)).catch(() => null);
-    if (jiraLink?.available && !jiraLink.connected) {
+    if (jiraLink?.available && !jiraLink.connected && !viewer.tablet) {
       out.push(jiraLink.problem
         ? { key: 'jira-connect', tone: 'important', title: 'Reconnect your Jira account', body: 'The hub can\'t make changes in Jira as you at the moment, so they show as the hub\'s account. Reconnecting takes a few seconds.', link: '/api/jira-connect/start', linkText: 'Reconnect' }
         : { key: 'jira-connect', tone: 'info', title: 'Connect your Jira account', body: 'So changes you make in the hub show as you in Jira\'s history, not as the hub\'s account. Atlassian asks you to allow it once.', link: '/api/jira-connect/start', linkText: 'Connect' });

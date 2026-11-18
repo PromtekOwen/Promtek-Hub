@@ -22,6 +22,7 @@ import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
 import * as JiraAuth from './jiraauth.js';
+import * as Tablet from './tablet.js';
 import * as Eotq from './eotq.js';
 import { workDaysOf, weekHoursOf } from './hours.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite, itemsByKey, dayLogs, updateWorklog, deleteWorklog, nextStatus, moveAfterLog } from './logging.js';
@@ -121,7 +122,30 @@ export default {
     if (!user) return json({ error: 'Sign in with your Promtek Google account to continue.' }, 401);
 
     try {
-      const real = await resolveViewer(env, user);
+      let real;
+      if (Tablet.isTablet(env, user.email)) {
+        // The shared tablet: whoever has tapped their name and PIN, until they switch or leave it.
+        const p = url.pathname;
+        const withCookie = (body, cookie) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json', 'cache-control': 'no-store', 'set-cookie': cookie } });
+        if (p === '/api/tablet/people' && request.method === 'GET') return json(await Tablet.people(env));
+        if (p === '/api/tablet/unlock' && request.method === 'POST') {
+          const r = await Tablet.unlock(env, await request.json().catch(() => ({})));
+          await Audit.record(env, { email: user.email, employee: { name: r.name } }, { area: 'Hub', action: 'started using the shared tablet', subjectType: 'tablet', subjectId: user.email, label: r.name }).catch(() => {});
+          return withCookie({ ok: true, name: r.name }, r.cookie);
+        }
+        if (p === '/api/tablet/lock' && request.method === 'POST') { await Tablet.lock(env, request); return withCookie({ ok: true }, Tablet.clearCookie()); }
+        const session = await Tablet.sessionOf(env, request);
+        real = session ? await tabletViewer(env, session.accountId) : null;
+        if (!real) {
+          const locked = { error: 'Tap your name on the tablet to carry on.', tabletLocked: true, tablet: { locked: true, idleMinutes: Tablet.idleMinutes(env) } };
+          return p === '/api/me' ? json(locked) : json(locked, 401);
+        }
+        if (Tablet.blocked(p)) return json({ error: 'That isn\'t available on the shared tablet. Use your own sign-in for it.' }, 403);
+        const acting = JiraAuth.configured(env) && JiraAuth.actsAsUser(request.method, p)
+          ? { ...env, JIRA_ACTOR: { accountId: real.accountId, email: real.email } } : env;
+        return await route(request, acting, url, real);
+      }
+      real = await resolveViewer(env, user);
       // Developers can look at the hub as someone else sees it. Nothing can be changed while they do.
       if (url.pathname.startsWith('/api/dev/')) return await devRoute(request, env, url, real);
       const as = real.can?.developer ? viewAsCookie(request) : null;
@@ -167,6 +191,15 @@ export default {
 
 // Combines the signed-in identity with the role stored against their profile.
 // The emails in ADMIN_EMAILS are always admins, so you can't lock yourself out.
+// Someone using the shared tablet: themselves, without admin rights (those need their own sign-in).
+async function tabletViewer(env, accountId) {
+  const emp = await env.DB.prepare('SELECT email FROM employees WHERE account_id = ? AND active = 1').bind(accountId).first().catch(() => null);
+  if (!emp?.email) return null;
+  const v = await resolveViewer(env, { email: String(emp.email).toLowerCase(), isAdmin: false });
+  if (!v.employee) return null;
+  return { ...v, isAdmin: false, can: { ...(v.can || {}), admin: false, developer: false }, tiles: { ...(v.tiles || {}), admin: false }, tablet: true };
+}
+
 async function resolveViewer(env, user) {
   const [emp, config] = await Promise.all([findEmployee(env, user.email), loadAccessConfig(env)]);
   return { ...user, employee: emp, accountId: emp?.account_id || null, ...access(emp, { fallbackAdmin: user.isAdmin, config }) };
@@ -238,6 +271,8 @@ async function route(request, env, url, user) {
     }
   }
 
+  if (method === 'GET' && pathname === '/api/tablet/pin') return json(await Tablet.pinState(env, user));
+  if (method === 'POST' && pathname === '/api/tablet/pin') return json(await Tablet.setPin(env, user, await request.json().catch(() => ({}))));
   if (method === 'GET' && pathname === '/api/me') {
     try { await (await import('./usage.js')).seen(env, user); } catch (err) { console.warn('Last seen not kept:', err.message); }
     // The hub's own address, for links it puts in Jira.
@@ -1352,6 +1387,7 @@ async function getMe(env, user) {
     teamsList: ALL_TEAMS,
     ledgerStart: await getState(env, 'ledger_start'),
     viewingAs: user.viewingAs || null,
+    tablet: user.tablet ? { idleMinutes: Tablet.idleMinutes(env) } : null,
     // Replies waiting on the viewer's own anonymous feedback, worked out without anyone else knowing which posts are theirs.
     feedbackUnread: user.viewingAs ? 0 : await (await import('./feedback.js')).unreadFor(env, user).catch(() => 0),
   };

@@ -150,8 +150,98 @@ async function serverApi(path, options = {}) {
     throw new Error('Your sign-in has expired. Reloading…');
   }
   const data = await res.json().catch(() => ({}));
+  // On the shared tablet, someone's time ran out: back to choosing who's using it.
+  if (data.tabletLocked && !tabletPicking) { tabletPicker(); throw new Error(data.error); }
   if (!res.ok) throw new Error(data.error || `Something went wrong (${res.status}).`);
   return data;
+}
+
+// ---------- the shared tablet ----------
+// Signed in as the tablet's own account; whoever is using it taps their name and PIN.
+let tabletPicking = false;
+let tabletPick = null;      // { people, chosen, pin, error, busy }
+let tabletIdle = null;
+async function tabletPicker() {
+  tabletPicking = true;
+  document.body.classList.add('tablet-locked');
+  try { document.querySelector('dialog[open]')?.close(); } catch { /* none open */ }
+  tabletPick = { people: [], chosen: null, pin: '', error: '', busy: false };
+  try { tabletPick.people = (await fetch('/api/tablet/people').then((r) => r.json())).people || []; } catch { tabletPick.error = 'Couldn\'t load the people. Check the tablet is online.'; }
+  tabletDraw();
+}
+function tabletDraw() {
+  const t = tabletPick;
+  band.innerHTML = `<h1>${t.chosen ? `Hello, ${esc(t.chosen.name.split(' ')[0])}` : 'Who\'s using the tablet?'}</h1><p class="sub">${t.chosen ? 'Enter your PIN' : 'Tap your name'}</p>`;
+  const face = (p) => (p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : `<span>${esc(p.name.split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase())}</span>`);
+  if (!t.chosen) {
+    view.innerHTML = `<div class="tablet-people">${t.people.map((p) => `<button class="tablet-person" data-tablet-person="${esc(p.id)}"><span class="tablet-face">${face(p)}</span><b>${esc(p.name)}</b></button>`).join('')
+      || '<p class="muted">Nobody has set a tablet PIN yet. Each person sets theirs from their own sign-in, under their account menu.</p>'}</div>
+      ${t.error ? `<p class="bad" style="text-align:center">${esc(t.error)}</p>` : ''}`;
+    return;
+  }
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'back', '0', 'go'];
+  view.innerHTML = `<div class="tablet-pin">
+      <span class="tablet-face big">${face(t.chosen)}</span>
+      <div class="tablet-dots" aria-label="${t.pin.length} digits entered">${Array.from({ length: Math.max(4, t.pin.length) }, (_, i) => `<i class="${i < t.pin.length ? 'on' : ''}"></i>`).join('')}</div>
+      ${t.error ? `<p class="bad">${esc(t.error)}</p>` : ''}
+      <div class="tablet-keys">${keys.map((k) => `<button class="tablet-key${k === 'go' ? ' go' : ''}" data-tablet-key="${k}"${t.busy ? ' disabled' : ''} aria-label="${k === 'back' ? 'Delete' : k === 'go' ? 'Enter' : k}">${k === 'back' ? '⌫' : k === 'go' ? '→' : k}</button>`).join('')}</div>
+      <button class="linklike" data-tablet-back="1">Not ${esc(t.chosen.name.split(' ')[0])}? Choose again</button>
+    </div>`;
+}
+async function tabletSubmit() {
+  const t = tabletPick;
+  if (t.pin.length < 4 || t.busy) return;
+  t.busy = true; t.error = ''; tabletDraw();
+  try {
+    const res = await fetch('/api/tablet/unlock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: t.chosen.id, pin: t.pin }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'That didn\'t work. Try again.');
+    location.hash = '#/';
+    location.reload();
+  } catch (err) { t.busy = false; t.pin = ''; t.error = err.message; tabletDraw(); }
+}
+view.addEventListener('click', (event) => {
+  if (!tabletPicking) return;
+  event.stopPropagation();
+  const t = tabletPick;
+  // Full screen on the first tap, where the browser allows it.
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+  const person = event.target.closest('[data-tablet-person]');
+  if (person) { t.chosen = t.people.find((p) => p.id === person.dataset.tabletPerson); t.pin = ''; t.error = ''; return tabletDraw(); }
+  if (event.target.closest('[data-tablet-back]')) { t.chosen = null; t.pin = ''; t.error = ''; return tabletDraw(); }
+  const key = event.target.closest('[data-tablet-key]')?.dataset.tabletKey;
+  if (!key) return;
+  if (key === 'back') t.pin = t.pin.slice(0, -1);
+  else if (key === 'go') return tabletSubmit();
+  else if (t.pin.length < 8) t.pin += key;
+  tabletDraw();
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (!tabletPicking || !tabletPick?.chosen) return;
+  if (/^\d$/.test(event.key) && tabletPick.pin.length < 8) { tabletPick.pin += event.key; tabletDraw(); }
+  else if (event.key === 'Backspace') { tabletPick.pin = tabletPick.pin.slice(0, -1); tabletDraw(); }
+  else if (event.key === 'Enter') tabletSubmit();
+});
+async function tabletLock() {
+  await fetch('/api/tablet/lock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+  location.hash = '#/';
+  location.reload();
+}
+// While someone is using it: Switch user in the bar, and it locks itself when left.
+function tabletInUse() {
+  document.body.classList.add('tablet-mode');
+  const bar = document.querySelector('.appbar');
+  if (bar && !bar.querySelector('[data-tablet-switch]')) {
+    const b = document.createElement('button');
+    b.className = 'tablet-switch'; b.type = 'button'; b.dataset.tabletSwitch = '1';
+    b.textContent = 'Switch user';
+    b.addEventListener('click', tabletLock);
+    bar.insertBefore(b, document.getElementById('account-btn'));
+  }
+  const limit = (me.tablet.idleMinutes || 5) * 60000;
+  const poke = () => { clearTimeout(tabletIdle); tabletIdle = setTimeout(tabletLock, limit); };
+  for (const ev of ['pointerdown', 'keydown', 'scroll', 'touchstart']) document.addEventListener(ev, poke, { passive: true, capture: true });
+  poke();
 }
 
 // Level ring: two concentric rings, like the Promtek logo.
@@ -14309,14 +14399,16 @@ function renderAccount() {
           ${themeItemHtml()}
           ${notifyItemHtml()}
           <li><button data-account="refresh">${svgIcon('<path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/>')}Refresh my XP</button></li>
-          ${installItem}
+          ${me.tablet ? '' : installItem}
+          ${me.linked && !me.tablet && !me.viewingAs ? `<li><button data-account="tablet-pin">${svgIcon('<rect x="6" y="3" width="12" height="18" rx="2"/><path d="M11 17.5h2"/>')}Shared tablet PIN<span class="value">${tabletPinSet == null ? '' : tabletPinSet ? 'Set' : 'Not set'}</span></button></li>` : ''}
           ${me.user.can?.developer && !me.viewingAs ? `<li><button data-account="viewas">${svgIcon('<path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>')}View as someone else</button></li>` : ''}
           ${me.user.isAdmin || me.user.can?.developer ? `<li><a href="#/admin" data-account="close">${svgIcon('<circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/>')}Admin tools</a></li>` : ''}
         </ul>
       </section>
       <section class="acct-section">
         <ul class="menu">
-          <li><a class="danger" href="/cdn-cgi/access/logout">${svgIcon('<path d="M15 4h4a1 1 0 011 1v14a1 1 0 01-1 1h-4M10 16l-4-4 4-4M6 12h10"/>')}Sign out</a></li>
+          ${me.tablet ? `<li><button class="danger" data-account="tablet-switch">${svgIcon('<path d="M15 4h4a1 1 0 011 1v14a1 1 0 01-1 1h-4M10 16l-4-4 4-4M6 12h10"/>')}Switch user</button></li>`
+            : `<li><a class="danger" href="/cdn-cgi/access/logout">${svgIcon('<path d="M15 4h4a1 1 0 011 1v14a1 1 0 01-1 1h-4M10 16l-4-4 4-4M6 12h10"/>')}Sign out</a></li>`}
         </ul>
       </section>
     </div>`;
@@ -14350,10 +14442,30 @@ function themeItemHtml() {
 }
 
 document.getElementById('account-btn').addEventListener('click', () => {
-  if (!me) return;
+  if (!me || tabletPicking) return;
   renderAccount();
   accountDialog.showModal();
+  // Whether they've a PIN for the shared tablet, shown once known.
+  if (me.linked && !me.tablet && !me.viewingAs && tabletPinSet == null) api('/api/tablet/pin').then((r) => { tabletPinSet = r.set; if (accountDialog.open && !accountDialog.querySelector('.tablet-pin-form')) renderAccount(); }).catch(() => {});
 });
+
+// Their PIN for the shared tablet, set from their own sign-in.
+let tabletPinSet = null;
+function tabletPinForm() {
+  const body = accountDialog.querySelector('.acct-body');
+  body.innerHTML = `<section class="acct-section tablet-pin-form">
+      <h4>Shared tablet PIN</h4>
+      <p class="help" style="padding:0 .35rem .75rem">On the shared tablet, tap your name and enter this PIN to use the hub as you. Use 4 to 8 digits that you don't use for anything else. ${tabletPinSet ? 'Setting a new one replaces your old one.' : ''}</p>
+      <label class="tablet-pin-label">New PIN<input type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" id="tablet-pin-1"></label>
+      <label class="tablet-pin-label">Same again<input type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" id="tablet-pin-2"></label>
+      <ul class="menu" style="margin-top:.75rem">
+        <li><button data-account="tablet-pin-save">Save my PIN</button></li>
+        ${tabletPinSet ? '<li><button class="danger" data-account="tablet-pin-remove">Remove my PIN (I won\'t use the tablet)</button></li>' : ''}
+        <li><button data-account="viewas-back">Back</button></li>
+      </ul>
+    </section>`;
+  body.querySelector('#tablet-pin-1').focus();
+}
 
 accountDialog.addEventListener('click', async (event) => {
   if (event.target === accountDialog) return accountDialog.close(); // backdrop
@@ -14382,6 +14494,22 @@ accountDialog.addEventListener('click', async (event) => {
   if (action === 'notify-test') { notifyTest(); return; }
   if (action === 'theme') { window.hubTheme?.set(item.dataset.value); renderAccount(); return; }
   if (action === 'viewas') return viewAsPicker();
+  if (action === 'tablet-switch') { accountDialog.close(); return tabletLock(); }
+  if (action === 'tablet-pin') return tabletPinForm();
+  if (action === 'tablet-pin-save' || action === 'tablet-pin-remove') {
+    const remove = action === 'tablet-pin-remove';
+    const pin = accountDialog.querySelector('#tablet-pin-1')?.value || '';
+    if (!remove && pin !== (accountDialog.querySelector('#tablet-pin-2')?.value || '')) { toast('The two PINs aren\'t the same'); return; }
+    if (remove && !confirm('Remove your tablet PIN? You won\'t be able to use the shared tablet until you set one again.')) return;
+    item.disabled = true;
+    try {
+      const r = await api('/api/tablet/pin', { method: 'POST', body: JSON.stringify(remove ? { remove: true } : { pin }) });
+      tabletPinSet = r.set;
+      toast(remove ? 'Your tablet PIN is removed' : 'Your tablet PIN is saved');
+      renderAccount();
+    } catch (err) { toast(err.message); item.disabled = false; }
+    return;
+  }
   if (action === 'viewas-back') return renderAccount();
   if (action === 'viewas-pick') {
     item.disabled = true;
@@ -15185,6 +15313,7 @@ function pageLoader(label) {
 }
 
 async function render() {
+  if (tabletPicking) return tabletDraw();
   const token = ++renderToken;
   const route = currentRoute();
   const viewKey = `${route}|${settingsOpen || ''}|${notifyOpen || ''}`;
@@ -16797,7 +16926,9 @@ async function start() {
   }
   try {
     me = await api('/api/me');
+    if (me.tablet?.locked) return tabletPicker();
   } catch (err) {
+    if (tabletPicking) return;
     band.innerHTML = '<h1>Promtek Hub</h1>';
     view.innerHTML = `<div class="card notice error"><p><strong>Couldn't load the hub.</strong></p><p>${esc(err.message)}</p></div>`;
     return;
@@ -16805,6 +16936,7 @@ async function start() {
   try { tilePrefs = { hidden: [], folders: [], ...(await api('/api/prefs/tiles')) }; } catch { /* defaults are fine */ }
   try { toursSeen = new Set((await api('/api/prefs/tours')).seen || []); } catch { /* no guides rather than repeating them */ }
   if (me.viewingAs) viewAsBar();
+  if (me.tablet) tabletInUse();
   await render();
   notePage();
   logFab();

@@ -771,6 +771,34 @@ Reading from Jira always uses the hub's account.
 - **If their own account can't do something:** anything their Jira permissions don't allow is done as the hub's account instead, so nothing stops working.
 - **Changing the client secret:** this disconnects everyone, and they each connect again.
 
+## Part 14f3: The shared tablet
+
+A company tablet stays signed in to the hub as **automation@promtek.com** (set `TABLET_EMAILS` to use another account, or several, separated by commas). Instead of the home screen it shows **Who's using the tablet?**: each person taps their name and enters their PIN, and the hub is theirs.
+- **Who it acts as:** their tiles, their time, and their changes in Jira (as them, once they've connected their Jira account). The audit log notes when each person starts using the tablet.
+- **Switching and timing out:** **Switch user** in the top bar goes back to the names. So does leaving it untouched for 5 minutes (set `TABLET_IDLE_MINUTES` for another time, from 1 to 60).
+
+**PINs.** Each person sets theirs from their own sign-in, under their account menu, **Shared tablet PIN**.
+- **Rules:** 4 to 8 digits, not one digit repeated, and not a run like 1234.
+- **Storage:** kept only as a salted hash.
+- **Who's listed:** only people with a PIN appear on the tablet.
+- **Wrong PINs:** five in a row lock that person out on the tablet for 15 minutes.
+- **Changing or removing a PIN:** this ends any session on the tablet under the old one.
+
+**On the tablet nobody is an admin.** Admin tools, the settings cogs, viewing as someone else, connecting a Jira account and setting a PIN all need the person's own sign-in. Everything else (management permissions from their groups included) works as usual.
+
+**Setting it up:**
+1. Run `schema-070.sql` in the D1 console.
+2. In Cloudflare Zero Trust, make sure automation@promtek.com can get through the hub's Access application. Give it a long session (a policy just for it with a session duration of a month, say), so the tablet isn't asked to sign in to Google often.
+3. On the tablet, open the hub in Chrome, sign in as automation@promtek.com, and install it as an app (Chrome menu, Add to Home screen / Install app). It opens full screen from there.
+4. Ask everyone who'll use it to set their PIN.
+
+**Keeping it to the hub (kiosk).** A web page can't stop someone leaving it, so this is done on the tablet:
+- **Android's App pinning (free):**
+  - **Turn it on:** Settings → Security → More security settings → App pinning (the wording varies by make), with **Ask for PIN before unpinning**.
+  - **Pin the hub:** open the hub app, open the app switcher, tap the hub's icon and choose **Pin**.
+  - **Get out:** hold Back and Overview together (or swipe up and hold, with gesture navigation), then enter the tablet's own screen-lock PIN. Only admins know that PIN.
+- **Fully Kiosk Browser (a paid app, a few pounds per tablet):** locks the tablet to the hub, keeps the screen on, and reloads if it crashes. Its exit is a secret gesture (a swipe from the left edge, or several taps in a corner) followed by its own kiosk PIN.
+
 ## Part 15: 8x8 calls
 
 Engineers open the tile, pick a day and tap to fetch their calls. Nothing is pulled from 8x8 until someone asks, which keeps it quick and means each person sees their own calls.
