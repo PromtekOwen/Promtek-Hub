@@ -884,8 +884,31 @@ async function alerts(env, ctx) {
   }
 }
 
-export async function run(env, { force = false } = {}) {
+// Every couple of minutes, between the fuller runs: just the tickets changed since the last
+// read, so notifications about them (a customer's reply, a new ticket) go out within minutes.
+const QUICK_EVERY_MS = 2 * 60 * 1000;
+export async function quickRead(env) {
+  if (await getState(env, 'psc_full_started')) return { idle: true };
+  const fullAt = Number((await getState(env, 'psc_full_at')) || 0);
+  if (!fullAt) return { idle: true };
   const last = Number((await getState(env, 'psc_items_at')) || 0);
+  if (Date.now() - last < QUICK_EVERY_MS) return { idle: true };
+  const b = budget(env, 6);
+  try {
+    const since = ` AND updated >= -${Math.ceil((Date.now() - last) / 60000) + 5}m`;
+    const started = new Date().toISOString();
+    const r = await readPages(env, b, `${BASE_JQL}${since} ORDER BY updated ASC`, { started });
+    await setState(env, 'psc_items_at', Date.now());
+    return { read: r.count };
+  } catch (err) {
+    if (err instanceof OutOfCalls) return { partial: true };
+    throw err;
+  }
+}
+
+export async function run(env, { force = false } = {}) {
+  // The fuller run (retries, copies, contacts, alerts) has its own clock; quick reads keep the list current between.
+  const last = Number((await getState(env, 'psc_run_at')) || (await getState(env, 'psc_items_at')) || 0);
   const { results } = await env.DB.prepare('SELECT COUNT(*) AS n FROM psc_writes WHERE done_at IS NULL AND attempts < 10').all();
   // Jira changes that failed are tried again every few minutes, not on every run.
   const retryDue = Boolean(results[0]?.n) && Date.now() - Number((await getState(env, 'psc_retry_at')) || 0) >= RETRY_EVERY_MS;
@@ -919,6 +942,7 @@ export async function run(env, { force = false } = {}) {
       await setState(env, 'psc_alerts_version', v);
     }
     await setState(env, 'psc_error', '');
+    await setState(env, 'psc_run_at', Date.now());
   } catch (err) {
     if (!(err instanceof OutOfCalls)) { await setState(env, 'psc_error', `${new Date().toISOString()} ${err.message}`); throw err; }
     out.partial = true;

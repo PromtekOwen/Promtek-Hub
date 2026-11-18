@@ -234,7 +234,15 @@ The hub raises an alert when someone logs time in Tempo but isn't in the employe
     - `ALERT_WEBHOOK_SECRET`: the same random string
     - `ALERT_EMAIL`: where alerts should go, such as your own address
 
-The hub then sends any waiting alerts once an hour.
+**When emails go:**
+- **After someone does something:** an email that their action raises (a reminder sent by management, a new tool box talk or policy, a request for an estimate and so on) goes straight away, just after the hub answers them.
+- **From the background job:** emails it raises (PSC and IMS notifications, say) go at the end of the same run, so within a couple of minutes.
+- **Never twice:** each email is claimed before it's sent, so two runs at once never send one twice.
+- **When the relay refuses one:** it's kept and tried again on the next run.
+
+The Admin page shows each alert as **Emailed**, **Sending**, **Not emailed yet**, or **Held until …** for someone who has chosen emails only in their working hours.
+
+**PSC changes:** tickets changed in Jira are read every couple of minutes, between the hub's fuller PSC runs, so their notifications aren't kept waiting.
 
 ## Part 11: Point of work risk assessments
 
@@ -775,12 +783,12 @@ Reading from Jira always uses the hub's account.
 
 A company tablet stays signed in to the hub as **automation@promtek.com** (set `TABLET_EMAILS` to use another account, or several, separated by commas). Instead of the home screen it shows **Who's using the tablet?**: each person taps their name and enters their PIN, and the hub is theirs.
 - **Who it acts as:** their tiles, their time, and their changes in Jira (as them, once they've connected their Jira account). The audit log notes when each person starts using the tablet.
-- **Switching and timing out:** **Switch user** in the top bar goes back to the names. So does leaving it untouched for 5 minutes (set `TABLET_IDLE_MINUTES` for another time, from 1 to 60).
+- **Switching and timing out:** **Switch user** in the top bar goes back to the names. Left untouched for 30 minutes (set `TABLET_IDLE_MINUTES` for another time, from 1 to 240), the page is covered by **Still you, <name>?**. Their PIN carries them on exactly where they left off, with anything half-typed still there. **No, switch accounts** goes back to the names. While it asks, nobody can carry on as them, and if a change was sent just as it locked, they're asked for their PIN and can send it again.
 
 **PINs.** Each person sets theirs from their own sign-in, under their account menu, **Shared tablet PIN**.
 - **Rules:** 4 to 8 digits, not one digit repeated, and not a run like 1234.
 - **Storage:** kept only as a salted hash.
-- **Who's listed:** only people with a PIN appear on the tablet.
+- **Who's listed:** everyone in the UK (anyone not marked Promtek Africa on the company chart). Anyone without a PIN yet is marked **No PIN yet**, and tapping their name shows how to set one from their own phone or computer.
 - **Wrong PINs:** five in a row lock that person out on the tablet for 15 minutes.
 - **Changing or removing a PIN:** this ends any session on the tablet under the old one.
 
@@ -790,7 +798,7 @@ A company tablet stays signed in to the hub as **automation@promtek.com** (set `
 1. Run `schema-070.sql` in the D1 console.
 2. In Cloudflare Zero Trust, make sure automation@promtek.com can get through the hub's Access application. Give it a long session (a policy just for it with a session duration of a month, say), so the tablet isn't asked to sign in to Google often.
 3. On the tablet, open the hub in Chrome, sign in as automation@promtek.com, and install it as an app (Chrome menu, Add to Home screen / Install app). It opens full screen from there.
-4. Ask everyone who'll use it to set their PIN.
+4. Ask everyone who'll use it to set their PIN (the tablet also tells anyone without one how, when they tap their name).
 
 **Keeping it to the hub (kiosk).** A web page can't stop someone leaving it, so this is done on the tablet:
 - **Android's App pinning (free):**

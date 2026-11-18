@@ -10,7 +10,7 @@ import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
 import { access, canTile, loadAccessConfig, saveAccessConfig, rulesFrom, cleanRule, defaultTileRule, defaultPermissionRule, groupsOf, teamsOf, leadOf, TILES, PERMISSIONS, GROUPS, TEAMS as ALL_TEAMS } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
-import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, backdateRate, reconcileUser } from './sync.js';
+import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, sendRaisedSince, backdateRate, reconcileUser } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
 import * as Pow from './pow.js';
 import * as It from './itsupport.js';
@@ -108,7 +108,7 @@ export default {
     if (fromAnotherSite(request, url)) return json({ error: 'That request didn\'t come from the hub.' }, 403);
 
     const name = pageName(request.method, url.pathname);
-    const env = { ...rawEnv, DB: metered(rawEnv.DB, (rows, sql, written) => {
+    const env = { ...rawEnv, waitUntil: (p) => ctx.waitUntil(p), DB: metered(rawEnv.DB, (rows, sql, written) => {
       if (rows) {
         pageReads[name] = (pageReads[name] || 0) + rows;
         const q = `${name}: ${queryName(sql)}`;
@@ -120,6 +120,7 @@ export default {
 
     const user = await getUser(request, env);
     if (!user) return json({ error: 'Sign in with your Promtek Google account to continue.' }, 401);
+    const startedAt = new Date(Date.now() - 2000).toISOString();
 
     try {
       let real;
@@ -140,6 +141,7 @@ export default {
           const locked = { error: 'Tap your name on the tablet to carry on.', tabletLocked: true, tablet: { locked: true, idleMinutes: Tablet.idleMinutes(env) } };
           return p === '/api/me' ? json(locked) : json(locked, 401);
         }
+        if (p === '/api/tablet/ping') return json({ ok: true });
         if (Tablet.blocked(p)) return json({ error: 'That isn\'t available on the shared tablet. Use your own sign-in for it.' }, 403);
         const acting = JiraAuth.configured(env) && JiraAuth.actsAsUser(request.method, p)
           ? { ...env, JIRA_ACTOR: { accountId: real.accountId, email: real.email } } : env;
@@ -181,6 +183,9 @@ export default {
     } catch (err) {
       console.error(err);
       return json({ error: err.message }, err.status || 500);
+    } finally {
+      // Emails a change has just raised (a reminder, a request, a notification) go now, after the reply.
+      if (!['GET', 'HEAD'].includes(request.method)) ctx.waitUntil(sendRaisedSince(env, startedAt).catch((err) => console.warn('Sending alerts:', err.message)));
     }
   },
 
@@ -1543,7 +1548,7 @@ async function adminOverview(env) {
          FROM unmatched_worklogs GROUP BY account_id ORDER BY worklogs DESC LIMIT 50`
     ).all(),
     env.DB.prepare('SELECT key, value FROM sync_state').all(),
-    env.DB.prepare('SELECT id, kind, subject, body, created_at, sent_at FROM alerts ORDER BY id DESC LIMIT 20').all(),
+    env.DB.prepare('SELECT id, kind, subject, body, created_at, sent_at, not_before, recipient FROM alerts ORDER BY id DESC LIMIT 20').all().catch(() => env.DB.prepare('SELECT id, kind, subject, body, created_at, sent_at FROM alerts ORDER BY id DESC LIMIT 20').all()),
     backfillStatus(env),
   ]);
 

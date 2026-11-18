@@ -2460,7 +2460,7 @@ button.ims-since:hover { border-color: var(--blue); }
 
 /* The shared tablet: choosing who's using it, and their PIN */
 body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, body.tablet-locked #back, body.tablet-locked #log-fab { display: none !important; }
-.tablet-people { display: grid; grid-template-columns: repeat(auto-fill, 160px); justify-content: center; gap: 1rem; max-width: 980px; margin: 0 auto; }
+.tablet-people { display: grid; grid-template-columns: repeat(auto-fit, 160px); justify-content: center; gap: 1rem; max-width: 980px; margin: 0 auto; }
 .tablet-person { display: grid; justify-items: center; gap: .6rem; padding: 1.2rem .8rem; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 18px;
   font: inherit; cursor: pointer; box-shadow: var(--shadow); }
 .tablet-person:hover, .tablet-person:focus-visible { border-color: var(--blue); background: var(--tint); }
@@ -2488,3 +2488,15 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
 .jira-connect-dialog h2 { margin: 0 0 .6rem; }
 .jira-connect-dialog p { margin: 0 0 1.2rem; line-height: 1.5; }
 .jira-connect-dialog .btn { display: inline-block; text-decoration: none; }
+.tablet-person small { color: var(--muted); font-size: .8rem; }
+.tablet-person.no-pin .tablet-face { background: var(--muted); }
+.tablet-howto { max-width: 34rem; text-align: left; justify-items: stretch; }
+.tablet-howto .tablet-face { justify-self: center; }
+.tablet-howto ol { margin: 0; padding-left: 1.3rem; display: grid; gap: .5rem; line-height: 1.45; }
+.tablet-howto p { margin: 0; line-height: 1.45; }
+.tablet-howto .btn { justify-self: center; }
+.tablet-resume { width: 100vw; height: 100vh; max-width: none; max-height: none; margin: 0; border: 0; padding: 2rem 16px; background: var(--bg); color: var(--ink); overflow: auto; }
+.tablet-resume::backdrop { background: var(--bg); }
+.tablet-resume .tablet-pin { padding-top: 6vh; }
+.tablet-resume h2 { margin: 0; }
+.tablet-resume p { margin: 0; }

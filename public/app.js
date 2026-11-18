@@ -151,7 +151,11 @@ async function serverApi(path, options = {}) {
   }
   const data = await res.json().catch(() => ({}));
   // On the shared tablet, someone's time ran out: back to choosing who's using it.
-  if (data.tabletLocked && !tabletPicking) { tabletPicker(); throw new Error(data.error); }
+  if (data.tabletLocked && !tabletPicking) {
+    // Someone mid-way through something: asked for their PIN again, with everything left as it was.
+    if (me?.tablet && !me.tablet.locked) { tabletResume(); throw new Error('Enter your PIN to carry on, then try that again.'); }
+    tabletPicker(); throw new Error(data.error);
+  }
   if (!res.ok) throw new Error(data.error || `Something went wrong (${res.status}).`);
   return data;
 }
@@ -200,9 +204,26 @@ function tabletDraw() {
   band.innerHTML = `<h1>${t.chosen ? `Hello, ${esc(t.chosen.name.split(' ')[0])}` : 'Who\'s using the tablet?'}</h1><p class="sub">${t.chosen ? 'Enter your PIN' : 'Tap your name'}</p>`;
   const face = (p) => (p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : `<span>${esc(p.name.split(/\s+/).slice(0, 2).map((x) => x[0]).join('').toUpperCase())}</span>`);
   if (!t.chosen) {
-    view.innerHTML = `<div class="tablet-people">${t.people.map((p) => `<button class="tablet-person" data-tablet-person="${esc(p.id)}"><span class="tablet-face">${face(p)}</span><b>${esc(p.name)}</b></button>`).join('')
-      || '<p class="muted">Nobody has set a tablet PIN yet. Each person sets theirs from their own sign-in, under their account menu.</p>'}</div>
+    view.innerHTML = `<div class="tablet-people">${t.people.map((p) => `<button class="tablet-person${p.hasPin ? '' : ' no-pin'}" data-tablet-person="${esc(p.id)}"><span class="tablet-face">${face(p)}</span><b>${esc(p.name)}</b>${p.hasPin ? '' : '<small>No PIN yet</small>'}</button>`).join('')
+      || '<p class="muted">Nobody is in the list yet.</p>'}</div>
       ${t.error ? `<p class="bad" style="text-align:center">${esc(t.error)}</p>` : ''}`;
+    return;
+  }
+  // Someone who hasn't set a PIN yet: how to, from their own phone or computer.
+  if (!t.chosen.hasPin) {
+    band.innerHTML = `<h1>Hello, ${esc(t.chosen.name.split(' ')[0])}</h1><p class="sub">Set your tablet PIN first</p>`;
+    view.innerHTML = `<div class="tablet-pin tablet-howto">
+        <span class="tablet-face big">${face(t.chosen)}</span>
+        <p>You need a PIN to use the hub on this tablet. It takes a minute, from your own phone or computer:</p>
+        <ol>
+          <li>Open the hub at <strong>${esc(location.host)}</strong> and sign in with your Promtek Google account, as usual.</li>
+          <li>Tap your initials in the top right corner.</li>
+          <li>Choose <strong>Shared tablet PIN</strong>.</li>
+          <li>Enter a PIN of 4 to 8 digits, then the same again, and tap <strong>Save my PIN</strong>. Avoid one digit repeated or a run like 1234.</li>
+        </ol>
+        <p>Then come back to the tablet and tap your name.</p>
+        <button class="btn" data-tablet-back="1">Back to the names</button>
+      </div>`;
     return;
   }
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'back', '0', 'go'];
@@ -234,6 +255,7 @@ view.addEventListener('click', (event) => {
   if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
   const person = event.target.closest('[data-tablet-person]');
   if (person) { t.chosen = t.people.find((p) => p.id === person.dataset.tabletPerson); t.pin = ''; t.error = ''; return tabletDraw(); }
+  if (t.chosen && !t.chosen.hasPin && !event.target.closest('[data-tablet-back]')) return;
   if (event.target.closest('[data-tablet-back]')) { t.chosen = null; t.pin = ''; t.error = ''; return tabletDraw(); }
   const key = event.target.closest('[data-tablet-key]')?.dataset.tabletKey;
   if (!key) return;
@@ -243,7 +265,7 @@ view.addEventListener('click', (event) => {
   tabletDraw();
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (!tabletPicking || !tabletPick?.chosen) return;
+  if (!tabletPicking || !tabletPick?.chosen?.hasPin) return;
   if (/^\d$/.test(event.key) && tabletPick.pin.length < 8) { tabletPick.pin += event.key; tabletDraw(); }
   else if (event.key === 'Backspace') { tabletPick.pin = tabletPick.pin.slice(0, -1); tabletDraw(); }
   else if (event.key === 'Enter') tabletSubmit();
@@ -253,7 +275,10 @@ async function tabletLock() {
   location.hash = '#/';
   location.reload();
 }
-// While someone is using it: Switch user in the bar, and it locks itself when left.
+// While someone is using it: Switch user in the bar. Left alone, it asks "Still you?" and their
+// PIN, over the page as it was, so nothing they were part-way through is lost.
+let tabletResuming = null;   // { pin, error, busy, dlg }
+let tabletPingAt = 0;
 function tabletInUse() {
   document.body.classList.add('tablet-mode');
   const bar = document.querySelector('.appbar');
@@ -264,11 +289,81 @@ function tabletInUse() {
     b.addEventListener('click', tabletLock);
     bar.insertBefore(b, document.getElementById('account-btn'));
   }
-  const limit = (me.tablet.idleMinutes || 5) * 60000;
-  const poke = () => { clearTimeout(tabletIdle); tabletIdle = setTimeout(tabletLock, limit); };
-  for (const ev of ['pointerdown', 'keydown', 'scroll', 'touchstart']) document.addEventListener(ev, poke, { passive: true, capture: true });
+  const limit = (me.tablet.idleMinutes || 30) * 60000;
+  const poke = () => {
+    if (tabletResuming) return;
+    clearTimeout(tabletIdle);
+    tabletIdle = setTimeout(tabletResume, limit);
+    // Using the page without saving anything still counts as using it.
+    if (Date.now() - tabletPingAt > 120000) { tabletPingAt = Date.now(); fetch('/api/tablet/ping').catch(() => {}); }
+  };
+  for (const ev of ['pointerdown', 'keydown', 'scroll', 'touchstart', 'input']) document.addEventListener(ev, poke, { passive: true, capture: true });
+  tabletPingAt = Date.now();
   poke();
 }
+function tabletResume() {
+  if (tabletResuming || tabletPicking) return;
+  clearTimeout(tabletIdle);
+  // Nobody else can carry on as them from here while it asks.
+  fetch('/api/tablet/lock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).catch(() => {});
+  for (const d of document.querySelectorAll('dialog[open]')) { try { if (d.id !== 'tablet-resume') d.close(); } catch { /* fine */ } }
+  const dlg = document.createElement('dialog');
+  dlg.id = 'tablet-resume';
+  dlg.className = 'tablet-resume';
+  dlg.addEventListener('cancel', (e) => e.preventDefault());
+  document.body.appendChild(dlg);
+  tabletResuming = { pin: '', error: '', busy: false, dlg };
+  tabletResumeDraw();
+  dlg.showModal();
+  dlg.addEventListener('click', (event) => {
+    const t = tabletResuming;
+    if (!t) return;
+    if (event.target.closest('[data-tablet-resume-switch]')) return tabletLock();
+    const key = event.target.closest('[data-tablet-key]')?.dataset.tabletKey;
+    if (!key || t.busy) return;
+    if (key === 'back') t.pin = t.pin.slice(0, -1);
+    else if (key === 'go') return tabletResumeSubmit();
+    else if (t.pin.length < 8) t.pin += key;
+    tabletResumeDraw();
+  });
+}
+function tabletResumeDraw() {
+  const t = tabletResuming;
+  const name = me?.employee?.name || 'you';
+  const first = name.split(' ')[0];
+  const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'back', '0', 'go'];
+  t.dlg.innerHTML = `<div class="tablet-pin">
+      <span class="tablet-face big">${me?.employee?.avatar ? `<img src="${esc(me.employee.avatar)}" alt="">` : `<span>${esc(initials())}</span>`}</span>
+      <h2>Still you, ${esc(first)}?</h2>
+      <p>Enter your PIN to carry on where you left off.</p>
+      <div class="tablet-dots" aria-label="${t.pin.length} digits entered">${Array.from({ length: Math.max(4, t.pin.length) }, (_, i) => `<i class="${i < t.pin.length ? 'on' : ''}"></i>`).join('')}</div>
+      ${t.error ? `<p class="bad">${esc(t.error)}</p>` : ''}
+      <div class="tablet-keys">${keys.map((k) => `<button class="tablet-key${k === 'go' ? ' go' : ''}" data-tablet-key="${k}"${t.busy ? ' disabled' : ''} aria-label="${k === 'back' ? 'Delete' : k === 'go' ? 'Enter' : k}">${k === 'back' ? '⌫' : k === 'go' ? '→' : k}</button>`).join('')}</div>
+      <button class="btn secondary" data-tablet-resume-switch="1">No, switch accounts</button>
+    </div>`;
+}
+async function tabletResumeSubmit() {
+  const t = tabletResuming;
+  if (!t || t.pin.length < 4 || t.busy) return;
+  t.busy = true; t.error = ''; tabletResumeDraw();
+  try {
+    const res = await fetch('/api/tablet/unlock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ accountId: me.employee?.accountId, pin: t.pin }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'That didn\'t work. Try again.');
+    t.dlg.close(); t.dlg.remove();
+    tabletResuming = null;
+    tabletPingAt = Date.now();
+    clearTimeout(tabletIdle);
+    tabletIdle = setTimeout(tabletResume, (me.tablet.idleMinutes || 30) * 60000);
+  } catch (err) { t.busy = false; t.pin = ''; t.error = err.message; tabletResumeDraw(); }
+}
+document.addEventListener('keydown', (event) => {
+  const t = tabletResuming;
+  if (!t || t.busy) return;
+  if (/^\d$/.test(event.key) && t.pin.length < 8) { t.pin += event.key; tabletResumeDraw(); }
+  else if (event.key === 'Backspace') { t.pin = t.pin.slice(0, -1); tabletResumeDraw(); }
+  else if (event.key === 'Enter') tabletResumeSubmit();
+}, true);
 
 // Level ring: two concentric rings, like the Promtek logo.
 function ring(progress, size = 104, light = false) {
@@ -736,7 +831,7 @@ const pages = {
             : 'No mail relay is set up, so alerts only appear here. Add ALERT_WEBHOOK_URL to send them by email.'}</p>
           ${data.alerts.length ? `<ul class="list" style="box-shadow:none">${data.alerts.map((a) => `<li>
               <span class="title">${esc(a.subject)}</span>
-              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${a.sent_at ? 'Emailed' : 'Not emailed'}.</span>
+              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
               <span class="xp"></span>
             </li>`).join('')}</ul>` : '<p class="muted">Nothing to report.</p>'}
         </div>

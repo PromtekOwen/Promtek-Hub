@@ -13,7 +13,10 @@ const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart
 
 export const tabletEmails = (env) => String(env.TABLET_EMAILS || 'automation@promtek.com').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
 export const isTablet = (env, email) => tabletEmails(env).includes(String(email || '').toLowerCase());
-export const idleMinutes = (env) => Math.min(60, Math.max(1, Number(env.TABLET_IDLE_MINUTES) || 5));
+export const idleMinutes = (env) => Math.min(240, Math.max(1, Number(env.TABLET_IDLE_MINUTES) || 30));
+// The hub on the tablet asks "Still you?" after the idle time; the session itself lasts a little longer,
+// so a change sent just as it asks isn't refused.
+const GRACE_MS = 5 * 60_000;
 
 async function hashPin(pin, salt) {
   const key = await crypto.subtle.importKey('raw', enc.encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
@@ -75,7 +78,7 @@ export async function sessionOf(env, request) {
   const row = await env.DB.prepare('SELECT * FROM tablet_sessions WHERE token = ?').bind(id).first().catch(() => null);
   if (!row) return null;
   const now = Date.now();
-  if (now - row.last_seen > idleMinutes(env) * 60_000) {
+  if (now - row.last_seen > idleMinutes(env) * 60_000 + GRACE_MS) {
     await env.DB.prepare('DELETE FROM tablet_sessions WHERE token = ?').bind(id).run();
     return null;
   }
@@ -83,16 +86,16 @@ export async function sessionOf(env, request) {
   return { accountId: row.account_id, token: id };
 }
 
-// The people who can use the tablet: everyone who has set a PIN.
+// Everyone in the UK (not Promtek Africa), with whether they've set a PIN yet.
 export async function people(env) {
-  const { results } = await env.DB.prepare(`SELECT e.account_id, e.name, e.avatar FROM tablet_pins p JOIN employees e ON e.account_id = p.account_id
-    WHERE e.active = 1 ORDER BY e.name`).all();
-  return { people: results.map((e) => ({ id: e.account_id, name: e.name, avatar: e.avatar || null })), idleMinutes: idleMinutes(env) };
+  const { results } = await env.DB.prepare(`SELECT e.account_id, e.name, e.avatar, p.account_id AS pin FROM employees e LEFT JOIN tablet_pins p ON p.account_id = e.account_id
+    WHERE e.active = 1 AND e.account_id NOT LIKE 'pending%' AND COALESCE(e.chart_sa, 0) = 0 ORDER BY e.name`).all();
+  return { people: results.map((e) => ({ id: e.account_id, name: e.name, avatar: e.avatar || null, hasPin: Boolean(e.pin) })), idleMinutes: idleMinutes(env) };
 }
 
 export async function unlock(env, { accountId, pin }) {
   const row = await env.DB.prepare('SELECT p.*, e.name FROM tablet_pins p JOIN employees e ON e.account_id = p.account_id WHERE p.account_id = ? AND e.active = 1').bind(String(accountId || '')).first();
-  if (!row) throw refuse('Choose your name.');
+  if (!row) throw refuse('You haven\'t set a tablet PIN yet. Set one from your own sign-in first.', 409);
   const now = Date.now();
   if (row.locked_until && row.locked_until > now) throw refuse(`Too many wrong PINs. Try again in ${Math.ceil((row.locked_until - now) / 60000)} minutes, or use your own sign-in.`, 429);
   if (!/^\d{4,8}$/.test(String(pin || '')) || await hashPin(pin, row.salt) !== row.pin_hash) {

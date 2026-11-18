@@ -485,25 +485,47 @@ async function raiseUnmatchedAlert(env, accountIds) {
 }
 
 // Hands unsent alerts to the mail relay, if one is configured.
-export async function sendAlerts(env) {
+// Emails waiting to go, a few at once so a batch goes quickly. Each is claimed before it's sent,
+// so two runs at the same moment never send the same one twice. Stops at the first the relay refuses.
+export async function sendAlerts(env, { limit = 15 } = {}) {
   if (!env.ALERT_WEBHOOK_URL) return { skipped: 'No mail relay configured' };
-  const { results } = await env.DB.prepare(
-    'SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT 15'
-  ).bind(new Date().toISOString()).all().catch(() => env.DB.prepare('SELECT id, subject, body, recipient FROM alerts WHERE sent_at IS NULL ORDER BY id LIMIT 15').all());
+  const n = Math.max(1, Math.min(45, Number(limit) || 15));
+  const nowMs = Date.now();
+  const claim = `claim:${nowMs}:${Math.random().toString(36).slice(2, 10)}`;
+  // A claim left by a run that stopped part-way is let go after five minutes.
+  await env.DB.prepare("UPDATE alerts SET sent_at = NULL WHERE sent_at LIKE 'claim:%' AND sent_at < ?").bind(`claim:${nowMs - 300_000}`).run().catch(() => {});
+  await env.DB.prepare(`UPDATE alerts SET sent_at = ? WHERE id IN (SELECT id FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT ${n}) AND sent_at IS NULL`)
+    .bind(claim, new Date(nowMs).toISOString()).run();
+  const { results } = await env.DB.prepare('SELECT id, subject, body, recipient FROM alerts WHERE sent_at = ? ORDER BY id').bind(claim).all();
   if (!results.length) return { sent: 0 };
-  const now = new Date().toISOString();
   let sent = 0;
-  for (const alert of results) {
-    const res = await fetch(env.ALERT_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
-    });
-    if (!res.ok) break;
-    await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(now, alert.id).run();
-    sent++;
+  let stopped = false;
+  for (let i = 0; i < results.length; i += 5) {
+    const part = results.slice(i, i + 5);
+    if (stopped) { await env.DB.prepare(`UPDATE alerts SET sent_at = NULL WHERE id IN (${part.map(() => '?').join(',')})`).bind(...part.map((x) => x.id)).run(); continue; }
+    const done = await Promise.all(part.map(async (alert) => {
+      const res = await fetch(env.ALERT_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
+      }).catch(() => null);
+      await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(res?.ok ? new Date().toISOString() : null, alert.id).run();
+      return Boolean(res?.ok);
+    }));
+    sent += done.filter(Boolean).length;
+    if (done.includes(false)) stopped = true;
   }
   return { sent };
+}
+
+// Emails someone's action has just raised go straight away, after the reply, rather than
+// waiting for the next background run.
+export async function sendRaisedSince(env, sinceIso) {
+  if (!env.ALERT_WEBHOOK_URL) return { idle: true };
+  const waiting = await env.DB.prepare("SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND created_at >= ? AND (not_before IS NULL OR not_before <= ?) LIMIT 1")
+    .bind(sinceIso, new Date().toISOString()).first().catch(() => null);
+  if (!waiting?.n) return { idle: true };
+  return sendAlerts(env, { limit: 45 });
 }
 
 // Pull worklogs created or edited since the last poll.
@@ -785,6 +807,8 @@ export async function runScheduled(rawEnv) {
   // New time puts its author in Promtek Staff Involved within minutes, a few at a time
   // so the job that follows still has its calls. Its own turn below clears any backlog.
   await attempt('Staff involved', async () => { const Staff = await import('./staff.js'); return Staff.run(env, { raiseAlert, londonDate, limit: Staff.EVERY_RUN }); });
+  // PSC tickets changed in the last couple of minutes, so their notifications go straight out.
+  await attempt('PSC changes', async () => (await import('./psc.js')).quickRead(env));
   // Orders and invoices changed in the last few minutes, so the WIP stays current.
   await attempt('WIP', async () => (await import('./wip.js')).quick(env));
   // One of the last 14 days is re-read every 10 minutes, so each day is checked every couple of hours.
@@ -918,6 +942,12 @@ export async function runScheduled(rawEnv) {
     if (!r?.idle) break;
   }
   await setState(env, 'slot_pointer', pointer);
+  // Emails go out every run (a few, within the run's outside calls), so a notification raised by
+  // this run, a PSC change say, goes within minutes rather than waiting for its turn.
+  if (env.ALERT_WEBHOOK_URL) {
+    const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) LIMIT 1').bind(new Date().toISOString()).first().catch(() => null);
+    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 8 }));
+  }
   await finish();
 }
 
