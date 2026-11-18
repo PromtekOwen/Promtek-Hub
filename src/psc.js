@@ -510,6 +510,10 @@ async function readContext(env) {
 // original is hidden, and lends the copy its raised time, reporter and history.
 // They're paired by an issue link, or failing that by customer and summary.
 const sameText = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+const SYNCED_NOTE = /^\s*(?:message|comment) originally posted in [A-Z][A-Z0-9_]*-\d+[^\n]*\n?/i;
+const commentText = (s) => sameText(String(s || '').replace(SYNCED_NOTE, ''));
+// The same comment, allowing for one copy of it being cut shorter than the other.
+const sameStart = (a, b) => { const n = Math.min(a.length, b.length, 300); return n > 0 ? a.slice(0, n) === b.slice(0, n) : a === b; };
 export function pairCopies(items, match) {
   const byKey = new Map(items.map((r) => [r.issue_key, r]));
   const taken = new Set();
@@ -540,7 +544,7 @@ export function pairCopies(items, match) {
 }
 
 // The copy's details, with the original's raised time, reporter and history folded in.
-function merged(row) {
+export function merged(row) {
   const src = row.source;
   if (!src) return row;
   const earliest = (...xs) => xs.filter(Boolean).sort((a, b) => ms(a.at) - ms(b.at))[0] || null;
@@ -553,10 +557,16 @@ function merged(row) {
   const cust = latest(src.customer_last_at && { at: src.customer_last_at, by: src.customer_last_by }, row.customer_last_at && !row.reporter_team && { at: row.customer_last_at, by: row.customer_last_by });
   // Comments and status changes come through on both; keep one of each.
   const events = [...JSON.parse(src.timeline || '[]'), ...JSON.parse(row.timeline || '[]').filter((e) => e.kind !== 'created')];
+  // Copy & Sync posts each comment on the other as "Message originally posted in PSC-… on …":
+  // that one is left out when the comment it came from is there, whenever it was copied.
+  const plain = events.filter((e) => !SYNCED_NOTE.test(String(e.text || '')));
   const kept = [];
   for (const e of events.sort((a, b) => ms(a.at) - ms(b.at))) {
-    if (kept.some((k) => k.kind === e.kind && sameText(k.text) === sameText(e.text) && Math.abs(ms(k.at) - ms(e.at)) < 15 * 60000)) continue;
-    kept.push(e);
+    const copied = SYNCED_NOTE.test(String(e.text || ''));
+    const text = commentText(e.text);
+    if (copied && plain.some((k) => k.kind === e.kind && sameStart(commentText(k.text), text))) continue;
+    if (kept.some((k) => k.kind === e.kind && (copied ? sameStart(commentText(k.text), text) : commentText(k.text) === text && Math.abs(ms(k.at) - ms(e.at)) < 15 * 60000))) continue;
+    kept.push(copied ? { ...e, text: String(e.text).replace(SYNCED_NOTE, '').trim() } : e);
   }
   return {
     ...row,
