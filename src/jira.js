@@ -72,6 +72,10 @@ export async function jiraFetch(env, path, init = {}) {
   return fetch(env.JIRA_BASE_URL + path, { ...init, headers: { ...headers, Authorization: authHeader(env) } });
 }
 
+// The Admin status is for admins: nobody else is offered a move to it.
+export const adminOnlyStatus = (name) => String(name || '').trim().toLowerCase() === 'admin';
+export const statusAllowed = (viewer, name) => Boolean(viewer?.isAdmin) || !adminOnlyStatus(name);
+
 // ---------- which projects the hub works with ----------
 // Customer projects are the ones in the two customer categories. Any project
 // outside them (testing, archive, special access) is left out of everything

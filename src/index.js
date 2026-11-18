@@ -274,7 +274,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/log/bonus') return json(await (await import('./xprates.js')).bonusItems(env));
     if (method === 'GET' && pathname === '/api/log/keys') return json(await itemsByKey(env, url.searchParams.get('keys')));
     if (method === 'GET' && pathname === '/api/log/day') return json(await dayLogs(env, user, url.searchParams.get('date')));
-    if (method === 'GET' && pathname === '/api/log/next') return json(await nextStatus(env, url.searchParams.get('issueId')));
+    if (method === 'GET' && pathname === '/api/log/next') return json(await nextStatus(env, url.searchParams.get('issueId'), user));
     if (method === 'POST' && pathname === '/api/log/worklog') {
       const result = await createWorklog(env, user, body);
       try { await pollRecent(env, { force: true }); } catch (err) { console.warn('Post-log sync failed:', err.message); }
@@ -602,6 +602,8 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/psc/refresh') return json(await Psc.refresh(env, user));
     if (method === 'POST' && pathname === '/api/psc/pickup') return json(await Psc.pickUp(env, user, body.key));
     if (method === 'POST' && pathname === '/api/psc/assign') return json(await Psc.assign(env, user, body.key, body.accountId));
+    if (method === 'GET' && pathname === '/api/psc/moves') return json(await Psc.moves(env, user, url.searchParams.get('key') || ''));
+    if (method === 'POST' && pathname === '/api/psc/move') return json(await Psc.move(env, user, body));
     if (method === 'POST' && pathname === '/api/psc/org') return json(await Psc.setOrg(env, user, body.key, body.orgId));
     if (method === 'POST' && pathname === '/api/psc/resolve') {
       const r = await Psc.resolve(env, user, body);
@@ -886,7 +888,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/jobs/dispute-withdraw') return json(await Disputes.withdrawDispute(env, user, body.id));
     if (method === 'POST' && pathname === '/api/jobs/dispute-decide') return json(await Disputes.decideDispute(env, user, body));
     if (method === 'GET' && pathname === '/api/jobs/subtasks') return json(await Disputes.subtasksOf(env, url.searchParams.get('keys')));
-    if (method === 'GET' && pathname === '/api/jobs/transitions') return json(await Disputes.transitionsOf(env, url.searchParams.get('key')));
+    if (method === 'GET' && pathname === '/api/jobs/transitions') return json(await Disputes.transitionsOf(env, url.searchParams.get('key'), user));
     if (method === 'POST' && pathname === '/api/jobs/transition') return json(await Disputes.transition(env, user, body));
     if (method === 'POST' && pathname === '/api/jobs/difficulty') return json(await Disputes.setDifficulty(env, user, body));
     if (method === 'GET' && pathname === '/api/approvals') {

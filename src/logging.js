@@ -1,5 +1,5 @@
 // Finding the right item to log time against, and writing the worklog to Tempo.
-import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue, getIssue, blockedForLookup } from './jira.js';
+import { jira, searchJql, customerProjects, CUSTOMER_CATEGORY_IDS as CATEGORY_IDS, issueKeyOf, projectKeyOf, mustBeHubIssue, getIssue, blockedForLookup, statusAllowed } from './jira.js';
 import { raiseAlert, londonDate, processWorklogs, ledgerChanged, noteDeleted, refreshSnapshots } from './sync.js';
 import { normalise } from './tempo.js';
 import { applyOvertime, mondayOfDay } from './overtime.js';
@@ -499,7 +499,7 @@ const CAT_ORDER = { new: 0, indeterminate: 1, done: 2 };
 
 // The statuses an item can move to, with the one that comes next in its workflow
 // first. Items in PMB are filed by status, so they're never moved from here.
-export async function nextStatus(env, issueId) {
+export async function nextStatus(env, issueId, viewer = null) {
   const id = String(issueId || '');
   if (!/^\d{1,20}$/.test(id)) return { transitions: [] };
   const issue = await getIssue(env, id, ['status', 'project', 'issuetype']);
@@ -510,7 +510,7 @@ export async function nextStatus(env, issueId) {
   const rank = (c) => CAT_ORDER[c] ?? 1;
   const here = rank(current.statusCategory?.key);
   const list = transitions.map((t) => ({ id: String(t.id), to: t.to?.name || t.name, cat: t.to?.statusCategory?.key || null }))
-    .filter((t) => t.to !== current.name);
+    .filter((t) => t.to !== current.name && statusAllowed(viewer, t.to));
   // Next: the first move Jira offers that doesn't go back a stage. Jira lists them in workflow order.
   const next = here < 2 ? list.find((t) => rank(t.cat) >= here) || null : null;
   return { key: issue.key, status: current.name || null, statusCat: current.statusCategory?.key || null,
@@ -518,7 +518,7 @@ export async function nextStatus(env, issueId) {
 }
 
 export async function moveAfterLog(env, viewer, { issueId, transitionId }) {
-  const { key, transitions } = await nextStatus(env, issueId);
+  const { key, transitions } = await nextStatus(env, issueId, viewer);
   const t = transitions.find((x) => x.id === String(transitionId));
   if (!t) throw refuse('Jira doesn\'t offer that move from where it is now.');
   await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });

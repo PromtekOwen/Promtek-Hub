@@ -527,6 +527,10 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 The customer is known, so it's raised in the customer's own project, under its PSC & Snag List (a Service Request under its Service item), not on the PSC board. The PSC board is for what customers raise themselves, through the portal or by email. The person raising it is the reporter. Where Jira won't let the hub set the reporter, the hub's account raises it and their name goes at the end of the description; where it won't take the list, it's raised without and the lists job moves it under later. It shows in the tile straight away, opened. Every PSC raised is in the audit log.
 
+### Moving a ticket on
+
+An open ticket's page has a status list beside the owner: **<its status>: move to…** lists the statuses Jira allows from where it is, and choosing one moves it in Jira (if Jira doesn't take it, the hub tries again). Resolved [Promtek] isn't in the list, because **Resolve** asks for the root cause and chargeable first. **Admin** is only offered to admins, here, after logging time, and on Jobs.
+
 ### Reading tickets in the hub
 
 Opening an item on the PSC tile shows the ticket itself under the hub's details: who raised it (with their email address, taken from the service desk when Jira hides it), the Organization, description, attachments, links, the customer copy or original, and every comment, marked **Internal**, **Only Promtek Members** or **Customer can see**. A link to a PSC ticket or one of its customer copies anywhere in the hub opens the same view in a side panel instead of Jira. A link to a Service Token opens what used it instead (see Service contracts). Links to anything else (contracts, visits, orders) open in Jira; Ctrl or Cmd click always does, and so does **Open in Jira** in the panel. Attachments download through the hub, which checks the file belongs to that ticket first.

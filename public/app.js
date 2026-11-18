@@ -11790,6 +11790,15 @@ function pscCardHtml(d, { triage = false } = {}) {
     </article>`;
 }
 
+// Moving a ticket to another status, from those Jira allows where it is (read once each time it's opened).
+let pscMoves = null;   // { key, status, moves }
+async function pscMoveSelect(d) {
+  if (pscMoves?.key !== d.key || pscMoves.status !== d.status) pscMoves = await api(`/api/psc/moves?key=${encodeURIComponent(d.key)}`).then((r) => ({ ...r, status: d.status })).catch(() => ({ key: d.key, status: d.status, moves: [] }));
+  if (!pscMoves.moves.length) return '';
+  return `<select data-psc-move="${esc(d.key)}" aria-label="Move ${esc(d.key)} to another status"><option value="">${esc(d.status)}: move to…</option>
+    ${pscMoves.moves.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}</select>`;
+}
+
 // Quote or Condor from the list: opens the item with that ready to go.
 function pscQuickHand(d) {
   if (d.state === 'resolved' || d.orderWork) return '';
@@ -13490,6 +13499,7 @@ async function pscItemHtml() {
         ${pscCanResolve(d) ? `<button class="btn" data-psc-resolve="${esc(d.key)}">Resolve</button>` : ''}
         <button class="btn secondary" data-psc-log="${esc(d.key)}">Log time</button>
         ${pscPeopleSelect(d)}
+        ${await pscMoveSelect(d)}
         ${d.project === 'PSC' ? pscOrgSelect(d) : ''}
       </div>
       ${d.state !== 'resolved' && !d.orderWork ? `<div class="psc-actions psc-handoff-actions">
@@ -13654,6 +13664,7 @@ async function pscChange(event) {
     render();
   };
   if (el.matches('[data-psc-assign]') && el.value) { await send('/api/psc/assign', { key: el.dataset.pscAssign, accountId: el.value }, 'Assigned'); return true; }
+  if (el.matches('[data-psc-move]') && el.value) { const to = el.value; pscMoves = null; await send('/api/psc/move', { key: el.dataset.pscMove, to }, `Moved to ${to}`); return true; }
   if (el.matches('[data-psc-org]') && el.value) { await send('/api/psc/org', { key: el.dataset.pscOrg, orgId: el.value }, 'Organization saved'); return true; }
   if (el.matches('[data-psc-flag-org]') && el.value) {
     el.disabled = true;

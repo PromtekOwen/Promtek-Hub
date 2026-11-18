@@ -1,7 +1,7 @@
 // Active jobs, difficulty disputes and estimate alerts. The quoted difficulty
 // is never overwritten: each approved dispute is kept alongside it, so quoting
 // can learn where jobs turned out harder than they looked.
-import { searchJql, getIssue, jira, BLOCKED_PROJECTS } from './jira.js';
+import { searchJql, getIssue, jira, BLOCKED_PROJECTS, statusAllowed } from './jira.js';
 import { record } from './audit.js';
 import { STAGE_WEIGHTS } from './quotes.js';
 import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone, teamOf } from './jobs.js';
@@ -220,16 +220,16 @@ async function subtaskOnly(env, key) {
   return { k, issue };
 }
 
-export async function transitionsOf(env, key) {
+export async function transitionsOf(env, key, viewer = null) {
   const { k } = await subtaskOnly(env, key);
   const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}/transitions`)) || {};
-  return { transitions: transitions.map((t) => ({ id: String(t.id), name: t.name, to: t.to?.name || t.name, cat: t.to?.statusCategory?.key || null })) };
+  return { transitions: transitions.filter((t) => statusAllowed(viewer, t.to?.name || t.name)).map((t) => ({ id: String(t.id), name: t.name, to: t.to?.name || t.name, cat: t.to?.statusCategory?.key || null })) };
 }
 
 export async function transition(env, viewer, { key, id }) {
   const { k, issue } = await subtaskOnly(env, key);
   const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}/transitions`)) || {};
-  const t = transitions.find((x) => String(x.id) === String(id));
+  const t = transitions.find((x) => String(x.id) === String(id) && statusAllowed(viewer, x.to?.name || x.name));
   if (!t) throw new Error('Jira doesn\'t offer that move from where it is now.');
   await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: String(t.id) } }) });
   const to = t.to?.name || t.name;

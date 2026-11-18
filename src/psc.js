@@ -5,7 +5,7 @@
 // Jira is read in a few searches by the background job and kept in the hub's
 // database, so the tile opens straight away. The first look is the first time
 // an item is moved to In Progress in Jira, read from its history.
-import { jira, searchPage, customerProjects } from './jira.js';
+import { jira, searchPage, customerProjects, statusAllowed } from './jira.js';
 import * as Contacts from './psccontacts.js';
 import { staffIds } from './psccontacts.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
@@ -429,6 +429,15 @@ async function applyWrite(b, w) {
     const go = transitions.find((t) => IN_PROGRESS.test(t.to?.name || t.name || ''));
     if (!go) throw new Error('Jira offers no way to move it to In Progress from where it is.');
     await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
+  } else if (w.kind === 'move') {
+    const { transitions = [] } = await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`);
+    const go = transitions.find((t) => String(t.to?.name || t.name || '').toLowerCase() === String(p.to).toLowerCase());
+    if (!go) {
+      const now = await b.call(`/rest/api/3/issue/${w.issue_key}?fields=status`);
+      if (String(now?.fields?.status?.name || '').toLowerCase() === String(p.to).toLowerCase()) return;   // already there
+      throw new Error(`Jira offers no way to move it to ${p.to} from ${now?.fields?.status?.name || 'where it is'}.`);
+    }
+    await b.call(`/rest/api/3/issue/${w.issue_key}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: go.id } }) });
   } else throw new Error(`Unknown change ${w.kind}`);
 }
 
@@ -733,6 +742,29 @@ export async function pickUp(env, viewer, key) {
     if (!moved.saved) result = moved;
   }
   return result;
+}
+
+// The statuses Jira allows a ticket to move to from where it is. Resolving has its own button,
+// which asks for the root cause; Admin is only for admins.
+export async function moves(env, viewer, key) {
+  mustSee(viewer);
+  const row = await rowFor(env, key);
+  const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(row.issue_key)}/transitions`)) || {};
+  const names = [...new Set(transitions.map((t) => t.to?.name || t.name).filter(Boolean))]
+    .filter((n) => n !== row.status && n.toLowerCase() !== RESOLVE_TO.toLowerCase() && statusAllowed(viewer, n));
+  return { key: row.issue_key, status: row.status, moves: names };
+}
+
+export async function move(env, viewer, { key, to }) {
+  mustSee(viewer);
+  const row = await rowFor(env, key);
+  const name = String(to || '').trim();
+  if (!name) throw Object.assign(new Error('Choose where to move it.'), { status: 400 });
+  if (!statusAllowed(viewer, name)) throw Object.assign(new Error('Only admins can move a ticket to Admin.'), { status: 403 });
+  if (name.toLowerCase() === RESOLVE_TO.toLowerCase()) throw Object.assign(new Error('Use Resolve, so the root cause is recorded.'), { status: 400 });
+  const { moves: allowed } = await moves(env, viewer, key);
+  if (!allowed.includes(name)) throw Object.assign(new Error(`Jira doesn't offer a move to ${name} from ${row.status || 'where it is'}.`), { status: 409 });
+  return queueWrite(env, viewer, row.issue_key, 'move', { to: name }, `Moving to ${name}`);
 }
 
 export async function assign(env, viewer, key, accountId) {
