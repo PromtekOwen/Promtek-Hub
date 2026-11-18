@@ -272,6 +272,44 @@ If step 4 is refused, your Workspace policy blocks service account keys. That's 
 
 **If either delivery fails**, the assessment is still saved and downloadable from the hub, and the team lead is told so it can be filed by hand. Nothing is ever lost because Jira or Drive was unavailable.
 
+## Part 11b: COSHH
+
+The **COSHH** tile holds an assessment for each substance Promtek keeps, filled in from the hub and filed as a PDF laid out like the paper form (SP 04/A).
+
+**Filling one in.** **New assessment** asks what the form asks:
+- the product, other names, MSDS reference and appearance;
+- its containers, with up to four pictures (on the tablet, **Take a picture of it** opens the camera);
+- what it's used for and where;
+- the hazard pictograms on its label, PPE and first aid;
+- precautions and disposal;
+- the three questions at the end, and the risk (low, medium or high).
+
+**Saving and completing:**
+- **Drafts:** it's saved as a draft as it's filled in (**Your drafts**). **Preview the PDF** shows it as it stands.
+- **Who and when:** **Complete and file it** puts in whoever is signed in as the assessor, dates it today, and numbers it. The next number follows the highest in the list, starting at 1001.
+- **Filing:** it then adds the PDF to the COSHH page in Confluence (page 666533895; set `COSHH_CONFLUENCE_PAGE` for another), as **COSHH <No> Rev <Rev> - <product>.pdf**. This uses the hub's Jira account, which needs to be able to edit that page.
+- **If Confluence can't be reached:** it's kept, an alert says so, and **File it in Confluence again** on the item tries once more.
+
+**The list.**
+- **Order:** products **in house** come first, in green, and those no longer in house are greyed out below.
+- **In house:** anyone can tick or untick **In house** on a card or the item.
+- **Where it's kept:** on the item, tap the places (Office, Workshop, Upstairs, Kitchen, Office Male Toilet, Office Female Toilet, Workshop Washroom & Toilet) or add another.
+- **Finding one:** search by product, number or place, or show one place only.
+
+**Reviews.** A product still in house is due its review a year after it was assessed or last reviewed.
+- **When it's due:** two weeks before, and until it's done, it's marked on the list. People with **Manage COSHH** (Management to begin with; Admin, Who can use what) get a notification and email once, and an alert on their home screen.
+- **Mark it reviewed today:** this puts the reviewer and date into the form's Next Reviews table (up to six years) and files the PDF again under the same name, as a new version.
+- **Revising:** **Something's changed: revise it** opens the form filled in. Completing it keeps the number, goes up a Rev, dates it today and starts the reviews again.
+
+**What's already on the Confluence page.** People with Manage COSHH see **Bring in from Confluence**.
+- **What it brings in:** every PDF, Word or Excel file on the page that didn't come from the hub becomes an item, named from the file, with its COSHH number if the name has one. It's dated from when it was put on the page, and starts not in house.
+- **After bringing them in:** tick the ones still in house. Correct the product, number and assessment date on each (they decide when its review is due). Its file opens from the hub.
+- **Running it again:** it only adds new files.
+
+**Removing.** Anyone can throw away their own draft. Only Manage COSHH can remove a completed one from the hub (its file stays on the page); otherwise, untick In house.
+
+**Setting it up:** run `schema-071.sql` in the D1 console.
+
 ## Part 12: IT support
 
 IT requests go to your `PROMTEKIT` service desk. Engineers pick what they need in plain words, say how much it's holding them up, optionally attach the asset and photos, and the hub raises the request in their name so replies reach them.

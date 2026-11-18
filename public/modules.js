@@ -69,6 +69,13 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'coshh',
+    name: 'COSHH',
+    route: '#/coshh',
+    icon: icon('<path d="M9 3.5h6M10 3.5v5.2L5.2 17.6A2 2 0 007 20.5h10a2 2 0 001.8-2.9L14 8.7V3.5"/><path d="M7.5 14.5h9"/>'),
+    detail: () => 'Assessments for what we keep, and their reviews',
+  },
+  {
     id: 'nearmiss',
     name: 'Near misses',
     route: '#/nearmiss',

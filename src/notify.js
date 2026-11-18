@@ -17,6 +17,9 @@ export const EVENTS = {
     { id: 'psc-response', label: 'First look overdue', about: 'Nobody has looked at a PSC by the time its contract asks', app: true, email: true },
     { id: 'psc-waiting', label: 'Customer waiting on us', about: 'A customer replied and nobody has answered in time', app: true, email: true },
   ],
+  coshh: [
+    { id: 'coshh-review', label: 'COSHH reviews due', about: 'A product still in house is due its yearly COSHH review (for those who manage COSHH)', app: true, email: true },
+  ],
   training: [
     { id: 'talk-new', label: 'Tool box talk arranged', about: 'You\'re asked to a tool box talk or training', app: true, email: true },
     { id: 'talk-upcoming', label: 'Tool box talk countdown', about: 'Each morning until a talk you\'re asked to, with the link to join', app: true, email: false },

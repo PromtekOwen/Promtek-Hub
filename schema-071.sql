@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS coshh_items (id INTEGER PRIMARY KEY AUTOINCREMENT, coshh_no INTEGER, rev INTEGER NOT NULL DEFAULT 1, product TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'draft', source TEXT NOT NULL DEFAULT 'hub', data TEXT NOT NULL DEFAULT '{}', in_house INTEGER NOT NULL DEFAULT 1, locations TEXT NOT NULL DEFAULT '[]', assessed_by TEXT, assessed_by_id TEXT, assessed_on TEXT, last_review_on TEXT, next_review_on TEXT, pdf_name TEXT, confluence_id TEXT, confluence_note TEXT, file_name TEXT, review_told TEXT, created_by_id TEXT, created_by TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, in_house_by TEXT, in_house_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_coshh_items_house ON coshh_items(in_house, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_coshh_items_confluence ON coshh_items(confluence_id);
+CREATE TABLE IF NOT EXISTS coshh_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, item_id INTEGER NOT NULL, data TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_coshh_photos_item ON coshh_photos(item_id);

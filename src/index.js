@@ -257,7 +257,7 @@ async function devRoute(request, env, url, real) {
 
 // The requests that belong to one tile alone.
 const TILE_APIS = {
-  condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], it: ['/api/it/'],
+  condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], coshh: ['/api/coshh'], it: ['/api/it/'],
   requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'], nearmiss: ['/api/nearmiss'],
 };
 
@@ -1023,6 +1023,28 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/eotq/past-round-remove') return json(await Eotq.removePastRound(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/link') return json(await Eotq.link(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
+  }
+
+  if (pathname.startsWith('/api/coshh')) {
+    const C = await import('./coshh.js');
+    const q = (k) => url.searchParams.get(k);
+    if (method === 'GET' && pathname === '/api/coshh') return json(await C.list(env, user));
+    if (method === 'GET' && pathname === '/api/coshh/item') return json(await C.get(env, user, q('id')));
+    if (method === 'GET' && pathname === '/api/coshh/photo') {
+      const bytes = await C.photo(env, user, q('id'));
+      return new Response(bytes, { headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
+    }
+    if (method === 'GET' && pathname === '/api/coshh/file') {
+      const f = await C.download(env, user, q('id'));
+      const safe = f.name.replace(/[^\w .()-]+/g, '_');
+      return new Response(f.bytes, { headers: { 'content-type': f.type, 'content-disposition': `${q('download') ? 'attachment' : 'inline'}; filename="${safe}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+    }
+    if (method === 'POST' && pathname === '/api/coshh/photo') return json(await C.addPhoto(env, user, q('id'), request));
+    const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    const post = { save: C.save, submit: C.submit, review: C.review, 'in-house': C.setInHouse, locations: C.setLocations, details: C.setDetails, remove: C.remove,
+      'photo-remove': C.removePhoto, refile: C.refile, import: C.importFromConfluence };
+    const sub = pathname.slice('/api/coshh/'.length);
+    if (method === 'POST' && post[sub]) return json(await post[sub](env, user, body));
   }
 
   if (pathname.startsWith('/api/nearmiss')) {

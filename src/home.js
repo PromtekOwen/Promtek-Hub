@@ -107,6 +107,16 @@ async function systemAlerts(env, viewer) {
         : { key: 'jira-connect', tone: 'info', title: 'Connect your Jira account', body: 'So changes you make in the hub show as you in Jira\'s history, not as the hub\'s account. Atlassian asks you to allow it once.', link: '/api/jira-connect/start', linkText: 'Connect' });
     }
 
+    // COSHH assessments due their yearly review, for those who manage COSHH.
+    if (viewer.isAdmin || viewer.can?.coshhManage) {
+      const due = await import('./coshh.js').then((C) => C.dueList(env)).catch(() => []);
+      if (due.length) {
+        const late = due.filter((r) => r.next_review_on < today).length;
+        out.push({ key: 'coshh-review', tone: late ? 'important' : 'info', title: due.length === 1 ? `COSHH review due: ${due[0].product}` : `${due.length} COSHH assessments due for review`,
+          body: late ? `${late} overdue. Check each is still right and mark it reviewed.` : 'Due in the next two weeks. Check each is still right and mark it reviewed.', link: '#/coshh?due=1' });
+      }
+    }
+
     // Tool box talks they were at but haven't acknowledged: until they do, with no way to dismiss it.
     const talks = await import('./training.js').then((T) => T.outstandingTalks(env, me)).catch(() => []);
     for (const t of talks.slice(0, 3)) {

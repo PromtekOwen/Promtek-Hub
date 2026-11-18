@@ -196,8 +196,26 @@ async function tabletPicker() {
   document.body.classList.add('tablet-locked');
   try { document.querySelector('dialog[open]')?.close(); } catch { /* none open */ }
   tabletPick = { people: [], chosen: null, pin: '', error: '', busy: false };
-  try { tabletPick.people = (await fetch('/api/tablet/people').then((r) => r.json())).people || []; } catch { tabletPick.error = 'Couldn\'t load the people. Check the tablet is online.'; }
-  tabletDraw();
+  await tabletPeople();
+  // The names stay up to date while it waits (someone setting their PIN, say), and the page itself
+  // is reloaded now and then so the tablet picks up hub updates.
+  const loadedAt = Date.now();
+  setInterval(async () => {
+    if (!tabletPicking || tabletPick.chosen) return;
+    if (Date.now() - loadedAt > 30 * 60000) { location.reload(); return; }
+    await tabletPeople();
+  }, 60000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && tabletPicking && !tabletPick.chosen) tabletPeople(); });
+}
+async function tabletPeople() {
+  try {
+    const r = await fetch('/api/tablet/people', { cache: 'no-store' });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'failed');
+    tabletPick.people = data.people || [];
+    tabletPick.error = '';
+  } catch { tabletPick.error = 'Couldn\'t load the people. Check the tablet is online.'; }
+  if (!tabletPick.chosen) tabletDraw();
 }
 function tabletDraw() {
   const t = tabletPick;
@@ -722,6 +740,11 @@ const pages = {
   '#/wip': {
     band: () => '<h1>WIP</h1><p>Every order and service contract: progress, invoicing and payment.</p>',
     render: () => wipHtml(),
+  },
+
+  '#/coshh': {
+    band: () => '<h1>COSHH</h1><p>Assessments for the substances we keep: what each is, where it\'s kept, and its yearly review.</p>',
+    render: () => coshhHtml(),
   },
 
   '#/nearmiss': {
@@ -3680,6 +3703,372 @@ async function vehicleControl(action, value) {
     out(action === 'book' ? 'veh-result' : 'check-result', err.message, true);
   }
 }
+
+// ---------- COSHH ----------
+// Every assessment, those still in house first; a new one filled in here (with photos from
+// the tablet), made into the PDF and filed on the COSHH page in Confluence.
+
+let coshhData = null;        // the list
+let coshhView = null;        // null (the list) | { kind: 'item', id } | { kind: 'form' }
+let coshhItem = null;        // the item open
+let coshhForm = null;        // { id, product, data, revise, photos: [{ id }] }
+let coshhQuery = '';
+let coshhPlace = '';
+let coshhDueOnly = false;
+let coshhSaveTimer = null;
+const COSHH_DIAMOND = '<svg viewBox="0 0 24 24" aria-hidden="true" class="coshh-diamond"><path d="M12 2.5L21.5 12 12 21.5 2.5 12z"/></svg>';
+
+async function coshhLoad(force = false) {
+  if (force || !coshhData) coshhData = await api('/api/coshh');
+  return coshhData;
+}
+const coshhDay = (d) => (d ? fullDate(d) : '—');
+function coshhDueChip(i) {
+  if (i.status === 'draft') return '<span class="psc-chip plain">Draft</span>';
+  if (!i.inHouse) return '';
+  if (i.reviewDue === 'overdue') return `<span class="psc-chip bad">Review overdue since ${esc(coshhDay(i.nextReviewOn))}</span>`;
+  if (i.reviewDue === 'soon') return `<span class="psc-chip warn">Review due ${esc(coshhDay(i.nextReviewOn))}</span>`;
+  return i.nextReviewOn ? `<span class="psc-chip plain">Next review ${esc(coshhDay(i.nextReviewOn))}</span>` : '';
+}
+
+async function coshhHtml() {
+  if (/[?&]due=1/.test(location.hash)) { coshhDueOnly = true; history.replaceState(history.state, '', '#/coshh'); }
+  if (coshhView?.kind === 'form') return coshhFormHtml();
+  if (coshhView?.kind === 'item') return coshhItemHtml();
+  const d = await coshhLoad();
+  const q = coshhQuery.trim().toLowerCase();
+  const shown = d.items.filter((i) => (!q || `${i.product} ${i.no || ''} ${i.locations.join(' ')} ${i.fileName || ''}`.toLowerCase().includes(q))
+    && (!coshhPlace || i.locations.includes(coshhPlace)) && (!coshhDueOnly || i.reviewDue));
+  const drafts = shown.filter((i) => i.status === 'draft');
+  const inHouse = shown.filter((i) => i.status !== 'draft' && i.inHouse);
+  const gone = shown.filter((i) => i.status !== 'draft' && !i.inHouse);
+  const due = d.items.filter((i) => i.reviewDue).length;
+  const card = (i) => `<article class="coshh-card${i.inHouse ? ' in' : ' out'}" data-coshh-open="${i.id}" tabindex="0" role="button" aria-label="${esc(i.product)}">
+      ${i.photoId ? `<img class="coshh-thumb" src="/api/coshh/photo?id=${i.photoId}" alt="" loading="lazy">` : `<span class="coshh-thumb none">${COSHH_DIAMOND}</span>`}
+      <div class="coshh-card-main">
+        <strong>${esc(i.product || 'Not named yet')}</strong>
+        <span class="muted">${i.no ? `COSHH ${esc(String(i.no))}${i.source === 'hub' ? ` Rev ${i.rev}` : ''}` : i.source === 'confluence' ? 'From Confluence' : 'Not numbered yet'}${i.assessedOn ? ` · assessed ${esc(coshhDay(i.assessedOn))}` : ''}</span>
+        <div class="coshh-chips">${i.locations.map((l) => `<span class="chip">${esc(l)}</span>`).join('')}${coshhDueChip(i)}</div>
+      </div>
+      ${i.status !== 'draft' ? `<label class="coshh-house" title="Still in house"><input type="checkbox" data-coshh-house="${i.id}"${i.inHouse ? ' checked' : ''}> In house</label>` : ''}
+    </article>`;
+  return `<div class="card coshh-top">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <p style="margin:0">Fill in a COSHH assessment for any product we keep, with a photo of it. It's made into the form and filed on the COSHH page in Confluence.</p>
+        <div class="row"><button class="btn" data-coshh-new="1">＋ New assessment</button>
+          ${d.manage ? '<button class="btn secondary" data-coshh-import="1">Bring in from Confluence</button>' : ''}</div>
+      </div>
+    </div>
+    ${due ? `<div class="card notice"><p style="margin:0"><strong>${due} assessment${due === 1 ? '' : 's'} due for review.</strong> ${coshhDueOnly ? '<button class="linklike" data-coshh-due="0">Show everything</button>' : '<button class="linklike" data-coshh-due="1">Show just those</button>'}</p></div>` : ''}
+    <div class="row con-tools coshh-tools">
+      <input type="search" id="coshh-search" placeholder="Search products, numbers or places" value="${esc(coshhQuery)}" aria-label="Search COSHH assessments">
+      <select data-coshh-place aria-label="Where it's kept"><option value="">Everywhere</option>${d.locations.map((l) => `<option${coshhPlace === l ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+    </div>
+    ${drafts.length ? `<h2>Your drafts</h2><div class="coshh-list">${drafts.map(card).join('')}</div>` : ''}
+    <h2>In house <small class="muted">${inHouse.length}</small></h2>
+    <div class="coshh-list">${inHouse.map(card).join('') || '<p class="muted">Nothing marked in house.</p>'}</div>
+    <h2>No longer in house <small class="muted">${gone.length}</small></h2>
+    <div class="coshh-list">${gone.map(card).join('') || '<p class="muted">None.</p>'}</div>`;
+}
+
+async function coshhItemHtml() {
+  if (!coshhItem || coshhItem.item.id !== coshhView.id) coshhItem = await api(`/api/coshh/item?id=${coshhView.id}`);
+  const { item: i, photos, manage } = coshhItem;
+  const d = i.data || {};
+  const places = coshhData?.locations || [];
+  const o = coshhData?.options || {};
+  const label = (list, keys) => (keys || []).map((k) => (list || []).find(([x]) => x === k)?.[1]).filter(Boolean).join(', ') || '—';
+  const reviews = d.reviews || [];
+  const imported = i.source === 'confluence';
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-coshh-back="1">All assessments</button></div>
+    <section class="card coshh-head${i.inHouse ? ' in' : ' out'}">
+      <div class="psc-top"><span class="psc-key">${i.no ? `COSHH ${esc(String(i.no))}` : imported ? 'From Confluence' : 'Draft'}</span>${i.source === 'hub' && i.status !== 'draft' ? `<span class="muted">Rev ${i.rev}</span>` : ''}${coshhDueChip(i)}</div>
+      <h2 style="margin:.3rem 0 .8rem">${esc(i.product || 'Not named yet')}</h2>
+      ${i.status !== 'draft' ? `<label class="coshh-house big"><input type="checkbox" data-coshh-house="${i.id}"${i.inHouse ? ' checked' : ''}> Still in house${i.inHouseBy ? ` <small class="muted">${i.inHouse ? 'marked' : 'taken off'} by ${esc(i.inHouseBy)} ${esc(agoText(i.inHouseAt))}</small>` : ''}</label>` : ''}
+      ${photos.length ? `<div class="coshh-photos">${photos.map((p) => `<a href="/api/coshh/photo?id=${p.id}" target="_blank" rel="noopener"><img src="/api/coshh/photo?id=${p.id}" alt="Photo of ${esc(i.product)}"></a>`).join('')}</div>` : ''}
+    </section>
+    ${i.status !== 'draft' ? `<section class="card">
+      <h3 style="margin-top:0">Where it's kept</h3>
+      <div class="chips">${places.map((l) => `<button class="chip${i.locations.includes(l) ? ' on' : ''}" data-coshh-place-toggle="${esc(l)}">${esc(l)}</button>`).join('')}</div>
+      <div class="row" style="margin-top:.7rem"><input type="text" id="coshh-new-place" placeholder="Somewhere else" maxlength="60" style="max-width:16rem"><button class="btn secondary" data-coshh-place-add="1">Add</button></div>
+    </section>
+    <section class="card">
+      <h3 style="margin-top:0">Reviews</h3>
+      <p>${i.assessedOn ? `Assessed ${esc(coshhDay(i.assessedOn))}${i.assessedBy ? ` by ${esc(i.assessedBy)}` : ''}. ` : ''}${i.lastReviewOn ? `Last reviewed ${esc(coshhDay(i.lastReviewOn))}. ` : ''}${i.nextReviewOn ? `<strong>Next review ${esc(coshhDay(i.nextReviewOn))}.</strong>` : ''}</p>
+      ${reviews.length ? `<ul class="jv-links">${reviews.map((r) => `<li>${esc(coshhDay(r.date))}: ${esc(r.name)}${r.note ? ` <small class="muted">${esc(r.note)}</small>` : ''}</li>`).join('')}</ul>` : ''}
+      <label><span>Note <small class="muted">(optional)</small></span><input type="text" id="coshh-review-note" maxlength="300" placeholder="Checked the product, label and data sheet: no changes"></label>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-review="${i.id}">Mark it reviewed today</button>
+        ${!imported ? `<button class="btn secondary" data-coshh-revise="${i.id}">Something's changed: revise it</button>` : ''}</div>
+      ${reviews.length >= 6 && !imported ? '<p class="help">The form has room for six yearly reviews. Revising it starts a new Rev with an empty review table.</p>' : ''}
+    </section>` : ''}
+    <section class="card">
+      <h3 style="margin-top:0">The form</h3>
+      ${i.hasFile || i.status === 'draft' ? `<div class="row"><a class="btn secondary" href="/api/coshh/file?id=${i.id}" target="_blank" rel="noopener">${i.status === 'draft' ? 'Preview the PDF' : 'Open it'}</a>
+        <a class="btn secondary" href="/api/coshh/file?id=${i.id}&download=1">Download</a>
+        ${i.status === 'draft' ? `<button class="btn" data-coshh-edit="${i.id}">Carry on filling it in</button>` : ''}</div>` : ''}
+      ${i.status === 'done' ? (i.fileNote ? `<p class="bad">${esc(i.fileNote)}</p><button class="btn secondary" data-coshh-refile="${i.id}">File it in Confluence again</button>`
+        : i.filed ? `<p class="muted" style="margin-bottom:0">Filed on the COSHH page in Confluence as ${esc(i.fileName)}.</p>` : '') : ''}
+      ${imported ? `<p class="muted">${esc(i.fileName || '')}, on the COSHH page in Confluence. Correct its details here so it's listed and reminded properly.</p>
+        <div class="psc-new-row coshh-imported">
+          <label>Product<input type="text" id="coshh-imp-product" maxlength="200" value="${esc(i.product)}"></label>
+          <label>COSHH No<input type="number" id="coshh-imp-no" value="${esc(String(i.no || ''))}"></label>
+          <label>Assessment date<input type="date" id="coshh-imp-date" value="${esc(i.assessedOn || '')}"></label>
+        </div><div class="row" style="margin-top:.6rem"><button class="btn secondary" data-coshh-imp-save="${i.id}">Save these</button></div>` : ''}
+      ${!imported && i.status !== 'draft' ? `<dl class="psc-facts coshh-facts">
+        <div><dt>Used for</dt><dd>${esc(d.usedFor || '—')}</dd></div>
+        <div><dt>Where it's used</dt><dd>${esc(label(o.where, d.where))}</dd></div>
+        <div><dt>Hazards</dt><dd>${esc(label(o.hazards, d.hazards))}</dd></div>
+        <div><dt>PPE</dt><dd>${esc(label(o.ppe, d.ppe) === '—' ? 'None' : label(o.ppe, d.ppe))}${d.ppeNote ? `. ${esc(d.ppeNote)}` : ''}</dd></div>
+        <div><dt>Risk</dt><dd>${esc((o.risks || []).find(([k]) => k === d.risk)?.[1] || '—')}</dd></div>
+        <div><dt>Disposal</dt><dd>${esc(label(o.disposal, d.disposal))}</dd></div>
+      </dl>` : ''}
+      ${i.status === 'draft' || manage ? `<div class="row" style="margin-top:.8rem"><button class="btn secondary danger-outline" data-coshh-remove="${i.id}">${i.status === 'draft' ? 'Throw away this draft' : 'Remove from the hub'}</button></div>` : ''}
+    </section>`;
+}
+
+function coshhBlank() {
+  const o = coshhData?.options || {};
+  return { id: null, product: '', revise: false, photos: [], data: { msds: '', otherNames: '', appearance: '', containers: '', usedFor: '', where: [], risk: '', hazards: [], ppe: [], ppeNote: '',
+    firstAid: { eye: '', skin: '', inhalation: '', ingestion: '' }, precautions: o.precautions || '', disposal: [], infoGiven: '', training: '', surveillance: '' } };
+}
+
+function coshhFormHtml() {
+  const f = coshhForm;
+  const d = f.data;
+  const o = coshhData.options;
+  const text = (path, label, { rows = 0, placeholder = '', max = 500, value } = {}) => {
+    const v = value ?? path.split('.').reduce((x, k) => x?.[k], f);
+    return `<label><span>${label}</span>${rows ? `<textarea rows="${rows}" data-coshh-f="${path}" maxlength="${max}" placeholder="${esc(placeholder)}">${esc(v || '')}</textarea>`
+      : `<input type="text" data-coshh-f="${path}" maxlength="${max}" value="${esc(v || '')}" placeholder="${esc(placeholder)}">`}</label>`;
+  };
+  const chips = (field, list, { diamond = false } = {}) => `<div class="chips">${list.map(([k, l]) => `<button type="button" class="chip${d[field].includes(k) ? ' on' : ''}${diamond ? ' coshh-haz' : ''}" data-coshh-chip="${field}" data-value="${k}">${diamond ? COSHH_DIAMOND : ''}${esc(l)}</button>`).join('')}</div>`;
+  const yn = (field) => `<span class="segment">${[['yes', 'Yes'], ['no', 'No']].map(([k, l]) => `<button type="button" class="seg${d[field] === k ? ' on' : ''}" data-coshh-seg="${field}" data-value="${k}">${l}</button>`).join('')}</span>`;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-coshh-cancel="1">Back</button></div>
+    <section class="card coshh-form">
+      <h2 style="margin-top:0">${f.revise ? 'Revise the assessment' : 'New COSHH assessment'}</h2>
+      ${f.revise ? '<p class="help">Completing it makes the next Rev of the same COSHH number, dated today, with an empty review table.</p>' : ''}
+      <h3>The product</h3>
+      <label><span>Principal product name <span class="req">*</span></span><input type="text" data-coshh-f="product" maxlength="200" value="${esc(f.product)}" placeholder="As it's named on the label"></label>
+      <div class="psc-new-row">${text('data.otherNames', 'Other names / manufacturers')}${text('data.msds', 'MSDS ref. number(s)', { max: 200, placeholder: 'From the safety data sheet' })}${text('data.appearance', 'Appearance (under normal conditions)', { max: 300, placeholder: 'Clear liquid, white powder…' })}</div>
+      <h3>Its container</h3>
+      ${text('data.containers', 'Normal container(s)', { placeholder: '500ml trigger spray, 5 litre drum…' })}
+      <div class="coshh-photos edit">${f.photos.map((p) => `<span class="coshh-photo"><img src="/api/coshh/photo?id=${p.id}" alt=""><button type="button" class="linklike" data-coshh-photo-remove="${p.id}">Remove</button></span>`).join('')}
+        ${f.photos.length < 4 ? `<label class="btn secondary coshh-snap">📷 ${f.photos.length ? 'Add another picture' : 'Take a picture of it'}<input type="file" accept="image/*" capture="environment" id="coshh-photo-input" hidden></label>` : ''}</div>
+      <h3>Its use</h3>
+      ${text('data.usedFor', 'What is this product used for? <span class="req">*</span>', { rows: 2, max: 1000 })}
+      <p class="coshh-q">Where is this product used? <span class="req">*</span> <small class="muted">Tick all that apply</small></p>
+      ${chips('where', o.where)}
+      <h3>Hazards</h3>
+      <p class="help" style="margin-top:0">The pictograms on the label or the safety data sheet.</p>
+      ${chips('hazards', o.hazards, { diamond: true })}
+      <h3>PPE</h3>
+      ${chips('ppe', o.ppe)}
+      ${text('data.ppeNote', 'Anything more about PPE', { placeholder: 'Leave both blank if none is needed' })}
+      <h3>First aid</h3>
+      <div class="psc-new-row coshh-two">${text('data.firstAid.eye', 'Eye contact', { rows: 2 })}${text('data.firstAid.inhalation', 'Inhalation', { rows: 2 })}${text('data.firstAid.skin', 'Skin contact', { rows: 2 })}${text('data.firstAid.ingestion', 'Ingestion', { rows: 2 })}</div>
+      <h3>Precautions</h3>
+      ${text('data.precautions', 'Are any particular precautions required? Comments?', { rows: 3, max: 2000 })}
+      <h3>Disposal</h3>
+      ${chips('disposal', o.disposal)}
+      <h3>The assessment</h3>
+      <div class="qrow"><span>Have staff received sufficient information relating to the product? <span class="req">*</span></span>${yn('infoGiven')}</div>
+      <div class="qrow"><span>Is any training required? <span class="req">*</span></span>${yn('training')}</div>
+      <div class="qrow"><span>Are health surveillance controls required? <span class="req">*</span></span>${yn('surveillance')}</div>
+      <div class="qrow"><span>Risk <span class="req">*</span></span><span class="segment">${o.risks.map(([k, l]) => `<button type="button" class="seg${d.risk === k ? ' on' : ''}" data-coshh-seg="risk" data-value="${k}">${l}</button>`).join('')}</span></div>
+      <div class="psc-new-row">
+        <label>Assessed by<input type="text" value="${esc(me.employee?.name || '')}" disabled></label>
+        <label>Assessment date<input type="text" value="Today, when it's completed" disabled></label>
+      </div>
+      <div class="row" style="margin-top:1rem"><button class="btn" data-coshh-submit="1">Complete and file it</button>
+        <button class="btn secondary" data-coshh-save="1">Save for later</button>
+        ${f.id ? `<a class="linklike" href="/api/coshh/file?id=${f.id}" target="_blank" rel="noopener" data-coshh-preview="1">Preview the PDF</a>` : ''}</div>
+    </section>`;
+}
+
+// What's typed, kept as it's typed.
+function coshhCapture() {
+  if (!coshhForm) return;
+  for (const el of view.querySelectorAll('[data-coshh-f]')) {
+    const keys = el.dataset.coshhF.split('.');
+    const last = keys.pop();
+    keys.reduce((o, k) => o[k], coshhForm)[last] = el.value;
+  }
+}
+async function coshhSave({ quiet = true } = {}) {
+  if (!coshhForm || coshhForm.revise) return;
+  coshhCapture();
+  if (!coshhForm.id && !coshhForm.product.trim()) return;
+  const r = await api('/api/coshh/save', { method: 'POST', body: JSON.stringify({ id: coshhForm.id, product: coshhForm.product, data: coshhForm.data }) });
+  coshhForm.id = r.id;
+  if (!quiet) toast('Saved. It\'s under Your drafts.');
+}
+function coshhSaveSoon() {
+  clearTimeout(coshhSaveTimer);
+  coshhSaveTimer = setTimeout(() => coshhSave().catch(() => {}), 2500);
+}
+
+// A picture from the camera, made smaller before it goes.
+async function coshhShrink(file) {
+  const img = await createImageBitmap(file).catch(() => null);
+  if (!img) throw new Error('That picture couldn\'t be read.');
+  for (const [max, quality] of [[1280, 0.78], [1000, 0.68], [800, 0.6]]) {
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(img.width * scale); canvas.height = Math.round(img.height * scale);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+    if (blob && blob.size < 650 * 1024) return blob;
+  }
+  throw new Error('That picture is too big.');
+}
+async function coshhAddPhoto(file) {
+  try {
+    coshhCapture();
+    if (!coshhForm.id) {
+      if (coshhForm.revise) throw new Error('Something went wrong. Go back and open it again.');
+      const r = await api('/api/coshh/save', { method: 'POST', body: JSON.stringify({ id: null, product: coshhForm.product, data: coshhForm.data }) });
+      coshhForm.id = r.id;
+    }
+    toast('Adding the picture…');
+    const blob = await coshhShrink(file);
+    const p = await api(`/api/coshh/photo?id=${coshhForm.id}`, { method: 'POST', body: blob, headers: { 'content-type': 'image/jpeg' } });
+    coshhForm.photos.push({ id: p.id });
+    toast('Picture added');
+  } catch (err) { toast(err.message); }
+  render();
+}
+
+async function coshhOpenForm(id, revise = false) {
+  await coshhLoad();
+  const r = await api(`/api/coshh/item?id=${id}`);
+  const blank = coshhBlank();
+  coshhForm = { id: r.item.id, product: r.item.product, revise, photos: r.photos.map((p) => ({ id: p.id })),
+    data: { ...blank.data, ...r.item.data, firstAid: { ...blank.data.firstAid, ...(r.item.data?.firstAid || {}) } } };
+  coshhView = { kind: 'form' };
+  window.scrollTo(0, 0);
+  return render();
+}
+
+async function coshhClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('a[href^="/api/coshh/file"], a[href^="/api/coshh/photo"]')) return false;
+  if (t('[data-coshh-house]')) return false;  // the checkbox's change does it
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  if (t('[data-coshh-new]')) { await coshhLoad(); coshhForm = coshhBlank(); coshhView = { kind: 'form' }; window.scrollTo(0, 0); return render(); }
+  if (t('[data-coshh-due]')) { coshhDueOnly = t('[data-coshh-due]').dataset.coshhDue === '1'; return render(); }
+  const imp = t('[data-coshh-import]');
+  if (imp) return busy(imp, async () => { const r = await api('/api/coshh/import', { method: 'POST', body: '{}' }); toast(r.added ? `${r.added} brought in. Tick the ones still in house.` : 'Nothing new on the page'); await coshhLoad(true); render(); });
+  const open = t('[data-coshh-open]');
+  if (open) { coshhView = { kind: 'item', id: Number(open.dataset.coshhOpen) }; coshhItem = null; window.scrollTo(0, 0); return render(); }
+  if (t('[data-coshh-back]')) { coshhView = null; coshhItem = null; await coshhLoad(true); return render(); }
+  if (t('[data-coshh-cancel]')) {
+    coshhCapture();
+    clearTimeout(coshhSaveTimer);
+    if (coshhForm.revise) { const id = coshhForm.id; coshhForm = null; coshhView = { kind: 'item', id }; return render(); }
+    await coshhSave().catch(() => {});
+    coshhForm = null; coshhView = null; await coshhLoad(true); return render();
+  }
+  const chip = t('[data-coshh-chip]');
+  if (chip) {
+    coshhCapture();
+    const list = coshhForm.data[chip.dataset.coshhChip];
+    const v = chip.dataset.value;
+    const at = list.indexOf(v);
+    if (at >= 0) list.splice(at, 1); else list.push(v);
+    chip.classList.toggle('on', at < 0);
+    coshhSaveSoon();
+    return true;
+  }
+  const seg = t('[data-coshh-seg]');
+  if (seg) {
+    coshhForm.data[seg.dataset.coshhSeg] = seg.dataset.value;
+    seg.parentElement.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b === seg));
+    coshhSaveSoon();
+    return true;
+  }
+  const rmPhoto = t('[data-coshh-photo-remove]');
+  if (rmPhoto) return busy(rmPhoto, async () => { coshhCapture(); await api('/api/coshh/photo-remove', { method: 'POST', body: JSON.stringify({ photoId: Number(rmPhoto.dataset.coshhPhotoRemove) }) }); coshhForm.photos = coshhForm.photos.filter((p) => p.id !== Number(rmPhoto.dataset.coshhPhotoRemove)); render(); });
+  if (t('[data-coshh-preview]')) { coshhCapture(); await coshhSave().catch(() => {}); return false; }
+  const save = t('[data-coshh-save]');
+  if (save) return busy(save, async () => { await coshhSave({ quiet: false }); coshhForm = null; coshhView = null; await coshhLoad(true); render(); });
+  const submit = t('[data-coshh-submit]');
+  if (submit) {
+    coshhCapture();
+    clearTimeout(coshhSaveTimer);
+    return busy(submit, async () => {
+      submit.textContent = 'Filing it…';
+      const r = await api('/api/coshh/submit', { method: 'POST', body: JSON.stringify({ id: coshhForm.id, product: coshhForm.product, data: coshhForm.data }) });
+      toast(r.filed ? `COSHH ${r.no} Rev ${r.rev} completed and filed in Confluence` : `COSHH ${r.no} completed. ${r.fileNote || ''}`);
+      coshhForm = null; coshhView = { kind: 'item', id: r.id }; coshhItem = null; await coshhLoad(true); window.scrollTo(0, 0); render();
+    }).finally(() => { if (document.body.contains(submit)) submit.textContent = 'Complete and file it'; });
+  }
+  const edit = t('[data-coshh-edit]');
+  if (edit) return coshhOpenForm(Number(edit.dataset.coshhEdit));
+  const revise = t('[data-coshh-revise]');
+  if (revise) return coshhOpenForm(Number(revise.dataset.coshhRevise), true);
+  const rev = t('[data-coshh-review]');
+  if (rev) return busy(rev, async () => {
+    const r = await api('/api/coshh/review', { method: 'POST', body: JSON.stringify({ id: Number(rev.dataset.coshhReview), note: view.querySelector('#coshh-review-note')?.value || '' }) });
+    toast(`Reviewed. Next review ${coshhDay(r.nextReviewOn)}`); coshhItem = null; await coshhLoad(true); render();
+  });
+  const refile = t('[data-coshh-refile]');
+  if (refile) return busy(refile, async () => { const r = await api('/api/coshh/refile', { method: 'POST', body: JSON.stringify({ id: Number(refile.dataset.coshhRefile) }) }); toast(r.filed ? 'Filed in Confluence' : r.fileNote); coshhItem = null; render(); });
+  const placeT = t('[data-coshh-place-toggle]');
+  if (placeT) {
+    const i = coshhItem.item;
+    const l = placeT.dataset.coshhPlaceToggle;
+    const next = i.locations.includes(l) ? i.locations.filter((x) => x !== l) : [...i.locations, l];
+    return busy(placeT, async () => { const r = await api('/api/coshh/locations', { method: 'POST', body: JSON.stringify({ id: i.id, locations: next }) }); i.locations = r.locations; coshhData = null; await coshhLoad(); render(); });
+  }
+  const placeAdd = t('[data-coshh-place-add]');
+  if (placeAdd) {
+    const v = view.querySelector('#coshh-new-place')?.value.trim();
+    if (!v) { toast('Say where'); return true; }
+    const i = coshhItem.item;
+    return busy(placeAdd, async () => { const r = await api('/api/coshh/locations', { method: 'POST', body: JSON.stringify({ id: i.id, locations: [...i.locations, v] }) }); i.locations = r.locations; await coshhLoad(true); render(); });
+  }
+  const impSave = t('[data-coshh-imp-save]');
+  if (impSave) return busy(impSave, async () => {
+    await api('/api/coshh/details', { method: 'POST', body: JSON.stringify({ id: Number(impSave.dataset.coshhImpSave), product: view.querySelector('#coshh-imp-product').value, no: view.querySelector('#coshh-imp-no').value, assessedOn: view.querySelector('#coshh-imp-date').value }) });
+    toast('Saved'); coshhItem = null; await coshhLoad(true); render();
+  });
+  const rm = t('[data-coshh-remove]');
+  if (rm) {
+    if (!confirm(coshhItem?.item.status === 'draft' ? 'Throw away this draft?' : 'Remove this assessment from the hub? Its file stays on the Confluence page.')) return true;
+    return busy(rm, async () => { await api('/api/coshh/remove', { method: 'POST', body: JSON.stringify({ id: Number(rm.dataset.coshhRemove) }) }); toast('Removed'); coshhView = null; coshhItem = null; await coshhLoad(true); render(); });
+  }
+  return false;
+}
+
+view.addEventListener('input', (event) => {
+  if (currentRoute() !== '#/coshh') return;
+  if (event.target.id === 'coshh-search') {
+    coshhQuery = event.target.value;
+    const pos = event.target.selectionStart;
+    render().then(() => { const box = view.querySelector('#coshh-search'); if (box) { box.focus(); box.setSelectionRange(pos, pos); } });
+    return;
+  }
+  if (event.target.matches('[data-coshh-f]')) { coshhCapture(); coshhSaveSoon(); }
+});
+view.addEventListener('change', async (event) => {
+  if (currentRoute() !== '#/coshh') return;
+  const el = event.target;
+  if (el.matches('[data-coshh-place]')) { coshhPlace = el.value; return render(); }
+  if (el.id === 'coshh-photo-input' && el.files?.[0]) return coshhAddPhoto(el.files[0]);
+  if (el.matches('[data-coshh-house]')) {
+    const id = Number(el.dataset.coshhHouse);
+    el.disabled = true;
+    try {
+      const r = await api('/api/coshh/in-house', { method: 'POST', body: JSON.stringify({ id, inHouse: el.checked }) });
+      toast(r.inHouse ? 'Marked in house' : 'Marked no longer in house');
+      coshhItem = null; await coshhLoad(true);
+    } catch (err) { toast(err.message); el.checked = !el.checked; }
+    el.disabled = false;
+    render();
+  }
+});
 
 // ---------- point of work ----------
 
@@ -15303,6 +15692,7 @@ view.addEventListener('click', async (event) => {
   }
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesClick(event) !== false) return;
   if (currentRoute() === '#/nearmiss' && !settingsOpen && await nmClick(event) !== false) return;
+  if (currentRoute() === '#/coshh' && !settingsOpen && await coshhClick(event) !== false) return;
   if (currentRoute() === '#/xp' && event.target.closest('#modifiers') && await modifiersClick(event) !== false) return;
   if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
   const eloUndo = event.target.closest('button[data-elo-undo]');

@@ -853,6 +853,7 @@ export async function runScheduled(rawEnv) {
       await attempt('Feedback round-up', async () => (await import('./feedback.js')).roundUp(env));
       await attempt('Notification emails', async () => (await import('./notify.js')).digest(env));
       await attempt('Tool box talk reminders', async () => (await import('./training.js')).daily(env));
+      await attempt('COSHH reviews', async () => (await import('./coshh.js')).remindReviews(env));
       await attempt('Tool box talks finished', async () => (await import('./training.js')).concludeTalks(env));
       await attempt('Birthdays', async () => (await import('./eotq.js')).birthdayAlerts(env));
     }),
