@@ -697,6 +697,8 @@ Anywhere, choosing a person's course opens it to record training. **＋ Course**
 
 **Before and after a talk.** Run `schema-068.sql` first. When a talk is arranged, its Internal Training item gets the talk's day as its Target end date and is moved to **Training Date Confirmed**. Each hour the hub looks for talks that have finished: each is moved to **Training Provided**, the join link is put away (management still see it under Change it), and everyone it was for who hasn't acknowledged it is emailed the link to acknowledge it (Training & Policy notifications, "Tool box talk to acknowledge", emailed by default) and shown an alert on their home screen. The alert can't be dismissed; it goes once they've acknowledged. Talks that finished more than three days before this first runs, and talks from the old spreadsheet, aren't chased. If Jira won't make a move (a status named differently, say), the talk says so to management.
 
+**Reminding.** On a tool box talk (once it has started) and a policy, management see **Email the N people who haven't acknowledged it**. Each person still to acknowledge it gets an email straight away (whatever their notification settings), with a link that opens it ready to acknowledge, and the same in the hub's notifications. The page shows when everyone was last reminded. It can be sent once every 10 minutes, and each one is in the audit log.
+
 **Acknowledging.** Under "I attended this tool box talk and understood it", everyone chooses how they found it (good, OK or poor) and can leave feedback. Management see the totals and the comments on the talk, and each person's face beside their name.
 
 **Who's had each one.** Under Training, **Tool box talks**, **Who's had each one**: every topic across the top, everyone on the hub down the side, and the date and time each last acknowledged it. A topic is due again a year after it was last acknowledged: amber in the month before, red once it's a year or more. A cross is someone asked to a talk on it who hasn't acknowledged it; a dash, someone never asked. The Overview shows the same totals. A talk's **Topic** (on the new talk form, suggested from earlier ones) is what groups repeats of the same talk; left blank it's the title.
@@ -737,6 +739,33 @@ Run `schema-062.sql` in the D1 console first. Until it's run, alerts are emailed
 The hub only lists and searches customer projects, the ones in the **Promtek UK Customers** and **Promtek SA Customers** categories, plus its own working projects: MES (Condor Dev), PSC (service items), PMB (general tasks and assisting), PROMTEKIT and ASSET (IT support) and the ten IMS projects (internal time). Any other project, such as CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST or TPB, is left out without needing to be listed, so a new testing project stays out as long as it isn't put in a customer category. CSIMS, CSIMSB, CSIMST, ARCHIVE, TEST and TPB are also blocked outright, in case one is ever put in a customer category by mistake. Both lists are at the top of `src/jira.js`.
 
 Looking up a particular item by its key still works, so TEST is a safe place to try things out. The list of customer projects is read from Jira every six hours.
+
+## Part 14f2: Changes in Jira made as the person
+
+Without this, everything the hub does in Jira shows in Jira's history as the hub's own account. With it, a change someone makes in the hub is made as them. That covers editing an IMS item, adding a sub-task or comment, moving a job, raising a tool box talk, uploading a file, and changes to customers' copies of PSC tickets (assigning, resolving, commenting and so on, from the PSC tile too). The exceptions all stay with the hub's account:
+- The PSC board's own items (PSC-…), whoever changes them, including making their customer copies.
+- Fetching the latest from Jira.
+- The hub's own background work, such as IMS copies and keeping them in step, and a change Jira didn't take first time that the hub tries again later.
+
+Reading from Jira always uses the hub's account.
+
+**Setting it up (once):**
+1. At developer.atlassian.com, signed in as a Jira admin, open **Developer console** and **Create** an **OAuth 2.0 integration**. Name it Promtek Hub.
+2. **Permissions:** add **Jira API** and give it `read:jira-work`, `write:jira-work` and `read:jira-user`.
+3. **Authorization:** set the callback URL to `https://<the hub's address>/api/jira-connect/callback`.
+4. **Distribution:** turn on **Enable sharing**, so people other than the app's owner can connect. Fill in Promtek as the vendor, a privacy policy link, and say the app stores personal data (each person's access to Jira).
+5. **Settings:** copy the Client ID and Secret, then add them to the Worker:
+   - `ATLASSIAN_CLIENT_ID`, as a variable or a secret.
+   - `ATLASSIAN_CLIENT_SECRET`, as a secret: `npx wrangler secret put ATLASSIAN_CLIENT_SECRET`.
+6. Run `schema-069.sql` in the D1 console.
+
+**Connecting:** until someone connects, their home screen alerts say **Connect your Jira account**. **Connect** takes them to Atlassian once, to allow the hub, and back. The hub checks the Atlassian account is theirs, on Promtek's Jira, before keeping it. If Atlassian says the app needs approving, a site admin approves it once in admin.atlassian.com under Connected apps.
+
+**How it keeps working:**
+- **Storage:** each person's access is kept locked (encrypted with a key made from the client secret) and renewed as it runs out.
+- **If the connection stops:** if it lapses (after about 90 days unused, or if they remove the app from their Atlassian account), their change still goes through as the hub's account, and their home screen asks them to **Reconnect**.
+- **If their own account can't do something:** anything their Jira permissions don't allow is done as the hub's account instead, so nothing stops working.
+- **Changing the client secret:** this disconnects everyone, and they each connect again.
 
 ## Part 15: 8x8 calls
 

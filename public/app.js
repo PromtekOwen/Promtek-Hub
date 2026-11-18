@@ -692,7 +692,7 @@ const feedWhen = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'nume
 
 function feedItemHtml(a, { full = false } = {}) {
   const open = a.form ? `<button class="feed-open" data-form-open="${a.formId}">Fill in</button>`
-    : a.link ? `<a class="feed-open" href="${esc(a.link)}"${a.link.startsWith('http') ? ' target="_blank" rel="noopener"' : ''}>Open</a>` : '';
+    : a.link ? `<a class="feed-open" href="${esc(a.link)}"${a.link.startsWith('http') ? ' target="_blank" rel="noopener"' : ''}>${esc(a.linkText || 'Open')}</a>` : '';
   const done = a.id ? `<button class="feed-done" data-feed-dismiss="${a.id}">Got it</button>` : '';
   const formNote = a.form ? `<span class="feed-from">${n(a.questions)} ${a.questions === 1 ? 'question' : 'questions'}${a.endsAt ? `, closes ${feedWhen(a.endsAt)}` : ''}. ${esc(a.from || '')}</span>` : '';
   return `<li class="feed-item${a.tone === 'important' ? ' important' : ''}${full ? ' full' : ''}">
@@ -15730,7 +15730,7 @@ function trTalkHtml(t, manage) {
         : '<p style="margin:0">Once the talk has started you can acknowledge it here.</p>'}</div>` : ''}
       ${manage && t.started ? trShareHtml('talk', t.id, 'tool box talk') : ''}
       ${manage && t.started ? trFeedbackHtml(t.feedback) : ''}
-      ${manage ? `<h3>Who it's for (${t.done} of ${t.count} acknowledged)</h3>${trWhoHtml(t.people)}
+      ${manage ? `<h3>Who it's for (${t.done} of ${t.count} acknowledged)</h3>${trWhoHtml(t.people, t.started ? { kind: 'talk', id: t.id, at: t.chasedAt } : null)}
         <h3>Change it</h3>
         <div class="tr-form psc-new-row">
           <label>Meeting link<input type="url" id="tr-talk-link" value="${esc(t.link || '')}" placeholder="https://meet.google.com/…"></label>
@@ -15751,10 +15751,12 @@ function trFeedbackHtml(f) {
     ${f.comments.length ? `<ul class="tr-fb-comments">${f.comments.map((c) => `<li><span aria-hidden="true">${TR_FACES.find(([k]) => k === c.rating)?.[1] || ''}</span><div><p style="margin:0">${esc(c.comment)}</p><small class="muted">${esc(c.name || '')} · ${esc(shortDate(String(c.at).slice(0, 10)))}</small></div></li>`).join('')}</ul>` : ''}`;
 }
 
-function trWhoHtml(people) {
+function trWhoHtml(people, chase = null) {
   const done = people.filter((p) => p.at);
   const not = people.filter((p) => !p.at);
-  return `<div class="tr-who">
+  const remind = chase && not.length ? `<div class="tr-chase"><button class="btn secondary" data-tr-chase="${chase.kind}" data-id="${chase.id}">✉ Email the ${not.length === 1 ? 'one person' : `${not.length} people`} who haven't acknowledged it</button>
+      <small class="muted">${chase.at ? `Last reminded ${esc(agoText(chase.at))}. ` : ''}Each gets an email with a link straight to it.</small></div>` : '';
+  return `${remind}<div class="tr-who">
       <div><h4>Not yet (${not.length})</h4>${not.length ? `<ul>${not.map((p) => `<li>${esc(p.name)}</li>`).join('')}</ul>` : '<p class="muted">Everyone has.</p>'}</div>
       <div><h4>Acknowledged (${done.length})</h4>${done.length ? `<ul>${done.map((p) => `<li>${esc(p.name)} <small class="muted">${esc(shortDate(p.at.slice(0, 10)))}</small>${p.rating ? ` <span title="${esc(TR_FACES.find(([k]) => k === p.rating)?.[2] || '')}">${TR_FACES.find(([k]) => k === p.rating)?.[1] || ''}</span>` : ''}</li>`).join('')}</ul>` : '<p class="muted">Nobody yet.</p>'}</div>
     </div>`;
@@ -15812,7 +15814,7 @@ function trPolicyHtml(p, manage) {
       ${p.forMe ? `<div class="jv-note">${p.acknowledged ? `<p style="margin:0">You acknowledged this policy ${esc(agoText(p.acknowledged))}.</p>`
         : `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I have read and understood this policy</label><div class="row" style="margin-top:.5rem"><button class="btn" data-tr-ack="policy" data-id="${p.id}">Acknowledge</button></div>`}</div>` : ''}
       ${manage ? trShareHtml('policy', p.id, 'policy') : ''}
-      ${manage ? `<h3>Who needs to acknowledge it (${p.done} of ${p.count})</h3>${trWhoHtml(p.people)}
+      ${manage ? `<h3>Who needs to acknowledge it (${p.done} of ${p.count})</h3>${trWhoHtml(p.people, p.archived ? null : { kind: 'policy', id: p.id, at: p.chasedAt })}
         <div class="row"><button class="btn secondary" data-tr-policy-edit="${p.id}">Edit</button><button class="btn secondary" data-tr-policy-archive="${p.id}">${p.archived ? 'Bring it back' : 'Archive it'}</button></div>` : ''}
     </section>`;
 }
@@ -16347,6 +16349,18 @@ async function trClick(event) {
   if (tcancel) {
     if (!confirm('Cancel this tool box talk? It comes off everyone\'s list and the reminders stop. The Jira item stays as it is.')) return true;
     await busy(tcancel, async () => { await api('/api/training/talk', { method: 'POST', body: JSON.stringify({ id: Number(tcancel.dataset.trTalkCancel), cancel: true }) }); trOpen = null; await reload('talks'); render(); });
+    return true;
+  }
+  const chaseBtn = t('[data-tr-chase]');
+  if (chaseBtn) {
+    const kind = chaseBtn.dataset.trChase;
+    const n = (kind === 'talk' ? trCache.talks?.talks : trCache.policies?.policies)?.find((x) => x.id === Number(chaseBtn.dataset.id))?.people?.filter((p) => !p.at).length || 0;
+    if (!confirm(`Email ${n === 1 ? 'the one person' : `all ${n} people`} who haven't acknowledged it yet?`)) return true;
+    await busy(chaseBtn, async () => {
+      const r = await api('/api/training/chase', { method: 'POST', body: JSON.stringify({ kind, id: Number(chaseBtn.dataset.id) }) });
+      toast(`Reminder emailed to ${r.sent} ${r.sent === 1 ? 'person' : 'people'}${r.missed ? `; ${r.missed} have no email address in the hub` : ''}`);
+      await reload(kind === 'talk' ? 'talks' : 'policies'); render();
+    });
     return true;
   }
   const ack = t('[data-tr-ack]');

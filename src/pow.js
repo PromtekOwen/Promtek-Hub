@@ -1,6 +1,6 @@
 // Point of work risk assessments: picking the job, keeping drafts, and
 // delivering the finished PDF to Jira and Google Drive.
-import { jira, searchJql, customerProjects, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
+import { jira, jiraFetch, searchJql, customerProjects, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { buildPowPdf } from './pow-pdf.js';
 import { SITE_VISIT_TYPES, DEFAULT_RA_LIBRARY, BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, RISK_LEVELS } from './pow-data.js';
@@ -321,10 +321,9 @@ async function attachToJira(env, rawIssueKey, filename, bytes) {
   const issueKey = await mustBeHubIssue(env, issueKeyOf(rawIssueKey));
   const body = new FormData();
   body.append('file', new Blob([bytes], { type: 'application/pdf' }), filename);
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {
+  const res = await jiraFetch(env, `/rest/api/3/issue/${issueKey}/attachments`, {
     method: 'POST',
     headers: {
-      Authorization: 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`),
       'X-Atlassian-Token': 'no-check',
       Accept: 'application/json',
     },

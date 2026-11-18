@@ -12,7 +12,7 @@
 // Triage decides what kind of note each ticket gets (a single sentence, a
 // paragraph, or a paragraph with a photo), and whoever is assigned the ticket
 // writes it here, adding pictures, which go to Jira.
-import { jira, searchJql } from './jira.js';
+import { jira, jiraFetch, searchJql } from './jira.js';
 import { londonDate, raiseAlert } from './sync.js';
 import { moduleOf, MODULE_FIELD, INCLUDE_FIELD, NOTE_FIELD } from './mes.js';
 
@@ -446,9 +446,9 @@ export async function upload(env, viewer, issueId, request) {
   if (!/\.[a-z0-9]{2,4}$/i.test(name)) name += `.${ext}`;
   const form = new FormData();
   form.append('file', new File([bytes], name, { type }));
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(item.issue_key)}/attachments`, {
+  const res = await jiraFetch(env, `/rest/api/3/issue/${encodeURIComponent(item.issue_key)}/attachments`, {
     method: 'POST', body: form,
-    headers: { Authorization: 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`), 'X-Atlassian-Token': 'no-check', Accept: 'application/json' },
+    headers: { 'X-Atlassian-Token': 'no-check', Accept: 'application/json' },
   });
   if (!res.ok) throw new Error(`Jira didn't take the picture (${res.status}). Try again in a moment.`);
   const [att] = await res.json();

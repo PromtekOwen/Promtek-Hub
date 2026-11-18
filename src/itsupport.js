@@ -1,6 +1,6 @@
 // IT support: raises Jira Service Management requests on behalf of the person
 // asking, and shows them what happened next.
-import { jira, searchJql, issueKeyOf, getIssue } from './jira.js';
+import { jira, jiraFetch, searchJql, issueKeyOf, getIssue } from './jira.js';
 
 const IT_PROJECT = 'PROMTEKIT';
 const ASSET_PROJECT = 'ASSET';
@@ -178,10 +178,9 @@ async function attachFile(env, issueKey, { name, type, base64 }) {
 
   const body = new FormData();
   body.append('file', new Blob([bytes], { type: type || 'image/jpeg' }), name || 'photo.jpg');
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {
+  const res = await jiraFetch(env, `/rest/api/3/issue/${issueKey}/attachments`, {
     method: 'POST',
     headers: {
-      Authorization: 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`),
       'X-Atlassian-Token': 'no-check',
       Accept: 'application/json',
     },

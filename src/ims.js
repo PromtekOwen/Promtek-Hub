@@ -9,7 +9,7 @@
 // change goes to the others. Copies that already disagreed when the hub first saw them are
 // left as they are and shown, for someone to choose which is right. A copy the hub hasn't
 // seen before is brought in line with the others, never the other way round.
-import { jira } from './jira.js';
+import { jira, jiraFetch } from './jira.js';
 import { getState, setState } from './sync.js';
 import { canTile } from './permissions.js';
 import { record } from './audit.js';
@@ -50,11 +50,14 @@ const ph = (n) => Array(n).fill('?').join(',');
 class OutOfCalls extends Error {}
 function budget(env, max) {
   let used = 0;
-  return {
-    env,
-    async call(path, init) { if (used >= max) throw new OutOfCalls('Call budget used'); used++; return jira(env, path, init); },
+  const make = (e) => ({
+    env: e,
+    async call(path, init) { if (used >= max) throw new OutOfCalls('Call budget used'); used++; return jira(e, path, init); },
     left: () => max - used,
-  };
+    // The same calls, made as the hub's own account rather than whoever is using it.
+    asHub: () => make({ ...env, JIRA_ACTOR: null }),
+  });
+  return make(env);
 }
 
 export function mustSee(viewer) {
@@ -597,7 +600,9 @@ async function makeCopy(env, call, groupKey, areaKey, F) {
 }
 
 // Carries out queued changes and copies, a few each run.
-export async function applyWrites(env, b, { limit = WRITES_PER_RUN } = {}) {
+export async function applyWrites(env, b0, { limit = WRITES_PER_RUN } = {}) {
+  // Queued copies and changes are the hub's own work, whoever's action set them going.
+  const b = b0.asHub ? b0.asHub() : b0;
   const { results } = await env.DB.prepare(`SELECT * FROM ims_writes WHERE done_at IS NULL AND attempts < ${MAX_TRIES} ORDER BY id LIMIT ?`).bind(limit).all();
   if (!results.length) return { idle: true };
   const F = await fieldMap(env, (p) => b.call(p));
@@ -1606,11 +1611,10 @@ export async function minutes(env, viewer, key, form) {
   if (!files.length) throw refuse('Choose the minutes to upload.');
   if (files.length > 10) throw refuse('Upload up to 10 files at a time.');
   for (const f of files) if (f.size > 20 * 1024 * 1024) throw refuse(`${f.name} is over 20 MB.`);
-  const auth = `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`)}`;
   for (const f of files) {
     const body = new FormData();
     body.append('file', f, f.name || 'minutes');
-    const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(k)}/attachments`, { method: 'POST', headers: { Authorization: auth, 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body });
+    const res = await jiraFetch(env, `/rest/api/3/issue/${encodeURIComponent(k)}/attachments`, { method: 'POST', headers: { 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body });
     if (!res.ok) throw refuse(`Jira didn't take ${f.name} (${res.status}).`, 502);
   }
   let moved = false;

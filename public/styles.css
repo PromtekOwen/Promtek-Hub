@@ -2456,3 +2456,4 @@ button.ims-since:hover { border-color: var(--blue); }
 .ims-sub-form { display: grid; gap: .8rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
 .ims-sub-form h3 { margin: 0; }
 .ims-sub-form label { display: grid; gap: .3rem; }
+.tr-chase { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; margin: .2rem 0 .8rem; }

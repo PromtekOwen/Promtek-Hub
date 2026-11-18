@@ -2,7 +2,7 @@
 // due again), tool box talks (an Internal Training item in Compliance & Training, with a
 // reminder each day counting down to it) and policies to acknowledge. Everyone sees their
 // own; management set them up and see who has and hasn't acknowledged each.
-import { jira } from './jira.js';
+import { jira, jiraFetch } from './jira.js';
 import { canTile } from './permissions.js';
 import { record } from './audit.js';
 import { londonDate } from './sync.js';
@@ -421,6 +421,7 @@ export async function talks(env, viewer) {
     for (const f of fb) (feedback.get(f.item_id) || feedback.set(f.item_id, []).get(f.item_id)).push(f);
   }
   const now = Date.now();
+  const chased = manage ? await chasedAt(env) : new Map();
   const out = [];
   for (const t of results) {
     const ids = [...await audienceIds(env, json(t.audience, {}), list)];
@@ -436,7 +437,7 @@ export async function talks(env, viewer) {
       count: ids.length, done: ids.filter((id) => ack.has(id)).length,
       people: manage ? ids.map((id) => ({ id, name: names.get(id) || id, at: ack.get(id) || null, rating: (feedback.get(t.id) || []).find((f) => f.account_id === id)?.rating || null }))
         .sort((a, b) => Boolean(a.at) - Boolean(b.at) || a.name.localeCompare(b.name)) : null,
-      feedback: manage ? feedbackOf(feedback.get(t.id) || []) : null,
+      feedback: manage ? feedbackOf(feedback.get(t.id) || []) : null, chasedAt: manage ? chased.get(`talk:${t.id}`) || null : null,
       by: t.created_by_name,
     });
   }
@@ -498,6 +499,7 @@ export async function policies(env, viewer) {
   const names = new Map(list.map((p) => [p.id, p.name]));
   const { results } = await env.DB.prepare('SELECT * FROM policies ORDER BY archived, created_at DESC LIMIT 200').all();
   const acks = await acksFor(env, 'policy', results.map((p) => p.id));
+  const chased = manage ? await chasedAt(env) : new Map();
   const out = [];
   for (const p of results) {
     const ids = [...await audienceIds(env, json(p.audience, {}), list)];
@@ -508,6 +510,7 @@ export async function policies(env, viewer) {
       id: p.id, title: p.title, about: p.about, links: json(p.links, []), version: p.version, dueOn: p.due_on, archived: Boolean(p.archived), createdAt: p.created_at, by: p.created_by_name,
       audience: manage ? json(p.audience, {}) : null, forMe: mine, acknowledged: ack.get(viewer.accountId) || null, count: ids.length, done: ids.filter((id) => ack.has(id)).length,
       people: manage ? ids.map((id) => ({ id, name: names.get(id) || id, at: ack.get(id) || null })).sort((a, b) => Boolean(a.at) - Boolean(b.at) || a.name.localeCompare(b.name)) : null,
+      chasedAt: manage ? chased.get(`policy:${p.id}`) || null : null,
     });
   }
   return { policies: out, manage };
@@ -540,6 +543,51 @@ export async function acknowledge(env, viewer, { kind, id, rating = null, commen
   await record(env, viewer, { area: kind === 'talk' ? 'Training' : 'Policies', action: kind === 'talk' ? 'acknowledged a tool box talk' : 'acknowledged a policy',
     subjectType: kind, subjectId: String(item.id), label: item.title }).catch(() => {});
   return { ok: true, at };
+}
+
+// ---------- chasing ----------
+
+// Management email everyone still to acknowledge a talk or policy, with the link straight to it.
+const CHASE_GAP_MS = 10 * 60 * 1000;
+async function chasedAt(env) {
+  const { results } = await env.DB.prepare("SELECT key, value FROM sync_state WHERE key LIKE 'chase:%'").all().catch(() => ({ results: [] }));
+  return new Map(results.map((r) => [r.key.slice(6), r.value]));
+}
+export async function chase(env, viewer, { kind, id }) {
+  mustManage(viewer);
+  const item = kind === 'talk' ? await env.DB.prepare('SELECT * FROM toolbox_talks WHERE id = ? AND cancelled = 0').bind(Number(id)).first()
+    : kind === 'policy' ? await env.DB.prepare('SELECT * FROM policies WHERE id = ? AND archived = 0').bind(Number(id)).first() : null;
+  if (!item) throw refuse('That isn\'t in the list any more.', 404);
+  if (kind === 'talk' && Date.parse(item.starts_at) > Date.now()) throw refuse('A tool box talk can be acknowledged once it has started, so there\'s no one to remind yet.');
+  const last = (await chasedAt(env)).get(`${kind}:${item.id}`);
+  if (last && Date.now() - Date.parse(last) < CHASE_GAP_MS) throw refuse('Everyone was reminded a few minutes ago. Try again later.');
+  const list = await people(env);
+  const ids = [...await audienceIds(env, json(item.audience, {}), list)];
+  const { results: acked } = await env.DB.prepare('SELECT account_id FROM acknowledgements WHERE kind = ? AND item_id = ?').bind(kind, item.id).all();
+  const done = new Set(acked.map((a) => a.account_id));
+  const todo = ids.filter((x) => !done.has(x));
+  if (!todo.length) throw refuse('Everyone has acknowledged it.');
+  const origin = String(env.HUB_URL || (await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'hub_origin'").first().catch(() => null))?.value || '').replace(/\/$/, '');
+  const path = `#/training?${kind}=${item.id}`;
+  const link = `${origin}/${path}`;
+  const by = viewer.employee?.name || viewer.email;
+  const what = kind === 'talk' ? 'tool box talk' : 'policy';
+  const now = new Date().toISOString();
+  const { chasePerson } = await import('./notify.js');
+  const sent = [];
+  for (const pid of todo) {
+    const due = kind === 'policy' && item.due_on ? ` It's due by ${item.due_on}.` : '';
+    const ok = await chasePerson(env, pid, { tile: 'training', kind: kind === 'talk' ? 'talk-ack' : 'policy-reminder', dedupe: `chase:${kind}:${item.id}:${now}`,
+      subject: `Reminder: you still need to acknowledge the ${what} "${item.title}"`,
+      body: `${by} has asked for a reminder: you haven't acknowledged the ${what} "${item.title}" yet.${due}\n\nOpen it here to ${kind === 'talk' ? 'confirm you attended and understood it' : 'read and acknowledge it'}:\n${link}`,
+      link: path, ref: { key: `${kind}-${item.id}` } }).catch(() => false);
+    if (ok) sent.push(pid);
+  }
+  await env.DB.prepare('INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(`chase:${kind}:${item.id}`, now).run();
+  const names = new Map(list.map((p) => [p.id, p.name]));
+  await record(env, viewer, { area: kind === 'talk' ? 'Training' : 'Policies', action: `reminded everyone still to acknowledge a ${what}`, subjectType: kind, subjectId: String(item.id), label: item.title,
+    changes: [{ label: 'Emailed', before: '', after: sent.map((x) => names.get(x) || x).join(', ').slice(0, 500) }] }).catch(() => {});
+  return { ok: true, sent: sent.length, missed: todo.length - sent.length, at: now };
 }
 
 // ---------- each morning ----------
@@ -639,8 +687,8 @@ export async function addTalkFile(env, viewer, id, name, request) {
   const filename = clip(name, 200).replace(/[\\/:*?"<>|\r\n]/g, '_') || 'document';
   const form = new FormData();
   form.append('file', new Blob([bytes], { type: request.headers.get('content-type') || 'application/octet-stream' }), filename);
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(t.issue_key)}/attachments`, {
-    method: 'POST', headers: { Authorization: jiraAuth(env), 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body: form });
+  const res = await jiraFetch(env, `/rest/api/3/issue/${encodeURIComponent(t.issue_key)}/attachments`, {
+    method: 'POST', headers: { 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body: form });
   if (!res.ok) throw refuse(`Jira wouldn't take the file (${res.status}).`, 502);
   await record(env, viewer, { area: 'Training', action: 'attached a document to a tool box talk', subjectType: 'talk', subjectId: String(t.id), label: `${t.title}: ${filename}` }).catch(() => {});
   return { ok: true };

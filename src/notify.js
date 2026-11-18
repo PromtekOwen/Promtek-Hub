@@ -211,6 +211,14 @@ export async function toPerson(env, accountId, { tile, kind, dedupe, subject, bo
   return deliver(env, emp, { tile, kind, dedupe, subject, body, link: link || defaultLink(tile), refKey: ref.key || null }, { app: choice.app, email: choice.email, prefs });
 }
 
+// A reminder sent by hand by management: always emailed, straight away, as well as in the app.
+export async function chasePerson(env, accountId, { tile, kind, dedupe, subject, body, link = null, ref = {} }) {
+  const emp = (await staff(env)).find((e) => e.account_id === accountId);
+  if (!emp?.email) return false;
+  const prefs = withDefaults(tile, await savedPrefs(env, emp.account_id, tile));
+  return deliver(env, emp, { tile, kind, dedupe, subject, body, link: link || defaultLink(tile), refKey: ref.key || null }, { app: true, email: true, prefs: { ...prefs, emailMode: 'instant', workingHours: false } });
+}
+
 // ---------- PSC: what changed since it was last read ----------
 
 const HOUR = 3600000;

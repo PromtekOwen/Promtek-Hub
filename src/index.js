@@ -21,6 +21,7 @@ import * as Obs from './obsolescence.js';
 import * as Org from './org.js';
 import * as People from './people.js';
 import * as Home from './home.js';
+import * as JiraAuth from './jiraauth.js';
 import * as Eotq from './eotq.js';
 import { workDaysOf, weekHoursOf } from './hours.js';
 import { browse, shortcuts, search, stageHint, createWorklog, createPsc, flagMissingStage, setFavourite, itemsByKey, dayLogs, updateWorklog, deleteWorklog, nextStatus, moveAfterLog } from './logging.js';
@@ -85,6 +86,15 @@ async function savePageReads(rawEnv) {
   try { await addReads(rawEnv, 'd1_reads_web', counts, { queries, writes }); } catch (err) { console.warn('Read count not saved:', err.message); }
 }
 
+const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function connectPage(message, ok) {
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Jira account</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;color:#1b2a35;background:#f4f7f9">
+<h1 style="font-size:1.4rem">${ok ? 'Connected' : 'Not connected'}</h1><p>${escHtml(message)}</p>
+<p><a href="/#/" style="color:#0b6aa6;font-weight:600">Back to the hub</a>${ok ? '' : ' · <a href="/api/jira-connect/start" style="color:#0b6aa6;font-weight:600">Try again</a>'}</p></body></html>`,
+  { status: ok ? 200 : 400, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'" } });
+}
+
 export default {
   async fetch(request, rawEnv, ctx) {
     const url = new URL(request.url);
@@ -128,7 +138,22 @@ export default {
           return await route(request, { ...env, DB: readOnly(env.DB), RAW_DB: env.DB }, url, viewer);
         }
       }
-      return await route(request, env, url, real);
+      // Connecting their own Jira account: there and back from Atlassian, as pages.
+      if (url.pathname === '/api/jira-connect/start' && request.method === 'GET') {
+        try { return Response.redirect(await JiraAuth.start(env, real, url.origin), 302); } catch (err) { return connectPage(err.message, false); }
+      }
+      if (url.pathname === '/api/jira-connect/callback' && request.method === 'GET') {
+        try {
+          await JiraAuth.finish(env, real, url.origin, { code: url.searchParams.get('code'), state: url.searchParams.get('state'), error: url.searchParams.get('error') });
+          return connectPage('Your Jira account is connected. Changes you make in the hub now show as you in Jira.', true);
+        } catch (err) { return connectPage(err.message, false); }
+      }
+      if (url.pathname === '/api/jira-connect/status' && request.method === 'GET') return json(await JiraAuth.status(env, real));
+      if (url.pathname === '/api/jira-connect/disconnect' && request.method === 'POST') return json(await JiraAuth.disconnect(env, real));
+      // Changes someone makes are made in Jira as them, once they've connected their account.
+      const acting = real.accountId && JiraAuth.configured(env) && JiraAuth.actsAsUser(request.method, url.pathname)
+        ? { ...env, JIRA_ACTOR: { accountId: real.accountId, email: real.email } } : env;
+      return await route(request, acting, url, real);
     } catch (err) {
       console.error(err);
       return json({ error: err.message }, err.status || 500);
@@ -538,6 +563,7 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/training/talk') return json(body.id ? await T.updateTalk(env, user, body) : await T.createTalk(env, user, body));
     if (method === 'POST' && pathname === '/api/training/policy') return json(await T.savePolicy(env, user, body));
     if (method === 'POST' && pathname === '/api/training/acknowledge') return json(await T.acknowledge(env, user, body));
+    if (method === 'POST' && pathname === '/api/training/chase') return json(await T.chase(env, user, body));
     if (method === 'POST' && pathname === '/api/training/talk/file/remove') return json(await T.removeTalkFile(env, user, body));
   }
   if (pathname.startsWith('/api/notifications')) {

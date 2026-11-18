@@ -9,10 +9,9 @@ export async function jira(env, path, init = {}) {
   // can steer a request to a different part of Jira.
   const issue = String(path).match(/^\/rest\/(?:api\/3|agile\/1\.0)\/issue\/([^/?#]+)/);
   if (issue && !/^([A-Za-z][A-Za-z0-9_]*-\d+|\d+)$/.test(decodeURIComponent(issue[1]))) throw badInput('That isn\'t a Jira item.');
-  const res = await fetch(env.JIRA_BASE_URL + path, {
+  const res = await jiraFetch(env, path, {
     ...init,
     headers: {
-      Authorization: authHeader(env),
       Accept: 'application/json',
       'Content-Type': 'application/json',
       ...(init.headers || {}),
@@ -28,6 +27,49 @@ export async function jira(env, path, init = {}) {
   // Some calls, such as linking two issues, answer 201 with nothing in the body.
   const body = await res.text();
   return body ? JSON.parse(body) : null;
+}
+
+// The PSC board's own items are always changed as the hub's account; everything else,
+// customers' copies of them included, can be changed as the person.
+const HUB_ONLY_PROJECT = 'PSC';
+const ISSUE_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
+async function hubOnly(env, path, init) {
+  const segs = String(path).split('?')[0].split('/').map((x) => { try { return decodeURIComponent(x); } catch { return x; } });
+  const keys = segs.filter((x) => ISSUE_KEY.test(x));
+  let body = null;
+  if (typeof init.body === 'string') { try { body = JSON.parse(init.body); } catch { body = null; } }
+  if (body) {
+    for (const k of [body.inwardIssue?.key, body.outwardIssue?.key, body.issueIdOrKey, body.issueKey]) if (k) keys.push(String(k));
+    if (String(body.fields?.project?.key || '').toUpperCase() === HUB_ONLY_PROJECT) return true;
+  }
+  if (keys.some((k) => k.toUpperCase().startsWith(`${HUB_ONLY_PROJECT}-`))) return true;
+  // An item named by its number: looked up among the tickets the hub has read.
+  const ids = segs.filter((x, i) => /^\d+$/.test(x) && /^(issue|request)$/.test(segs[i - 1] || ''));
+  for (const id of ids) {
+    const row = await env.DB.prepare('SELECT project_key FROM psc_items WHERE issue_id = ?').bind(id).first().catch(() => null);
+    if (row?.project_key === HUB_ONLY_PROJECT) return true;
+  }
+  return false;
+}
+
+// One request to Jira. A change made by someone in the hub is made as them in Jira, once
+// they've connected their Jira account, so Jira's history shows who did it. Reading, the
+// PSC board's own items, the hub's background work, and anything their own account can't
+// do, use the hub's account.
+export async function jiraFetch(env, path, init = {}) {
+  const method = String(init.method || 'GET').toUpperCase();
+  const headers = { ...(init.headers || {}) };
+  delete headers.Authorization;
+  if (env.JIRA_ACTOR && method !== 'GET' && method !== 'HEAD' && !await hubOnly(env, path, init)) {
+    const as = await import('./jiraauth.js').then((A) => A.actorAuth(env)).catch((err) => { console.warn('Jira as the user:', err.message); return null; });
+    if (as) {
+      const res = await fetch(`https://api.atlassian.com/ex/jira/${as.cloudId}${path}`, { ...init, headers: { ...headers, Authorization: `Bearer ${as.token}` } });
+      if (![401, 403, 404].includes(res.status)) return res;
+      if (res.status === 401) await as.lost().catch(() => {});
+      console.warn(`Jira as ${env.JIRA_ACTOR.email}: ${res.status} on ${method} ${path.split('?')[0]}; done as the hub instead`);
+    }
+  }
+  return fetch(env.JIRA_BASE_URL + path, { ...init, headers: { ...headers, Authorization: authHeader(env) } });
 }
 
 // ---------- which projects the hub works with ----------

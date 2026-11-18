@@ -3,7 +3,7 @@
 // item), as the team would raise it in Jira: its type, summary, description, owner and any
 // pictures. It can go straight to Condor Dev too. The PSC board is for what customers raise
 // themselves, through the portal or by email. Once made it's read into the tile at once.
-import { jira, customerProjects } from './jira.js';
+import { jira, jiraFetch, customerProjects } from './jira.js';
 import { record } from './audit.js';
 import { mustSee, readOne, changed } from './psc.js';
 import { PSC_HOME, LISTS } from './customer-lists.js';
@@ -48,13 +48,12 @@ function adf(text) {
 }
 
 async function attach(env, key, files) {
-  const auth = `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`)}`;
   const failed = [];
   for (const f of files) {
     const form = new FormData();
     form.append('file', f, f.name || 'picture');
-    const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${encodeURIComponent(key)}/attachments`, {
-      method: 'POST', headers: { Authorization: auth, 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body: form,
+    const res = await jiraFetch(env, `/rest/api/3/issue/${encodeURIComponent(key)}/attachments`, {
+      method: 'POST', headers: { 'X-Atlassian-Token': 'no-check', Accept: 'application/json' }, body: form,
     }).catch(() => null);
     if (!res?.ok) failed.push(f.name || 'a picture');
   }

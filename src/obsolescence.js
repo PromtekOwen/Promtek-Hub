@@ -1,6 +1,6 @@
 // Obsolescence surveys: the equipment library, the client list from Jira,
 // the survey itself, and the sales review that follows it.
-import { jira, searchJql, issueKeyOf } from './jira.js';
+import { jira, jiraFetch, searchJql, issueKeyOf } from './jira.js';
 import { raiseAlert, londonDate, getState, setState } from './sync.js';
 import { LIBRARY_SEED, LIBRARY_VERSION } from './obs-library.js';
 import { buildSurveyPdf } from './obs-pdf.js';
@@ -464,10 +464,9 @@ async function transitionTo(env, issueKey, statusName) {
 async function attachToJira(env, issueKey, filename, bytes) {
   const body = new FormData();
   body.append('file', new Blob([bytes], { type: 'application/pdf' }), filename);
-  const res = await fetch(`${env.JIRA_BASE_URL}/rest/api/3/issue/${issueKey}/attachments`, {
+  const res = await jiraFetch(env, `/rest/api/3/issue/${issueKey}/attachments`, {
     method: 'POST',
     headers: {
-      Authorization: 'Basic ' + btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`),
       'X-Atlassian-Token': 'no-check',
       Accept: 'application/json',
     },
