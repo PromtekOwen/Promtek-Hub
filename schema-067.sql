@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS gap_analyses (id INTEGER PRIMARY KEY AUTOINCREMENT, jira_key TEXT, meeting_key TEXT, meeting_name TEXT, status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, closed_at TEXT, jira_note TEXT);
+CREATE TABLE IF NOT EXISTS gap_areas (id INTEGER PRIMARY KEY AUTOINCREMENT, analysis_id INTEGER NOT NULL, jira_key TEXT, title TEXT NOT NULL, objectives TEXT, team TEXT, people TEXT NOT NULL DEFAULT '[]', standards TEXT, skills TEXT NOT NULL DEFAULT '[]', stage TEXT NOT NULL DEFAULT 'skills', created_by TEXT, created_at TEXT NOT NULL, updated_at TEXT, filled_at TEXT, jira_note TEXT);
+CREATE INDEX IF NOT EXISTS gap_areas_analysis ON gap_areas (analysis_id);
+CREATE TABLE IF NOT EXISTS gap_assessments (id INTEGER PRIMARY KEY AUTOINCREMENT, area_id INTEGER NOT NULL, jira_key TEXT, person_id TEXT NOT NULL, person_name TEXT, assessor_id TEXT, methods TEXT NOT NULL DEFAULT '[]', due_on TEXT, ratings TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'planned', done_at TEXT, done_by TEXT, jira_note TEXT);
+CREATE INDEX IF NOT EXISTS gap_assessments_area ON gap_assessments (area_id);
+CREATE TABLE IF NOT EXISTS gap_gaps (id INTEGER PRIMARY KEY AUTOINCREMENT, area_id INTEGER NOT NULL, person_id TEXT NOT NULL, person_name TEXT, skill_id TEXT, skill TEXT NOT NULL, needed INTEGER, has INTEGER, status TEXT NOT NULL DEFAULT 'open', plan TEXT, provision TEXT, due_on TEXT, jira_key TEXT, course_id INTEGER, check_level INTEGER, done_at TEXT, jira_note TEXT);
+CREATE INDEX IF NOT EXISTS gap_gaps_area ON gap_gaps (area_id);

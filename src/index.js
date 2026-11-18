@@ -492,6 +492,17 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/ims/comment') return json(await Ims.comment(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/create') return json(await Ims.create(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/meeting') return json(await Ims.newMeeting(env, user, body));
+    if (pathname.startsWith('/api/ims/gaps')) {
+      const G = await import('./gaps.js');
+      const sub = pathname.slice('/api/ims/gaps'.length) || '/';
+      if (method === 'GET' && sub === '/') return json(await G.overview(env, user));
+      if (method === 'GET' && sub === '/options') return json(await G.options(env, user));
+      if (method === 'GET' && sub === '/area') return json(await G.area(env, user, q('id')));
+      if (method === 'GET' && sub === '/assessment') return json(await G.assessment(env, user, q('id')));
+      const post = { '/start': G.start, '/area': G.addArea, '/skills': G.saveSkills, '/send': G.sendAssessments, '/rate': G.rate, '/gaps': G.saveGaps,
+        '/raise': G.raiseTraining, '/done': G.trainingDone, '/link': G.linkCourse, '/remove': G.removeArea };
+      if (method === 'POST' && post[sub]) return json(await post[sub](env, user, body));
+    }
     if (method === 'POST' && pathname === '/api/ims/link-meeting') return json(await Ims.linkToMeeting(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/refresh') return json(await Ims.refresh(env, user));
   }

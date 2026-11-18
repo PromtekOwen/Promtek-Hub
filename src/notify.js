@@ -26,6 +26,7 @@ export const EVENTS = {
   ims: [
     { id: 'ims-new', label: 'New IMS item', about: 'An item is raised in an area (copies of it are not counted again)', app: false, email: false, scope: 'all', scopes: ['all'] },
     { id: 'ims-assigned', label: 'Assigned to me', about: 'An IMS item, or a copy of one, is given to you', app: true, email: true },
+    { id: 'gap-assessment', label: 'Skill assessments', about: 'You\'re asked to assess someone for a gap analysis', app: true, email: true },
   ],
   quotes: [
     { id: 'quote-request', label: 'Asked for an estimate', about: 'Someone wants your view on a quote', app: true, email: true },

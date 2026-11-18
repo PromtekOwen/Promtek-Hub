@@ -34,6 +34,8 @@ const areaByName = (n) => AREAS.find((a) => a.name.toLowerCase() === String(n ||
 export const isArea = (k) => AREA_KEYS.includes(String(k || '').split('-')[0]);
 // Not work: the structure the work sits in, and the IMS Main Board's own items.
 export const NOT_WORK = ['Folder', 'Legacy Reference Tasks', 'Archive', 'Meeting', 'Meeting List', 'IMS Main', 'Employee'];
+// The gap analysis's own items, made and followed on the Gap analysis tab.
+export const GAP_TYPES = ['Gap Analysis', 'Gap Area', 'Skill Assessment', 'Training Requirement'];
 const SYNC_LINKS = /^(sync|cloners)$/i;
 
 const READ_EVERY_MS = 10 * 60 * 1000;
@@ -532,6 +534,7 @@ export async function run(env, { force = false } = {}) {
         out.sync = await syncGroups(env, groups);
         out.main = await moveMainItems(env, b);
         out.onboarding = await startOnboarding(env, b);
+        out.gaps = await import('./gaps.js').then((G) => G.sweep(env)).catch(() => null);
       }
     }
   } catch (err) {
@@ -592,7 +595,7 @@ export function collapse(rows) {
 export async function list(env, viewer, { done = false } = {}) {
   mustSee(viewer);
   const rows = await allRows(env);
-  const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && inIms(i) && (done || !i.done));
+  const items = collapse(rows).filter((i) => !NOT_WORK.includes(i.type) && !GAP_TYPES.includes(i.type) && inIms(i) && (done || !i.done));
   // How each area stands, from everything open in it: red for an open incident,
   // non-conformity or 8D report, blue for other open work, green for nothing open.
   const areaState = areaStates(rows);
@@ -655,7 +658,7 @@ export const SUGGEST_TYPES = ['IMS Task', '8D Report', 'Incident'];
 // A sub-task goes by the item it's under.
 export const inIms = (i) => !(i.areas.length && i.areas.every((a) => a === 'SUGGEST') && !SUGGEST_TYPES.includes(i.subtask && i.parentType ? i.parentType : i.type));
 // What the numbers count: IMS work, sub-tasks included (many non-conformities are raised as sub-tasks), but not meeting sub-tasks.
-const NOT_COUNTED = ['Meeting (Subtask)'];
+const NOT_COUNTED = ['Meeting (Subtask)', ...GAP_TYPES];
 export const counted = (i) => !NOT_WORK.includes(i.type) && !NOT_COUNTED.includes(i.type) && inIms(i);
 // Non-conformities and incidents; 8D reports are counted on their own. Any of them turns an area red.
 export const is8D = (i) => i.type === '8D Report';
@@ -1187,7 +1190,7 @@ const rowsOf = (list, keys, n = 30) => (Array.isArray(list) ? list : []).slice(0
   .map((r) => keys.map((k) => clip(r?.[k], 500))).filter((r) => r.some(Boolean));
 
 // One value in the shape its Jira field takes.
-function valueFor(meta, v) {
+export function valueFor(meta, v) {
   const s = meta.schema || {};
   const custom = String(s.custom || '');
   if (v && typeof v === 'object' && v.type === 'table') {
@@ -1369,6 +1372,8 @@ export async function newMeeting(env, viewer, { summary, date }) {
     project: { key: MAIN }, issuetype: { id: typeId }, summary: title, parent: { key: MEETING_LIST }, [F.start]: date,
   } }) });
   await setState(env, 'ims_read_at', Date.now() - READ_EVERY_MS);
+  // Each meeting has a gap analysis ready for it (one still empty from the last meeting moves on to this one).
+  await import('./gaps.js').then((G) => G.forMeeting(env, viewer, { key: made.key, summary: title })).catch(() => {});
   await record(env, viewer, { area: 'IMS', action: 'added a management meeting', subjectType: 'ims', subjectId: made.key, label: `${made.key} ${title}` }).catch(() => {});
   return { ok: true, key: made.key };
 }
@@ -1396,7 +1401,7 @@ export async function minutes(env, viewer, key, form) {
   return { ok: true, files: files.length, moved };
 }
 
-async function linkMeeting(env, key, meetingKey) {
+export async function linkMeeting(env, key, meetingKey) {
   const { issueLinkTypes = [] } = (await jira(env, '/rest/api/3/issueLinkType')) || {};
   const t = issueLinkTypes.find((x) => /active\s*\/\s*legacy/i.test(x.name)) || issueLinkTypes.find((x) => /^relates$/i.test(x.name));
   if (!t) return;

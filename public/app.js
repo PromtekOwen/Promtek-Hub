@@ -12128,13 +12128,14 @@ async function imsLoadOptions() {
 }
 
 function imsTabsHtml() {
-  return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings'], ['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
+  return `<div class="psc-tabs-row"><div class="tabs con-tabs">${[['items', 'Items'], ['stats', 'Stats'], ['meetings', 'Meetings'], ['gaps', 'Gap analysis'], ['training', 'Training'], ['policy', 'Policy']].map(([k, l]) =>
     `<button class="tab${imsTab === k ? ' on' : ''}" data-ims-tab="${k}">${l}</button>`).join('')}</div>
     ${imsCreateBtn()}</div>`;
 }
 // Each tab's own create button.
 function imsCreateBtn() {
   if (imsTab === 'meetings') return imsNewMeeting || imsMeetingOpen ? '' : '<button class="btn psc-new-btn" data-ims-meeting-new="1">＋ New meeting</button>';
+  if (imsTab === 'gaps') return !gapView && gapCache.list?.analyses.some((g) => g.status !== 'closed') ? '<button class="btn psc-new-btn" data-gap-new="1">＋ New gap area</button>' : '';
   if (imsTab === 'training') return trCache.talks?.manage && !trOpen ? '<button class="btn psc-new-btn" data-tr-new-talk="1">＋ Create tool box talk</button>' : '';
   if (imsTab === 'policy') return trCache.policies?.manage && !trOpen ? '<button class="btn psc-new-btn" data-tr-new-policy="1">＋ New policy</button>' : '';
   return '<button class="btn psc-new-btn" data-ims-new="1">＋ New IMS item</button>';
@@ -12152,6 +12153,7 @@ async function imsHtml() {
       <p class="help" style="margin:.3rem 0 0">The hub tries again at each read.</p></div>` : ''}
     ${data.onboarding?.failed?.length ? `<div class="jv-note" style="margin-bottom:.8rem"><p style="margin:0"><strong>Jira wouldn't add Onboarding to ${data.onboarding.failed.map((f) => esc(f.key)).join(', ')}</strong> once preboarding was done: ${esc(data.onboarding.failed[0].error)}. The hub tries again at each read.</p></div>` : ''}`;
   if (imsTab === 'training' || imsTab === 'policy') { const body = await trainingHtml(imsTab, 'ims'); return `${imsTabsHtml()}${body}`; }
+  if (imsTab === 'gaps') { const body = await gapsHtml(); return `${imsTabsHtml()}${body}`; }
   if (imsCleanup) return head + await imsCleanupHtml();
   if (imsTab === 'stats') return head + await imsStatsHtml();
   if (imsTab === 'meetings') return head + await imsMeetingsHtml();
@@ -12516,6 +12518,352 @@ async function imsCleanupHtml() {
     </section>`;
 }
 
+// ---------- gap analysis ----------
+// One per management meeting; each gap area goes through its steps, showing only what each needs.
+
+let gapView = null;            // { kind: 'area' | 'assess' | 'new', id }
+let gapDraft = null;           // the form being filled in
+let gapCache = { list: null, options: null, item: null };
+const GAP_STEPS = [['skills', 'Skills needed'], ['plan', 'Plan assessments'], ['assess', 'Assessing'], ['gaps', 'Gaps'], ['training', 'Training'], ['filled', 'Gaps filled']];
+const gapStepName = (s) => GAP_STEPS.find(([k]) => k === s)?.[1] || s;
+const gapLevel = (o, n) => (n == null ? '–' : `${n} ${o.scale.find((x) => x.n === n)?.name || ''}`);
+const gapPerson = (o, id) => o.people.find((p) => p.id === id)?.name || 'Someone not in the hub';
+const gapJira = (key) => (key ? `<a class="psc-key" href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener" data-jv-out="1">${esc(key)}</a>` : '');
+const gapNote = (n) => (n ? `<p class="ims-nudge" style="margin:.4rem 0">${esc(n)}</p>` : '');
+async function gapLoad(force = false) {
+  if (force) gapCache = { ...gapCache, list: null, item: null };
+  if (!gapCache.options) gapCache.options = await api('/api/ims/gaps/options');
+  if (!gapCache.list) gapCache.list = await api('/api/ims/gaps');
+  return gapCache;
+}
+function gapStepper(stage) {
+  const at = GAP_STEPS.findIndex(([k]) => k === stage);
+  return `<ol class="gap-steps">${GAP_STEPS.map(([k, l], i) => `<li class="${i < at ? 'done' : i === at ? 'on' : ''}"><span>${i < at ? '✓' : i + 1}</span>${esc(l)}</li>`).join('')}</ol>`;
+}
+function gapPeoplePicker(o, ids, attr = 'data-gap-person') {
+  const chosen = ids.map((id) => o.people.find((p) => p.id === id)).filter(Boolean);
+  const teams = [...new Set(o.people.flatMap((p) => p.teams))].sort();
+  return `<div class="gap-people">${chosen.map((p) => `<span class="chip">${esc(p.name)} <button type="button" class="linklike" ${attr}-remove="${esc(p.id)}" aria-label="Remove ${esc(p.name)}">✕</button></span>`).join('') || '<span class="muted">Nobody yet</span>'}</div>
+    <div class="row" style="margin-top:.5rem"><select ${attr}-add="1"><option value="">Add someone…</option>${o.people.filter((p) => !ids.includes(p.id)).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}</select>
+      ${teams.length ? `<select ${attr}-team="1"><option value="">Add a whole team…</option>${teams.map((t) => `<option>${esc(t)}</option>`).join('')}</select>` : ''}</div>`;
+}
+
+async function gapsHtml() {
+  const { list, options: o } = await gapLoad();
+  if (gapView?.kind === 'new') return gapNewHtml(o);
+  if (gapView?.kind === 'area') return gapAreaHtml(o);
+  if (gapView?.kind === 'assess') return gapAssessHtml(o);
+  const current = list.analyses.find((g) => g.status !== 'closed');
+  const past = list.analyses.filter((g) => g !== current);
+  const areaCard = (a) => `<button class="card gap-area-card" data-gap-open="${a.id}">
+      <div class="psc-top">${a.key ? `<span class="psc-key">${esc(a.key)}</span>` : ''}${a.team ? `<span class="psc-chip plain">${esc(a.team)}</span>` : ''}<span class="psc-chip ${a.stage === 'filled' ? 'ok' : 'plain'}">${esc(gapStepName(a.stage))}</span></div>
+      <h3 class="psc-title">${esc(a.title)}</h3>
+      <div class="gap-mini">${GAP_STEPS.map(([k], i) => `<i class="${i < GAP_STEPS.findIndex(([x]) => x === a.stage) ? 'done' : k === a.stage ? 'on' : ''}"></i>`).join('')}</div>
+      <p class="muted" style="margin:.4rem 0 0">${a.people.length} ${a.people.length === 1 ? 'person' : 'people'}${a.assessments.all ? ` · ${a.assessments.done} of ${a.assessments.all} assessed` : ''}${a.gaps.all ? ` · ${a.gaps.done} of ${a.gaps.all} gaps closed` : ''}</p>
+      ${a.jiraNote ? '<p class="bad" style="margin:.3rem 0 0;font-size:.85rem">Jira needs a look</p>' : ''}</button>`;
+  return `${list.mine.length ? `<section class="card gap-mine"><h3 style="margin-top:0">Your assessments to do</h3><ul class="tr-lines">${list.mine.map((x) => `<li><button class="tr-line" data-gap-assess="${x.id}">
+      <span class="tr-badge s-soon" aria-hidden="true">!</span><span class="tr-line-main"><strong>${esc(x.personName)}</strong><small>${esc(x.areaTitle)}</small></span><span class="tr-line-when">By ${esc(shortDate(x.dueOn))}</span></button></li>`).join('')}</ul></section>` : ''}
+    ${current ? `<section class="card"><div class="ims-card-head"><div><h3>Gap analysis for ${esc(current.meetingName || 'the next meeting')}</h3>
+        <p class="muted" style="margin:.2rem 0 0">${gapJira(current.key)} ${current.areas.length ? `${current.areas.length} gap area${current.areas.length === 1 ? '' : 's'}` : 'Nothing in it yet: it moves on to the next meeting until it\'s used.'}</p></div></div>
+        ${gapNote(current.jiraNote)}
+        <div class="gap-areas">${current.areas.map(areaCard).join('')}</div>
+        ${current.areas.length ? '' : '<p class="help">Add a gap area for each team or group to look at: Projecting, Service or Condor, say, each assessed by their line manager.</p>'}</section>`
+    : `<section class="card"><p style="margin-top:0">No gap analysis is open. One is made with each meeting added on the Meetings tab.</p><button class="btn" data-gap-start="1">Start one now</button></section>`}
+    ${list.recurring.length ? `<section class="card"><h3 style="margin-top:0">Skills that keep coming up</h3><ul class="tr-lines">${list.recurring.map((r) => `<li class="tr-line" style="cursor:default"><span class="tr-line-main"><strong>${esc(r.skill)}</strong></span><span class="tr-line-when">${r.n} gaps · ${r.closed} closed</span></li>`).join('')}</ul></section>` : ''}
+    ${past.length ? `<details class="card gap-past"><summary><strong>Earlier gap analyses (${past.length})</strong></summary>${past.map((g) => `<div class="gap-past-row"><h4>${esc(g.meetingName || 'Gap analysis')} ${gapJira(g.key)} <span class="psc-chip ${g.status === 'closed' ? 'ok' : 'plain'}">${g.status === 'closed' ? 'All gaps closed' : 'Open'}</span></h4>
+        <div class="gap-areas">${g.areas.map(areaCard).join('') || '<p class="muted">Not used.</p>'}</div></div>`).join('')}</details>` : ''}`;
+}
+
+function gapNewHtml(o) {
+  const d = gapDraft;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-gap-back="1">Back</button></div>
+    <section class="card tr-form"><h2 style="margin-top:0">New gap area</h2>
+      <p class="help" style="margin-top:0">A team or group whose skills you're looking at against an objective. Each person is assessed by their line manager, so keep Projecting, Service and Condor in their own gap areas.</p>
+      <label>Name<input type="text" data-gap="title" value="${esc(d.title)}" placeholder="Service engineers: safe isolation"></label>
+      <label>Team<select data-gap="team"><option value="">Choose</option>${o.teams.map((t) => `<option${d.team === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label>
+      <label>Objective(s)<textarea rows="3" data-gap="objectives" placeholder="What this gap analysis should achieve">${esc(d.objectives)}</textarea></label>
+      <fieldset><legend>Promtek Staff Involved</legend>${gapPeoplePicker(o, d.people)}</fieldset>
+      <div class="row"><button class="btn" data-gap-create="1">Start the gap area</button><button class="linklike" data-gap-back="1">Cancel</button></div>
+    </section>`;
+}
+
+async function gapAreaHtml(o) {
+  if (!gapCache.item || gapCache.item.id !== gapView.id) gapCache.item = await api(`/api/ims/gaps/area?id=${gapView.id}`);
+  const a = gapCache.item;
+  if (!gapDraft || gapDraft.id !== a.id || gapDraft.stage !== a.stage) gapDraft = gapDraftFor(a, o);
+  const d = gapDraft;
+  const head = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-gap-back="1">All gap analyses</button></div>
+    <section class="card gap-head"><div class="psc-top">${gapJira(a.key)}${a.team ? `<span class="psc-chip plain">${esc(a.team)}</span>` : ''}<span class="muted">${a.analysis ? `Gap analysis for ${esc(a.analysis.meetingName || '')}` : ''}</span></div>
+      <h2 style="margin:.3rem 0">${esc(a.title)}</h2>
+      <p class="muted" style="margin:0">${a.people.map((id) => esc(gapPerson(o, id))).join(', ')}</p>
+      ${gapStepper(a.stage)}${gapNote(a.jiraNote)}</section>`;
+  const objectives = `<div class="gap-obj"><strong>Objective(s)</strong><p>${esc(a.objectives).replace(/\n/g, '<br>')}</p></div>`;
+  const skillList = (withLevels) => `<ul class="gap-skill-list">${a.skills.map((s) => `<li><span>${esc(s.name)}</span>${withLevels && s.level ? `<b>${esc(gapLevel(o, s.level))}</b>` : ''}</li>`).join('')}</ul>`;
+  let body = '';
+  if (a.stage === 'skills') {
+    body = `<section class="card tr-form"><h3 style="margin-top:0">1. The skills needed</h3>
+      <label>Name<input type="text" data-gap="title" value="${esc(d.title)}"></label>
+      <div class="psc-new-row"><label>Team<select data-gap="team"><option value="">Choose</option>${o.teams.map((t) => `<option${d.team === t ? ' selected' : ''}>${esc(t)}</option>`).join('')}</select></label></div>
+      <label>Objective(s)<textarea rows="3" data-gap="objectives">${esc(d.objectives)}</textarea></label>
+      <fieldset><legend>Promtek Staff Involved</legend>${gapPeoplePicker(o, d.people)}</fieldset>
+      <label>Industry Regulations / Standards<textarea rows="4" data-gap="standards" placeholder="What the standards are for these skills, and what others in the industry expect">${esc(d.standards)}</textarea></label>
+      <fieldset><legend>Identified Skills Required</legend>
+        <p class="help" style="margin-top:0">One skill a line, with the level each person needs. The levels are hidden from the assessors so they can't sway the ratings.</p>
+        <div class="gap-skills-edit">${d.skills.map((s, i) => `<div class="gap-skill-row"><input type="text" data-gap="skills.${i}.name" value="${esc(s.name)}" placeholder="A skill, e.g. Lock out tag out" aria-label="Skill ${i + 1}">
+          <select data-gap="skills.${i}.level" aria-label="Level needed for skill ${i + 1}">${o.scale.filter((x) => x.n > 0).map((x) => `<option value="${x.n}"${Number(s.level) === x.n ? ' selected' : ''}>Needs ${x.n} ${esc(x.name)}</option>`).join('')}</select>
+          <button type="button" class="linklike" data-gap-skill-remove="${i}">Remove</button></div>`).join('')}</div>
+        <button type="button" class="btn secondary" data-gap-skill-add="1">＋ Add a skill</button></fieldset>
+      ${gapScaleHtml(o)}
+      <div class="row"><button class="btn" data-gap-lock="1">Lock the skills and plan the assessments</button><button class="btn secondary" data-gap-save-skills="1">Save</button>
+        <button class="btn secondary danger-outline" data-gap-remove="1">Remove this gap area</button></div>
+      <p class="help">Once locked, the skills and levels can't change, so everyone is assessed against the same thing.</p></section>`;
+  } else if (a.stage === 'plan') {
+    body = `<section class="card">${objectives}<h3>Skills needed</h3>${skillList(true)}</section>
+      <section class="card tr-form"><h3 style="margin-top:0">2. Plan the assessments</h3>
+      <p class="help" style="margin-top:0">Each person is assessed by their line manager, unless you choose someone else. A Skill Assessment is made in Jira for each, and the assessor is told.</p>
+      ${d.plans.map((p, i) => `<div class="gap-plan-row"><h4>${esc(gapPerson(o, p.personId))}</h4>
+        <div class="psc-new-row"><label>Assessed by<select data-gap="plans.${i}.assessorId"><option value="">Choose</option>${o.people.filter((x) => x.id !== p.personId).map((x) => `<option value="${esc(x.id)}"${p.assessorId === x.id ? ' selected' : ''}>${esc(x.name)}${o.people.find((y) => y.id === p.personId)?.managerId === x.id ? ' (line manager)' : ''}</option>`).join('')}</select></label>
+          <label>Date of assessment<input type="date" data-gap="plans.${i}.dueOn" value="${esc(p.dueOn || '')}"></label></div>
+        <fieldset><legend>Assessment Tasks</legend><div class="ims-checks">${o.methods.map((m) => `<label class="inline-check"><input type="checkbox" data-gap-method="${i}" value="${esc(m)}"${p.methods.includes(m) ? ' checked' : ''}> ${esc(m)}</label>`).join('')}</div></fieldset></div>`).join('')}
+      <div class="row"><button class="btn" data-gap-send="1">Send the assessments</button><button class="btn secondary danger-outline" data-gap-remove="1">Remove this gap area</button></div></section>`;
+  } else if (a.stage === 'assess') {
+    body = `<section class="card">${objectives}<h3>Skills being assessed</h3>${skillList(false)}
+      <p class="help">The levels needed and everyone's ratings stay hidden until every assessment is in, so nothing sways them.</p></section>
+      <section class="card"><h3 style="margin-top:0">3. Assessments</h3><ul class="tr-lines">${a.assessments.map((x) => `<li><button class="tr-line" data-gap-assess="${x.id}"${x.status === 'done' ? ' disabled' : ''}>
+        <span class="tr-badge s-${x.status === 'done' ? 'ok' : x.status === 'started' ? 'soon' : 'blank'}" aria-hidden="true">${x.status === 'done' ? '✓' : ''}</span>
+        <span class="tr-line-main"><strong>${esc(x.personName)}</strong><small>By ${esc(gapPerson(o, x.assessorId))} · ${esc(x.methods.join(', '))}${x.key ? ` · ${esc(x.key)}` : ''}</small></span>
+        <span class="tr-line-when">${x.status === 'done' ? 'Done' : `${x.status === 'started' ? 'Started · ' : ''}by ${esc(shortDate(x.dueOn))}`}${x.status !== 'done' && x.assessorId === me.user.accountId ? '<small>Yours</small>' : ''}</span></button>${gapNote(x.jiraNote)}</li>`).join('')}</ul></section>`;
+  } else {
+    body = `${gapResultsHtml(a, o)}${a.stage === 'gaps' ? gapPlanHtml(a, o) : gapTrainingHtml(a, o)}`;
+  }
+  return head + body;
+}
+
+function gapScaleHtml(o) {
+  return `<details class="gap-scale"><summary>The levels</summary><ul>${o.scale.map((x) => `<li><b>${x.n} ${esc(x.name)}</b> ${esc(x.about)}</li>`).join('')}</ul></details>`;
+}
+
+// The ratings against the levels needed: people down, skills across.
+function gapResultsHtml(a, o) {
+  const cell = (x, s) => {
+    const has = x.ratings?.[s.id]?.level;
+    const cls = has == null ? 'none' : has >= s.level ? 'met' : s.level - has >= 2 ? 'far' : 'near';
+    return `<td class="gap-cell ${cls}" title="${esc(`${x.personName}, ${s.name}: ${gapLevel(o, has)} (needs ${gapLevel(o, s.level)})${x.ratings?.[s.id]?.note ? `. ${x.ratings[s.id].note}` : ''}`)}">${has ?? '–'}<small>/${s.level}</small></td>`;
+  };
+  return `<section class="card"><h3 style="margin-top:0">Assessed against what's needed</h3>
+      <div class="table-wrap"><table class="gap-grid"><thead><tr><th></th>${a.skills.map((s) => `<th><span>${esc(s.name)}</span><small>needs ${s.level}</small></th>`).join('')}</tr></thead>
+      <tbody>${a.assessments.map((x) => `<tr><th>${esc(x.personName)}</th>${a.skills.map((s) => cell(x, s)).join('')}</tr>`).join('')}</tbody></table></div>
+      <p class="help gap-key"><span class="gap-cell met">3</span> meets it <span class="gap-cell near">2</span> one level short <span class="gap-cell far">1</span> two or more short</p></section>`;
+}
+
+function gapPlanHtml(a, o) {
+  const d = gapDraft;
+  return `<section class="card tr-form"><h3 style="margin-top:0">4. The gaps</h3>
+    <p class="help" style="margin-top:0">Every skill rated below the level needed. Keep each with a plan, or dismiss it. Kept gaps get a Training Requirement in Jira when you raise the training.</p>
+    ${d.gaps.map((g, i) => `<div class="gap-gap${g.dismissed ? ' dismissed' : ''}"><div class="gap-gap-head"><strong>${esc(g.personName)}: ${esc(g.skill)}</strong>
+        ${g.needed != null ? `<span class="muted">needs ${esc(gapLevel(o, g.needed))}, assessed ${esc(gapLevel(o, g.has))}</span>` : '<span class="muted">added by hand</span>'}
+        <label class="inline-check"><input type="checkbox" data-gap-dismiss="${i}"${g.dismissed ? ' checked' : ''}> Dismiss</label></div>
+      ${g.dismissed ? '' : `<label>Plan for Gap<textarea rows="2" data-gap="gaps.${i}.plan" placeholder="How it'll be closed">${esc(g.plan || '')}</textarea></label>
+      <div class="psc-new-row"><label>Training Provision<select data-gap="gaps.${i}.provision"><option value="">Choose</option>${o.provisions.map((p) => `<option${g.provision === p ? ' selected' : ''}>${esc(p)}</option>`).join('')}</select></label>
+        <label>Due<input type="date" data-gap="gaps.${i}.dueOn" value="${esc(g.dueOn || '')}"></label></div>`}</div>`).join('') || '<p>No skill was rated below the level needed.</p>'}
+    <details class="gap-add"${d.adding ? ' open' : ''}><summary>Add a gap the ratings didn't show</summary>
+      <div class="psc-new-row"><label>Who<select data-gap="add.personId"><option value="">Choose</option>${a.people.map((id) => `<option value="${esc(id)}"${d.add.personId === id ? ' selected' : ''}>${esc(gapPerson(o, id))}</option>`).join('')}</select></label>
+        <label>Skill<input type="text" data-gap="add.skill" value="${esc(d.add.skill)}"></label></div>
+      <button type="button" class="btn secondary" data-gap-add="1">Add it</button></details>
+    <div class="row"><button class="btn" data-gap-raise="1">${d.gaps.some((g) => !g.dismissed) ? 'Raise the training' : 'Close with no gaps'}</button><button class="btn secondary" data-gap-save-gaps="1">Save</button></div></section>`;
+}
+
+function gapTrainingHtml(a, o) {
+  const kept = (a.gaps || []).filter((g) => g.status !== 'dismissed');
+  const dismissed = (a.gaps || []).filter((g) => g.status === 'dismissed');
+  const courseOpts = (g) => `<option value="">Not on the matrix</option>${o.courses.map((c) => `<option value="${c.id}"${g.courseId === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}<option value="new">＋ Add "${esc(g.skill)}" as a new course…</option>`;
+  return `<section class="card"><h3 style="margin-top:0">${a.stage === 'filled' ? 'Gaps filled' : '5. Training'}</h3>
+    ${a.stage === 'filled' ? `<p class="muted" style="margin-top:0">Every gap was closed${a.filledAt ? ` on ${esc(shortDate(a.filledAt.slice(0, 10)))}` : ''}.</p>` : '<p class="help" style="margin-top:0">Mark training done here, or complete its Training Requirement in Jira and the hub picks it up. Once all are done, the area moves to Gaps Filled.</p>'}
+    ${kept.map((g) => `<div class="gap-gap"><div class="gap-gap-head"><strong>${esc(g.personName)}: ${esc(g.skill)}</strong>${gapJira(g.key)}
+        <span class="psc-chip ${g.status === 'done' ? 'ok' : 'warn'}">${g.status === 'done' ? 'Training done' : 'Training required'}</span></div>
+      <p style="margin:.2rem 0">${esc(g.provision || '')}${g.dueOn ? ` · due ${esc(shortDate(g.dueOn))}` : ''}${g.plan ? `<br><span class="muted">${esc(g.plan)}</span>` : ''}</p>${gapNote(g.jiraNote)}
+      <div class="row gap-actions">
+        ${g.status === 'planned' ? `<button class="btn secondary" data-gap-done="${g.id}">Training done</button>` : ''}
+        ${g.status === 'planned' && /toolbox/i.test(g.provision || '') ? `<button class="btn secondary" data-gap-talk="${g.id}">Arrange a tool box talk</button>` : ''}
+        <label class="gap-inline">On the training matrix<select data-gap-course="${g.id}">${courseOpts(g)}</select></label>
+        ${g.status === 'done' ? `<label class="gap-inline">Did it work? Re-rated<select data-gap-check="${g.id}"><option value="">Not yet</option>${o.scale.map((x) => `<option value="${x.n}"${g.check === x.n ? ' selected' : ''}>${x.n} ${esc(x.name)}${g.needed != null && x.n >= g.needed ? ' ✓' : ''}</option>`).join('')}</select></label>` : ''}
+      </div>
+      ${gapDraft?.newCourse === g.id ? `<div class="gap-newcourse tr-form"><label>Course name<input type="text" id="gap-course-name" value="${esc(g.skill)}"></label>
+        <fieldset><legend>In these divisions</legend><div class="ims-checks">${o.divisions.map((x) => `<label class="inline-check"><input type="checkbox" data-gap-course-div="1" value="${x.id}"> ${esc(x.name)}</label>`).join('')}</div></fieldset>
+        <div class="row"><button class="btn" data-gap-course-make="${g.id}">Add to the matrix</button><button class="linklike" data-gap-course-cancel="1">Cancel</button></div></div>` : ''}</div>`).join('')}
+    ${dismissed.length ? `<details><summary class="muted">Dismissed (${dismissed.length})</summary><ul>${dismissed.map((g) => `<li>${esc(g.personName)}: ${esc(g.skill)}</li>`).join('')}</ul></details>` : ''}</section>`;
+}
+
+async function gapAssessHtml(o) {
+  if (!gapCache.item || gapCache.item.assessId !== gapView.id) gapCache.item = { ...(await api(`/api/ims/gaps/assessment?id=${gapView.id}`)), assessId: gapView.id };
+  const x = gapCache.item;
+  if (!gapDraft || gapDraft.assessId !== x.id) gapDraft = { assessId: x.id, ratings: JSON.parse(JSON.stringify(x.ratings || {})) };
+  const r = gapDraft.ratings;
+  return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-gap-back="1">Back</button></div>
+    <section class="card tr-form gap-assess"><div class="psc-top">${gapJira(x.key)}<span class="muted">${esc(x.areaTitle)}</span></div>
+      <h2 style="margin:.2rem 0">Skill assessment: ${esc(x.personName)}</h2>
+      <p class="muted" style="margin:0">${esc(x.methods.join(', '))} · by ${esc(shortDate(x.dueOn))}${x.assessorId ? ` · assessed by ${esc(gapPerson(o, x.assessorId))}` : ''}</p>
+      <div class="gap-obj"><strong>Objective(s)</strong><p>${esc(x.objectives).replace(/\n/g, '<br>')}</p></div>
+      <p class="help" style="margin:0">Rate where ${esc(x.personName.split(' ')[0])} is now on each skill. The level each one needs isn't shown, so it can't sway the rating.</p>
+      ${x.skills.map((s) => `<fieldset class="gap-rate"><legend>${esc(s.name)}</legend>
+        <div class="gap-rate-scale" role="radiogroup" aria-label="${esc(s.name)}">${x.scale.map((l) => `<label class="gap-rate-opt${r[s.id]?.level === l.n ? ' on' : ''}" title="${esc(l.about)}"><input type="radio" name="rate-${esc(s.id)}" value="${l.n}" data-gap-rate="${esc(s.id)}"${r[s.id]?.level === l.n ? ' checked' : ''}><b>${l.n}</b><span>${esc(l.name)}</span></label>`).join('')}</div>
+        <input type="text" data-gap-rate-note="${esc(s.id)}" value="${esc(r[s.id]?.note || '')}" placeholder="What you saw, or evidence (optional)" aria-label="Notes on ${esc(s.name)}"></fieldset>`).join('')}
+      ${gapScaleHtml({ scale: x.scale })}
+      <div class="row"><button class="btn" data-gap-rate-done="1">Complete the assessment</button><button class="btn secondary" data-gap-rate-save="1">Save for now</button></div>
+    </section>`;
+}
+
+function gapDraftFor(a, o) {
+  const d = { id: a.id, stage: a.stage, title: a.title, team: a.team, objectives: a.objectives, people: [...a.people], standards: a.standards, skills: a.skills.length ? a.skills.map((s) => ({ ...s })) : [{ name: '', level: 3 }] };
+  if (a.stage === 'plan') d.plans = a.people.map((pid) => ({ personId: pid, assessorId: o.people.find((p) => p.id === pid)?.managerId || '', methods: [], dueOn: '' }));
+  if (a.stage === 'gaps') { d.gaps = (a.gaps || []).map((g) => ({ ...g, dismissed: g.status === 'dismissed' })); d.add = { personId: '', skill: '' }; d.added = []; }
+  return d;
+}
+function gapSetPath(obj, path, value) {
+  const keys = path.split('.'); const last = keys.pop();
+  const t = keys.reduce((o, k) => o?.[k], obj);
+  if (t) t[last] = value;
+}
+function gapCapture() {
+  if (!gapDraft) return;
+  for (const el of view.querySelectorAll('[data-gap]')) gapSetPath(gapDraft, el.dataset.gap, el.value);
+  if (gapDraft.plans) gapDraft.plans.forEach((p, i) => { p.methods = [...view.querySelectorAll(`[data-gap-method="${i}"]:checked`)].map((el) => el.value); });
+  if (gapDraft.ratings) {
+    for (const el of view.querySelectorAll('[data-gap-rate]:checked')) gapDraft.ratings[el.dataset.gapRate] = { ...(gapDraft.ratings[el.dataset.gapRate] || {}), level: Number(el.value) };
+    for (const el of view.querySelectorAll('[data-gap-rate-note]')) gapDraft.ratings[el.dataset.gapRateNote] = { ...(gapDraft.ratings[el.dataset.gapRateNote] || {}), note: el.value };
+  }
+}
+
+async function gapClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('[data-jv-out]')) return false;
+  const busy = async (btn, fn) => { btn.disabled = true; try { await fn(); } catch (err) { toast(err.message); btn.disabled = false; } };
+  const open = t('[data-gap-open]');
+  if (open) { gapView = { kind: 'area', id: Number(open.dataset.gapOpen) }; gapDraft = null; gapCache.item = null; window.scrollTo(0, 0); render(); return true; }
+  const as = t('[data-gap-assess]');
+  if (as) { gapView = { kind: 'assess', id: Number(as.dataset.gapAssess), back: gapView }; gapDraft = null; gapCache.item = null; window.scrollTo(0, 0); render(); return true; }
+  if (t('[data-gap-back]')) { gapView = gapView?.back || null; gapDraft = null; gapCache.item = null; gapCache.list = null; window.scrollTo(0, 0); render(); return true; }
+  if (t('[data-gap-new]')) { gapView = { kind: 'new' }; gapDraft = { title: '', team: '', objectives: '', people: [] }; window.scrollTo(0, 0); render(); return true; }
+  const st = t('[data-gap-start]');
+  if (st) { await busy(st, async () => { await api('/api/ims/gaps/start', { method: 'POST', body: '{}' }); gapCache.list = null; render(); }); return true; }
+  const prem = t('[data-gap-person-remove]');
+  if (prem) { gapCapture(); gapDraft.people = gapDraft.people.filter((x) => x !== prem.dataset.gapPersonRemove); render(); return true; }
+  if (t('[data-gap-skill-add]')) { gapCapture(); gapDraft.skills.push({ name: '', level: 3 }); await render(); [...view.querySelectorAll('.gap-skill-row input')].at(-1)?.focus(); return true; }
+  const srem = t('[data-gap-skill-remove]');
+  if (srem) { gapCapture(); gapDraft.skills.splice(Number(srem.dataset.gapSkillRemove), 1); if (!gapDraft.skills.length) gapDraft.skills.push({ name: '', level: 3 }); render(); return true; }
+  const create = t('[data-gap-create]');
+  if (create) {
+    gapCapture();
+    const list = gapCache.list?.analyses || [];
+    const current = list.find((g) => g.status !== 'closed');
+    await busy(create, async () => {
+      const r = await api('/api/ims/gaps/area', { method: 'POST', body: JSON.stringify({ analysisId: current?.id, ...gapDraft }) });
+      toast('Gap area started'); gapView = { kind: 'area', id: r.id }; gapDraft = null; gapCache.list = null; gapCache.item = null; render();
+    });
+    return true;
+  }
+  const skillsBtn = t('[data-gap-save-skills]') || t('[data-gap-lock]');
+  if (skillsBtn) {
+    gapCapture();
+    const lock = skillsBtn.matches('[data-gap-lock]');
+    await busy(skillsBtn, async () => {
+      await api('/api/ims/gaps/skills', { method: 'POST', body: JSON.stringify({ ...gapDraft, skills: gapDraft.skills.filter((s) => String(s.name).trim()), lock }) });
+      toast(lock ? 'Skills locked' : 'Saved'); gapCache.item = null; gapDraft = null; render();
+    });
+    return true;
+  }
+  const rem = t('[data-gap-remove]');
+  if (rem) {
+    if (!gapDraft.removing) { gapDraft.removing = true; rem.textContent = 'Remove it? Press again'; return true; }
+    await busy(rem, async () => { await api('/api/ims/gaps/remove', { method: 'POST', body: JSON.stringify({ id: gapView.id }) }); toast('Removed'); gapView = null; gapDraft = null; gapCache.list = null; render(); });
+    return true;
+  }
+  const send = t('[data-gap-send]');
+  if (send) {
+    gapCapture();
+    await busy(send, async () => { const r = await api('/api/ims/gaps/send', { method: 'POST', body: JSON.stringify({ id: gapView.id, plans: gapDraft.plans }) }); toast(`${r.sent} assessment${r.sent === 1 ? '' : 's'} sent`); gapCache.item = null; gapDraft = null; render(); });
+    return true;
+  }
+  const rateBtn = t('[data-gap-rate-done]') || t('[data-gap-rate-save]');
+  if (rateBtn) {
+    gapCapture();
+    const complete = rateBtn.matches('[data-gap-rate-done]');
+    await busy(rateBtn, async () => {
+      const r = await api('/api/ims/gaps/rate', { method: 'POST', body: JSON.stringify({ id: gapView.id, ratings: gapDraft.ratings, complete }) });
+      toast(complete ? (r.revealed ? 'Assessment complete: every one is in, so the gaps are ready' : 'Assessment complete') : 'Saved');
+      if (complete) { gapView = gapView.back || null; gapDraft = null; gapCache.item = null; gapCache.list = null; } render();
+    });
+    return true;
+  }
+  const dis = t('[data-gap-dismiss]');
+  if (dis) { gapCapture(); gapDraft.gaps[Number(dis.dataset.gapDismiss)].dismissed = dis.querySelector('input')?.checked ?? event.target.checked; render(); return true; }
+  const add = t('[data-gap-add]');
+  if (add) {
+    gapCapture();
+    if (!gapDraft.add.personId || !gapDraft.add.skill.trim()) { toast('Choose who, and the skill'); return true; }
+    gapDraft.gaps.push({ id: null, personId: gapDraft.add.personId, personName: gapPerson(gapCache.options, gapDraft.add.personId), skill: gapDraft.add.skill.trim(), needed: null, has: null, plan: '', provision: '', dueOn: '', added: true });
+    gapDraft.add = { personId: '', skill: '' }; render(); return true;
+  }
+  const saveGaps = t('[data-gap-save-gaps]') || t('[data-gap-raise]');
+  if (saveGaps) {
+    gapCapture();
+    const raise = saveGaps.matches('[data-gap-raise]');
+    const payload = { id: gapView.id, gaps: gapDraft.gaps.filter((g) => g.id).map((g) => ({ id: g.id, dismissed: g.dismissed, plan: g.plan, provision: g.provision, dueOn: g.dueOn })),
+      added: gapDraft.gaps.filter((g) => !g.id && !g.dismissed) };
+    await busy(saveGaps, async () => {
+      await api('/api/ims/gaps/gaps', { method: 'POST', body: JSON.stringify(payload) });
+      if (raise) { const r = await api('/api/ims/gaps/raise', { method: 'POST', body: JSON.stringify({ id: gapView.id }) }); toast(r.filled ? 'No gaps kept: the area is filled' : `${r.raised} Training Requirement${r.raised === 1 ? '' : 's'} raised${r.more ? `; ${r.more} more to raise` : ''}`); }
+      else toast('Saved');
+      gapCache.item = null; gapDraft = null; render();
+    });
+    return true;
+  }
+  const done = t('[data-gap-done]');
+  if (done) { await busy(done, async () => { await api('/api/ims/gaps/done', { method: 'POST', body: JSON.stringify({ id: Number(done.dataset.gapDone) }) }); toast('Training done'); gapCache.item = null; render(); }); return true; }
+  const talk = t('[data-gap-talk]');
+  if (talk) {
+    const g = gapCache.item.gaps.find((x) => x.id === Number(talk.dataset.gapTalk));
+    imsTab = 'training'; trOpen = 'new-talk';
+    trDraft = { title: g.skill, about: g.plan || '', at: '', minutes: '30', location: '', meetLink: '', courseId: g.courseId ? String(g.courseId) : '', audience: { everyone: false, teams: [], divisions: [], people: [g.personId] } };
+    window.scrollTo(0, 0); render(); return true;
+  }
+  const make = t('[data-gap-course-make]');
+  if (make) {
+    const divisions = [...view.querySelectorAll('[data-gap-course-div]:checked')].map((el) => Number(el.value));
+    await busy(make, async () => {
+      await api('/api/ims/gaps/link', { method: 'POST', body: JSON.stringify({ id: Number(make.dataset.gapCourseMake), newCourse: { name: view.querySelector('#gap-course-name')?.value, divisions } }) });
+      toast('Added to the training matrix'); gapDraft.newCourse = null; gapCache.options = null; gapCache.item = null; trCache.matrix = trCache.all = null; render();
+    });
+    return true;
+  }
+  if (t('[data-gap-course-cancel]')) { gapDraft.newCourse = null; render(); return true; }
+  return false;
+}
+
+async function gapChange(event) {
+  const el = event.target;
+  if (el.matches('[data-gap-person-add]') && el.value) { gapCapture(); gapDraft.people = [...new Set([...gapDraft.people, el.value])]; render(); return true; }
+  if (el.matches('[data-gap-person-team]') && el.value) {
+    gapCapture(); gapDraft.people = [...new Set([...gapDraft.people, ...gapCache.options.people.filter((p) => p.teams.includes(el.value)).map((p) => p.id)])];
+    if (!gapDraft.team && gapCache.options.teams.includes(el.value)) gapDraft.team = el.value;
+    render(); return true;
+  }
+  if (el.matches('[data-gap-rate]')) { gapCapture(); el.closest('.gap-rate-scale')?.querySelectorAll('.gap-rate-opt').forEach((o) => o.classList.toggle('on', o.contains(el))); return true; }
+  if (el.matches('[data-gap-dismiss]')) { gapCapture(); gapDraft.gaps[Number(el.dataset.gapDismiss)].dismissed = el.checked; render(); return true; }
+  if (el.matches('[data-gap-course]')) {
+    if (el.value === 'new') { gapDraft ||= {}; gapDraft.newCourse = Number(el.dataset.gapCourse); render(); return true; }
+    try { await api('/api/ims/gaps/link', { method: 'POST', body: JSON.stringify({ id: Number(el.dataset.gapCourse), courseId: el.value ? Number(el.value) : null }) }); toast(el.value ? 'Linked to the matrix' : 'Unlinked'); }
+    catch (err) { toast(err.message); }
+    gapCache.item = null; trCache.matrix = trCache.all = null; render(); return true;
+  }
+  if (el.matches('[data-gap-check]') && el.value !== '') {
+    try { await api('/api/ims/gaps/done', { method: 'POST', body: JSON.stringify({ id: Number(el.dataset.gapCheck), check: Number(el.value) }) }); toast('Saved'); } catch (err) { toast(err.message); }
+    gapCache.item = null; render(); return true;
+  }
+  if (el.matches('[data-gap]')) { gapCapture(); return true; }
+  return false;
+}
+
 // ---------- meetings ----------
 
 async function imsMeetingsHtml() {
@@ -12720,8 +13068,9 @@ async function imsClick(event) {
   const t = (sel) => event.target.closest(sel);
   if (t('.jv-comment a, .jv-rich a')) return false;
   const tab = t('[data-ims-tab]');
-  if (tab) { imsTab = tab.dataset.imsTab; imsOpen = null; imsMeetingOpen = null; imsDrill = null; imsCleanup = null; trOpen = null; trDraft = null; trCell = null; return render(); }
+  if (tab) { if (tab.dataset.imsTab === 'gaps') { gapView = null; gapDraft = null; gapCache.list = null; } imsTab = tab.dataset.imsTab; imsOpen = null; imsMeetingOpen = null; imsDrill = null; imsCleanup = null; trOpen = null; trDraft = null; trCell = null; return render(); }
   if ((imsTab === 'training' || imsTab === 'policy') && await trClick(event)) return true;
+  if (imsTab === 'gaps' && !event.target.closest('[data-ims-tab]') && await gapClick(event)) return true;
   const area = t('[data-ims-area]');
   if (area) { imsFilter.area = area.dataset.imsArea; return render(); }
   if (t('[data-ims-refresh]')) {
@@ -12885,6 +13234,7 @@ async function imsClick(event) {
 async function imsChange(event) {
   const el = event.target;
   if ((imsTab === 'training' || imsTab === 'policy') && await trChange(event)) return true;
+  if (imsTab === 'gaps' && await gapChange(event)) return true;
   if (el.matches('[data-ims-filter]') && el.dataset.imsFilter !== 'q') { imsFilter[el.dataset.imsFilter] = el.value; render(); return true; }
   if (el.matches('[data-ims-done]')) { imsDone = el.checked; render(); return true; }
   if (el.matches('[data-ims-differ]')) { imsFilter.differ = el.checked; if (el.checked) imsDone = true; render(); return true; }
@@ -15041,10 +15391,12 @@ const SUB_VIEWS = {
   '#/training': { open: () => (trOpen && !['new-talk', 'new-policy', 'edit-policy', 'course', 'member'].includes(trOpen) ? trOpen : null),
     close: () => { trOpen = null; trDraft = null; }, reopen: (v) => { trOpen = v; if (v.startsWith('policy-')) trTab = 'policy'; } },
   '#/ims': { open: () => imsOpen || imsMeetingOpen || (imsNew ? 'new' : null) || (imsCleanup ? 'cleanup' : null) || (imsDrill ? `drill|${imsDrill.id}|${imsDrill.title}` : null)
-    || (trOpen && (imsTab === 'training' || imsTab === 'policy') && /^(talk|policy)-/.test(trOpen) ? `tr|${trOpen}` : null),
-    close: () => { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; imsCleanup = null; imsDrill = null; trOpen = null; trDraft = null; },
+    || (trOpen && (imsTab === 'training' || imsTab === 'policy') && /^(talk|policy)-/.test(trOpen) ? `tr|${trOpen}` : null)
+    || (imsTab === 'gaps' && gapView && gapView.kind !== 'new' ? `gap|${gapView.kind}|${gapView.id}` : null),
+    close: () => { imsOpen = null; imsMeetingOpen = null; imsNew = null; imsItemData = null; imsEdit = null; imsCleanup = null; imsDrill = null; trOpen = null; trDraft = null; gapView = null; gapDraft = null; },
     reopen: (v) => {
       if (v.startsWith('tr|')) { trOpen = v.slice(3); imsTab = v.startsWith('tr|policy') ? 'policy' : 'training'; }
+      else if (v.startsWith('gap|')) { const [, kind, id] = v.split('|'); imsTab = 'gaps'; gapView = { kind, id: Number(id) }; gapDraft = null; gapCache.item = null; }
       else if (v === 'cleanup') imsCleanup = {};
       else if (v.startsWith('drill|')) { const [, id, title] = v.split('|'); imsDrill = { id, title }; imsTab = 'stats'; }
       else if (/^PROMTEK-/.test(v)) imsMeetingOpen = v; else if (v !== 'new') { imsOpen = v; imsItemData = null; imsEdit = null; }
@@ -16100,7 +16452,12 @@ async function bellOpen() {
 // A notification's link: the page, with the item on it open.
 const NOTIFY_OPENERS = {
   '#/psc': (k) => { pscNew = null; pscOpen = k; },
-  '#/ims': (k) => { imsNew = null; imsMeetingOpen = null; imsOpen = k; imsItemData = null; imsEdit = null; },
+  '#/ims': (k) => {
+    imsNew = null; imsMeetingOpen = null; imsItemData = null; imsEdit = null;
+    const gap = /^gap-assess-(\d+)$/.exec(k);
+    if (gap) { imsOpen = null; imsTab = 'gaps'; gapView = { kind: 'assess', id: Number(gap[1]) }; gapDraft = null; gapCache.item = null; return; }
+    imsOpen = k;
+  },
   '#/contracts': (k) => { conOpen = k; },
   '#/training': (k) => { trOpen = k; trTab = k.startsWith('policy-') ? 'policy' : 'training'; trCache.at = 0; },
   '#/nearmiss': (k) => { nmOpenId = k; },
