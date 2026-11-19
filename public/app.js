@@ -4427,12 +4427,15 @@ function customerOverviewHtml(d) {
     ${custSec('comms', 'Recent communications', comms, { count: custComms && !custComms.error ? custComms.comments.length : null, sub: 'Their emails, as the mail handler put them on their items, from the last four months.' })}`;
 }
 
-// Tokens used of those in the contract; overdraft tokens count as used, and put it in red.
+// Tokens used of those in the contract. Jira's count of used tokens already includes any overdraft
+// tokens; going over the contract's tokens, or any overdraft token, puts it in red.
 function custTokens(c) {
   const over = Number(c.overdraft) || 0;
-  if (!c.available && !c.used && !over) return '—';
-  const used = (Number(c.used) || 0) + over;
-  return `<span class="${over > 0 ? 'bad' : ''}" title="${over > 0 ? `${n(over)} overdraft token${over === 1 ? '' : 's'}` : ''}">${n(used)}/${n(Number(c.available) || 0)}</span>`;
+  const used = Number(c.used) || 0;
+  const available = Number(c.available) || 0;
+  if (!available && !used && !over) return '—';
+  const red = over > 0 || used > available;
+  return `<span class="${red ? 'bad' : ''}" title="${over > 0 ? `${n(over)} of them overdraft token${over === 1 ? '' : 's'}` : ''}">${n(used)}/${n(available)}</span>`;
 }
 
 async function customerStatsHtml(d, fresh = false) {

@@ -312,7 +312,7 @@ The **Customers** tile lists every live customer project in Jira (the UK and Sou
 - **Open work by kind:** everything not done in their project by issue type (except Documentation, which isn't worked once it's made), to do and in progress (hover for the statuses), and each open order's progress and how much is invoiced.
 - **How long things take:** average and median days from raised to done, by issue type, for the last two years.
 - **Who's working on them** and **who knows them best:** only people in the hub (former staff are left out); everything ever assigned to each in their project (up to the latest 1,500) and the time each has logged for them, the top one starred.
-- **PSCs raised by month** and **every service contract** the Service contracts tile has for them (archived ones too), newest start first, with tokens used of those in the contract: overdraft tokens count as used, and turn it red (23/20).
+- **PSCs raised by month** and **every service contract** the Service contracts tile has for them (archived ones too), newest start first, with tokens used of those in the contract (Jira's count, which includes overdraft tokens), in red when there are overdraft tokens or more used than the contract has (23/20).
 - Worked out when first opened and kept for six hours; **Work it out again** refreshes them.
 
 **Setting it up:** run `schema-073.sql`, then `schema-074.sql`, in the D1 console. The first read runs within the half hour; until then the list shows the customer projects without last updates or contacts.
