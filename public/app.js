@@ -4427,6 +4427,14 @@ function customerOverviewHtml(d) {
     ${custSec('comms', 'Recent communications', comms, { count: custComms && !custComms.error ? custComms.comments.length : null, sub: 'Their emails, as the mail handler put them on their items, from the last four months.' })}`;
 }
 
+// Tokens used of those in the contract; overdraft tokens count as used, and put it in red.
+function custTokens(c) {
+  const over = Number(c.overdraft) || 0;
+  if (!c.available && !c.used && !over) return '—';
+  const used = (Number(c.used) || 0) + over;
+  return `<span class="${over > 0 ? 'bad' : ''}" title="${over > 0 ? `${n(over)} overdraft token${over === 1 ? '' : 's'}` : ''}">${n(used)}/${n(Number(c.available) || 0)}</span>`;
+}
+
 async function customerStatsHtml(d, fresh = false) {
   if (!custStats || custStats.key !== d.key || fresh) custStats = await api(`/api/customers/stats?key=${encodeURIComponent(d.key)}${fresh ? '&fresh=1' : ''}`);
   const s = custStats;
@@ -4476,7 +4484,7 @@ async function customerStatsHtml(d, fresh = false) {
       ${s.sampled.assigned >= 1500 ? '<p class="help">Counted from their latest 1,500 assigned items.</p>' : ''}`,
     { sub: 'Every item ever assigned to each person in the hub in their project, and the time each has logged for them.' });
     const contracts = s.contracts.length ? custSec('stat-contracts', 'Service contracts', `<div class="table-wrap"><table><thead><tr><th>Contract</th><th>Status</th><th>Tier</th><th class="num">Value</th><th>Started</th><th class="num">Tokens used</th></tr></thead>
-      <tbody>${s.contracts.map((c) => `<tr><td>${custJira(c.key)}</td><td>${esc(c.status || '')}</td><td>${esc(c.tier || '')}</td><td class="num">${wipMoney(c.total)}</td><td>${c.start ? esc(fullDate(c.start)) : '—'}</td><td class="num">${c.available ? `${n(c.used || 0)} of ${n(c.available)}` : '—'}</td></tr>`).join('')}</tbody></table></div>`,
+      <tbody>${s.contracts.map((c) => `<tr><td>${custJira(c.key)}</td><td>${esc(c.status || '')}</td><td>${esc(c.tier || '')}</td><td class="num">${wipMoney(c.total)}</td><td>${c.start ? esc(fullDate(c.start)) : '—'}</td><td class="num">${custTokens(c)}</td></tr>`).join('')}</tbody></table></div>`,
     { count: s.contracts.length, sub: 'Newest first.' }) : '';
     return `${kpis}${money}${hours}${open}${timings}${working}${familiar}${pscs}${contracts}`;
   } finally { wipSymFor = null; }

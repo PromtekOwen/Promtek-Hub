@@ -18,7 +18,7 @@ const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'up
 const RUN_EVERY_MS = 30 * 60_000;
 const STATS_FOR_MS = 6 * 3600_000;
 // Kept statistics from an older version of this are worked out again.
-const STATS_VERSION = 2;
+const STATS_VERSION = 3;
 // Customer projects that are templates for new customers, not customers.
 const TEMPLATE_PROJECTS = ['UKST', 'SAST'];
 // Newest start first, then the newest item.
@@ -529,7 +529,12 @@ export async function stats(env, viewer, raw, { fresh = false } = {}) {
     if (/overdue/.test(st)) overdue += v;
     if (sent && !/paid/.test(st)) awaiting += v;
   }
-  const { results: contractRows } = await env.DB.prepare('SELECT w.issue_key, w.total, w.start_date, c.status, c.tier, c.f_available, c.f_used FROM wip_contracts w LEFT JOIN contracts c ON c.issue_key = w.issue_key WHERE w.project_key = ? AND w.gone = 0').bind(k).all();
+  // Every service contract: those the Service contracts tile keeps (archived ones too), with their value from the WIP.
+  const { results: tileContracts } = await env.DB.prepare(`SELECT c.issue_key, c.status, c.tier, c.start_date, c.f_available, c.f_used, c.f_overdraft, w.total
+    FROM contracts c LEFT JOIN wip_contracts w ON w.issue_key = c.issue_key WHERE c.project_key = ?`).bind(k).all();
+  const { results: wipOnly } = await env.DB.prepare(`SELECT w.issue_key, w.status, NULL AS tier, w.start_date, NULL AS f_available, NULL AS f_used, NULL AS f_overdraft, w.total
+    FROM wip_contracts w WHERE w.project_key = ? AND NOT EXISTS (SELECT 1 FROM contracts c WHERE c.issue_key = w.issue_key)`).bind(k).all();
+  const contractRows = [...tileContracts, ...wipOnly];
   for (const x of contractRows) if (x.total && inRange(monthOf(x.start_date))) contractBy[monthOf(x.start_date)] += x.total;
   const valued = orders.filter((o) => o.value && !o.token_only);
   const money = {
@@ -633,7 +638,7 @@ export async function stats(env, viewer, raw, { fresh = false } = {}) {
     v: STATS_VERSION, at: Date.now(), key: k, name: c.name, firstCreated: first?.fields?.created || null, issueCount: c.issue_count ?? null,
     money, hours: { months, values: months.map((m) => Math.round(hoursBy[m] * 10) / 10), total: [...personSeconds.values()].reduce((t, s) => t + s, 0) / 3600 },
     openWork, orderProgress, timings, current: [...current.values()].sort((a, b) => b.total - a.total), familiar: familiar.slice(0, 15),
-    psc, quotes, contracts: newestStart(contractRows).map((x) => ({ key: x.issue_key, status: x.status, tier: x.tier, total: x.total, start: x.start_date, available: x.f_available, used: x.f_used })),
+    psc, quotes, contracts: newestStart(contractRows).map((x) => ({ key: x.issue_key, status: x.status, tier: x.tier, total: x.total, start: x.start_date, available: x.f_available, used: x.f_used, overdraft: x.f_overdraft })),
     sampled: { open: open.length, done: done.length, assigned: everyone.length },
   };
   await setState(env, cacheKey, JSON.stringify(out));
