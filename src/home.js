@@ -217,8 +217,8 @@ async function systemAlerts(env, viewer) {
   }
 
   if (service) {
-    const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM contract_flags WHERE resolved_at IS NULL').first().catch(() => ({ n: 0 }));
-    if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Dates, acceptance or PSCs missing an Organization.', link: '#/contracts' });
+    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM contract_flags WHERE resolved_at IS NULL AND kind != 'psc-org'").first().catch(() => ({ n: 0 }));
+    if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Contract dates or acceptance to sort out.', link: '#/contracts' });
   }
   return out;
 }

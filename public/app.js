@@ -4808,13 +4808,30 @@ function optionRow(option) {
     </button>`;
 }
 
+// The item picked itself, when there's something under it to log to instead.
+let logStepCache = null;        // { node, step }: the step just fetched, so it isn't fetched twice
+function logSelfHtml(self, under) {
+  const what = { order: 'the order', category: 'the category', item: 'this item' }[self.kind] || 'this item';
+  const parts = self.kind === 'order' ? 'the parts' : 'the stages';
+  const rate = self.rate ?? 1;
+  const pick = esc(JSON.stringify({ ...self, skipChildren: true }));
+  if (!under) return `<div class="options">${logOptionRow({ ...self, skipChildren: true })}</div>`;
+  return `<div class="card log-self">
+      <p style="margin:0"><strong>None of these?</strong> Log to ${what} itself, ${esc(self.label)}.</p>
+      <p class="log-self-warn">${rate === 0 ? `${what[0].toUpperCase()}${what.slice(1)} earns no XP.` : rate < 1 ? `It earns ${Math.round(rate * 100)}% XP, less than ${parts} under it.`
+        : `Time logged to ${what} doesn't count towards ${parts} under it, and can earn less XP than logging to the right one.`}</p>
+      <button class="btn secondary" data-pick='${pick}'>Log to this level instead</button>
+    </div>`;
+}
+
 async function logPickerHtml() {
   if (logPscProject) return pscFormHtml(logPscProject);
   await loadLogShortcuts().catch(() => { logShortcuts = { recent: [], favourites: [], assigned: [] }; });
   const side = `<aside class="log-side"><h2>Favourites</h2><div class="options log-fav-list">${favListHtml()}</div></aside>`;
   const layout = (main) => `<div class="log-layout">${side}<div class="log-main">${main}</div></div>`;
   if (logNode) {
-    const step = await api(`/api/log/browse?node=${encodeURIComponent(logNode)}`);
+    const step = logStepCache?.node === logNode ? logStepCache.step : await api(`/api/log/browse?node=${encodeURIComponent(logNode)}`);
+    logStepCache = { node: logNode, step };
     const crumbs = logTrail.map((c, i) => `<button class="linklike" data-crumb="${i}">${esc(c.label)}</button>`).join(' › ');
     return layout(`
       <div class="card">
@@ -4826,7 +4843,8 @@ async function logPickerHtml() {
         ${step.subtitle ? `<p class="muted" style="margin:.2rem 0 0">${esc(step.subtitle)}</p>` : ''}
       </div>
       <div style="height:1rem"></div>
-      <div class="options">${step.options.map(logOptionRow).join('') || '<div class="card"><p class="muted">Nothing here. Step back and try another branch.</p></div>'}</div>
+      <div class="options">${step.options.map(logOptionRow).join('') || (step.self ? '' : '<div class="card"><p class="muted">Nothing here. Step back and try another branch.</p></div>')}</div>
+      ${step.self ? logSelfHtml(step.self, step.options.length > 0) : ''}
       ${step.canCreatePsc ? `<div class="card" style="margin-top:1rem">
         <p style="margin-top:0">Took a call or did work with no item for it?</p>
         <button class="btn" data-psc="${esc(step.canCreatePsc.projectKey)}">Raise a service item</button>
@@ -5727,7 +5745,7 @@ function leaderRowHtml(r, extra = '') {
   return `<li class="${[r.isYou ? 'you' : '', extra].filter(Boolean).join(' ')}">
       <span class="pos">${r.position}</span>
       <span class="who">${esc(r.name)}</span>
-      <span class="lvl">${level}</span>
+      <span class="lvl">${level}${r.title ? ` <small class="lvl-title">${esc(r.title)}</small>` : ''}</span>
       <span class="pts">${n(r.xp)} XP</span>
     </li>`;
 }
@@ -5880,7 +5898,7 @@ function scoreRow(key, label, value, { quoted, name = 'jobs-score' } = {}) {
 
 const jobsCatInfo = new Map();   // category key -> what its sub-tasks need: discipline, estimate, older order or not
 let jobsWeights = null;           // the agreed weightings for sharing a category's time across its sub-tasks
-let jobsFilter = { customer: '', assignee: '', status: '' };
+let jobsFilter = { customer: '', assignee: '', status: '', team: '', category: '' };
 let jobsReuse = false;            // a filter changed: draw from the list already loaded
 let jobsLoadedAt = 0;
 const EPIC_ICON = '<svg class="epic-icon" viewBox="0 0 16 16" role="img" aria-label="Epic"><rect width="16" height="16" rx="3" fill="#904ee2"/><path d="M9.6 2.6 4.4 9h3.2l-1.2 4.4L11.6 7H8.4l1.2-4.4z" fill="#fff"/></svg>';
@@ -5904,9 +5922,9 @@ function jobsCategoryRow(c) {
   if (c.legacy) {
     return `<li class="job-cat legacy-item${state}" data-log-key="${esc(c.key)}">
     <div class="job-cat-head"><span class="title"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(c.summary)}</span>
-      <span class="cat-meta">${status}</span></div>
+      <span class="cat-meta">${status}${jobsPeopleHtml(c, 'md')}</span></div>
     ${c.estimateSeconds ? `<div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>` : ''}
-    <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}. ${c.mine ? 'Assigned to you' : c.assigneeName ? esc(c.assigneeName) : 'Not assigned'}</span>
+    <div class="job-cat-foot"><span class="sub">${c.estimateSeconds ? `${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}, ${Math.round(pct * 100)}%` : `${hoursShort(c.loggedSeconds)} logged, no estimate`}.</span>
       <span class="cat-foot-actions">${count}<button class="chip-btn job-sub-log" data-jobs-log='${esc(JSON.stringify({ issueId: c.id, key: c.key, title: c.summary, sublabel: c.status || '' }))}'>Log time</button></span></div>
     ${jobsSubsSlot(c.key)}
   </li>`;
@@ -5925,7 +5943,7 @@ function jobsCategoryRow(c) {
       : `<button class="chip-btn" data-jobs-dispute="${esc(c.id)}">Dispute</button>`;
   return `<li class="job-cat${state}">
     <div class="job-cat-head"><span class="title">${catIcon(c.discipline)}<a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${name}</span>
-      <span class="cat-meta">${status}<span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span></span></div>
+      <span class="cat-meta">${status}<span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span>${jobsPeopleHtml(c, 'md')}</span></div>
     <div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>
     <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.unscored ? '. Difficulty not set' : ''}${notes ? `. ${notes}` : ''}</span>
       <span class="cat-foot-actions">${count}${action}</span></div>
@@ -5960,7 +5978,7 @@ function jobsSubsHtml(key) {
     const over = g.seconds && x.loggedSeconds > g.seconds;
     const log = { issueId: x.id, key: x.key, title: x.summary, sublabel: [x.type, x.status].filter(Boolean).join(', '), jobElo: info.jobElo };
     return `<li class="job-sub${x.statusCat === 'done' ? ' done' : ''}" data-log-key="${esc(x.key)}">
-      <span class="job-sub-name"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}${x.assignee ? ` <small class="muted">${esc(x.assignee)}</small>` : ''}</span>
+      <span class="job-sub-name">${x.assigneeId ? personAvatar(x.assigneeId, 'sm', x.assignee) : '<span class="pa pa-sm pa-none" title="No assignee">?</span>'}<a href="${esc(me.jiraBaseUrl)}/browse/${esc(x.key)}" target="_blank" rel="noopener">${esc(x.key)}</a> ${esc(x.summary)}</span>
       <span class="job-sub-time${over ? ' over' : ''}">${g.seconds ? `Estimate about <strong>${hoursShort(g.seconds)}</strong>, ` : ''}${hoursShort(x.loggedSeconds)} logged</span>
       <span class="job-sub-status"><button class="status-chip s-${esc(x.statusCat || 'new')}" data-jobs-sub-move="${esc(x.key)}" aria-haspopup="true">${esc(x.status || 'Status')} <span aria-hidden="true">▾</span></button>
         <button class="chip-btn job-sub-log" data-jobs-log='${esc(JSON.stringify(log))}'>Log time</button></span>
@@ -6001,14 +6019,14 @@ async function loadJobSubtasks() {
 
 // ---------- who's on an order ----------
 
-function personAvatar(id, size) {
-  const p = jobsData?.people?.[id] || { name: '?' };
+function personAvatar(id, size, name = '') {
+  const p = jobsData?.people?.[id] || { name: name || '?' };
   return `<span class="pa pa-${size}" title="${esc(p.name)}">${p.avatar ? `<img src="${esc(p.avatar)}" alt="">` : esc(initialsOf(p.name))}</span>`;
 }
 
-function jobsPeopleHtml(o) {
+function jobsPeopleHtml(o, size = 'lg') {
   o.people = o.people || [];
-  if (!o.assignee && !o.people.length) return '';
+  if (!o.assignee && !o.people.length) return `<div class="job-people"><span class="pa pa-${size} pa-none" title="No assignee">?</span></div>`;
   const shown = o.people.slice(0, 5);
   const more = o.people.length - shown.length;
   const dir = jobsData?.people || {};
@@ -6016,7 +6034,7 @@ function jobsPeopleHtml(o) {
   const label = [o.assignee ? `Assignee ${dir[o.assignee]?.name || ''}` : 'No assignee', o.people.length ? `${o.people.length} more involved` : ''].filter(Boolean).join(', ');
   return `<div class="job-people">
     <button class="job-people-btn" data-jobs-people="1" aria-expanded="false" aria-label="${esc(label)}">
-      ${o.assignee ? personAvatar(o.assignee, 'lg') : '<span class="pa pa-lg pa-none" title="No assignee">?</span>'}
+      ${o.assignee ? personAvatar(o.assignee, size) : `<span class="pa pa-${size} pa-none" title="No assignee">?</span>`}
       ${shown.length ? `<span class="pa-stack">${shown.map((id) => personAvatar(id, 'sm')).join('')}${more > 0 ? `<span class="pa pa-sm pa-more">+${more}</span>` : ''}</span>` : ''}
     </button>
     <div class="job-people-pop" role="tooltip">
@@ -6109,20 +6127,26 @@ async function jobsHomeHtml() {
   const assignees = jobsAssigneeOptions(data, names);
   if (jobsFilter.customer && !customers.includes(jobsFilter.customer)) jobsFilter.customer = '';
   if (jobsFilter.status && !statuses.includes(jobsFilter.status)) jobsFilter.status = '';
+  const teams = [...new Set(data.orders.map((o) => o.team).filter(Boolean))].sort();
+  const kinds = [...new Set(data.orders.flatMap((o) => o.categories.map((c) => (c.legacy ? 'legacy' : c.discipline)).filter(Boolean)))]
+    .sort((a, b) => (a === 'legacy') - (b === 'legacy') || String(DISCIPLINE_NAMES[a] || a).localeCompare(String(DISCIPLINE_NAMES[b] || b)));
+  if (jobsFilter.team && !teams.includes(jobsFilter.team)) jobsFilter.team = '';
+  if (jobsFilter.category && !kinds.includes(jobsFilter.category)) jobsFilter.category = '';
+  const catOk = (c) => (!jobsFilter.status || c.status === jobsFilter.status) && (!jobsFilter.category || (c.legacy ? 'legacy' : c.discipline) === jobsFilter.category);
   const shown = data.orders
     .filter((o) => !jobsFilter.customer || (o.customer || 'No customer') === jobsFilter.customer)
+    .filter((o) => !jobsFilter.team || o.team === jobsFilter.team)
     .filter((o) => !jobsFilter.assignee || jobsAssignees(o).has(jobsFilter.assignee))
-    .map((o) => (jobsFilter.status ? { ...o, categories: o.categories.filter((c) => c.status === jobsFilter.status) } : o))
+    .map((o) => (jobsFilter.status || jobsFilter.category ? { ...o, categories: o.categories.filter(catOk) } : o))
     .filter((o) => o.categories.length);
   const orders = shown.map((o) => `<div class="card job-order${o.legacy ? ' legacy' : ''}" data-job-order>
       <div class="job-order-top">
         <p class="job-order-head"><strong>${EPIC_ICON}<a href="${esc(me.jiraBaseUrl)}/browse/${esc(o.key)}" target="_blank" rel="noopener">${esc(o.key)}</a> ${esc(o.summary)}</strong>
           <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}${o.legacy ? '. Older order, from before categories' : ''}</span></p>
-        ${jobsPeopleHtml(o)}
       </div>
       <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul>
-      <span hidden>${(o.people || []).concat(o.assignee ? [o.assignee] : []).map((id) => esc(data.people?.[id]?.name || '')).join(' ')}</span></div>`).join('');
-  const filtered = jobsFilter.customer || jobsFilter.assignee || jobsFilter.status;
+      <span hidden>${(o.people || []).concat(o.assignee ? [o.assignee] : [], o.categories.flatMap((c) => [c.assignee, ...(c.people || [])])).filter(Boolean).map((id) => esc(data.people?.[id]?.name || '')).join(' ')}</span></div>`).join('');
+  const filtered = jobsFilter.customer || jobsFilter.assignee || jobsFilter.status || jobsFilter.team || jobsFilter.category;
   const empty = filtered
     ? '<div class="card"><p style="margin:0">Nothing open matches these filters.</p></div>'
     : jobsScope === 'mine'
@@ -6137,10 +6161,12 @@ async function jobsHomeHtml() {
     <div class="row jobs-tools"><span class="segment">${scopes.map(([k, l]) =>
       `<button class="seg${jobsScope === k ? ' on' : ''}" data-jobs-scope="${k}">${l}</button>`).join('')}</span>
       ${select('customer', 'Customer', 'All customers', customers.map((c) => [c, c]))}
+      ${teams.length > 1 ? select('team', 'Team', 'Every team', teams.map((x) => [x, x])) : ''}
+      ${select('category', 'Category', 'Every category', kinds.map((k) => [k, k === 'legacy' ? 'Older orders\' items' : DISCIPLINE_NAMES[k] || k]))}
       ${select('assignee', 'Assignee', 'Anyone', assignees)}
       ${select('status', 'Status', 'Any status', statuses.map((x) => [x, x]))}
       <input type="search" id="jobs-search" placeholder="Search orders, customers or keys" aria-label="Search jobs"></div>
-    <p class="help">Each category shows its status, job ELO and the time logged against its estimate. Under it are its sub-tasks, each with a rough guide to its share of that time; only the category as a whole counts towards ELO. Tap a sub-task's status to move it on, or Log time to log to it. If a job has turned out harder than quoted, dispute it and your team lead will take a look; if no difficulty was set when it was quoted, work it out instead.</p>
+    <p class="help">Each category shows its status, job ELO, who it's assigned to and who else is involved (tap the faces for names), and the time logged against its estimate. Under it are its sub-tasks, each with a rough guide to its share of that time; only the category as a whole counts towards ELO. Tap a sub-task's status to move it on, or Log time to log to it. If a job has turned out harder than quoted, dispute it and your team lead will take a look; if no difficulty was set when it was quoted, work it out instead.</p>
     ${orders || empty}`;
 }
 
@@ -10385,8 +10411,8 @@ function wipOrdersHtml(d) {
       <td class="num">${r.paid === null ? (r.tokens !== null && r.tokenPaid ? 'Tokens paid' : '—') : wipPct(r.paid)}</td></tr>`).join('');
   return `<div class="row wip-filters">
       <span class="segment wip-seg">${WIP_FILTERS.map(([k, l]) => `<button class="seg${wipFilter === k ? ' on' : ''}" data-wip-filter="${k}">${l}</button>`).join('')}</span>
-      <label>Division <select data-wip-division>${[['all', 'Both'], ['ProjectsTeam', 'Projects'], ['ServiceTeam', 'Service']].map(([k, l]) =>
-        `<option value="${k}"${wipDivision === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+      <select data-wip-division aria-label="Division">${[['all', 'Division: Both'], ['ProjectsTeam', 'Division: Projects'], ['ServiceTeam', 'Division: Service']].map(([k, l]) =>
+        `<option value="${k}"${wipDivision === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
       <input type="search" id="wip-search" value="${esc(wipQuery)}" placeholder="Search orders, customers or quotes" aria-label="Search orders">
       <p class="muted search-recheck" id="wip-recheck" role="status" hidden></p>
     </div>
@@ -15714,6 +15740,19 @@ view.addEventListener('click', async (event) => {
       location.hash = '#/log';
       return;
     }
+    // Anything with parts under it (an order, a category, a task with sub-tasks) shows them first.
+    if (!picked.skipChildren && isJiraKey(picked.label) && !pendingCall) {
+      pickBtn.classList.add('busy'); pickBtn.disabled = true;
+      const node = `item:${picked.label}`;
+      const step = await api(`/api/log/browse?node=${encodeURIComponent(node)}`).catch(() => null);
+      pickBtn.classList.remove('busy'); pickBtn.disabled = false;
+      if (step?.options?.length) {
+        logTrail.push({ node: logNode, label: pickBtn.querySelector('strong')?.textContent?.trim() || 'Back' });
+        logNode = node; logStepCache = { node, step };
+        window.scrollTo(0, 0);
+        return render();
+      }
+    }
     logChosen = picked;
     // Logging a call's time goes straight to the form; otherwise ask which way first.
     logMode = pendingCall ? 'manual' : null;
@@ -16474,17 +16513,47 @@ const SUB_VIEWS = {
       else if (/^PROMTEK-/.test(v)) imsMeetingOpen = v; else if (v !== 'new') { imsOpen = v; imsItemData = null; imsEdit = null; }
     } },
   '#/contracts': { open: () => conOpen, close: () => { conOpen = null; }, reopen: (v) => { conOpen = v; } },
+  '#/coshh': { open: () => (coshhView?.kind === 'item' ? `item|${coshhView.id}` : coshhView?.kind === 'form' ? (coshhForm?.mode === 'new' && !coshhForm?.id ? 'new' : `form|${coshhForm?.id || ''}`) : null),
+    close: () => { coshhView = null; coshhItem = null; coshhForm = null; coshhSheet = null; },
+    reopen: (v) => { const [kind, id] = String(v).split('|'); if (kind === 'item' || (kind === 'form' && id)) { coshhView = { kind: 'item', id: Number(id) }; coshhItem = null; } } },
   '#/wip': { open: () => wipOpen, close: () => { wipOpen = null; }, reopen: (v) => { wipOpen = v; } },
   '#/nearmiss': { open: () => nmOpenId, close: () => { nmOpenId = null; }, reopen: (v) => { nmOpenId = v; } },
   '#/jobs': { open: () => jobsView, close: () => { jobsView = null; jobsDraft = null; } },
   '#/quotes': { open: () => quotesView, close: () => { quotesView = null; quoteData = null; } },
   '#/condor': { open: () => mesEst && mesEst.issueId, close: () => { mesEst = null; } },
 };
+// The tabs within each tile: each tab chosen is a page of its own too, so back returns to the tab before.
+const TILE_TABS = {
+  '#/ims': [() => imsTab, (v) => { imsTab = v; }, 'items'],
+  '#/wip': [() => wipTab, (v) => { wipTab = v; }, 'summary'],
+  '#/invoicing': [() => invTab, (v) => { invTab = v; }, 'invoices'],
+  '#/contracts': [() => conTab, (v) => { conTab = v; }, 'contracts'],
+  '#/psc': [() => pscTab, (v) => { pscTab = v; }, 'open'],
+  '#/quotes': [() => quotesTab, (v) => { quotesTab = v; }, 'builder'],
+  '#/nearmiss': [() => nmTab, (v) => { nmTab = v; }, 'report'],
+  '#/condor': [() => condorTab, (v) => { condorTab = v; }, 'day'],
+  '#/feedback': [() => fbTab, (v) => { fbTab = v; }, 'board'],
+  '#/training': [() => trTab, (v) => { trTab = v; }, 'training'],
+  '#/eotq': [() => eotqView, (v) => { eotqView = v; }, 'nominate'],
+  '#/vehicles': [() => vehicleView, (v) => { vehicleView = v; }, 'home'],
+};
+const tabOnly = (key) => { try { const v = JSON.parse(key); return Boolean(v && typeof v === 'object' && 'tab' in v && v.v === null); } catch { return false; } };
+const tabOf = (route) => { const t = TILE_TABS[route]; const v = t?.[0](); return t && typeof v === 'string' && v !== t[2] ? v : null; };
 function subViewKey(route) {
   if (settingsOpen === route) return 'settings';
   if (notifyOpen === route) return 'notify';
-  const v = SUB_VIEWS[route]?.open();
+  const v = SUB_VIEWS[route]?.open() || null;
+  const tab = tabOf(route);
+  if (tab) return JSON.stringify({ tab, v });
   return v ? JSON.stringify(v) : null;
+}
+// Back to an entry: its tab, then what it had open.
+function reopenSub(route, want) {
+  const t = TILE_TABS[route];
+  let v = want ? JSON.parse(want) : null;
+  if (v && typeof v === 'object' && 'tab' in v) { if (t) t[1](v.tab); v = v.v; } else if (t) t[1](t[2]);
+  if (v !== null && v !== undefined && SUB_VIEWS[route]?.reopen) SUB_VIEWS[route].reopen(v);
+  return v === null || v === undefined || Boolean(SUB_VIEWS[route]?.reopen);
 }
 // After each page is drawn: something newly opened within the tile gets a history entry of its own.
 function noteSubView(route) {
@@ -16495,10 +16564,19 @@ function noteSubView(route) {
   if (key === cur) return;
   // Arriving at a page whose entry had something open that isn't any more: just forget it.
   if (byNav && !key) { history.replaceState({ ...history.state, hubSub: null }, ''); return; }
-  if (key && !cur) history.pushState({ hubDepth: navDepth() + 1, hubSub: key }, '');
+  // Arriving at a tile still on the tab it was left on: that's where this entry is, not a step further.
+  if (byNav && !cur && tabOnly(key)) { history.replaceState({ ...history.state, hubSub: key }, ''); return; }
+  // Each entry within a tile remembers where the tile's own entry is, so closing goes straight back to it.
+  const push = () => history.pushState({ hubDepth: navDepth() + 1, hubSub: key, hubPrev: cur, hubBase: history.state?.hubBase ?? navDepth() }, '');
+  // Closed with the tile's own button, back to what was open before: step back to that entry, without drawing again.
+  if (!byNav && key && history.state?.hubPrev === key && navDepth() > 0) { quietPop = true; history.back(); lastDepth = navDepth() - 1; return; }
+  if (key && !cur) push();
+  // From one thing to another (an item to its sub-task, one tab to the next): back returns to the first.
+  // A form that's just been sent is replaced by what it made.
+  else if (key && !/^"new"$|"v":"new"/.test(cur) && !['settings', 'notify'].includes(cur)) push();
   else if (key) history.replaceState({ ...history.state, hubSub: key }, '');
-  // Closed with the tile's own button: step back over its entry, without drawing again.
-  else if (navDepth() > 0) { quietPop = true; history.back(); }
+  // Closed with the tile's own button: step back to the tile's own entry, without drawing again.
+  else if (navDepth() > 0) { const base = history.state?.hubBase; quietPop = true; if (base !== undefined && base < navDepth()) history.go(base - navDepth()); else history.back(); }
   else history.replaceState({ ...history.state, hubSub: null }, '');
   lastDepth = navDepth();
 }
@@ -16521,8 +16599,7 @@ window.addEventListener('popstate', () => {
   SUB_VIEWS[route]?.close();
   if (want === 'settings' && TILE_SETTINGS[route]) settingsOpen = route;
   else if (want === 'notify' && NOTIFY_TILES[route]) notifyOpen = route;
-  else if (want && SUB_VIEWS[route]?.reopen) { try { SUB_VIEWS[route].reopen(JSON.parse(want)); } catch { /* left closed */ } }
-  else if (want) history.replaceState({ ...history.state, hubSub: null }, '');
+  else { let ok = false; try { ok = reopenSub(route, want); } catch { /* left closed */ } if (want && !ok) history.replaceState({ ...history.state, hubSub: null }, ''); }
   render();
 });
 back.addEventListener('click', (event) => {

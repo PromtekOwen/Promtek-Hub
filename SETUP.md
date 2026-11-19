@@ -155,6 +155,8 @@ Directors, general managers and managers who share a column sit side by side, an
 
 **Download as an image** saves a PNG of the chart exactly as drawn, at twice screen resolution, for pasting into documents or the ISMS.
 
+**Back.** The arrow at the top left goes back a page: from something opened within a tile (an item, a ticket, a sub-task, an assessment) to what was open before it, and from one of a tile's tabs to the tab before, then to the tile's first view and home. The phone's or browser's own back does the same.
+
 **Downloads.** Everything the hub saves (the chart image, the WIP workbook, CSVs, certificates, release notes) says "Downloading" and then "Downloaded" with the file's name, which matters in the installed app, where there's no download bar. Files from the server are fetched first, so "Downloaded" only shows once the file has arrived. In the installed app on an iPhone or iPad, the share sheet opens instead, for Save to Files.
 
 Someone new with no manager and no level appears on the Directors row, which makes them easy to spot until they're set up.
@@ -163,7 +165,7 @@ Someone new with no manager and no level appears on the Directors row, which mak
 
 Access is set with **groups** (roles) and **teams**. A person can be in any number of each. What each role and team can open starts from the defaults below, and admins can change it under **Admin → Who can use what** (see below).
 
-- **Everyone:** their own XP, time and profile, the leaderboard, and the tiles for their teams.
+- **Everyone:** their own XP, time and profile, the leaderboard (with everyone's level and level title), and the tiles for their teams.
 - **Admin:** everything, including Admin, every settings cog, the audit log, employees, vehicles and issuing the company chart.
 - **Management:** sees and acts on every team: reports, approvals, disputes, modifiers, count checks, Condor triage and planning, quotes and the XP shop preview.
 - **Team lead:** the same as Management, but their own lists ("Waiting for you", approvals, the Reports team picker) and their team's alerts are for the teams they lead. They can still act on another team's item when needed.
@@ -385,7 +387,7 @@ Everyone can order their own home screen. **Arrange tiles** on the dashboard let
 
 ## Part 14b: The active time tracker
 
-**Log time** is the button at the bottom of the home screen: centred on a phone, bottom-right on a larger screen. While a timer runs, it shows the job and the running clock. After picking a job, the engineer chooses **Add time already done** (the usual form) or **Start the timer**. Logging an 8x8 call's time goes straight to the form. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
+**Log time** is the button at the bottom of the home screen: centred on a phone, bottom-right on a larger screen. While a timer runs, it shows the job and the running clock. Picking anything with parts under it (an order, a category, or a task with sub-tasks), from a search, the shortcuts or the tree, shows those parts first, to pick the one worked on; **Log to this level instead**, below them, logs to the item itself, with a note of the lower XP it earns (its XP Rate) where it's less. After picking a job, the engineer chooses **Add time already done** (the usual form) or **Start the timer**. Logging an 8x8 call's time goes straight to the form. The timer is kept in the hub, so it carries on across tabs and devices, and a bar at the foot of every other page shows it running.
 
 **Stretches.** Every stretch between starting and pausing is sent to Tempo the moment it ends, as its own worklog with its real start time and length:
 - stretches under a minute are dropped;
@@ -967,10 +969,10 @@ Each finished category is a match between the job and the people who logged time
 
 **Jobs tile.** Every open order in the customer projects, with each category's job ELO and its time logged against the estimate. Mine shows categories you've logged time on in the last six months; My team and All show the rest.
 
-- **Who's on it.** Each order shows its Assignee as a large picture (or initials) and everyone in Promtek Staff Involved on the order or its categories as smaller ones beside it, up to five then "+N". The Assignee isn't repeated among them. Hover over them, or tap on a phone, for the list of names. Searching finds orders by these names too.
+- **Who's on it.** Each category (and each item on an older order) shows its Assignee as a picture (or initials, or ? when nobody is assigned) and everyone in Promtek Staff Involved on that category as smaller ones beside it, up to five then "+N". The Assignee isn't repeated among them. Hover over them, or tap on a phone, for the list of names. Each sub-task shows its own assignee's picture before its key. Searching finds orders by these names too.
 - **Icons and status.** Each order has the purple Epic icon before its key, and each category its discipline's icon (Software, Hardware, Site visit, Condor, from `public/icons/`). Each category shows its Jira status and how many of its sub-tasks are done.
 - **Sub-tasks.** Under each category its sub-tasks always show; on older orders they start folded away. Each has a rough guide to its time: the category's estimate shared out by the agreed weightings for its kind of sub-task (the same ones quoting uses, a weight of 1 for any kind not listed; on older orders, equal shares of the item's estimate). It's only a guide while there's little data: only the category as a whole going over its estimate counts towards ELO or estimate alerts. Time logged to sub-tasks counts in their category's total (Jira's Σ Time Spent). Each shows that estimate, its time logged, its status and **Log time**, which opens the Log time form for it. Tap a status to move it to any status Jira allows from there; the move is made in Jira as the hub's Jira account and recorded in the audit log under Jobs. Only sub-tasks in customer projects can be moved.
-- **Filters.** Customer, Assignee and Status, as well as the search. Assignee finds orders where someone is the assignee of the order, a category, an item or a sub-task. Status shows only the categories and items in that status.
+- **Filters.** Customer, Team (when there's more than one), Category (Software, Hardware, Site visit, Condor, or older orders' items), Assignee and Status, as well as the search. Category and Status show only the categories that match. Assignee finds orders where someone is the assignee of the order, a category, an item or a sub-task. Status shows only the categories and items in that status.
 - **Older orders.** Orders from before categories show on My team and All with their open items and who each is assigned to; Mine shows only the ones assigned to you.
 - **Difficulty set later.** A category quoted without a difficulty shows **Work out difficulty** instead of Dispute. Score the four areas, with an optional estimate. A team lead, Management or an admin sets it straight away; anyone else's goes to the team lead like a dispute. It is kept alongside the quote as an agreed dispute is (reason "Difficulty set after the order was made"), XP already earned on it is recalculated, and the ELO is written to the category in Jira.
 

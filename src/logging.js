@@ -182,27 +182,20 @@ export async function browse(env, node = 'root') {
     }
   }
 
-  // An order: its categories, then the stages underneath.
-  if (head === 'epic') {
-    const epicKey = issueKeyOf(rest[0]);
-    const children = await issuesFor(env, `parent = "${epicKey}" ORDER BY summary ASC`, { next: 'parent' });
-    const epic = (await searchJql(env, `key = "${epicKey}"`, LIST_FIELDS))[0];
+  // An order: its categories, then the stages underneath. Any item picked (from a search, the shortcuts
+  // or the tree) shows what's under it the same way, with the item itself offered to log to instead.
+  if (head === 'epic' || head === 'parent' || head === 'item') {
+    const key = issueKeyOf(rest[0]);
+    const [self] = await searchJql(env, `key = "${key}"`, LIST_FIELDS);
+    const isEpic = String(self?.fields?.issuetype?.name || '').toLowerCase() === 'epic' || head === 'epic';
+    const children = await issuesFor(env, `parent = "${key}" ORDER BY summary ASC`, { next: isEpic ? 'item' : null });
+    const kind = isEpic ? 'order' : head === 'parent' || /categor/i.test(self?.fields?.issuetype?.name || '') ? 'category' : 'item';
     return {
-      title: epicKey,
-      subtitle: children.length ? 'Pick the part you worked on' : 'No breakdown on this order',
-      options: [...children, ...(epic ? [{ ...asOption(epic), sublabel: 'The order itself' }] : [])],
-    };
-  }
-
-  if (head === 'parent') {
-    const parentKey = issueKeyOf(rest[0]);
-    const children = await issuesFor(env, `parent = "${parentKey}" ORDER BY summary ASC`);
-    const parent = (await searchJql(env, `key = "${parentKey}"`, LIST_FIELDS))[0];
-    return {
-      title: parentKey,
-      subtitle: children.length ? 'Pick the stage you worked on' : 'No stages on this item',
-      options: [...children, ...(parent ? [{ ...asOption(parent), sublabel: 'The category itself' }] : [])],
-      flaggable: parent ? { issueKey: parentKey, summary: parent.fields?.summary || '' } : null,
+      title: self ? `${key} ${self.fields?.summary || ''}`.trim() : key,
+      subtitle: children.length ? (isEpic ? 'Pick the part you worked on' : 'Pick the stage you worked on') : (isEpic ? 'No breakdown on this order' : 'Nothing under it'),
+      options: children,
+      self: self ? { ...asOption(self), kind } : null,
+      flaggable: self && !isEpic ? { issueKey: key, summary: self.fields?.summary || '' } : null,
     };
   }
 

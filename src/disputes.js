@@ -148,7 +148,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
       pendingDispute: pendingBy.has(c.issue_id), pendingIsMine: pendingBy.get(c.issue_id) === viewer.accountId,
       // No difficulty was set when it was quoted: it can be worked out now.
       unscored: !o && c.job_elo == null && c.weighted_score == null,
-      assignee: c.assignee || null,
+      assignee: c.assignee || null, people: [...new Set(c.staff || [])].filter((id) => id && id !== c.assignee),
     });
   }
   // Orders from before categories: on their own list, the open items assigned to them;
@@ -161,7 +161,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
       id: item.issue_id, key: item.issue_key, summary: item.summary, legacy: true, status: item.status, done: item.done,
       estimateSeconds: item.estimate_seconds, loggedSeconds: item.actual_seconds,
       pct: item.estimate_seconds ? item.actual_seconds / item.estimate_seconds : null, mine: item.assignee === viewer.accountId,
-      assigneeName: null, assignee: item.assignee,
+      assigneeName: null, assignee: item.assignee, people: [...new Set(item.staff || [])].filter((id) => id && id !== item.assignee),
     });
     addPeople(item.epic_key, item.epic_assignee, item.epic_staff, item.staff, item.assignee ? [item.assignee] : []);
   }
@@ -179,6 +179,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     for (const c of o.categories) {
       if (c.legacy) c.assigneeName = c.assignee ? byId.get(c.assignee)?.name || null : null;
       if (c.assignee) ref(c.assignee);
+      c.people = (c.people || []).map(ref).sort((a, b) => directory[a].name.localeCompare(directory[b].name));
     }
     const others = [...p.staff].filter((id) => id !== p.assignee).map(ref);
     others.sort((a, b) => directory[a].name.localeCompare(directory[b].name));

@@ -319,6 +319,7 @@ dialog#account::backdrop { background: rgba(9, 32, 48, .45); }
 .board .pos { color: var(--muted); font-weight: 700; font-variant-numeric: tabular-nums; }
 .board .who { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .board .lvl { color: var(--muted); font-size: .9rem; }
+.board .lvl-title { display: inline-block; margin-left: .3rem; padding: .05rem .45rem; border-radius: 99px; background: var(--tint); color: var(--blue-deep); font-size: .78rem; font-weight: 600; }
 .board .pts { font-weight: 700; color: var(--blue-deep); font-variant-numeric: tabular-nums; }
 .board .you { background: var(--tint); border-radius: 10px; }
 .board .pts .elo-move { display: block; text-align: right; font-size: .8rem; font-weight: 600; color: var(--muted); }
@@ -509,6 +510,9 @@ label.linklike { cursor: pointer; }
 .pa img { width: 100%; height: 100%; object-fit: cover; }
 .pa-lg { width: 42px; height: 42px; font-size: .95rem; box-shadow: 0 0 0 2px var(--blue); }
 .pa-sm { width: 30px; height: 30px; font-size: .66rem; letter-spacing: -.02em; }
+.pa-md { width: 34px; height: 34px; font-size: .78rem; box-shadow: 0 0 0 2px var(--blue); }
+.cat-meta .pa-stack .pa { width: 28px; height: 28px; font-size: .64rem; box-shadow: 0 0 0 1px var(--line); }
+.job-sub-name .pa { width: 24px; height: 24px; font-size: .58rem; margin-right: .4rem; vertical-align: middle; border-width: 1px; }
 .pa-none { background: #eef2f5; color: var(--muted); box-shadow: 0 0 0 2px var(--line); }
 .pa-stack { display: inline-flex; }
 .pa-stack .pa + .pa { margin-left: -8px; }
@@ -2599,3 +2603,9 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
 .coshh-waiting { margin: .3rem 0 .6rem; padding-left: 1.1rem; columns: 2 18rem; }
 .coshh-waiting li { margin: .15rem 0; break-inside: avoid; }
 .coshh-release textarea { width: 100%; }
+
+/* Logging to an order or category itself, rather than a part under it. */
+.log-self { margin-top: 1rem; }
+.log-self-warn { margin: .35rem 0 .7rem; color: #8A5A00; font-size: .9rem; }
+:where(:root[data-theme="dark"]) .log-self-warn { color: #f0c36a; }
+.option.busy { opacity: .6; cursor: progress; }

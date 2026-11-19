@@ -131,6 +131,7 @@ export async function leaderboard(env, { period = 'week', metric = 'xp', account
     name: r.name,
     xp: r.xp,
     level: progressFor(r.total).level,
+    title: progressFor(r.total).title,
     levelFrom: period === 'all' ? null : progressFor(r.total - r.xp).level,
     isYou: r.account_id === accountId,
   }));
