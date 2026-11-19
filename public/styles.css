@@ -2585,3 +2585,12 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
 .ims-move-box { margin: .45rem 0 .1rem; }
 .ims-move-box select, select.ims-move { max-width: 100%; font-size: .9rem; }
 .psc-top select.ims-move { margin-left: auto; }
+
+/* COSHH reviews waiting to go to Confluence. */
+.psc-chip.info { background: #E3F0FA; color: #0E6293; }
+:where(:root[data-theme="dark"]) .psc-chip.info { background: #16324a; color: #9fd0f2; }
+.coshh-release { border-left: 4px solid var(--blue, #2f80c2); }
+.coshh-release.bad { border-left-color: var(--danger, #c4513f); }
+.coshh-waiting { margin: .3rem 0 .6rem; padding-left: 1.1rem; columns: 2 18rem; }
+.coshh-waiting li { margin: .15rem 0; break-inside: avoid; }
+.coshh-release textarea { width: 100%; }

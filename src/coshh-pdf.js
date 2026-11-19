@@ -79,11 +79,9 @@ export async function buildCoshhPdf(item, photos = []) {
 
   const lab = 112;
   const label = (text, size = 8.5) => wrapped(text, size, lab - PAD * 2, true).map((t) => ({ text: t, bold: true, size }));
-  // COSHH No, Rev, MSDS.
+  // COSHH No, MSDS.
   cell(doc, L, top, 80, 18, { fill: GREY, lines: ['COSHH No:'], bold: true });
-  cell(doc, L + 80, top, 55, 18, { lines: [{ text: String(item.no || ''), bold: true, size: 11 }], align: 'center' });
-  cell(doc, L + 135, top, 32, 18, { fill: GREY, lines: ['Rev'], bold: true });
-  cell(doc, L + 167, top, 35, 18, { lines: [String(item.rev || 1)], align: 'center' });
+  cell(doc, L + 80, top, 122, 18, { lines: [{ text: String(item.no || ''), bold: true, size: 11 }], align: 'center' });
   cell(doc, L + 202, top, 150, 18, { fill: GREY, lines: ['MSDS Ref. Number(s)'], bold: true, align: 'right' });
   // A link to the sheet is broken anywhere to fit, on two small lines.
   const msdsW = W - 352 - PAD * 2;

@@ -306,7 +306,8 @@ The **COSHH** tile holds an assessment for each substance Promtek keeps, filled 
 **Saving and completing:**
 - **Drafts:** it's saved as a draft as it's filled in (**Your drafts**). **Preview the PDF** shows it as it stands.
 - **Who and when:** **Complete and file it** puts in whoever is signed in as the assessor, dates it today, and numbers it. The next number follows the highest in the list, starting at 1001.
-- **Filing:** it then adds the PDF to the COSHH page in Confluence (page 666533895; set `COSHH_CONFLUENCE_PAGE` for another), as **COSHH <No> Rev <Rev> - <product>.pdf**. This uses the hub's Jira account, which needs to be able to edit that page.
+- **Filing:** a new product's PDF goes to the COSHH page in Confluence straight away (page 666533895; set `COSHH_CONFLUENCE_PAGE` for another), as **COSHH <No> - <product>.pdf**, and it's in house from that day. This uses the hub's Jira account, which needs to be able to edit that page.
+- **One file each:** the name never changes, so every later upload is a new version of the same file (its versions are in the file's history on the page), not another file. A file from before this with **Rev** in its name is renamed the next time it goes. There's no Rev on the form any more.
 - **If Confluence can't be reached:** it's kept, an alert says so, and **File it in Confluence again** on the item tries once more.
 
 **The list.**
@@ -317,17 +318,30 @@ The **COSHH** tile holds an assessment for each substance Promtek keeps, filled 
 
 **Reviews.** A product still in house is due its review a year after it was assessed or last reviewed.
 - **When it's due:** two weeks before, and until it's done, it's marked on the list. People with **Manage COSHH** (Management to begin with; Admin, Who can use what) get a notification and email once, and an alert on their home screen.
-- **Mark it reviewed today:** this puts the reviewer and date into the form's Next Reviews table (up to six years) and files the PDF again under the same name, as a new version.
-- **Revising:** **Something's changed: revise it** opens the form filled in. Completing it keeps the number, goes up a Rev, dates it today and starts the reviews again.
+- **Reviewed, no changes:** puts the reviewer and today's date in the next empty column of the form's Next Reviews table (up to six; after that the latest six).
+- **Review found changes:** opens the form filled in, to change what the review found; saving it dates the review the same way. The number, assessor and assessment date stay.
+- **One brought in from Confluence:** the hub can't write into a document it didn't make, so either button opens the form to fill in once from the current document (its assessor and assessment date too). From then on the hub makes its PDF, filed under the file's existing name (a Word file's name with .pdf), with that review in the first column.
+- **Waiting for COSHH review complete:** reviews don't go to Confluence one at a time. They're marked **Waiting for review complete**, and the list shows what's waiting.
+
+**COSHH review complete.** When the review is finished, anyone with the COSHH tile presses **COSHH review complete** on the list. It:
+- reads the page first; if it can't, nothing is sent;
+- files each waiting PDF as a new version of its file, a dozen at a time (the button carries on until they're all done; if it's left part way, the hub carries on within the hour);
+- moves the page's control table on an issue (**Version** Issue 5 to Issue 6) with today as **Last Reviewed**, leaving Ref, Owner, Team and the rest alone;
+- adds a row at the top of **Version History**: Ref (IMS1.09.06 and so on), the same Owner and Team as the control table, Released today, and the **Release notes**. The hub writes the notes from what changed (reviewed with no changes, reviewed with changes, added, in or out of house); they can be edited before pressing.
+
+The tables are found by their headings (Version and Last Reviewed; Ref and Released), so they can move about the page. If one can't be found, the rest is done and an alert says what to set by hand. Page changes are saved as minor edits. If reviews wait three days or more, people with Manage COSHH get a notification and email (again every three days) and an alert on their home screen.
+
+**In and out of house dates.** The page's table with **COSHH ID**, **Most Recent Date in House** and **Most Recent Date out of House** has a row for each COSHH number, in order, kept by the hub. Ticking or unticking In house, or a new product, changes it straight away (if Confluence can't be reached, within the hour). Dates are only ever the hub's: products from before it start with their ID and blank dates, and anything already typed in a row is kept until the hub has a date for it.
 
 **What's already on the Confluence page.** People with Manage COSHH see **Bring in from Confluence**.
 - **What it brings in:** every PDF, Word or Excel file on the page that didn't come from the hub becomes an item, named from the file, with its COSHH number if the name has one. It's dated from when it was put on the page, and starts not in house.
 - **After bringing them in:** tick the ones still in house. Correct the product, number and assessment date on each (they decide when its review is due). Its file opens from the hub.
 - **Running it again:** it only adds new files.
+- **The same number twice:** where the page has more than one document for a COSHH number, the one reviewed (or put on the page) most recently is kept, with the others' places and in-house state, and the others are taken out of the hub and not brought in again. Their files stay on the page. A number already in use can't be given to another item.
 
 **Removing.** Anyone can throw away their own draft. Only Manage COSHH can remove a completed one from the hub (its file stays on the page); otherwise, untick In house.
 
-**Setting it up:** run `schema-071.sql` in the D1 console.
+**Setting it up:** run `schema-071.sql`, then `schema-072.sql`, in the D1 console.
 
 ## Part 12: IT support
 

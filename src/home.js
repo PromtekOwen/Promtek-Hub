@@ -115,6 +115,8 @@ async function systemAlerts(env, viewer) {
         out.push({ key: 'coshh-review', tone: late ? 'important' : 'info', title: due.length === 1 ? `COSHH review due: ${due[0].product}` : `${due.length} COSHH assessments due for review`,
           body: late ? `${late} overdue. Check each is still right and mark it reviewed.` : 'Due in the next two weeks. Check each is still right and mark it reviewed.', link: '#/coshh?due=1' });
       }
+      const unsent = await import('./coshh.js').then((C) => C.unsentFor(env)).catch(() => null);
+      if (unsent) out.push({ key: 'coshh-release', tone: 'info', title: 'COSHH reviews not sent to Confluence', body: `${unsent.waiting} reviewed in the hub ${unsent.days} days ago or more. Press COSHH review complete once the review is finished.`, link: '#/coshh' });
     }
 
     // Tool box talks they were at but haven't acknowledged: until they do, with no way to dismiss it.

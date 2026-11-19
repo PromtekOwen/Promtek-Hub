@@ -19,6 +19,7 @@ export const EVENTS = {
   ],
   coshh: [
     { id: 'coshh-review', label: 'COSHH reviews due', about: 'A product still in house is due its yearly COSHH review (for those who manage COSHH)', app: true, email: true },
+    { id: 'coshh-release', label: 'COSHH reviews not sent', about: 'Reviews made in the hub have waited a few days for COSHH review complete (for those who manage COSHH)', app: true, email: true },
   ],
   training: [
     { id: 'talk-new', label: 'Tool box talk arranged', about: 'You\'re asked to a tool box talk or training', app: true, email: true },

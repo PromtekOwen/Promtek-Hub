@@ -3725,7 +3725,7 @@ async function vehicleControl(action, value) {
 let coshhData = null;        // the list
 let coshhView = null;        // null (the list) | { kind: 'item', id } | { kind: 'form' }
 let coshhItem = null;        // the item open
-let coshhForm = null;        // { id, product, data, revise, photos: [{ id }] }
+let coshhForm = null;        // { id, product, data, mode: 'new' | 'change' | 'first', changed, photos: [{ id }] }
 let coshhQuery = '';
 let coshhPlace = '';
 let coshhDueOnly = false;
@@ -3761,8 +3761,8 @@ async function coshhHtml() {
       ${i.photoId ? `<img class="coshh-thumb" src="/api/coshh/photo?id=${i.photoId}" alt="" loading="lazy">` : `<span class="coshh-thumb none">${COSHH_DIAMOND}</span>`}
       <div class="coshh-card-main">
         <strong>${esc(i.product || 'Not named yet')}</strong>
-        <span class="muted">${i.no ? `COSHH ${esc(String(i.no))}${i.source === 'hub' ? ` Rev ${i.rev}` : ''}` : i.source === 'confluence' ? 'From Confluence' : 'Not numbered yet'}${i.assessedOn ? ` · assessed ${esc(coshhDay(i.assessedOn))}` : ''}</span>
-        <div class="coshh-chips">${i.locations.map((l) => `<span class="chip">${esc(l)}</span>`).join('')}${coshhDueChip(i)}</div>
+        <span class="muted">${i.no ? `COSHH ${esc(String(i.no))}` : i.source === 'confluence' ? 'From Confluence' : 'Not numbered yet'}${i.assessedOn ? ` · assessed ${esc(coshhDay(i.assessedOn))}` : ''}</span>
+        <div class="coshh-chips">${i.locations.map((l) => `<span class="chip">${esc(l)}</span>`).join('')}${coshhDueChip(i)}${i.waiting ? '<span class="psc-chip info">Waiting for review complete</span>' : ''}</div>
       </div>
       ${i.status !== 'draft' ? `<label class="coshh-house" title="Still in house"><input type="checkbox" data-coshh-house="${i.id}"${i.inHouse ? ' checked' : ''}> In house</label>` : ''}
     </article>`;
@@ -3773,6 +3773,7 @@ async function coshhHtml() {
           ${d.manage ? '<button class="btn secondary" data-coshh-import="1">Bring in from Confluence</button>' : ''}</div>
       </div>
     </div>
+    ${coshhReleaseHtml(d.release)}
     ${due ? `<div class="card notice"><p style="margin:0"><strong>${due} assessment${due === 1 ? '' : 's'} due for review.</strong> ${coshhDueOnly ? '<button class="linklike" data-coshh-due="0">Show everything</button>' : '<button class="linklike" data-coshh-due="1">Show just those</button>'}</p></div>` : ''}
     <div class="row con-tools coshh-tools">
       <input type="search" id="coshh-search" placeholder="Search products, numbers or places" value="${esc(coshhQuery)}" aria-label="Search COSHH assessments">
@@ -3796,7 +3797,7 @@ async function coshhItemHtml() {
   const imported = i.source === 'confluence';
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-coshh-back="1">All assessments</button></div>
     <section class="card coshh-head${i.inHouse ? ' in' : ' out'}">
-      <div class="psc-top"><span class="psc-key">${i.no ? `COSHH ${esc(String(i.no))}` : imported ? 'From Confluence' : 'Draft'}</span>${i.source === 'hub' && i.status !== 'draft' ? `<span class="muted">Rev ${i.rev}</span>` : ''}${coshhDueChip(i)}</div>
+      <div class="psc-top"><span class="psc-key">${i.no ? `COSHH ${esc(String(i.no))}` : imported ? 'From Confluence' : 'Draft'}</span>${coshhDueChip(i)}${i.waiting ? '<span class="psc-chip info">Waiting for COSHH review complete</span>' : ''}</div>
       <h2 style="margin:.3rem 0 .8rem">${esc(i.product || 'Not named yet')}</h2>
       ${i.status !== 'draft' ? `<label class="coshh-house big"><input type="checkbox" data-coshh-house="${i.id}"${i.inHouse ? ' checked' : ''}> Still in house${i.inHouseBy ? ` <small class="muted">${i.inHouse ? 'marked' : 'taken off'} by ${esc(i.inHouseBy)} ${esc(agoText(i.inHouseAt))}</small>` : ''}</label>` : ''}
       ${photos.length ? `<div class="coshh-photos">${photos.map((p) => `<a href="/api/coshh/photo?id=${p.id}" target="_blank" rel="noopener"><img src="/api/coshh/photo?id=${p.id}" alt="Photo of ${esc(i.product)}"></a>`).join('')}</div>` : ''}
@@ -3810,10 +3811,14 @@ async function coshhItemHtml() {
       <h3 style="margin-top:0">Reviews</h3>
       <p>${i.assessedOn ? `Assessed ${esc(coshhDay(i.assessedOn))}${i.assessedBy ? ` by ${esc(i.assessedBy)}` : ''}. ` : ''}${i.lastReviewOn ? `Last reviewed ${esc(coshhDay(i.lastReviewOn))}. ` : ''}${i.nextReviewOn ? `<strong>Next review ${esc(coshhDay(i.nextReviewOn))}.</strong>` : ''}</p>
       ${reviews.length ? `<ul class="jv-links">${reviews.map((r) => `<li>${esc(coshhDay(r.date))}: ${esc(r.name)}${r.note ? ` <small class="muted">${esc(r.note)}</small>` : ''}</li>`).join('')}</ul>` : ''}
-      <label><span>Note <small class="muted">(optional)</small></span><input type="text" id="coshh-review-note" maxlength="300" placeholder="Checked the product, label and data sheet: no changes"></label>
-      <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-review="${i.id}">Mark it reviewed today</button>
-        ${!imported ? `<button class="btn secondary" data-coshh-revise="${i.id}">Something's changed: revise it</button>` : ''}</div>
-      ${reviews.length >= 6 && !imported ? '<p class="help">The form has room for six yearly reviews. Revising it starts a new Rev with an empty review table.</p>' : ''}
+      ${imported ? `<p class="help">This one was made outside the hub, so the hub can't add the review's date to its document. Reviewing it here means filling it in once from its current document; the hub keeps it from then on, under the same file name.</p>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-first="${i.id}" data-changed="0">Reviewed, no changes</button>
+        <button class="btn secondary" data-coshh-first="${i.id}" data-changed="1">Review found changes</button></div>`
+      : `<label><span>Note <small class="muted">(optional)</small></span><input type="text" id="coshh-review-note" maxlength="300" placeholder="Checked the product, label and data sheet: no changes"></label>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-review="${i.id}">Reviewed, no changes</button>
+        <button class="btn secondary" data-coshh-revise="${i.id}">Review found changes</button></div>
+      <p class="help">The review's date goes in the next Next Reviews column. The PDF goes to Confluence, as a new version of the same file, when someone presses COSHH review complete on the list.</p>`}
+      ${reviews.length >= 6 && !imported ? '<p class="help">The form has room for six yearly reviews; after that it shows the latest six.</p>' : ''}
     </section>` : ''}
     <section class="card">
       <h3 style="margin-top:0">The form</h3>
@@ -3821,7 +3826,7 @@ async function coshhItemHtml() {
         <a class="btn secondary" href="/api/coshh/file?id=${i.id}&download=1">Download</a>
         ${i.status === 'draft' ? `<button class="btn" data-coshh-edit="${i.id}">Carry on filling it in</button>` : ''}</div>` : ''}
       ${i.status === 'done' ? (i.fileNote ? `<p class="bad">${esc(i.fileNote)}</p><button class="btn secondary" data-coshh-refile="${i.id}">File it in Confluence again</button>`
-        : i.filed ? `<p class="muted" style="margin-bottom:0">Filed on the COSHH page in Confluence as ${esc(i.fileName)}.</p>` : '') : ''}
+        : i.filed ? `<p class="muted" style="margin-bottom:0">Filed on the COSHH page in Confluence as ${esc(i.fileName)}${i.waiting ? '. The reviewed version goes at COSHH review complete' : ''}.</p>` : '') : ''}
       ${imported ? `<p class="muted">${esc(i.fileName || '')}, on the COSHH page in Confluence. Correct its details here so it's listed and reminded properly.</p>
         <div class="psc-new-row coshh-imported">
           <label>Product<input type="text" id="coshh-imp-product" maxlength="200" value="${esc(i.product)}"></label>
@@ -3843,7 +3848,7 @@ async function coshhItemHtml() {
 
 function coshhBlank() {
   const o = coshhData?.options || {};
-  return { id: null, product: '', revise: false, photos: [], data: { msds: '', otherNames: '', appearance: '', containers: '', usedFor: '', where: [], risk: '', hazards: [], ppe: [], ppeNote: '',
+  return { id: null, product: '', mode: 'new', photos: [], data: { msds: '', otherNames: '', appearance: '', containers: '', usedFor: '', where: [], risk: '', hazards: [], ppe: [], ppeNote: '',
     firstAid: { eye: '', skin: '', inhalation: '', ingestion: '' }, precautions: o.precautions || '', disposal: [], infoGiven: '', training: '', surveillance: '' } };
 }
 
@@ -3862,8 +3867,9 @@ function coshhFormHtml() {
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-coshh-cancel="1">Back</button></div>
     ${coshhSheet ? '<div class="coshh-split"><aside class="coshh-sheet-slot" id="coshh-sheet-slot"></aside><div class="coshh-split-form">' : ''}
     <section class="card coshh-form">
-      <h2 style="margin-top:0">${f.revise ? 'Revise the assessment' : 'New COSHH assessment'}</h2>
-      ${f.revise ? '<p class="help">Completing it makes the next Rev of the same COSHH number, dated today, with an empty review table.</p>' : ''}
+      <h2 style="margin-top:0">${f.mode === 'new' ? 'New COSHH assessment' : `COSHH ${esc(String(f.no || ''))}: ${f.mode === 'first' ? 'its review' : 'review found changes'}`}</h2>
+      ${f.mode === 'change' ? '<p class="help">Change whatever the review found. Saving dates the review today, in the next Next Reviews column, and the PDF goes to Confluence as a new version of the same file at COSHH review complete.</p>' : ''}
+      ${f.mode === 'first' ? `<p class="help">This one was made outside the hub. Fill it in from its current document${f.fileName ? ` (<a href="/api/coshh/file?id=${f.id}" target="_blank" rel="noopener">${esc(f.fileName)}</a>)` : ''}, with anything the review found changed. The hub makes its PDF from then on, filed under the same name as a new version at COSHH review complete, with today's review in the first Next Reviews column.</p>` : ''}
       <h3>The product</h3>
       <label><span>Principal product name <span class="req">*</span></span><input type="text" data-coshh-f="product" maxlength="200" value="${esc(f.product)}" placeholder="As it's named on the label"></label>
       <div class="coshh-msds">
@@ -3901,13 +3907,18 @@ function coshhFormHtml() {
       <div class="qrow"><span>Is any training required? <span class="req">*</span></span>${yn('training')}</div>
       <div class="qrow"><span>Are health surveillance controls required? <span class="req">*</span></span>${yn('surveillance')}</div>
       <div class="qrow"><span>Risk <span class="req">*</span></span><span class="segment">${o.risks.map(([k, l]) => `<button type="button" class="seg${d.risk === k ? ' on' : ''}" data-coshh-seg="risk" data-value="${k}">${l}</button>`).join('')}</span></div>
-      <div class="psc-new-row">
+      ${f.mode === 'new' ? `<div class="psc-new-row">
         <label>Assessed by<input type="text" value="${esc(me.employee?.name || '')}" disabled></label>
         <label>Assessment date<input type="text" value="Today, when it's completed" disabled></label>
-      </div>
-      <div class="row" style="margin-top:1rem"><button class="btn" data-coshh-submit="1">Complete and file it</button>
+      </div>` : f.mode === 'first' ? `<div class="psc-new-row">
+        <label>Assessed by <small class="muted">(from the document)</small><input type="text" data-coshh-f="assessedBy" maxlength="120" value="${esc(f.assessedBy)}" placeholder="${esc(me.employee?.name || '')}"></label>
+        <label>Assessment date <small class="muted">(from the document)</small><input type="date" data-coshh-f="assessedOn" value="${esc(f.assessedOn)}"></label>
+      </div>` : ''}
+      ${f.mode !== 'new' ? `<label><span>Review note <small class="muted">(optional)</small></span><input type="text" data-coshh-f="note" maxlength="300" value="${esc(f.note)}" placeholder="${f.changed ? 'What changed' : 'Checked the product, label and data sheet: no changes'}"></label>` : ''}
+      <div class="row" style="margin-top:1rem">${f.mode === 'new' ? `<button class="btn" data-coshh-submit="1">Complete and file it</button>
         <button class="btn secondary" data-coshh-save="1">Save for later</button>
-        ${f.id ? `<a class="linklike" href="/api/coshh/file?id=${f.id}" target="_blank" rel="noopener" data-coshh-preview="1">Preview the PDF</a>` : ''}</div>
+        ${f.id ? `<a class="linklike" href="/api/coshh/file?id=${f.id}" target="_blank" rel="noopener" data-coshh-preview="1">Preview the PDF</a>` : ''}`
+        : `<button class="btn" data-coshh-change="1">Save the review</button><button class="btn secondary" data-coshh-cancel="1">Cancel</button>`}</div>
     </section>${coshhSheet ? '</div></div>' : ''}`;
 }
 
@@ -4018,6 +4029,44 @@ async function coshhDrawSheet() {
 }
 
 
+// Reviews and changes wait in the hub until the review is finished; then one press files their PDFs
+// and moves the Confluence page on an issue, with notes saying what changed.
+let coshhNotes = null;       // the release notes as edited, before sending
+function coshhReleaseHtml(r) {
+  if (!r) return '';
+  if (r.open) return `<div class="card coshh-release${r.open.error ? ' bad' : ''}">
+      <h3 style="margin-top:0">${esc(r.open.ref)} ${r.open.error ? 'stopped part way' : 'is being sent to Confluence'}</h3>
+      ${r.open.error ? `<p class="bad">${esc(r.open.error)}</p>` : ''}
+      <p class="muted">${r.open.left ? `${r.open.left} PDF${r.open.left === 1 ? '' : 's'} still to file, then the page.` : 'The PDFs are filed; the page is next.'} If it's left, the hub carries on within the hour.</p>
+      <div class="row"><button class="btn" data-coshh-release-go="${r.open.n}">${r.open.error ? 'Try again' : 'Carry on'}</button></div>
+    </div>`;
+  if (!r.waiting.length && !r.changes) return '';
+  if (coshhNotes == null) coshhNotes = r.notes;
+  const kinds = { reviewed: 'reviewed, no changes', changed: 'reviewed, with changes' };
+  return `<div class="card coshh-release">
+      <h3 style="margin-top:0">${r.waiting.length ? `${r.waiting.length} review${r.waiting.length === 1 ? '' : 's'} waiting to go to Confluence` : 'Changes since the last COSHH review'}</h3>
+      ${r.waiting.length ? `<ul class="coshh-waiting">${r.waiting.map((w) => `<li><button class="linklike" data-coshh-open="${w.id}">COSHH ${esc(String(w.no || ''))} ${esc(w.product)}</button> <small class="muted">${kinds[w.kind]}</small></li>`).join('')}</ul>` : ''}
+      <p class="help">When the review is finished, ${r.waiting.length ? 'their PDFs go to the COSHH page as new versions of the same files, and ' : ''}the page moves on to the next issue${r.last ? ` after ${esc(r.last.ref)}` : ''}, with a row in its Version History. New products and in or out of house dates are on the page already.</p>
+      <label><span>Release notes</span><textarea rows="3" id="coshh-notes" maxlength="1000">${esc(coshhNotes)}</textarea></label>
+      <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-release="1">COSHH review complete</button></div>
+    </div>`;
+}
+async function coshhSendRelease(btn, first) {
+  btn.disabled = true;
+  try {
+    let r = first ? await api('/api/coshh/release', { method: 'POST', body: JSON.stringify({ notes: view.querySelector('#coshh-notes')?.value || '' }) }) : null;
+    let n = first ? r.n : Number(btn.dataset.coshhReleaseGo);
+    let sent = r?.sent || 0;
+    while (!r || (r.ok && !r.done)) {
+      btn.textContent = `Sending… ${sent} filed`;
+      r = await api('/api/coshh/release-continue', { method: 'POST', body: JSON.stringify({ n }) });
+      n = r.n; sent += r.sent || 0;
+    }
+    if (r.ok) { coshhNotes = null; toast(`${r.ref} is on the COSHH page`); } else toast(r.error || 'It stopped part way. Try again.');
+  } catch (err) { toast(err.message); }
+  coshhItem = null; await coshhLoad(true); render();
+}
+
 // What's typed, kept as it's typed.
 function coshhCapture() {
   if (!coshhForm) return;
@@ -4028,7 +4077,7 @@ function coshhCapture() {
   }
 }
 async function coshhSave({ quiet = true } = {}) {
-  if (!coshhForm || coshhForm.revise) return;
+  if (!coshhForm || coshhForm.mode !== 'new') return;
   coshhCapture();
   if (!coshhForm.id && !coshhForm.product.trim()) return;
   const r = await api('/api/coshh/save', { method: 'POST', body: JSON.stringify({ id: coshhForm.id, product: coshhForm.product, data: coshhForm.data }) });
@@ -4060,7 +4109,7 @@ async function coshhAddPhoto(file) {
   try {
     coshhCapture();
     if (!coshhForm.id) {
-      if (coshhForm.revise) throw new Error('Something went wrong. Go back and open it again.');
+      if (coshhForm.mode !== 'new') throw new Error('Something went wrong. Go back and open it again.');
       const r = await api('/api/coshh/save', { method: 'POST', body: JSON.stringify({ id: null, product: coshhForm.product, data: coshhForm.data }) });
       coshhForm.id = r.id;
     }
@@ -4073,12 +4122,14 @@ async function coshhAddPhoto(file) {
   render();
 }
 
-async function coshhOpenForm(id, revise = false) {
+async function coshhOpenForm(id, mode = 'new', changed = true) {
   await coshhLoad();
   const r = await api(`/api/coshh/item?id=${id}`);
   const blank = coshhBlank();
-  coshhForm = { id: r.item.id, product: r.item.product, revise, photos: r.photos.map((p) => ({ id: p.id })),
-    data: { ...blank.data, ...r.item.data, firstAid: { ...blank.data.firstAid, ...(r.item.data?.firstAid || {}) } } };
+  const kept = { ...r.item.data };
+  delete kept.download;
+  coshhForm = { id: r.item.id, product: r.item.product, mode, changed, no: r.item.no, fileName: r.item.fileName, note: '', assessedBy: '', assessedOn: r.item.assessedOn || '', photos: r.photos.map((p) => ({ id: p.id })),
+    data: { ...blank.data, ...kept, firstAid: { ...blank.data.firstAid, ...(kept.firstAid || {}) } } };
   coshhView = { kind: 'form' };
   window.scrollTo(0, 0);
   return render();
@@ -4099,7 +4150,7 @@ async function coshhClick(event) {
   if (t('[data-coshh-cancel]')) {
     coshhCapture();
     clearTimeout(coshhSaveTimer);
-    if (coshhForm.revise) { const id = coshhForm.id; coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id }; return render(); }
+    if (coshhForm.mode !== 'new') { const id = coshhForm.id; coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id }; return render(); }
     await coshhSave().catch(() => {});
     coshhForm = null; coshhSheet = null; coshhView = null; await coshhLoad(true); return render();
   }
@@ -4154,18 +4205,34 @@ async function coshhClick(event) {
     return busy(submit, async () => {
       submit.textContent = 'Filing it…';
       const r = await api('/api/coshh/submit', { method: 'POST', body: JSON.stringify({ id: coshhForm.id, product: coshhForm.product, data: coshhForm.data }) });
-      toast(r.filed ? `COSHH ${r.no} Rev ${r.rev} completed and filed in Confluence` : `COSHH ${r.no} completed. ${r.fileNote || ''}`);
+      toast(r.filed ? `COSHH ${r.no} completed and filed in Confluence` : `COSHH ${r.no} completed. ${r.fileNote || ''}`);
       coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id: r.id }; coshhItem = null; await coshhLoad(true); window.scrollTo(0, 0); render();
     }).finally(() => { if (document.body.contains(submit)) submit.textContent = 'Complete and file it'; });
   }
   const edit = t('[data-coshh-edit]');
   if (edit) return coshhOpenForm(Number(edit.dataset.coshhEdit));
   const revise = t('[data-coshh-revise]');
-  if (revise) return coshhOpenForm(Number(revise.dataset.coshhRevise), true);
+  if (revise) return coshhOpenForm(Number(revise.dataset.coshhRevise), 'change', true);
+  const first = t('[data-coshh-first]');
+  if (first) return coshhOpenForm(Number(first.dataset.coshhFirst), 'first', first.dataset.changed === '1');
+  const changeBtn = t('[data-coshh-change]');
+  if (changeBtn) {
+    coshhCapture();
+    const f = coshhForm;
+    return busy(changeBtn, async () => {
+      await api('/api/coshh/change', { method: 'POST', body: JSON.stringify({ id: f.id, product: f.product, data: f.data, note: f.note, changed: f.changed, assessedBy: f.assessedBy, assessedOn: f.assessedOn }) });
+      toast('Review saved. It goes to Confluence at COSHH review complete');
+      coshhForm = null; coshhSheet = null; coshhView = { kind: 'item', id: f.id }; coshhItem = null; coshhNotes = null; await coshhLoad(true); window.scrollTo(0, 0); render();
+    });
+  }
+  const relBtn = t('[data-coshh-release]');
+  if (relBtn) { coshhNotes = view.querySelector('#coshh-notes')?.value ?? coshhNotes; return coshhSendRelease(relBtn, true); }
+  const relGo = t('[data-coshh-release-go]');
+  if (relGo) return coshhSendRelease(relGo, false);
   const rev = t('[data-coshh-review]');
   if (rev) return busy(rev, async () => {
     const r = await api('/api/coshh/review', { method: 'POST', body: JSON.stringify({ id: Number(rev.dataset.coshhReview), note: view.querySelector('#coshh-review-note')?.value || '' }) });
-    toast(`Reviewed. Next review ${coshhDay(r.nextReviewOn)}`); coshhItem = null; await coshhLoad(true); render();
+    toast(`Reviewed. Next review ${coshhDay(r.nextReviewOn)}`); coshhItem = null; coshhNotes = null; await coshhLoad(true); render();
   });
   const refile = t('[data-coshh-refile]');
   if (refile) return busy(refile, async () => { const r = await api('/api/coshh/refile', { method: 'POST', body: JSON.stringify({ id: Number(refile.dataset.coshhRefile) }) }); toast(r.filed ? 'Filed in Confluence' : r.fileNote); coshhItem = null; render(); });
@@ -4217,7 +4284,8 @@ view.addEventListener('change', async (event) => {
     try {
       const r = await api('/api/coshh/in-house', { method: 'POST', body: JSON.stringify({ id, inHouse: el.checked }) });
       toast(r.inHouse ? 'Marked in house' : 'Marked no longer in house');
-      coshhItem = null; await coshhLoad(true);
+      if (r.page?.error) toast(`Saved. The dates on the Confluence page catch up within the hour (${r.page.error})`);
+      coshhItem = null; coshhNotes = null; await coshhLoad(true);
     } catch (err) { toast(err.message); el.checked = !el.checked; }
     el.disabled = false;
     render();
