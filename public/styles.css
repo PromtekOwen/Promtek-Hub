@@ -2667,3 +2667,18 @@ p .cust-shield { width: 18px; height: 18px; }
 .cust-tools .segment { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .cust-tools .segment .seg { white-space: nowrap; }
 @media (max-width: 520px) { .cust-tools .segment { width: 100%; } .cust-tools .segment .seg { flex: 1; padding-left: .4rem; padding-right: .4rem; font-size: .88rem; } }
+.cust-sec { padding: 0; margin-bottom: 1rem; }
+.cust-sec > summary { display: flex; align-items: center; gap: .6rem; padding: 1rem 1.25rem; cursor: pointer; list-style: none; }
+.cust-sec > summary::-webkit-details-marker { display: none; }
+.cust-sec > summary::before { content: ''; width: .55rem; height: .55rem; border-right: 2px solid var(--blue-deep); border-bottom: 2px solid var(--blue-deep); transform: rotate(-45deg); transition: transform .15s; flex: none; margin-right: .2rem; }
+.cust-sec[open] > summary::before { transform: rotate(45deg); }
+.cust-sec-title { font-size: 1.1rem; font-weight: 700; }
+.cust-sec-count { min-width: 1.6rem; padding: .05rem .5rem; border-radius: 99px; background: var(--tint); color: var(--blue-deep); font-weight: 700; font-size: .85rem; text-align: center; }
+.cust-sec-body { padding: 0 1.25rem 1.1rem; }
+.cust-sec .wipc { box-shadow: none; padding: 0; margin: 0; background: none; }
+.cust-actions { display: inline-flex; flex-wrap: wrap; gap: .35rem; margin-top: .35rem; }
+.cust-site { display: flex; justify-content: space-between; gap: .6rem; flex-wrap: wrap; align-items: center; }
+.cust-site .cust-actions { margin-top: 0; }
+.cust-person.primary { background: var(--tint); border-radius: 10px; padding-left: .6rem; padding-right: .6rem; }
+.cust-form { display: grid; gap: .6rem; padding: .6rem 0; }
+.cust-form textarea { width: 100%; }

@@ -49,6 +49,7 @@ export const PERMISSIONS = {
   contractInsights: { name: 'Contract insights', about: 'Insights across every service contract', groups: ['management'], leads: ['Service'], tile: 'contracts' },
   nearMissReview: { name: 'Near miss reports', about: 'Read every near miss reported, note what was done and close them, and hear about each new one', groups: [], tile: 'nearmiss' },
   feedbackReview: { name: 'Feedback moderation', about: 'Read anonymous feedback before it\'s posted, post or turn it down, and reply to writers', groups: [], tile: 'feedback' },
+  customerManage: { name: 'Manage customers', about: 'Add, change and remove customers\' site addresses and contacts, and choose their primary contact', groups: [], tile: 'customers' },
   customerStats: { name: 'Customer statistics', about: 'The Statistics tab on each customer: money and time by month, open work, how long things take and who knows them best', groups: ['management'], tile: 'customers' },
   coshhManage: { name: 'Manage COSHH', about: 'Hear when COSHH assessments are due their yearly review, bring them in from Confluence and remove them', groups: ['management'], tile: 'coshh' },
   trainingManage: { name: 'Manage training and policies', about: 'Arrange tool box talks, publish policies, keep the training matrix and see who has acknowledged each', groups: ['management'], tile: 'training' },

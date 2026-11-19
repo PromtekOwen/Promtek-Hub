@@ -290,22 +290,32 @@ If step 4 is refused, your Workspace policy blocks service account keys. That's 
 The **Customers** tile lists every live customer project in Jira (the UK and South Africa customer categories, not the blocked projects), to everyone.
 
 - **Each customer shows:** how many open quotes, open PSCs and active jobs (orders the WIP follows that aren't done) they have; a shield, green with a tick when they have a service contract In Contract or Requires Renewal; the date and time anything in their Jira project last changed; and their primary contact's name, phone and email (tap to call or email).
-- **The primary contact** is the Site Contact, phone and email on their active service contract, or failing that the most recently updated open order with them filled in.
-- **Finding one:** search by name, key or contact; show those with a contract, without one, or with open PSCs; sort A to Z or by last update.
-- **Opening a customer** shows their site address (from the Site Address on their jobs and contract, with a map link), each service contract and active job with its own contact and site, their open quotes and open PSCs, and contacts on their other recent orders.
-- **Where it comes from:** every half hour the hub reads the customer projects (with Jira's own last-updated time for each) and the contact and site fields on every open order and service contract, and any closed in the last year. Quotes, PSCs, jobs and contracts come from what the hub already keeps for those tiles.
+- **Finding one:** search by name, key or contact; show All, UK, Africa or those with open PSCs; sort A to Z or by last update.
+- **Where it comes from:** every half hour the hub reads the customer projects (with Jira's own last-updated time for each) and the Site Contact, phone, email and Site Address on every open order and service contract, and any closed in the last year. Quotes, PSCs, jobs and contracts come from what the hub already keeps for those tiles.
 
-**Statistics** (a tab on each customer, for people with **Customer statistics**: Management to begin with; Admin, Who can use what):
-- **Headlines:** customer since (their first item in Jira), orders all time with the average order, orders in the last 12 months, still to be paid on open orders, invoiced and awaiting payment (and overdue), active contract value, time logged for them, PSCs (open, average time to first look and to sort) and quotes.
+**A customer's page** has folding sections; closed, each shows how many are in it.
+- **Sites:** each address found on their jobs and contract, once each, with a map link.
+- **Contacts:** everyone named on their jobs and contracts, once each (the same email, or the same name with no email, is one person), with the items they're on.
+- **The primary contact** is the one an admin chooses, or else the contact on their active service contract, or else on their latest open job. It's the one shown on the list.
+- **Service contracts, active jobs, open quotes and open PSCs**, each with its contact and site as put right here.
+- **Recent communications:** the emails the mail handler (the **Operations Team** Jira account) has put on their items in the last four months, read when the section is opened. Each shows who sent it and what they said: the email headers, sign-off and signature, disclaimer, earlier messages quoted below and formatting marks are left out. The account is found by its name; set `OPS_ACCOUNT_NAME` if it's ever renamed.
+
+**Putting sites and contacts right** (people with **Manage customers**: admins to begin with; Admin, Who can use what):
+- **Sites:** add an address (with an optional label such as Head office), change one, or remove one. A removed address from Jira stays removed; a changed one stays as changed.
+- **Contacts:** add someone, change their name, phone or email, give them an optional job title and (with more than one site) a site, or remove them. **Make primary** chooses the primary contact; **Let the hub choose** goes back to the hub choosing.
+- These changes stay in the hub, and the next read from Jira leaves them as they are. Jira keeps what it has. Each is in the audit log under Customers.
+
+**Statistics** (a tab on each customer, for people with **Customer statistics**: Management to begin with). Each section folds away; **At a glance** starts open.
+- **At a glance:** customer since (their first item in Jira), orders all time with the average order, orders in the last 12 months, still to be paid on open orders, invoiced and awaiting payment (and overdue), active contract value, time logged for them, PSCs (open, average time to first look and to sort) and quotes.
 - **Money by month:** orders placed (by acceptance date), service contracts (by start date) and invoices sent, over two years.
 - **Time logged for them by month:** hours on their orders and everything under them, PSCs, quotes and contracts.
 - **Open work by kind:** everything not done in their project by issue type, to do and in progress (hover for the statuses), and each open order's progress and how much is invoiced.
 - **How long things take:** average and median days from raised to done, by issue type, for the last two years.
-- **Who's working on them** (assigned their open items now, by type) and **who knows them best** (everything ever assigned to each person in their project, up to the latest 1,500, and the time each has logged for them; the top one starred).
-- **PSCs raised by month**, their **service contracts** with tokens used, and **recent communications**: comments in the last four months on their items by the **Operations Team** Jira account (the mail handler posting their emails), found by its name (set `OPS_ACCOUNT_NAME` if it's ever renamed).
-- They're worked out when first opened and kept for six hours; **Work it out again** refreshes them.
+- **Who's working on them** and **who knows them best:** only people in the hub (former staff are left out); everything ever assigned to each in their project (up to the latest 1,500) and the time each has logged for them, the top one starred.
+- **PSCs raised by month** and their **service contracts**, newest first, with tokens used.
+- Worked out when first opened and kept for six hours; **Work it out again** refreshes them.
 
-**Setting it up:** run `schema-073.sql` in the D1 console. The first read runs within the half hour; until then the list shows the customer projects without last updates or contacts.
+**Setting it up:** run `schema-073.sql`, then `schema-074.sql`, in the D1 console. The first read runs within the half hour; until then the list shows the customer projects without last updates or contacts.
 
 ## Part 11b: COSHH
 

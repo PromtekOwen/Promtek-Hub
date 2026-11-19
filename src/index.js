@@ -1066,6 +1066,10 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/customers') return json(await Cu.list(env, user));
     if (method === 'GET' && pathname === '/api/customers/one') return json(await Cu.detail(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/customers/stats') return json(await Cu.stats(env, user, q('key'), { fresh: q('fresh') === '1' }));
+    if (method === 'GET' && pathname === '/api/customers/comms') return json(await Cu.comms(env, user, q('key'), { fresh: q('fresh') === '1' }));
+    const post = { 'site-save': Cu.saveSite, 'site-remove': Cu.removeSite, 'contact-save': Cu.saveContact, 'contact-remove': Cu.removeContact, 'contact-primary': Cu.setPrimary };
+    const sub = pathname.slice('/api/customers/'.length);
+    if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
   }
 
   if (pathname.startsWith('/api/coshh')) {
