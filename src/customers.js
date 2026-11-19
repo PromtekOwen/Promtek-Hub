@@ -17,6 +17,17 @@ const ADDRESS_FIELD = 'customfield_11300';
 const ITEM_FIELDS = ['summary', 'status', 'issuetype', 'project', 'created', 'updated', CONTACT_FIELD, CONTACT_PHONE_FIELD, CONTACT_EMAIL_FIELD, ADDRESS_FIELD];
 const RUN_EVERY_MS = 30 * 60_000;
 const STATS_FOR_MS = 6 * 3600_000;
+// Kept statistics from an older version of this are worked out again.
+const STATS_VERSION = 2;
+// Customer projects that are templates for new customers, not customers.
+const TEMPLATE_PROJECTS = ['UKST', 'SAST'];
+// Newest start first, then the newest item.
+const dayValue = (v) => { const t = Date.parse(String(v || '').slice(0, 10)); return Number.isNaN(t) ? -Infinity : t; };
+const keyNumber = (k) => Number(String(k || '').split('-')[1]) || 0;
+const newestStart = (list) => [...list].sort((a, b) => dayValue(b.start_date) - dayValue(a.start_date) || keyNumber(b.issue_key) - keyNumber(a.issue_key));
+const isTemplate = (key) => TEMPLATE_PROJECTS.includes(String(key || '').toUpperCase());
+// Issue types left out of Open work: nobody works them once they're made.
+const IDLE_TYPES = /^documentation/i;
 const ACTIVE_CONTRACT = ['in contract', 'requires renewal'];
 
 const refuse = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -65,7 +76,7 @@ export async function run(env, { force = false } = {}) {
     for (let page = 0; page < 6; page++) {
       const data = await jira(env, `/rest/api/3/project/search?categoryId=${categoryId}&status=live&expand=insight&orderBy=name&maxResults=50&startAt=${startAt}`);
       for (const p of data.values || []) {
-        if (BLOCKED_PROJECTS.includes(String(p.key).toUpperCase())) continue;
+        if (BLOCKED_PROJECTS.includes(String(p.key).toUpperCase()) || isTemplate(p.key)) continue;
         projects.push({ key: p.key, id: String(p.id), name: p.name, region, last: p.insight?.lastIssueUpdateTime || null, count: p.insight?.totalIssueCount ?? null });
       }
       if (data.isLast || !data.values?.length) break;
@@ -172,9 +183,10 @@ async function countsBy(env, sql, binds = []) {
 export async function list(env, viewer) {
   mustSee(viewer);
   let { results: customers } = await env.DB.prepare('SELECT * FROM customers ORDER BY name COLLATE NOCASE').all();
+  customers = customers.filter((c) => !isTemplate(c.project_key));
   if (!customers.length) {
     const { customerProjects } = await import('./jira.js');
-    customers = (await customerProjects(env).catch(() => [])).map((p) => ({ project_key: p.key, name: p.name, region: p.region, last_update: null }));
+    customers = (await customerProjects(env).catch(() => [])).filter((p) => !isTemplate(p.key)).map((p) => ({ project_key: p.key, name: p.name, region: p.region, last_update: null }));
   }
   const quotes = await countsBy(env, 'SELECT project_key, COUNT(*) AS n, MAX(updated_at) AS last FROM jira_quotes WHERE done = 0 GROUP BY project_key');
   const pscs = await countsBy(env, `SELECT project_key, SUM(CASE WHEN done = 0 THEN 1 ELSE 0 END) AS n, MAX(updated_at) AS last FROM psc_items WHERE issuetype IN (${marks(PSC_TYPES.length)}) GROUP BY project_key`, PSC_TYPES);
@@ -206,6 +218,7 @@ export async function list(env, viewer) {
 
 async function customerRow(env, raw) {
   const key = projectKeyOf(String(raw || '').toUpperCase());
+  if (isTemplate(key)) throw refuse('That\'s a template project, not a customer.', 404);
   const c = await env.DB.prepare('SELECT * FROM customers WHERE project_key = ?').bind(key).first();
   if (c) return c;
   const { customerProjects } = await import('./jira.js');
@@ -252,7 +265,7 @@ export async function detail(env, viewer, raw) {
     contact: contactOut(primary, sites), primaryChosen: Boolean(primary?.is_primary),
     sites,
     contacts: visible.map((x) => ({ ...contactOut(x, sites), isPrimary: primary?.id === x.id })),
-    contracts: contracts.map((x) => ({ key: x.issue_key, summary: x.summary, status: x.status, tier: x.tier, start: x.start_date, renewal: x.renewal_date, end: x.end_date,
+    contracts: newestStart(contracts).map((x) => ({ key: x.issue_key, summary: x.summary, status: x.status, tier: x.tier, start: x.start_date, renewal: x.renewal_date, end: x.end_date,
       active: isActiveContract(x), contact: contactFor(x.issue_key), site: siteFor(x.issue_key) })),
     jobs: jobs.map((j) => ({ key: j.issue_key, summary: j.summary, status: j.status, progress: j.progress, updated: j.updated, contact: contactFor(j.issue_key), site: siteFor(j.issue_key) })),
     quotes: quotes.map((q) => ({ key: q.issue_key, summary: q.summary, status: q.status, assignee: q.assignee_name, updated: q.updated_at })),
@@ -487,7 +500,7 @@ export async function stats(env, viewer, raw, { fresh = false } = {}) {
   const cacheKey = `customer_stats:${k}`;
   if (!fresh) {
     const kept = await getState(env, cacheKey);
-    if (kept) { try { const s = JSON.parse(kept); if (Date.now() - s.at < STATS_FOR_MS) return s; } catch { /* worked out again */ } }
+    if (kept) { try { const s = JSON.parse(kept); if (s.v === STATS_VERSION && Date.now() - s.at < STATS_FOR_MS) return s; } catch { /* worked out again */ } }
   }
   const months = lastMonths(24);
   const inRange = (m) => m && m >= months[0];
@@ -556,6 +569,7 @@ export async function stats(env, viewer, raw, { fresh = false } = {}) {
   const byType = new Map();
   for (const i of open) {
     const t = i.fields?.issuetype?.name || 'Other';
+    if (IDLE_TYPES.test(t)) continue;
     const cat = i.fields?.status?.statusCategory?.key === 'new' ? 'todo' : 'doing';
     const row = byType.get(t) || { type: t, todo: 0, doing: 0, oldest: null, statuses: {} };
     row[cat] += 1;
@@ -616,10 +630,10 @@ export async function stats(env, viewer, raw, { fresh = false } = {}) {
   const quotes = { open: quoteRows.filter((q) => !q.done).length, lastYear: quoteRows.filter((q) => days(q.created_at, new Date().toISOString()) <= 365).length };
 
   const out = {
-    at: Date.now(), key: k, name: c.name, firstCreated: first?.fields?.created || null, issueCount: c.issue_count ?? null,
+    v: STATS_VERSION, at: Date.now(), key: k, name: c.name, firstCreated: first?.fields?.created || null, issueCount: c.issue_count ?? null,
     money, hours: { months, values: months.map((m) => Math.round(hoursBy[m] * 10) / 10), total: [...personSeconds.values()].reduce((t, s) => t + s, 0) / 3600 },
     openWork, orderProgress, timings, current: [...current.values()].sort((a, b) => b.total - a.total), familiar: familiar.slice(0, 15),
-    psc, quotes, contracts: [...contractRows].sort((a, b) => String(b.start_date || '').localeCompare(String(a.start_date || ''))).map((x) => ({ key: x.issue_key, status: x.status, tier: x.tier, total: x.total, start: x.start_date, available: x.f_available, used: x.f_used })),
+    psc, quotes, contracts: newestStart(contractRows).map((x) => ({ key: x.issue_key, status: x.status, tier: x.tier, total: x.total, start: x.start_date, available: x.f_available, used: x.f_used })),
     sampled: { open: open.length, done: done.length, assigned: everyone.length },
   };
   await setState(env, cacheKey, JSON.stringify(out));

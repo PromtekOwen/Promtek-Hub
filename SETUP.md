@@ -287,7 +287,7 @@ If step 4 is refused, your Workspace policy blocks service account keys. That's 
 
 ## Part 11a: Customers
 
-The **Customers** tile lists every live customer project in Jira (the UK and South Africa customer categories, not the blocked projects), to everyone.
+The **Customers** tile lists every live customer project in Jira (the UK and South Africa customer categories, not the blocked projects or the templates UKST and SAST), to everyone.
 
 - **Each customer shows:** how many open quotes, open PSCs and active jobs (orders the WIP follows that aren't done) they have; a shield, green with a tick when they have a service contract In Contract or Requires Renewal; the date and time anything in their Jira project last changed; and their primary contact's name, phone and email (tap to call or email).
 - **Finding one:** search by name, key or contact; show All, UK, Africa or those with open PSCs; sort A to Z or by last update.
@@ -309,7 +309,7 @@ The **Customers** tile lists every live customer project in Jira (the UK and Sou
 - **At a glance:** customer since (their first item in Jira), orders all time with the average order, orders in the last 12 months, still to be paid on open orders, invoiced and awaiting payment (and overdue), active contract value, time logged for them, PSCs (open, average time to first look and to sort) and quotes.
 - **Money by month:** orders placed (by acceptance date), service contracts (by start date) and invoices sent, over two years.
 - **Time logged for them by month:** hours on their orders and everything under them, PSCs, quotes and contracts.
-- **Open work by kind:** everything not done in their project by issue type, to do and in progress (hover for the statuses), and each open order's progress and how much is invoiced.
+- **Open work by kind:** everything not done in their project by issue type (except Documentation, which isn't worked once it's made), to do and in progress (hover for the statuses), and each open order's progress and how much is invoiced.
 - **How long things take:** average and median days from raised to done, by issue type, for the last two years.
 - **Who's working on them** and **who knows them best:** only people in the hub (former staff are left out); everything ever assigned to each in their project (up to the latest 1,500) and the time each has logged for them, the top one starred.
 - **PSCs raised by month** and their **service contracts**, newest first, with tokens used.
