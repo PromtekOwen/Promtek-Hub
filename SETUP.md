@@ -715,6 +715,8 @@ The **IMS** tile treats the ten IMS projects (GOALS, LEGAL, HEALTH, COMPLIANCE, 
 
 **Root cause, when required.** On a new item, Root cause shows only once **Root cause required?** is Yes (always for incidents and 8D reports); the 5 Whys is always there. On an item's page the same, except that a root cause already filled in is always shown.
 
+**Moving an item on.** Each item in the list has **Move…**, and an item's page has a move list beside its status: both offer the statuses Jira allows from where it is (Admin only to admins). Choosing one moves the item and every copy of it in the other areas, as the person who chose it. A copy whose workflow can't go straight there is shown as waiting on the item, and the hub tries again; it can be moved in Jira by hand. Sub-tasks move the same way from their own page.
+
 **Sub-tasks.** Sub-tasks aren't in the Items list, and the area buttons count only the items listed (an open sub-task still turns its area red or blue). Searching for a sub-task's key, summary or assignee finds the item it's under. An item's page lists its sub-tasks, each once however many copies it has, with the areas it's in, its status and assignee. Tap one to open it in the hub, where it can be changed like any item (summary, status from those its workflow allows, assignee, dates, root cause and its 5 Whys), saved to every copy; **↑** at the top goes back to its parent. **Add a sub-task** takes a summary, assignee, dates, whether a root cause is required, a description and a 5 Whys. It's made as an **Internal Sub-Task** (or the area's own sub-task type) under the item's first copy, then copied under each of the other copies, joined by Sync links and the IMS Origin Item like any copies, and kept in step from then on. When an area is added to an item, its copy there gets those sub-tasks too. A sub-task made in Jira under one copy, from now on, is copied under the others the same way; if one of the same name is already under a copy it's joined to it rather than made twice. Sub-tasks from before this are left where they are. Sub-type sits above Summary.
 
 **Jira rules to turn off** once the tile is in use:
@@ -1189,3 +1191,5 @@ This is only needed if you want to change code and try it before committing.
 3. Copy `.dev.vars.example` to `.dev.vars` and fill in the tokens.
 4. Run `npx wrangler d1 execute promtek-hub --local --file=schema.sql` once to create the local database.
 5. Run `npm run dev` and open the address it prints. `DEV_EMAIL` stands in for the Google sign-in locally, and only works on your computer.
+
+**Dates.** Every date in the hub shows its year (for example 19 Nov 2026), so something from last month can't be mistaken for something from years ago. Days of the week on the weekly charts and birthdays are the exceptions.

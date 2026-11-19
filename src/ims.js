@@ -9,7 +9,7 @@
 // change goes to the others. Copies that already disagreed when the hub first saw them are
 // left as they are and shown, for someone to choose which is right. A copy the hub hasn't
 // seen before is brought in line with the others, never the other way round.
-import { jira, jiraFetch } from './jira.js';
+import { jira, jiraFetch, statusAllowed } from './jira.js';
 import { getState, setState } from './sync.js';
 import { canTile } from './permissions.js';
 import { record } from './audit.js';
@@ -1160,6 +1160,43 @@ export async function edit(env, viewer, { key, changes = {} }) {
   await record(env, viewer, { area: 'IMS', action: 'changed an IMS item', subjectType: 'ims', subjectId: groupKey, label: `${groupKey} ${row.summary}`.slice(0, 120),
     changes: names.map((n) => ({ label: SYNCED[n].label, before: '', after: n === 'fiveWhys' ? whysText(changes[n]) : Array.isArray(changes[n]) ? changes[n].join(', ') : String(changes[n] ?? '') })) }).catch(() => {});
   return { ok: true, copies: members.length, failed };
+}
+
+// ---------- moving it on, everywhere ----------
+
+// The statuses Jira offers from where this copy is, for the Move control on the item and in the list.
+export async function moves(env, viewer, key) {
+  mustSee(viewer);
+  const row = await env.DB.prepare('SELECT issue_key, status FROM ims_items WHERE issue_key = ?').bind(String(key || '')).first();
+  if (!row) throw refuse('That item isn\'t in the IMS list.', 404);
+  const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(row.issue_key)}/transitions`)) || {};
+  const seen = new Map();
+  for (const t of transitions) {
+    const name = t.to?.name || t.name;
+    if (name && name !== row.status && statusAllowed(viewer, name) && !seen.has(name)) seen.set(name, t.to?.statusCategory?.key || null);
+  }
+  return { key: row.issue_key, status: row.status, moves: [...seen.keys()], cats: Object.fromEntries(seen) };
+}
+
+// Moves the item, and every copy of it in the other areas, to the chosen status.
+// A copy Jira won't move there directly is queued and tried again, and shown as waiting.
+export async function move(env, viewer, { key, to }) {
+  const name = String(to || '').trim();
+  if (!name) throw refuse('Choose where to move it.');
+  if (!statusAllowed(viewer, name)) throw refuse('Only admins can move an item to Admin.', 403);
+  const offered = await moves(env, viewer, key);
+  if (!offered.moves.includes(name)) throw refuse(`Jira doesn't offer a move to ${name} from ${offered.status || 'where it is'}.`, 409);
+  const r = await edit(env, viewer, { key: offered.key, changes: { status: name } });
+  const cat = offered.cats[name];
+  if (cat) {
+    const row = await env.DB.prepare('SELECT group_key, issue_key FROM ims_items WHERE issue_key = ?').bind(offered.key).first();
+    const groupKey = row?.group_key || offered.key;
+    const stuck = new Set(r.failed.map((f) => f.split(':')[0]));
+    const { results: members } = await env.DB.prepare('SELECT issue_key FROM ims_items WHERE group_key = ? OR issue_key = ?').bind(groupKey, groupKey).all();
+    for (const m of members) if (!stuck.has(m.issue_key)) await env.DB.prepare('UPDATE ims_items SET status_cat = ? WHERE issue_key = ?').bind(cat, m.issue_key).run();
+    await changed(env);
+  }
+  return { ...r, to: name };
 }
 
 // ---------- sub-tasks ----------

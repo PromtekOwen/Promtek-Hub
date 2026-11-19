@@ -1467,7 +1467,7 @@ async function answer(p, q, method, body) {
 // ---------- Employee of the Quarter ----------
 
 const EOTQ_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const eotqWords = (iso) => `${Number(iso.slice(8, 10))} ${EOTQ_MONTHS[Number(iso.slice(5, 7)) - 1]}`;
+const eotqWords = (iso) => `${Number(iso.slice(8, 10))} ${EOTQ_MONTHS[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
 const eotqDayName = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'UTC' });
 const eotqLabel = (r) => {
   if (r.name) return r.name;

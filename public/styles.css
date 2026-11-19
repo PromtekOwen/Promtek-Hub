@@ -2579,3 +2579,9 @@ body.tablet-locked .appbar .bell-btn, body.tablet-locked .appbar .avatar-btn, bo
 }
 .coshh-sheet-links li { justify-items: start; } .coshh-sheet-links button { text-align: left; }
 .viewas-bar.editing { background: #8a1f1f; }
+
+/* Moving an IMS item on, from the list or its page. */
+.ims-move-btn { margin-left: auto; }
+.ims-move-box { margin: .45rem 0 .1rem; }
+.ims-move-box select, select.ims-move { max-width: 100%; font-size: .9rem; }
+.psc-top select.ims-move { margin-left: auto; }

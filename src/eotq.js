@@ -34,7 +34,7 @@ const quarterEnd = (iso) => {
 };
 export const dayWords = (iso) => {
   const d = new Date(`${iso}T12:00:00Z`);
-  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 };
 const weekday = (iso) => new Date(`${iso}T12:00:00Z`).toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'UTC' });
 

@@ -189,7 +189,7 @@ async function systemAlerts(env, viewer) {
     const timer = await env.DB.prepare('SELECT current FROM active_timers WHERE account_id = ?').bind(me).first().catch(() => null);
     const cur = parse(timer?.current, null);
     if (cur?.startedAt && Date.now() - Date.parse(cur.startedAt) > 10 * 3600_000) {
-      out.push({ key: 'timer', tone: 'important', title: 'Your timer is still running', body: `It has been timing ${cur.issueKey || 'a job'} since ${new Date(cur.startedAt).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', hour: '2-digit', minute: '2-digit' })}. Stop it, or say when you stopped.`, link: '#/log' });
+      out.push({ key: 'timer', tone: 'important', title: 'Your timer is still running', body: `It has been timing ${cur.issueKey || 'a job'} since ${new Date(cur.startedAt).toLocaleString('en-GB', { timeZone: 'Europe/London', weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}. Stop it, or say when you stopped.`, link: '#/log' });
     }
   }
 

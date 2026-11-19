@@ -584,6 +584,8 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/ims/meeting') return json(await Ims.meeting(env, user, q('key')));
     if (method === 'GET' && pathname === '/api/ims/attachment') return Ims.attachment(env, user, q('key'), q('id'));
     if (method === 'POST' && pathname === '/api/ims/edit') return json(await Ims.edit(env, user, body));
+    if (method === 'GET' && pathname === '/api/ims/moves') return json(await Ims.moves(env, user, url.searchParams.get('key') || ''));
+    if (method === 'POST' && pathname === '/api/ims/move') return json(await Ims.move(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/subtask') return json(await Ims.addSubtask(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/resolve') return json(await Ims.resolveConflict(env, user, body));
     if (method === 'POST' && pathname === '/api/ims/resolve-all') return json(await Ims.resolveAll(env, user, body));

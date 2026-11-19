@@ -34,8 +34,9 @@ function duration(seconds) {
 }
 
 const dateOf = (iso) => new Date(`${iso}T12:00:00Z`);
-const longDate = (iso) => dateOf(iso).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
-const shortDate = (iso) => dateOf(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+// Every date in the hub says its year, so a month ago is never mistaken for years ago.
+const longDate = (iso) => dateOf(iso).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+const shortDate = (iso) => dateOf(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 const todayIso = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London' }).format(new Date());
 const addDays = (iso, days) => new Date(dateOf(iso).getTime() + days * 86_400_000).toISOString().slice(0, 10);
 function mondayOf(iso) {
@@ -857,7 +858,7 @@ const pages = {
             ${data.mailWaiting ? `<div class="row" style="margin:.4rem 0 .8rem"><button class="btn secondary" data-admin-send-alerts="1">Send the ${data.mailWaiting} waiting now</button></div>` : ''}` : ''}
           ${data.alerts.length ? `<ul class="list" style="box-shadow:none">${data.alerts.map((a) => `<li>
               <span class="title">${esc(a.subject)}</span>
-              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
+              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
               <span class="xp"></span>
             </li>`).join('')}</ul>` : '<p class="muted">Nothing to report.</p>'}
         </div>
@@ -925,7 +926,7 @@ function levelSlideHtml() {
     </a>`;
 }
 
-const feedWhen = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+const feedWhen = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 
 function feedItemHtml(a, { full = false } = {}) {
   const open = a.form ? `<button class="feed-open" data-form-open="${a.formId}">Fill in</button>`
@@ -8757,7 +8758,7 @@ function usageHtml(u) {
     if (!iso) return 'Never';
     const d = new Date(iso);
     const today = new Date().toDateString() === d.toDateString();
-    return today ? `Today, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+    return today ? `Today, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}` : `${d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}, ${d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
   };
   // Every tile, including ones nobody has opened.
   const counted = new Map(u.pages.map((p) => [p.page, p]));
@@ -8766,7 +8767,7 @@ function usageHtml(u) {
     return `<tr${c.opens ? '' : ' class="muted"'}><td>${esc(pageLabel(p))}</td><td class="num">${n(c.opens)}</td><td class="num">${n(c.people)}</td></tr>`; }).join('');
   // A tile's last open: its time where known, otherwise just its day.
   const lastText = (t) => (t.lastAt ? seenText(t.lastAt)
-    : t.lastDay ? new Date(`${t.lastDay}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }) : '—');
+    : t.lastDay ? new Date(`${t.lastDay}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) : '—');
   const peopleRows = u.people.map((p) => {
     const open = usageOpen.has(p.id);
     const can = Boolean(p.tiles?.length);
@@ -11572,7 +11573,7 @@ const FLAG_TITLES = {
   'org-map': 'Organization matches no customer', write: 'Jira didn\'t take a change', clock: 'Clock and tokens disagree',
 };
 const fullDate = (iso) => (iso ? dateOf(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
-const whenText = (isoTime) => (isoTime ? new Date(isoTime).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : 'not yet');
+const whenText = (isoTime) => (isoTime ? new Date(isoTime).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'not yet');
 const jiraLink = (key, label = key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(label)}</a>`;
 
 // ---------- Jira items shown in the hub ----------
@@ -12474,7 +12475,7 @@ function agoText(iso) {
   const hrs = Math.round(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.round(hrs / 24);
-  return days < 14 ? `${days}d ago` : new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  return days < 14 ? `${days}d ago` : new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
 }
 const workText = (msv) => duration(Math.round((msv || 0) / 1000));
 
@@ -12488,14 +12489,8 @@ function pscTierBadge(d) {
   return `<span class="psc-tier t-${d.tier}" title="${esc(d.contract?.key || '')}">${esc(d.tierName)}</span>${d.contract?.tokensFree != null ? `<span class="psc-chip plain">${d.contract.tokensFree} ${d.contract.tokensFree === 1 ? 'token' : 'tokens'} free</span>` : ''}${d.contract?.bankHoliday ? bankHolidayIcon() : ''}`;
 }
 
-// A full date and time, so there's no guessing which Friday: "Fri 14 Nov, 20:44", with the
-// year when it isn't this year.
-const timeOf = (iso) => {
-  const t = new Date(iso);
-  const opts = { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' };
-  if (t.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
-  return t.toLocaleString('en-GB', opts);
-};
+// A full date and time, so there's no guessing which Friday: "Fri 14 Nov 2026, 20:44".
+const timeOf = (iso) => new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 // Time the clock has run inside cover. Long spells read in days, not thousands of hours.
 const coverText = (msv) => {
   const h = (msv || 0) / 3600000;
@@ -12848,6 +12843,19 @@ async function pscNewClick(t) {
 
 // Pictures: chosen, dropped on the form, or pasted.
 view.addEventListener('change', (e) => { if (notifyOpen) notifyChange(e); });
+// Moving an IMS item, from its page or the list: made to every copy.
+view.addEventListener('change', async (e) => {
+  const el = e.target.closest?.('[data-ims-move]');
+  if (!el || !el.value) return;
+  const to = el.value; const key = el.dataset.imsMove;
+  el.disabled = true;
+  try {
+    const r = await api('/api/ims/move', { method: 'POST', body: JSON.stringify({ key, to }) });
+    toast(r.failed?.length ? `Moved to ${to}, but Jira refused ${r.failed.length} cop${r.failed.length === 1 ? 'y' : 'ies'}; the hub tries again` : r.copies > 1 ? `Moved all ${r.copies} copies to ${to}` : `Moved to ${to}`);
+  } catch (err) { toast(err.message); }
+  imsMoves = null; imsItemData = null; imsEdit = null; imsData = null;
+  render();
+});
 view.addEventListener('input', (e) => {
   if (!notifyOpen || e.target.id !== 'nt-find') return;
   notifyFind = e.target.value;
@@ -12960,7 +12968,9 @@ function imsItemsHtml(data) {
     <p class="muted"><small>${items.length} item${items.length === 1 ? '' : 's'}</small></p>
     <div class="psc-list">${items.slice(0, 300).map((i) => `<article class="card ims-card${i.done ? ' done' : ''}" data-ims-open="${esc(i.key)}" tabindex="0" role="button">
         <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}${i.imsType ? ` · ${esc(i.imsType)}` : ''}</span>
-          <span class="psc-chip plain">${esc(i.status)}</span>${i.conflicts ? `<span class="psc-chip warn" title="Its copies disagree">Copies differ</span>` : ''}</div>
+          <span class="psc-chip plain">${esc(i.status)}</span>${i.conflicts ? `<span class="psc-chip warn" title="Its copies disagree">Copies differ</span>` : ''}
+          <button class="chip-btn ims-move-btn" data-ims-move-open="${esc(i.key)}" aria-label="Move ${esc(i.key)} to another status">Move…</button></div>
+        <div class="ims-move-box" data-ims-move-box="${esc(i.key)}" hidden></div>
         <h3 class="psc-title">${esc(i.summary)}</h3>
         <div class="ims-meta">${i.areas.map(imsAreaChip).join('')}
           <span class="muted">${i.assignee ? esc(i.assignee) : 'Unassigned'}${i.folder ? ` · ${esc(i.folder)}` : ''}${i.subtasks.all ? ` · ${i.subtasks.done} of ${i.subtasks.all} sub-tasks done` : ''}</span>
@@ -13041,6 +13051,19 @@ function imsSubtasksHtml(d, o) {
   return `<section class="card ims-subs-card"><h3 style="margin-top:0">Sub-tasks${d.subtasks.length ? ` <small class="muted">${d.subtasks.filter((x) => x.done).length} of ${d.subtasks.length} done</small>` : ''}</h3>${list}${form}</section>`;
 }
 
+// Moving an item to another status, from those Jira offers where it is; every copy follows.
+let imsMoves = null;   // { key, status, moves }
+async function imsMovesFor(key, status) {
+  if (imsMoves?.key !== key || imsMoves.status !== status) imsMoves = await api(`/api/ims/moves?key=${encodeURIComponent(key)}`).then((r) => ({ ...r, status })).catch(() => ({ key, status, moves: [] }));
+  return imsMoves.moves;
+}
+async function imsMoveSelect(key, status, copies = 1) {
+  const moves = await imsMovesFor(key, status);
+  if (!moves.length) return '';
+  return `<select class="ims-move" data-ims-move="${esc(key)}" aria-label="Move ${esc(key)} to another status"><option value="">${esc(status)}: move${copies > 1 ? ` all ${copies} copies` : ''} to…</option>
+    ${moves.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`).join('')}</select>`;
+}
+
 async function imsItemHtml() {
   if (!imsItemData || imsItemData.item.key !== imsOpen && !imsItemData.copies.some((c) => c.key === imsOpen)) imsItemData = await api(`/api/ims/item?key=${encodeURIComponent(imsOpen)}`);
   const o = await imsLoadOptions();
@@ -13068,7 +13091,7 @@ async function imsItemHtml() {
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-ims-back="1">All items</button>
       ${d.parent ? `<button class="btn secondary" data-ims-open="${esc(d.parent.key)}">↑ ${esc(d.parent.key)} ${esc(d.parent.summary.length > 50 ? `${d.parent.summary.slice(0, 50)}…` : d.parent.summary)}</button>` : ''}</div>
     <section class="card">
-      <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}</span><span class="psc-chip plain">${esc(i.status)}</span></div>
+      <div class="psc-top"><span class="psc-key">${esc(i.key)}</span><span class="muted">${esc(i.type)}</span><span class="psc-chip plain">${esc(i.status)}</span>${await imsMoveSelect(i.key, i.status, d.copies.length)}</div>
       ${d.parent ? `<p class="muted" style="margin:.2rem 0 0">Sub-task of <button class="linklike" data-ims-open="${esc(d.parent.key)}">${esc(d.parent.key)} ${esc(d.parent.summary)}</button></p>` : ''}
       <h2 style="margin:.3rem 0 .6rem">${esc(i.summary)}</h2>
       <div class="ims-copies">${d.copies.map((c) => `<span class="ims-copy">${imsAreaChip(c.project)} ${jiraLink(c.key)} <small class="muted">${esc(c.status)}</small></span>`).join('')}</div>
@@ -13931,6 +13954,22 @@ async function imsClick(event) {
       return render();
     } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Raise in Jira'; return true; }
   }
+  const moveOpen = t('[data-ims-move-open]');
+  if (moveOpen) {
+    const key = moveOpen.dataset.imsMoveOpen;
+    const box = view.querySelector(`[data-ims-move-box="${CSS.escape(key)}"]`);
+    if (!box) return true;
+    if (!box.hidden) { box.hidden = true; return true; }
+    view.querySelectorAll('[data-ims-move-box]').forEach((x) => { x.hidden = true; });
+    box.hidden = false;
+    box.innerHTML = '<span class="muted">Loading the moves from Jira…</span>';
+    const item = imsData?.items?.find((x) => x.key === key);
+    const sel = await imsMoveSelect(key, item?.status || '', item?.copies?.length || 1);
+    box.innerHTML = sel || '<span class="muted">Jira has no moves from here.</span>';
+    box.querySelector('select')?.focus();
+    return true;
+  }
+  if (t('[data-ims-move], [data-ims-move-box]')) return true;
   const open = t('[data-ims-open]');
   if (open) { imsOpen = open.dataset.imsOpen; imsItemData = null; imsEdit = null; imsMeetingOpen = null; window.scrollTo(0, 0); return render(); }
   if (t('[data-ims-back]')) { imsOpen = null; imsItemData = null; imsEdit = null; return render(); }
@@ -14228,7 +14267,7 @@ async function pscItemHtml() {
   const { item: d, timeline } = await api(`/api/psc/item?key=${encodeURIComponent(pscOpen)}`);
   await pscLoad();
   if (d.project === 'PSC' && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
-  const when = (iso) => (iso ? `${new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })} (${agoText(iso)})` : '—');
+  const when = (iso) => (iso ? `${new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })} (${agoText(iso)})` : '—');
   const kindText = { comment: 'Comment', status: 'Status', assignee: 'Owner', created: 'Raised', time: 'Time', hub: 'Hub', description: 'Description' };
   return `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-psc-back="1">All items</button></div>
     <section class="card psc-detail">
