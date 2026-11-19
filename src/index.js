@@ -289,7 +289,7 @@ async function devRoute(request, env, url, real) {
 
 // The requests that belong to one tile alone.
 const TILE_APIS = {
-  condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], coshh: ['/api/coshh'], it: ['/api/it/'],
+  condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], coshh: ['/api/coshh'], customers: ['/api/customers'], it: ['/api/it/'],
   requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'], nearmiss: ['/api/nearmiss'],
 };
 
@@ -1058,6 +1058,14 @@ async function route(request, env, url, user) {
     if (method === 'POST' && pathname === '/api/eotq/past-round-remove') return json(await Eotq.removePastRound(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/link') return json(await Eotq.link(env, user, body));
     if (method === 'POST' && pathname === '/api/eotq/winner') return json(await Eotq.chooseWinner(env, user, body));
+  }
+
+  if (pathname.startsWith('/api/customers')) {
+    const Cu = await import('./customers.js');
+    const q = (k) => url.searchParams.get(k);
+    if (method === 'GET' && pathname === '/api/customers') return json(await Cu.list(env, user));
+    if (method === 'GET' && pathname === '/api/customers/one') return json(await Cu.detail(env, user, q('key')));
+    if (method === 'GET' && pathname === '/api/customers/stats') return json(await Cu.stats(env, user, q('key'), { fresh: q('fresh') === '1' }));
   }
 
   if (pathname.startsWith('/api/coshh')) {

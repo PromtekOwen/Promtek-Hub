@@ -285,6 +285,28 @@ If step 4 is refused, your Workspace policy blocks service account keys. That's 
 
 **If either delivery fails**, the assessment is still saved and downloadable from the hub, and the team lead is told so it can be filed by hand. Nothing is ever lost because Jira or Drive was unavailable.
 
+## Part 11a: Customers
+
+The **Customers** tile lists every live customer project in Jira (the UK and South Africa customer categories, not the blocked projects), to everyone.
+
+- **Each customer shows:** how many open quotes, open PSCs and active jobs (orders the WIP follows that aren't done) they have; a shield, green with a tick when they have a service contract In Contract or Requires Renewal; the date and time anything in their Jira project last changed; and their primary contact's name, phone and email (tap to call or email).
+- **The primary contact** is the Site Contact, phone and email on their active service contract, or failing that the most recently updated open order with them filled in.
+- **Finding one:** search by name, key or contact; show those with a contract, without one, or with open PSCs; sort A to Z or by last update.
+- **Opening a customer** shows their site address (from the Site Address on their jobs and contract, with a map link), each service contract and active job with its own contact and site, their open quotes and open PSCs, and contacts on their other recent orders.
+- **Where it comes from:** every half hour the hub reads the customer projects (with Jira's own last-updated time for each) and the contact and site fields on every open order and service contract, and any closed in the last year. Quotes, PSCs, jobs and contracts come from what the hub already keeps for those tiles.
+
+**Statistics** (a tab on each customer, for people with **Customer statistics**: Management to begin with; Admin, Who can use what):
+- **Headlines:** customer since (their first item in Jira), orders all time with the average order, orders in the last 12 months, still to be paid on open orders, invoiced and awaiting payment (and overdue), active contract value, time logged for them, PSCs (open, average time to first look and to sort) and quotes.
+- **Money by month:** orders placed (by acceptance date), service contracts (by start date) and invoices sent, over two years.
+- **Time logged for them by month:** hours on their orders and everything under them, PSCs, quotes and contracts.
+- **Open work by kind:** everything not done in their project by issue type, to do and in progress (hover for the statuses), and each open order's progress and how much is invoiced.
+- **How long things take:** average and median days from raised to done, by issue type, for the last two years.
+- **Who's working on them** (assigned their open items now, by type) and **who knows them best** (everything ever assigned to each person in their project, up to the latest 1,500, and the time each has logged for them; the top one starred).
+- **PSCs raised by month**, their **service contracts** with tokens used, and **recent communications**: comments in the last four months on their items by the **Operations Team** Jira account (the mail handler posting their emails), found by its name (set `OPS_ACCOUNT_NAME` if it's ever renamed).
+- They're worked out when first opened and kept for six hours; **Work it out again** refreshes them.
+
+**Setting it up:** run `schema-073.sql` in the D1 console. The first read runs within the half hour; until then the list shows the customer projects without last updates or contacts.
+
 ## Part 11b: COSHH
 
 The **COSHH** tile holds an assessment for each substance Promtek keeps, filled in from the hub and filed as a PDF laid out like the paper form (SP 04/A).

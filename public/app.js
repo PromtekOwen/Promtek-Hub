@@ -743,6 +743,11 @@ const pages = {
     render: () => wipHtml(),
   },
 
+  '#/customers': {
+    band: () => '<h1>Customers</h1><p>Every customer: what\'s open with them, their contract, and who to contact.</p>',
+    render: () => customersHtml(),
+  },
+
   '#/coshh': {
     band: () => '<h1>COSHH</h1><p>Assessments for the substances we keep: what each is, where it\'s kept, and its yearly review.</p>',
     render: () => coshhHtml(),
@@ -4291,6 +4296,172 @@ view.addEventListener('change', async (event) => {
     render();
   }
 });
+
+// ---------- customers ----------
+// Every live customer project: what's open there, their contract, when anything last changed and who
+// to contact. Tapping one shows the contact and site on each job and contract; management also get
+// the customer's statistics.
+let custData = null;
+let custOpen = null;            // the project key open
+let custTab = 'overview';       // 'overview' or 'stats' on a customer
+let custOne = null;             // the customer open
+let custStats = null;           // its statistics
+let custQuery = '';
+let custShow = 'all';           // all, contract, none, psc
+let custSort = 'name';          // name or updated
+const CUST_SHIELD = (on) => `<svg class="cust-shield${on ? ' on' : ''}" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.2c0 4.5-3.1 8.4-7.5 9.8-4.4-1.4-7.5-5.3-7.5-9.8V6z"/>${on ? '<path d="M8.5 12.2l2.4 2.4 4.6-4.8"/>' : '<path d="M9 9l6 6M15 9l-6 6"/>'}</svg>`;
+const custWhen = (iso) => (iso ? `${timeOf(iso)}` : 'Not known yet');
+const custContactHtml = (c, { compact = false } = {}) => {
+  if (!c || !(c.name || c.phone || c.email)) return `<span class="muted">${compact ? 'No contact on Jira' : 'No contact set on it in Jira'}</span>`;
+  return `<span class="cust-contact">${c.name ? `<span>${esc(c.name)}</span>` : ''}${c.phone ? `<a href="tel:${esc(String(c.phone).replace(/[^\d+]/g, ''))}">${esc(c.phone)}</a>` : ''}${c.email ? `<a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}</span>`;
+};
+const custJira = (key) => `<a href="${esc(me.jiraBaseUrl)}/browse/${esc(key)}" target="_blank" rel="noopener">${esc(key)}</a>`;
+
+async function customersHtml() {
+  if (custOpen) return customerHtml();
+  if (!custData) custData = await api('/api/customers');
+  const q = custQuery.trim().toLowerCase();
+  let rows = custData.customers.filter((c) => (!q || `${c.name} ${c.key} ${c.contact?.name || ''} ${c.contact?.email || ''}`.toLowerCase().includes(q))
+    && (custShow === 'all' || (custShow === 'contract' ? c.contract : custShow === 'none' ? !c.contract : c.pscs > 0)));
+  if (custSort === 'updated') rows = [...rows].sort((a, b) => String(b.lastUpdate || '').localeCompare(String(a.lastUpdate || '')));
+  const pill = (n, label) => `<span class="cust-count${n ? '' : ' zero'}"><b>${n}</b> ${label}</span>`;
+  const card = (c) => `<article class="card cust-card" data-cust-open="${esc(c.key)}" tabindex="0" role="button" aria-label="${esc(c.name)}">
+      <div class="cust-card-top">
+        <span class="cust-badge" title="${c.contract ? `Service contract: ${esc(c.contract.status)}${c.contract.tier ? `, ${esc(c.contract.tier)}` : ''}` : 'No active service contract'}">${CUST_SHIELD(Boolean(c.contract))}</span>
+        <div class="cust-name"><strong>${esc(c.name)}</strong><span class="muted">${esc(c.key)}${c.region === 'sa' ? ' · South Africa' : ''}</span></div>
+      </div>
+      <div class="cust-counts">${pill(c.quotes, c.quotes === 1 ? 'quote' : 'quotes')}${pill(c.pscs, c.pscs === 1 ? 'PSC' : 'PSCs')}${pill(c.jobs, c.jobs === 1 ? 'job' : 'jobs')}</div>
+      <p class="cust-when muted">Last update ${esc(custWhen(c.lastUpdate))}</p>
+      <div class="cust-card-contact">${custContactHtml(c.contact, { compact: true })}</div>
+    </article>`;
+  const shows = [['all', 'All'], ['contract', 'Contract'], ['none', 'No contract'], ['psc', 'Open PSCs']];
+  return `<div class="row cust-tools">
+      <input type="search" id="cust-search" placeholder="Search customers, keys or contacts" value="${esc(custQuery)}" aria-label="Search customers">
+      <span class="segment">${shows.map(([k, l]) => `<button class="seg${custShow === k ? ' on' : ''}" data-cust-show="${k}">${l}</button>`).join('')}</span>
+      <select data-cust-sort aria-label="Order"><option value="name"${custSort === 'name' ? ' selected' : ''}>Sort: A to Z</option><option value="updated"${custSort === 'updated' ? ' selected' : ''}>Sort: last updated</option></select>
+    </div>
+    <p class="muted"><small>${rows.length} customer${rows.length === 1 ? '' : 's'}. ${CUST_SHIELD(true)} has an active service contract, ${CUST_SHIELD(false)} doesn't.</small></p>
+    <div class="cust-list">${rows.map(card).join('') || '<div class="card"><p style="margin:0">No customers match.</p></div>'}</div>`;
+}
+
+async function customerHtml() {
+  if (!custOne || custOne.key !== custOpen) { custOne = await api(`/api/customers/one?key=${encodeURIComponent(custOpen)}`); custStats = null; }
+  const d = custOne;
+  if (custTab === 'stats' && !d.canStats) custTab = 'overview';
+  const active = d.contracts.find((c) => c.active);
+  const head = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-cust-back="1">All customers</button></div>
+    <section class="card cust-head">
+      <div class="cust-card-top"><span class="cust-badge big">${CUST_SHIELD(Boolean(active))}</span>
+        <div class="cust-name"><h2 style="margin:0">${esc(d.name)}</h2><span class="muted">${esc(d.key)}${d.region === 'sa' ? ' · South Africa' : ''} · last update ${esc(custWhen(d.lastUpdate))}</span></div></div>
+      <dl class="psc-facts cust-facts">
+        <div><dt>Service contract</dt><dd>${active ? `${custJira(active.key)} ${esc(active.status)}${active.tier ? `, ${esc(active.tier)}` : ''}${active.end ? `, until ${esc(fullDate(active.end))}` : ''}` : 'None active'}</dd></div>
+        <div><dt>Primary contact</dt><dd>${custContactHtml(d.contact)}</dd></div>
+        <div><dt>Open</dt><dd>${d.quotes.length} quote${d.quotes.length === 1 ? '' : 's'}, ${d.pscs.length} PSC${d.pscs.length === 1 ? '' : 's'}, ${d.jobs.length} job${d.jobs.length === 1 ? '' : 's'}</dd></div>
+      </dl>
+    </section>
+    ${d.canStats ? `<div class="tabs cust-tabs">${[['overview', 'Overview'], ['stats', 'Statistics']].map(([k, l]) => `<button class="tab${custTab === k ? ' on' : ''}" data-cust-tab="${k}">${l}</button>`).join('')}</div>` : ''}`;
+  return head + (custTab === 'stats' ? await customerStatsHtml(d) : customerOverviewHtml(d));
+}
+
+function customerOverviewHtml(d) {
+  const item = (x, extra = '') => `<li class="cust-item">
+      <div class="cust-item-head"><span>${custJira(x.key)} ${esc(x.summary || '')}</span><span class="psc-chip plain">${esc(x.status || '')}</span></div>
+      ${extra}
+      <div class="cust-item-contact"><span class="muted">Contact</span> ${custContactHtml(x.contact)}</div>
+      ${x.site ? `<div class="cust-item-contact"><span class="muted">Site</span> ${esc(x.site)}</div>` : ''}
+    </li>`;
+  const simple = (x, sub) => `<li class="cust-item"><div class="cust-item-head"><span>${custJira(x.key)} ${esc(x.summary || '')}</span><span class="psc-chip plain">${esc(x.status || '')}</span></div>
+      ${sub ? `<div class="muted cust-item-sub">${sub}</div>` : ''}</li>`;
+  const section = (title, list, empty) => `<section class="card"><h3 style="margin-top:0">${title}</h3>${list.length ? `<ul class="cust-items">${list.join('')}</ul>` : `<p class="muted" style="margin:0">${empty}</p>`}</section>`;
+  return `${section(`Site${d.sites.length === 1 ? '' : 's'}`, d.sites.map((s) => `<li class="cust-item"><span>${esc(s)}</span> <a class="linklike" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(s)}" target="_blank" rel="noopener">Map</a></li>`), 'No site address set on their jobs or contract in Jira.')}
+    ${section('Service contracts', d.contracts.map((c) => item(c, `<div class="muted cust-item-sub">${[c.tier, c.start ? `from ${fullDate(c.start)}` : '', c.end ? `to ${fullDate(c.end)}` : '', c.renewal ? `renewal ${fullDate(c.renewal)}` : ''].filter(Boolean).map(esc).join(', ')}</div>`)), 'No service contract.')}
+    ${section('Active jobs', d.jobs.map((j) => item(j, `<div class="cust-progress"><span class="bar"><span style="width:${Math.min(100, Math.round((j.progress || 0) * 100))}%"></span></span><small class="muted">${Math.round((j.progress || 0) * 100)}% complete${j.updated ? `, updated ${esc(agoText(j.updated))}` : ''}</small></div>`)), 'No active jobs.')}
+    ${section('Open quotes', d.quotes.map((x) => simple(x, [x.assignee, x.updated ? `updated ${agoText(x.updated)}` : ''].filter(Boolean).map(esc).join(', '))), 'No open quotes.')}
+    ${section('Open PSCs', d.pscs.map((x) => simple(x, [x.type, x.assignee || 'Unassigned', x.updated ? `updated ${agoText(x.updated)}` : ''].filter(Boolean).map(esc).join(', '))), 'No open PSCs.')}
+    ${d.otherOrders.length ? `<section class="card"><details><summary><strong>Contacts on their other recent orders</strong> <span class="muted">(${d.otherOrders.length})</span></summary><ul class="cust-items">${d.otherOrders.map((o) => item(o)).join('')}</ul></details></section>` : ''}`;
+}
+
+async function customerStatsHtml(d, fresh = false) {
+  if (!custStats || custStats.key !== d.key || fresh) custStats = await api(`/api/customers/stats?key=${encodeURIComponent(d.key)}${fresh ? '&fresh=1' : ''}`);
+  const s = custStats;
+  const m = s.money;
+  wipSymFor = d.region === 'sa' ? 'R' : '£';
+  try {
+    const labels = m.months.map((x, i) => wipMonthLabel(x, i, m.months.length));
+    const tips = m.months.map((x) => wipMonthName(x));
+    const kpi = (label, value, sub = '') => `<div class="stat"><span class="stat-label">${label}</span><strong>${value}</strong>${sub ? `<small>${sub}</small>` : ''}</div>`;
+    const hrs = (h) => `${n(Math.round(h || 0))}h`;
+    const daysText = (v) => (v === null || v === undefined ? '—' : v < 1 ? `${Math.round(v * 24)}h` : `${Math.round(v * 10) / 10} days`);
+    const kpis = `<section class="card"><div class="cust-kpis">
+        ${kpi('Customer since', s.firstCreated ? esc(fullDate(s.firstCreated.slice(0, 10))) : '—', s.firstCreated ? `first item in Jira, ${esc(agoText(s.firstCreated))}` : '')}
+        ${kpi('Orders, all time', wipMoney(m.lifetime), `${n(m.orders)} order${m.orders === 1 ? '' : 's'}, about ${wipMoney(m.average)} each`)}
+        ${kpi('Orders, last 12 months', wipMoney(m.lastYear))}
+        ${kpi('Still to be paid on open orders', wipMoney(m.openBook))}
+        ${kpi('Invoiced, awaiting payment', wipMoney(m.awaiting), m.overdue ? `<span class="bad">${wipMoney(m.overdue)} overdue</span>` : 'none overdue')}
+        ${kpi('Active contract value', wipMoney(m.contractValue))}
+        ${kpi('Time logged for them', hrs(s.hours.total), 'all time, on their orders, PSCs and contracts')}
+        ${kpi('PSCs', `${n(s.psc.open)} open`, `first look in ${s.psc.firstLookHours === null ? '—' : `${Math.round(s.psc.firstLookHours * 10) / 10}h`} on average, sorted in ${daysText(s.psc.resolveDays)}`)}
+        ${kpi('Quotes', `${n(s.quotes.open)} open`, `${n(s.quotes.lastYear)} in the last 12 months`)}
+      </div><p class="muted" style="margin:.6rem 0 0"><small>Worked out ${esc(agoText(new Date(s.at).toISOString()))}. <button class="linklike" data-cust-refresh="1">Work it out again</button></small></p></section>`;
+    const money = wipColumns({ title: 'Money by month', sub: 'Orders placed (by acceptance date), service contracts (by start date) and invoices sent, over the last two years.', labels, tips,
+      series: [{ name: 'Orders placed', color: '#2f80c2', values: m.placed }, { name: 'Service contracts', color: '#e39a2d', values: m.contracts }, { name: 'Invoiced', color: '#3aa17e', values: m.invoiced }] });
+    const hours = wipColumns({ title: 'Time logged for them, by month', sub: 'Hours logged on their orders (and everything under them), PSCs, quotes and contracts.', labels, tips, count: true,
+      series: [{ name: 'Hours', color: '#7a5cc2', values: s.hours.values }] });
+    const pscs = wipColumns({ title: 'PSCs raised, by month', sub: 'From the PSC tile, which keeps the last few months of closed PSCs.', labels, tips, count: true, series: [{ name: 'PSCs', color: '#c4513f', values: s.psc.opened }] });
+    const maxOpen = Math.max(1, ...s.openWork.map((r) => r.todo + r.doing));
+    const open = `<section class="card"><h2>Open work, by kind</h2><p class="wipc-sub">Everything not done in their Jira project, by issue type: to do, and in progress.</p>
+      ${s.openWork.length ? `<p class="wipc-legend"><span><i style="background:#9aa5ae"></i>To do</span><span><i style="background:#2f80c2"></i>In progress</span></p>
+      <div class="cust-rows">${s.openWork.map((r) => `<div class="cust-row" title="${esc(Object.entries(r.statuses).map(([k, v]) => `${k}: ${v}`).join('\n'))}">
+        <span class="cust-row-name">${esc(r.type)}</span>
+        <span class="cust-row-bar"><span style="width:${(r.doing / maxOpen) * 100}%;background:#2f80c2"></span><span style="width:${(r.todo / maxOpen) * 100}%;background:#9aa5ae"></span></span>
+        <span class="cust-row-n">${n(r.doing)} in progress, ${n(r.todo)} to do${r.oldest ? `<small class="muted">oldest ${esc(agoText(r.oldest))}</small>` : ''}</span></div>`).join('')}</div>` : '<p class="muted">Nothing open.</p>'}
+      ${s.orderProgress.length ? `<h3>Open orders</h3><div class="cust-rows">${s.orderProgress.map((o) => `<div class="cust-row"><span class="cust-row-name">${custJira(o.key)} <small class="muted">${esc(o.summary)}</small></span>
+        <span class="cust-row-bar"><span style="width:${Math.round(o.progress * 100)}%;background:#3aa17e"></span></span><span class="cust-row-n">${Math.round(o.progress * 100)}% complete, ${Math.round(o.invoiced * 100)}% invoiced<small class="muted">${esc(o.status || '')}</small></span></div>`).join('')}</div>` : ''}</section>`;
+    const timings = `<section class="card"><h2>How long things take</h2><p class="wipc-sub">From being raised in Jira to done, for everything finished in the last two years.</p>
+      ${s.timings.length ? `<div class="table-wrap"><table><thead><tr><th>Kind</th><th class="num">Finished</th><th class="num">Average</th><th class="num">Typical (median)</th></tr></thead>
+      <tbody>${s.timings.map((t) => `<tr><td>${esc(t.type)}</td><td class="num">${n(t.count)}</td><td class="num">${daysText(t.avgDays)}</td><td class="num">${daysText(t.medianDays)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nothing finished in the last two years.</p>'}</section>`;
+    const people = `<section class="card"><h2>Who's working on them</h2><p class="wipc-sub">Assigned to their open items now.</p>
+      ${s.current.length ? `<div class="table-wrap"><table><thead><tr><th>Person</th><th class="num">Open items</th><th>Of which</th></tr></thead><tbody>${s.current.map((p) => `<tr><td>${esc(p.name)}</td><td class="num">${n(p.total)}</td><td>${Object.entries(p.types).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${esc(t)} ${n(c)}`).join(', ')}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nobody is assigned anything open.</p>'}
+      <h3>Who knows them best</h3><p class="wipc-sub">Every item ever assigned to each person in their project, and the time each has logged for them.</p>
+      ${s.familiar.length ? `<div class="table-wrap"><table><thead><tr><th>Person</th><th class="num">Items assigned, all time</th><th class="num">Time logged</th></tr></thead><tbody>${s.familiar.map((p, i) => `<tr><td>${i === 0 ? '★ ' : ''}${esc(p.name)}</td><td class="num">${n(p.tasks)}</td><td class="num">${hrs(p.hours)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nothing assigned yet.</p>'}
+      ${s.sampled.assigned >= 1500 ? '<p class="help">Counted from their latest 1,500 assigned items.</p>' : ''}</section>`;
+    const contracts = s.contracts.length ? `<section class="card"><h2>Service contracts</h2><div class="table-wrap"><table><thead><tr><th>Contract</th><th>Status</th><th>Tier</th><th class="num">Value</th><th>Started</th><th class="num">Tokens used</th></tr></thead>
+      <tbody>${s.contracts.map((c) => `<tr><td>${custJira(c.key)}</td><td>${esc(c.status || '')}</td><td>${esc(c.tier || '')}</td><td class="num">${wipMoney(c.total)}</td><td>${c.start ? esc(fullDate(c.start)) : '—'}</td><td class="num">${c.available ? `${n(c.used || 0)} of ${n(c.available)}` : '—'}</td></tr>`).join('')}</tbody></table></div></section>` : '';
+    const comms = `<section class="card"><h2>Recent communications</h2><p class="wipc-sub">Emails posted to their items by the Operations Team account in the last four months.</p>
+      ${s.comments.length ? `<ul class="cust-comments">${s.comments.map((c) => `<li><div class="cust-item-head"><span>${custJira(c.key)} <span class="muted">${esc(c.summary)}</span></span><small class="muted">${esc(timeOf(c.at))}</small></div><p>${esc(c.text)}</p></li>`).join('')}</ul>`
+        : '<p class="muted">Nothing from the Operations Team account on their items in the last four months.</p>'}</section>`;
+    return `${kpis}<div class="wipc-grid cust-charts">${money}${hours}</div>${open}${timings}${people}${pscs}${contracts}${comms}`;
+  } finally { wipSymFor = null; }
+}
+
+view.addEventListener('input', (event) => {
+  if (currentRoute() !== '#/customers' || event.target.id !== 'cust-search') return;
+  custQuery = event.target.value;
+  const pos = event.target.selectionStart;
+  render().then(() => { const box = view.querySelector('#cust-search'); if (box) { box.focus(); box.setSelectionRange(pos, pos); } });
+});
+view.addEventListener('change', (event) => {
+  if (currentRoute() === '#/customers' && event.target.matches('[data-cust-sort]')) { custSort = event.target.value; render(); }
+});
+
+async function customersClick(event) {
+  const t = (sel) => event.target.closest(sel);
+  if (t('a')) return false;
+  const open = t('[data-cust-open]');
+  if (open) { custOpen = open.dataset.custOpen; custTab = 'overview'; window.scrollTo(0, 0); return render(); }
+  if (t('[data-cust-back]')) { custOpen = null; custOne = null; custStats = null; return render(); }
+  const tab = t('[data-cust-tab]');
+  if (tab) { custTab = tab.dataset.custTab; return render(); }
+  const show = t('[data-cust-show]');
+  if (show) { custShow = show.dataset.custShow; return render(); }
+  const refresh = t('[data-cust-refresh]');
+  if (refresh) {
+    refresh.disabled = true; refresh.textContent = 'Working it out…';
+    try { await customerStatsHtml(custOne, true); } catch (err) { toast(err.message); }
+    return render();
+  }
+  return false;
+}
 
 // ---------- point of work ----------
 
@@ -16075,6 +16246,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesClick(event) !== false) return;
   if (currentRoute() === '#/nearmiss' && !settingsOpen && await nmClick(event) !== false) return;
   if (currentRoute() === '#/coshh' && !settingsOpen && await coshhClick(event) !== false) return;
+  if (currentRoute() === '#/customers' && !settingsOpen && await customersClick(event) !== false) return;
   if (currentRoute() === '#/xp' && event.target.closest('#modifiers') && await modifiersClick(event) !== false) return;
   if (event.target.closest('button[data-elo-more]')) { eloExpanded = !eloExpanded; return loadEloHistory(eloHistoryFor); }
   const eloUndo = event.target.closest('button[data-elo-undo]');
@@ -16517,6 +16689,8 @@ const SUB_VIEWS = {
     close: () => { coshhView = null; coshhItem = null; coshhForm = null; coshhSheet = null; },
     reopen: (v) => { const [kind, id] = String(v).split('|'); if (kind === 'item' || (kind === 'form' && id)) { coshhView = { kind: 'item', id: Number(id) }; coshhItem = null; } } },
   '#/wip': { open: () => wipOpen, close: () => { wipOpen = null; }, reopen: (v) => { wipOpen = v; } },
+  '#/customers': { open: () => (custOpen ? `${custOpen}|${custTab}` : null), close: () => { custOpen = null; custOne = null; custStats = null; },
+    reopen: (v) => { const [k, tab] = String(v).split('|'); custOpen = k; custTab = tab || 'overview'; } },
   '#/nearmiss': { open: () => nmOpenId, close: () => { nmOpenId = null; }, reopen: (v) => { nmOpenId = v; } },
   '#/jobs': { open: () => jobsView, close: () => { jobsView = null; jobsDraft = null; } },
   '#/quotes': { open: () => quotesView, close: () => { quotesView = null; quoteData = null; } },
@@ -16629,6 +16803,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/vehicles') { vehicleView = 'home'; checkForm = null; weekOffsetVehicles = 0; }
   if (currentRoute() !== '#/pow') { powStep = 'home'; powForm = null; powNode = 'root'; powTrail = []; }
   if (currentRoute() !== '#/coshh') coshhSheet = null;
+  if (currentRoute() !== '#/customers') { custOpen = null; custOne = null; custStats = null; custData = null; }
   if (currentRoute() !== '#/log') { logChosen = null; logNode = null; logTrail = []; logResults = null; logSearch = ''; logPscProject = null; logShortcuts = null; logScreen = null; }
   if (accountDialog.open) accountDialog.close();
   notifyOnPage();

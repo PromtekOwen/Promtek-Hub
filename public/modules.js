@@ -69,6 +69,13 @@ export const MODULES = [
     detail: () => 'Risk assessment before you start on site',
   },
   {
+    id: 'customers',
+    name: 'Customers',
+    route: '#/customers',
+    icon: icon('<path d="M4 20.5V7.5l8-4 8 4v13"/><path d="M9 20.5v-5h6v5"/><path d="M8 10.5h.01M12 10.5h.01M16 10.5h.01"/>'),
+    detail: () => 'Every customer: what\'s open, their contract and who to call',
+  },
+  {
     id: 'coshh',
     name: 'COSHH',
     route: '#/coshh',
