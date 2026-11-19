@@ -759,6 +759,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/wip') return json(await Wip.overview(env, user, { region: q('region'), month: q('month') }));
     if (method === 'GET' && pathname === '/api/wip/order') return json(await Wip.order(env, user, q('key')));
     if (method === 'POST' && pathname === '/api/wip/lookup') return json(await Wip.lookup(env, user));
+    if (method === 'GET' && pathname === '/api/wip/book') return json(await Wip.book(env, user, { region: q('region'), month: q('month'), fy: q('fy') }));
     if (method === 'GET' && pathname === '/api/wip/recurring') return json(await Wip.recurring(env, user, { region: q('region') }));
     if (method === 'GET' && pathname === '/api/wip/history') return json(await Wip.history(env, user, { region: q('region') }));
     if (method === 'GET' && pathname === '/api/wip/insights') return json(await Wip.insights(env, user, { region: q('region') }));

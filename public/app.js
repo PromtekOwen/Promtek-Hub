@@ -10278,7 +10278,17 @@ function wipControls({ months = null, extra = '' } = {}) {
   const monthPick = months ? `<label class="wip-month">Month <select data-wip-month>${months.map((m, i) =>
     `<option value="${i === 0 ? '' : m}"${(wipMonth || '') === (i === 0 ? '' : m) ? ' selected' : ''}>${i === 0 ? `${wipMonthName(m)}, so far` : wipMonthName(m)}</option>`).join('')}</select></label>` : '';
   return `<div class="tabs wip-tabs">${WIP_TABS.map(([k, l]) => `<button class="tab${wipTab === k ? ' on' : ''}" data-wip-tab="${k}">${l}</button>`).join('')}</div>
-    <div class="row wip-tools">${regions}${monthPick}${extra}<button class="btn secondary" data-wip-export="1">Download Excel</button></div>`;
+    <div class="row wip-tools">${regions}${monthPick}${extra}${wipDownloads(months)}</div>`;
+}
+
+// Downloading the month shown, or a financial year (May to April) of months.
+let wipFy = null;
+function wipDownloads(months) {
+  const list = months || wipData?.months || [];
+  const years = [...new Set(list.map(wipFyOf))].sort((a, b) => b - a);
+  if (wipFy === null || !years.includes(wipFy)) wipFy = years[0] ?? null;
+  return `<span class="wip-download"><button class="btn secondary" data-wip-export="month">Download ${months ? 'this month' : 'Excel'}</button>
+    ${years.length ? `<span class="wip-fy"><select data-wip-fy aria-label="Financial year">${years.map((y) => `<option value="${y}"${y === wipFy ? ' selected' : ''}>${wipFyLabel(y)}</option>`).join('')}</select><button class="btn secondary" data-wip-export="fy">Download year</button></span>` : ''}</span>`;
 }
 
 function wipSyncLine(d) {
@@ -10693,66 +10703,127 @@ addEventListener('scroll', () => wipTip(null), { passive: true });
 
 // ---------- WIP: Excel ----------
 
-async function wipExport(button) {
+// Laid out like the WIP spreadsheet: a tab for each month, newest first, with its blue headings,
+// banded rows, drop-downs for status and division, each order linked to Jira, and the totals
+// below the orders, as the tile has them.
+const WIP_XL = {
+  blue: '4472C4', band: 'E0F7FA', white: 'FFFFFF', overdue: 'F4C7C3', jira: 'https://promtek.atlassian.net/browse/',
+  statuses: ['On Hold [Customer]', 'On Hold [Promtek]', 'Awaiting Payment', 'Work in progress', 'Reoccuring Monthly', 'Done', 'Phase Complete', 'Documentation Check', 'Snagging', 'New', 'Archive', 'Backlog'],
+  months: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'June', 'July', 'Aug', 'Sept', 'Oct', 'Nov', 'Dec'],
+};
+const wipTabName = (m) => `WIP ${WIP_XL.months[Number(m.slice(5, 7)) - 1]} ${m.slice(2, 4)}`;
+const wipFyLabel = (y) => `${y}-${String(y + 1).slice(2)}`;
+const wipFyOf = (m) => (Number(m.slice(5, 7)) >= 5 ? Number(m.slice(0, 4)) : Number(m.slice(0, 4)) - 1);
+
+function wipMonthSheet(m, colName) {
+  const t = m.totals;
+  const money = { fmt: 'money' }, pct = { fmt: 'pct' }, date = { fmt: 'date' };
+  const M = (v) => (v === null || v === undefined ? null : { v: Math.round(v * 100) / 100, s: money });
+  const P = (v, s = pct) => (v === null || v === undefined ? null : { v: Math.round(v * 10000) / 10000, s });
+  const D = (v) => (v ? { v: String(v).slice(0, 10), s: date } : null);
+  const head = ['OrderID', 'Custom Quote Number', 'Acceptance Date', 'Ordered Date', 'Date Complete', 'Organisation', 'Title', 'Upfront Total', 'Quote Status', 'Division',
+    'WIP Value', 'Percentage Complete', 'This month Percentage Change', 'Non Admin Progress', 'This month Change', 'Promtek SA time',
+    'Invoiced Value (excl VAT)', 'Percentage Invoiced', 'Percentage Paid', 'Amount paid (Excl VAT)', 'Amount Remaining'];
+  const rows = [head];
+  for (const r of m.rows) {
+    rows.push([{ v: r.key, link: `${WIP_XL.jira}${encodeURIComponent(r.key)}` }, r.quoteNo || null, D(r.accepted), D(r.ordered || r.accepted), D(r.doneAt), r.org, r.title,
+      r.tokens !== null ? `${r.tokens} Token${r.tokens === 1 ? '' : 's'}` : M(r.value), r.status, r.division, M(r.wipValue), P(r.progress),
+      P(r.lastProgress === null || r.lastProgress === undefined ? null : (r.progress || 0) - r.lastProgress), P(r.nonAdmin),
+      P(r.nonAdmin === null || r.nonAdmin === undefined || r.lastNonAdmin === null || r.lastNonAdmin === undefined ? null : r.nonAdmin - r.lastNonAdmin),
+      P(r.saShare, { fmt: 'pct0' }), M(r.invoicedValue), P(r.invoiced), P(r.paid), M(r.paidValue), M(r.remaining)]);
+  }
+  const last = rows.length;   // the last order's row
+  // The totals, four rows below the orders, in the columns they're about.
+  const block = [];
+  const put = (r, c, v) => { (block[r] ||= [])[c] = v; };
+  const label = (r, c, text) => put(r, c, { v: text, s: { align: 'right' } });
+  const three = (r, c, labels, key, f) => labels.forEach((l, i) => { label(r + i, c, l); put(r + i, c + 1, f([t.all, t.service, t.projects][i][key])); });
+  const n = (v) => (v === null || v === undefined ? null : v);
+  three(0, 6, ['Order Book Value', 'Service', 'Projects'], 'orderBook', M);
+  three(3, 6, ['New Orders This Month', 'New Orders Service', 'New Orders Projects'], 'newValue', M);
+  [['New Projects', t.all.newCount], ['Completed', t.all.completed], ['Total Projects', t.all.orders], ['Work in progress', t.counts['Work in progress'] || 0],
+    ['Awaiting Payment', t.counts['Awaiting Payment'] || 0], ['Documentation Check', t.counts['Documentation Check'] || 0],
+    ['On Hold', (t.counts['On Hold [Promtek]'] || 0) + (t.counts['On Hold [Customer]'] || 0)]].forEach(([l, v], i) => { label(6 + i, 6, l); put(6 + i, 7, { v: n(v), s: { fmt: 'int', align: 'right' } }); });
+  three(0, 9, ['Total Value', 'Service', 'Projects'], 'wipValue', M);
+  three(3, 9, ['This Month Total', 'This Month Service', 'This Month Projects'], 'thisMonthValue', M);
+  three(6, 9, ['Active Value', 'Active Value Service', 'Active Value Projects'], 'activeValue', M);
+  three(0, 11, ['Total Progress', 'Total Service Progress', 'Total Projects Progress'], 'avgProgress', P);
+  three(3, 11, ['Monthly Total Progress', 'Monthly Service Progress Increase', 'Monthly Projects Progress Increase'], 'avgChange', P);
+  three(6, 11, ['Unrealised Value', 'Unrealised Value Service', 'Unrealised Value Projects'], 'unrealised', M);
+  three(0, 13, ['Total Work Progress', 'Total Work Service Progress', 'Total Work Projects Progress'], 'avgWork', P);
+  three(3, 13, ['Monthly Work Total Progress', 'Monthly Service Work Increase', 'Monthly Projects Work Increase'], 'avgWorkChange', P);
+  three(0, 16, ['Invoiced', 'Service', 'Projects'], 'invoiced', M);
+  three(3, 16, ['Total Paid', 'Service', 'Projects'], 'paid', M);
+  three(6, 16, ['Awaiting Payment', 'Service', 'Projects'], 'awaiting', M);
+  // A line under each group of three in the totals, and under the counts.
+  for (const at of [2, 5, 8, 12]) block[at] = (block[at] || []).map((c) => (c ? { ...c, s: { ...c.s, border: 'bottom' } } : c));
+  const start = last + 4;
+  while (rows.length < start) rows.push([]);
+  rows.push(...block.map((r) => r || []));
+  const widths = [21, 22.22, 12.22, 11.78, 23.89, 27.56, 59.22, 33, 23.56, 31, 18, 36, 22.89, 36, 16.78, 13.89, 19.78, 16.67, 14, 17.44, 17];
+  const statuses = [...new Set([...WIP_XL.statuses, ...m.rows.map((r) => r.status).filter(Boolean)])];
+  return {
+    name: wipTabName(m.month), cols: head.length, widths, freeze: { rows: 1, cols: 1 }, filter: `A1:${colName(head.length - 1)}${last}`,
+    rows,
+    rowStyle: (r) => {
+      if (r === 0) return { fill: WIP_XL.blue, bold: true, color: '000000' };
+      return { fill: r % 2 ? WIP_XL.band : WIP_XL.white };
+    },
+    validations: [{ ref: `I2:I${last}`, list: statuses }, { ref: `J2:J${last}`, list: ['ServiceTeam', 'ProjectsTeam'] }],
+  };
+}
+
+async function wipExport(button, { fy = null } = {}) {
   button.disabled = true;
+  const was = button.textContent;
+  button.textContent = 'Making it…';
   try {
-    const { writeBook } = await import('/xlsx-write.js');
+    const { writeBook, colName } = await import('/xlsx-write.js');
     const region = wipRegion;
-    const d = wipData && wipData.region === region && (wipData.month === (wipMonth || wipData.months?.[0])) ? wipData
-      : await api(`/api/wip?region=${region}${wipMonth ? `&month=${wipMonth}` : ''}`);
-    const [rec, hist] = await Promise.all([api(`/api/wip/recurring?region=${region}`), api(`/api/wip/history?region=${region}`)]);
-    const B = (v) => ({ v, s: 'bold' });
-    const M = (v) => (v === null || v === undefined ? null : { v: Math.round(v * 100) / 100, s: 'money' });
-    const P = (v) => (v === null || v === undefined ? null : { v: Math.round(v * 10000) / 10000, s: 'pct' });
-    const D = (v) => (v ? { v, s: 'date' } : null);
-    const byOrder = new Map();
-    for (const i of d.invoices) { if (!byOrder.has(i.order)) byOrder.set(i.order, []); byOrder.get(i.order).push(i); }
-    const most = Math.max(5, ...[...byOrder.values()].map((l) => l.length));
-    const head = ['Order', 'New this month', 'Custom Quote Number', 'Acceptance Date', 'Date Complete', 'Organisation', 'Title', 'Upfront Total', 'Quote Status',
-      'Division', 'WIP Value', 'Last Month Value', 'Percentage Complete', 'Last Month Percent', 'This Month Change', 'Non Admin Progress',
-      'Non Admin Last Month', 'Non Admin Change', 'Invoiced Value', 'Percentage Invoiced', 'Percentage Paid', 'Amount Paid', 'Amount Remaining'];
-    for (let i = 1; i <= most; i++) head.push(`Percentage${i}`, `Milestone${i}`, `Date${i}`, `Invoiced/Paid${i}`);
-    const rows = [head.map(B)];
-    for (const r of d.rows) {
-      const line = [r.key, r.isNew, r.quoteNo, D(r.accepted), D(r.doneAt), r.org, r.title, r.tokens !== null ? `${r.tokens} Token${r.tokens === 1 ? '' : 's'}` : M(r.value),
-        r.status, r.division, M(r.wipValue), M(r.lastValue), P(r.progress), P(r.lastProgress),
-        P(r.lastProgress === null ? null : r.progress - r.lastProgress), P(r.nonAdmin), P(r.lastNonAdmin),
-        P(r.nonAdmin === null || r.lastNonAdmin === null ? null : r.nonAdmin - r.lastNonAdmin), M(r.invoicedValue), P(r.invoiced), P(r.paid), M(r.paidValue), M(r.remaining)];
-      for (const i of byOrder.get(r.key) || []) line.push(i.token ? i.share : P(i.share), i.terms, D(i.date), i.state);
-      rows.push(line);
+    const book = await api(`/api/wip/book?${new URLSearchParams({ region, ...(fy !== null ? { fy } : wipMonth ? { month: wipMonth } : {}) })}`);
+    const newest = book.months[0];
+    const [rec, hist] = await Promise.all([newest.live ? api(`/api/wip/recurring?region=${region}`) : null, api(`/api/wip/history?region=${region}`)]);
+    const money = { fmt: 'money' }, pct = { fmt: 'pct0' }, date = { fmt: 'date' };
+    const M = (v) => (v === null || v === undefined ? null : { v: Math.round(v * 100) / 100, s: money });
+    const P = (v, s = pct) => (v === null || v === undefined ? null : { v: Math.round(v * 10000) / 10000, s });
+    const D = (v) => (v ? { v: String(v).slice(0, 10), s: date } : null);
+    const banded = (r) => (r === 0 ? { fill: WIP_XL.blue, bold: true, color: '000000' } : { fill: r % 2 ? WIP_XL.band : WIP_XL.white });
+    const sheets = book.months.map((m) => wipMonthSheet(m, colName));
+    sheets[0].selected = true;
+    if (newest.live && newest.invoices.length) {
+      const inv = newest.invoices;
+      sheets.push({ name: 'Active Order Invoices', cols: 9, freeze: { rows: 1, cols: 1 }, widths: [15.33, 27.56, 52, 15, 9, 15, 12, 16, 22], rowStyle: banded,
+        filter: `A1:I${inv.length + 1}`,
+        rows: [['OrderID', 'Organisation', 'Milestone', 'Invoice item', 'Share', 'Value', 'Date', 'Invoiced/Paid', 'Jira status'],
+          ...inv.map((i) => [{ v: i.order, link: `${WIP_XL.jira}${encodeURIComponent(i.order)}` }, i.org, i.terms, { v: i.key, link: `${WIP_XL.jira}${encodeURIComponent(i.key)}` },
+            i.token ? i.share : P(i.share), M(i.value), D(i.date), i.state, i.status])],
+        validations: [{ ref: `H2:H${inv.length + 1}`, list: [...new Set(['Not Invoiced', 'Invoiced', 'Paid', 'Overdue', ...inv.map((i) => i.state).filter(Boolean)])] }],
+        highlight: [{ ref: `H2:H${inv.length + 1}`, equals: 'Overdue', fill: WIP_XL.overdue }, { ref: `H2:H${inv.length + 1}`, equals: 'Invoice Overdue', fill: WIP_XL.overdue }] });
     }
-    const t = d.totals;
-    rows.push([], [B('Totals'), null, null, null, null, null, B('Projects'), B('Service'), B('Total')]);
-    const totalLines = [['Order book', 'orderBook', M], ['WIP value', 'wipValue', M], ['Work done this month', 'thisMonthValue', M], ['Average progress', 'avgProgress', P],
-      ['Average progress this month', 'avgChange', P], ['Invoiced', 'invoiced', M], ['Paid', 'paid', M], ['Invoiced, not yet paid', 'awaiting', M],
-      ['New orders', 'newCount', (v) => v], ['New orders value', 'newValue', M], ['Completed', 'completed', (v) => v], ['Active value', 'activeValue', M], ['Unrealised value', 'unrealised', M]];
-    for (const [label, k, f] of totalLines) rows.push([B(label), null, null, null, null, null, f(t.projects[k]), f(t.service[k]), f(t.all[k])]);
-    rows.push([], [B('Orders by status')]);
-    for (const [s, c] of Object.entries(t.counts)) rows.push([s, c]);
-    const tabName = `WIP ${new Date(`${d.month}-15T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' })}`;
-    const sheets = [{ name: tabName, freeze: true, widths: [14, 9, 16, 12, 12, 26, 44, 14, 20, 13, 13, 13, 11, 11, 11, 11, 11, 11, 14, 11, 11, 14, 14], rows }];
-    if (d.live) {
-      sheets.push({ name: 'Invoices', freeze: true, widths: [14, 26, 40, 14, 9, 14, 12, 14, 14], rows: [
-        ['Order', 'Organisation', 'Milestone', 'Invoice item', 'Share', 'Value', 'Date', 'Invoiced/Paid', 'Jira status'].map(B),
-        ...d.invoices.map((i) => [i.order, i.org, i.terms, i.key, i.token ? i.share : P(i.share), M(i.value), D(i.date), i.state, i.status])] });
+    if (rec) {
+      const n = rec.rows.length + 1;
+      sheets.push({ name: 'Monthly Recurring', cols: 12, freeze: { rows: 1, cols: 1 }, widths: [15.33, 12.22, 11.78, 27.56, 59.22, 15, 23.56, 14.22, 16.56, 14.22, 15, 14.22], rowStyle: banded,
+        filter: `A1:L${n}`,
+        rows: [['OrderID', 'Start Date', 'Exp End', 'Organisation', 'Title', 'Recurring Total', 'Contract Status', 'Division', 'Percentage Invoiced', 'Value Invoiced', 'Percentage Paid', 'Value Paid'],
+          ...rec.rows.map((r) => [{ v: r.key, link: `${WIP_XL.jira}${encodeURIComponent(r.key)}` }, D(r.start), D(r.end), r.org, r.title, M(r.total), r.state, r.division, P(r.invoiced), M(r.invoicedValue), P(r.paid), M(r.paidValue)]),
+          [], [], [{ v: 'Recurring value', s: { bold: true } }, null, null, null, null, M(rec.totals.value)], ['Service', null, null, null, null, M(rec.totals.service.value)],
+          ['Condor', null, null, null, null, M(rec.totals.condor.value)]],
+        validations: [{ ref: `G2:G${n}`, list: [...new Set(rec.rows.map((r) => r.state).filter(Boolean))] }, { ref: `H2:H${n}`, list: [...new Set(rec.rows.map((r) => r.division).filter(Boolean))] }] });
     }
-    sheets.push({ name: 'Monthly Recurring', freeze: true, widths: [14, 12, 12, 26, 40, 14, 24, 10, 11, 14, 11, 14], rows: [
-      ['Contract', 'Start Date', 'Exp End', 'Organisation', 'Title', 'Recurring Total', 'Contract Status', 'Division', 'Percentage Invoiced', 'Value Invoiced', 'Percentage Paid', 'Value Paid'].map(B),
-      ...rec.rows.map((r) => [r.key, D(r.start), D(r.end), r.org, r.title, M(r.total), r.state, r.division, P(r.invoiced), M(r.invoicedValue), P(r.paid), M(r.paidValue)]),
-      [], [B('Recurring value'), null, null, null, null, M(rec.totals.value)], [B('Service'), null, null, null, null, M(rec.totals.service.value)],
-      [B('Condor'), null, null, null, null, M(rec.totals.condor.value)]] });
     const hk = [['Month', null], ['New Projects', 'newProjects'], ['New Service', 'newService'], ['Complete Projects', 'completeProjects'], ['Complete Service', 'completeService'],
       ['Projects Jira Progress', 'projectsProgress', P], ['Service Jira Progress', 'serviceProgress', P], ['Projects Work Progress', 'projectsWork', P], ['Service Work Progress', 'serviceWork', P],
       ['Monthly Project Value', 'projectsValue', M], ['Monthly Service Value', 'serviceValue', M], ['Monthly Project Work Value', 'projectsWorkValue', M], ['Monthly Service Work Value', 'serviceWorkValue', M],
-      ['Unrealised Projects Value', 'unrealisedProjects', M], ['Unrealised Service Value', 'unrealisedService', M], ['Month Start Invoiced', 'startInvoiced', M], ['Month Start Paid', 'startPaid', M],
+      ['Unrealised Projecting Value', 'unrealisedProjects', M], ['Unrealised Service Value', 'unrealisedService', M], ['Month Start Invoiced', 'startInvoiced', M], ['Month Start Paid', 'startPaid', M],
       ['Month End Invoiced', 'endInvoiced', M], ['Month End Paid', 'endPaid', M], ['Month Start Awaiting Payment', 'startAwaiting', M], ['Month End Awaiting Payment', 'endAwaiting', M]];
-    sheets.push({ name: 'Overall Data', freeze: true, widths: [16, ...hk.slice(1).map(() => 14)], rows: [
-      hk.map(([l]) => B(l)),
-      ...hist.rows.map((r) => hk.map(([, k, f], i) => (i === 0 ? wipMonthName(r.month) : (f || ((v) => v))(r[k] ?? null))))] });
-    const blob = writeBook(sheets);
-    await saveFile(blob, `Promtek ${region === 'sa' ? 'SA' : 'UK'} WIP ${d.month}.xlsx`);
+    const upTo = newest.month;
+    sheets.push({ name: 'Overall Data', freeze: { rows: 1, cols: 1 }, widths: [26.89, 14.22, 14, 14.22, 14.33, 24.89, 16.67, 16.89, 17.78, 18.44, 18, 23.89, 23.67, 19.89, 19.89, 19.89, 13.67, 18.22, 14.89, 25.44, 23],
+      rows: [hk.map(([l]) => ({ v: l, s: { bold: true } })),
+        ...hist.rows.filter((r) => r.month <= upTo).map((r) => hk.map(([, k, f], i) => (i === 0 ? `${WIP_XL.months[Number(r.month.slice(5, 7)) - 1]} '${r.month.slice(2, 4)}` : (f || ((v) => v))(r[k] ?? null))))] });
+    const where = region === 'sa' ? 'SA' : 'UK';
+    await saveFile(writeBook(sheets), fy !== null ? `Promtek ${where} Orders ${wipFyLabel(Number(fy))}.xlsx` : `Promtek ${where} WIP ${newest.month}.xlsx`);
   } catch (err) { toast(err.message); }
   button.disabled = false;
+  button.textContent = was;
 }
 
 async function wipClick(event) {
@@ -10772,7 +10843,7 @@ async function wipClick(event) {
     wipQuery = ''; wipTab = 'orders';
     return render();
   }
-  if (t('[data-wip-export]')) return wipExport(t('[data-wip-export]'));
+  if (t('[data-wip-export]')) { const b = t('[data-wip-export]'); return wipExport(b, b.dataset.wipExport === 'fy' ? { fy: wipFy } : {}); }
   if (t('[data-wip-back]')) { wipOpen = null; return render(); }
   const save = t('[data-wip-save]');
   if (save) {
@@ -10794,6 +10865,7 @@ async function wipClick(event) {
 
 function wipChange2(event) {
   if (event.target.matches('[data-wip-month]')) { wipMonth = event.target.value || null; render(); return true; }
+  if (event.target.matches('[data-wip-fy]')) { wipFy = Number(event.target.value); return true; }
   if (event.target.matches('[data-wip-division]')) { wipDivision = event.target.value; render(); return true; }
   return false;
 }

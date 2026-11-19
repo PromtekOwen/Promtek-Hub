@@ -1270,7 +1270,9 @@ select.dd-open { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://
 .wip-seg { display: flex; flex-wrap: wrap; max-width: 100%; }
 .wip-seg .seg { flex: 1 1 auto; }
 .wip-tools { margin-bottom: .5rem; align-items: center; }
-.wip-tools .btn { margin-left: auto; }
+.wip-tools .btn { margin-left: 0; }
+.wip-download { margin-left: auto; display: inline-flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+.wip-fy { display: inline-flex; gap: .35rem; align-items: center; }
 .wip-month { display: flex; align-items: center; gap: .5rem; }
 .wip-sync { padding: .25rem 0 .5rem; }
 .wip-sync .bad { display: block; font-weight: 600; }
@@ -1317,6 +1319,9 @@ details.wip-group[open] summary, details.wip-edit[open] summary { margin-bottom:
 @media (max-width: 520px) {
   .wip-tabs .tab { padding: .45rem .25rem; font-size: .9rem; }
   .wip-tools .btn { margin-left: 0; width: 100%; }
+  .wip-download { margin-left: 0; width: 100%; }
+  .wip-download > .btn, .wip-fy { flex: 1 1 100%; }
+  .wip-fy select { flex: 1; } .wip-fy .btn { width: auto; flex: 1; }
   .wip-bar-label { font-size: .6rem; }
 }
 .wip-chip { display: inline-block; padding: .1rem .55rem; border-radius: 99px; font-size: .82rem; font-weight: 600; white-space: nowrap; line-height: 1.5; }

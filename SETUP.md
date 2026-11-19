@@ -516,6 +516,13 @@ Each change is in the audit log. Jira's workflow needs the New → Ready to be I
 - An order is only moved when something it depends on changes, so one moved back by hand stays put. Orders the hub last looked at under the old rule start from where they are now, and are moved only once something under them changes.
 - The WIP's "Status changes in Jira" lists each move, including categories completed and fields marked.
 
+**The WIP as Excel.** On the WIP tile, **Download this month** saves the month chosen, and **Download year** saves a financial year (May to April) chosen beside it, this year or any earlier one the hub has months for: a tab for each month so far, newest first, named like the WIP spreadsheet (WIP Nov 26).
+- **Each month's tab** is laid out like the WIP spreadsheet, without the columns that were only there for its formulas or the Kanban automation: OrderID (linked to Jira), Custom Quote Number, Acceptance Date, Ordered Date, Date Complete, Organisation, Title, Upfront Total, Quote Status, Division, WIP Value, Percentage Complete, This month Percentage Change, Non Admin Progress, This month Change, Promtek SA time, Invoiced Value (excl VAT), Percentage Invoiced, Percentage Paid, Amount paid (Excl VAT) and Amount Remaining.
+- **Its look:** blue headings, rows banded light blue and white, £ and % formats, the first row and column frozen, a filter on the headings, and drop-downs for Quote Status and Division.
+- **Promtek SA time:** the share of the time logged on the order (and everything under it) up to the month's end by the people marked as Promtek SA staff in the WIP settings; blank where they logged none.
+- **The totals** sit below the orders in the columns they're about, as figures from the tile rather than formulas: order book, new orders and counts by status under Title and Upfront Total; WIP value, this month's and active value under Division and WIP Value; progress, this month's progress and unrealised value; work progress; invoiced, paid and awaiting payment.
+- **After the months:** Active Order Invoices (with Overdue highlighted) and Monthly Recurring, when the year includes this month, and Overall Data up to the last month in the file.
+
 ## Part 14d: Page walkthroughs
 
 The first time someone opens a tile, the hub offers a walkthrough of it. Starting it reloads the page in practice mode: a blue bar across the top says so, and the page is filled with example customers, jobs, PSCs and contracts. Each step highlights one part of the page. Steps that explain something have Next; steps marked **Your turn** ask the person to do the next thing themselves (tap this job, type this, choose that) and move on once they have. **Do it for me** does any step for them.

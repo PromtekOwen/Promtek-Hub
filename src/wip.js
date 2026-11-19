@@ -776,7 +776,7 @@ function rowFor(o, over, seed, last, month) {
   return {
     id: o.issue_id, key: o.issue_key, project: o.project_key, org: o.org, title: o.summary, status: o.status, statusCat: o.status_cat,
     division, value, tokens: isToken ? (o.token_qty || num(String(seed?.upfront_text || '').match(/[\d.]+/)?.[0]) || null) : null,
-    quoteNo: o.quote_no || seed?.quote_no || null, accepted, doneAt: o.done_at, isNew,
+    quoteNo: o.quote_no || seed?.quote_no || null, accepted, ordered: o.created || accepted, doneAt: o.done_at, isNew,
     progress: o.progress ?? 0, lastProgress, nonAdmin: o.non_admin, lastNonAdmin,
     wipValue: value === null ? null : v * (o.progress || 0), lastValue: value === null || lastProgress === null ? null : v * lastProgress,
     invoiced: isToken ? null : o.invoiced ?? 0, paid: isToken ? null : o.paid ?? 0,
@@ -818,7 +818,7 @@ async function snapshotRows(env, region, month) {
     const value = s.token ? null : s.upfront;
     return {
       id: null, key: s.issue_key, project: s.issue_key.split('-')[0], org: s.org, title: s.title, status: s.status, statusCat: lower(s.status) === 'done' ? 'done' : null,
-      division: s.division, value, tokens: s.token ? 1 : null, quoteNo: s.quote_no, accepted: s.accepted, doneAt: s.done_at, isNew,
+      division: s.division, value, tokens: s.token ? 1 : null, quoteNo: s.quote_no, accepted: s.accepted, ordered: s.accepted, doneAt: s.done_at, isNew,
       progress: s.progress ?? 0, lastProgress, nonAdmin: s.non_admin, lastNonAdmin: l ? l.non_admin : isNew ? 0 : null,
       wipValue: value === null ? null : v * (s.progress || 0), lastValue: value === null || lastProgress === null ? null : v * lastProgress,
       invoiced: s.token ? null : s.invoiced, paid: s.token ? null : s.paid,
@@ -847,6 +847,7 @@ export function metrics(rows, month) {
     return {
       orders: list.length, orderBook, wipValue, lastValue, thisMonthValue: wipValue - lastValue,
       avgProgress: avg(list.map((r) => r.progress || 0)), avgChange: avg(known.map((r) => (r.progress || 0) - r.lastProgress)),
+      avgWork: avg(list.filter((r) => r.nonAdmin !== null && r.nonAdmin !== undefined).map((r) => r.nonAdmin)),
       avgWorkChange: avg(knownWork.map((r) => r.nonAdmin - r.lastNonAdmin)),
       workValue: sum((r) => (r.nonAdmin !== null && r.nonAdmin !== undefined && r.lastNonAdmin !== null && r.lastNonAdmin !== undefined ? r.value * (r.nonAdmin - r.lastNonAdmin) : 0)),
       invoiced, paid, awaiting: invoiced - paid, remaining: orderBook - paid,
@@ -939,6 +940,74 @@ export async function overview(env, viewer, { region, month } = {}) {
     totals: metrics(rows, month), invoices, moves,
     canEdit: canChange(viewer), isAdmin: Boolean(viewer.isAdmin),
   };
+}
+
+// ---------- the workbook ----------
+
+// The financial year runs May to April: its months so far, newest first.
+export const fyOf = (month) => (Number(month.slice(5, 7)) >= 5 ? Number(month.slice(0, 4)) : Number(month.slice(0, 4)) - 1);
+export function fyMonths(fy, now = thisMonth()) {
+  const out = [];
+  for (let m = `${fy}-05`; m <= `${fy + 1}-04` && m <= now; m = shiftMonth(m, 1)) out.push(m);
+  return out.reverse();
+}
+
+// The share of the time logged on each order (and everything under it), up to the month's end, logged by Promtek SA staff.
+async function saShares(env, rows, month) {
+  let staff = [];
+  try { staff = JSON.parse((await getState(env, 'wip_sa_staff')) || '[]'); } catch { /* none */ }
+  const out = new Map();
+  if (!staff.length || !rows.length) return out;
+  const keyOf = new Map();
+  const keys = rows.map((r) => r.key);
+  for (let i = 0; i < keys.length; i += 80) {
+    const part = keys.slice(i, i + 80);
+    const { results } = await env.DB.prepare(`SELECT issue_id, issue_key FROM wip_orders WHERE issue_key IN (${marks(part.length)})`).bind(...part).all();
+    for (const o of results) keyOf.set(o.issue_id, o.issue_key);
+  }
+  const orderIds = [...keyOf.keys()];
+  for (let i = 0; i < orderIds.length; i += 80) {
+    const part = orderIds.slice(i, i + 80);
+    const { results } = await env.DB.prepare(`SELECT issue_id, order_id FROM wip_items WHERE order_id IN (${marks(part.length)})`).bind(...part).all();
+    for (const it of results) keyOf.set(it.issue_id, keyOf.get(it.order_id));
+  }
+  const ids = [...keyOf.keys()];
+  const sums = new Map();
+  for (let i = 0; i < ids.length; i += 80) {
+    const part = ids.slice(i, i + 80);
+    const { results } = await env.DB.prepare(`SELECT issue_id, SUM(seconds) AS total, SUM(CASE WHEN account_id IN (SELECT value FROM json_each(?)) THEN seconds ELSE 0 END) AS sa
+      FROM xp_ledger WHERE issue_id IN (${marks(part.length)}) AND work_date <= ? GROUP BY issue_id`).bind(JSON.stringify(staff), ...part, `${month}-31`).all();
+    for (const r of results) {
+      const k = keyOf.get(r.issue_id);
+      const t = sums.get(k) || { total: 0, sa: 0 };
+      t.total += Number(r.total || 0); t.sa += Number(r.sa || 0);
+      sums.set(k, t);
+    }
+  }
+  for (const [k, t] of sums) if (t.sa > 0 && t.total > 0) out.set(k, t.sa / t.total);
+  return out;
+}
+
+// What the Excel download needs: one month, or a financial year's months, each as the tile shows it.
+export async function book(env, viewer, { region, month, fy } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  const now = thisMonth();
+  const available = new Set(await monthsAvailable(env, region));
+  let months;
+  if (fy) {
+    const y = Number(fy);
+    if (!Number.isInteger(y) || y < 2000 || y > fyOf(now)) throw refuse('Choose a financial year.', 400);
+    months = fyMonths(y, now).filter((m) => available.has(m));
+    if (!months.length) throw refuse(`The hub has no WIP months for ${y}-${String(y + 1).slice(2)}.`, 404);
+  } else months = [isMonth(month) && month <= now ? month : now];
+  const out = [];
+  for (const m of months) {
+    const o = await overview(env, viewer, { region, month: m });
+    const sa = await saShares(env, o.rows, m);
+    out.push({ month: m, live: o.live, rows: o.rows.map((r) => ({ ...r, saShare: sa.get(r.key) ?? null })), totals: o.totals, invoices: o.invoices });
+  }
+  return { region, fy: fy ? Number(fy) : null, months: out };
 }
 
 export async function order(env, viewer, key) {
