@@ -64,7 +64,7 @@ button { font: inherit; }
 /* ---------- Top: app bar + gradient band ---------- */
 .top { background: var(--brand-gradient); color: #fff; padding-bottom: 3.25rem; }
 .appbar {
-  position: sticky; top: 0; z-index: 20;
+  position: sticky; top: var(--viewas-h, 0px); z-index: 20;
   display: flex; align-items: center; gap: .5rem;
   padding: calc(.55rem + env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) .55rem max(1rem, env(safe-area-inset-left));
   background: var(--brand-a);

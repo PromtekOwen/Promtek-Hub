@@ -16199,6 +16199,10 @@ function viewAsBar() {
     catch (err) { toast(err.message); event.target.disabled = false; }
   });
   document.body.prepend(bar);
+  // The app bar sticks below it rather than behind it.
+  const fit = () => document.documentElement.style.setProperty('--viewas-h', `${bar.offsetHeight}px`);
+  fit();
+  addEventListener('resize', fit);
 }
 
 window.addEventListener('beforeinstallprompt', (event) => {
@@ -16980,7 +16984,7 @@ async function render() {
   back.hidden = route === '#/';
   // Promtek Africa's people have the hub in green.
   document.documentElement.classList.toggle('theme-sa', myCountry() === 'sa');
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', myCountry() === 'sa' ? '#2A4D1B' : '#0E6293');
+  window.hubTheme?.refresh?.();
   avatar.textContent = initials();
   if (notifyOpen && notifyOpen !== route) { notifyOpen = null; notifyData = null; notifyDraft = null; }
   band.innerHTML = settingsOpen === route
