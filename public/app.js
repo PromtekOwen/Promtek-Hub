@@ -672,11 +672,13 @@ const pages = {
   },
 
   '#/quotes': {
-    band: () => `<h1>Quotes</h1><p>${quotesView?.kind === 'answer' ? 'Your view on how long it will take and how hard it is.' : 'What the job involves, how long it should take and how hard it is.'}</p>`,
+    band: () => (quotesView?.kind === 'prospect' ? `<h1>${esc(prosTitle || 'New prospect')}</h1><p>A potential customer: who they are, what they'd like from us, and who to talk to.</p>`
+      : `<h1>Quotes</h1><p>${quotesView?.kind === 'answer' ? 'Your view on how long it will take and how hard it is.' : 'What the job involves, how long it should take and how hard it is.'}</p>`),
     async render() {
       if (quotesView?.kind === 'new') return quoteNewHtml();
       if (quotesView?.kind === 'quote') return quoteHtml();
       if (quotesView?.kind === 'answer') return quoteAnswerHtml();
+      if (quotesView?.kind === 'prospect') return prospectHtml();
       return quotesHomeHtml();
     },
   },
@@ -4412,7 +4414,7 @@ let custQuery = '';
 let custShow = 'all';           // all, uk, sa, psc
 let custSort = 'name';          // name or updated
 let custEdit = null;            // { kind: 'site' | 'contact', id } being added or changed
-const custSecs = new Set(['sites', 'contacts', 'kpis']);   // the sections open
+const custSecs = new Set(['sites', 'contacts', 'kpis', 'about']);   // the sections open
 const CUST_SHIELD = (on) => `<svg class="cust-shield${on ? ' on' : ''}" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7.5 3v5.2c0 4.5-3.1 8.4-7.5 9.8-4.4-1.4-7.5-5.3-7.5-9.8V6z"/>${on ? '<path d="M8.5 12.2l2.4 2.4 4.6-4.8"/>' : '<path d="M9 9l6 6M15 9l-6 6"/>'}</svg>`;
 const custWhen = (iso) => (iso ? `${timeOf(iso)}` : 'Not known yet');
 const custContactHtml = (c, { compact = false } = {}) => {
@@ -4520,7 +4522,14 @@ function customerOverviewHtml(d) {
     : custComms.error ? `<p class="bad" style="margin:0">${esc(custComms.error)}</p>`
       : custComms.comments.length ? `<ul class="cust-comments">${custComms.comments.map((c) => `<li><div class="cust-item-head"><span><strong>${esc(c.from || 'Email')}</strong> on ${custJira(c.key)} <span class="muted">${esc(c.summary)}</span></span><small class="muted">${esc(timeOf(c.at))}</small></div><p>${esc(c.text)}</p></li>`).join('')}</ul>`
         : '<p class="muted" style="margin:0">No emails on their items in the last four months.</p>';
-  return `${custSitesHtml(d)}${custContactsHtml(d)}
+  const a = d.about;
+  const fact = (label, v) => (v ? `<div><dt>${label}</dt><dd>${esc(v)}</dd></div>` : '');
+  const about = a ? custSec('about', 'About them', `<div class="cust-about"><dl>
+      ${fact('What they do', a.business)}${fact('Sector', a.sector)}${a.website ? `<div><dt>Website</dt><dd><a href="${esc(a.website)}" target="_blank" rel="noopener">${esc(a.website.replace(/^https?:\/\//, ''))}</a></dd></div>` : ''}
+      ${fact('Size', a.size)}${fact('Sites', a.sites)}${fact('What they wanted from us', a.interest)}${fact('Areas', (a.areas || []).map(qDisc).join(', '))}
+      ${fact('How they found us', [a.source, a.sourceDetail].filter(Boolean).join(': '))}${fact('Notes', a.notes)}</dl></div>`,
+    { sub: `What the sales team knew about them as a prospect${a.by ? `, added by ${esc(a.by)}` : ''}${a.since ? ` on ${esc(fullDate(a.since.slice(0, 10)))}` : ''}.` }) : '';
+  return `${about}${custSitesHtml(d)}${custContactsHtml(d)}
     ${custSec('contracts', 'Service contracts', listOf(d.contracts.map((c) => item(c, `<div class="muted cust-item-sub">${[c.tier, c.start ? `from ${fullDate(c.start)}` : '', c.end ? `to ${fullDate(c.end)}` : '', c.renewal ? `renewal ${fullDate(c.renewal)}` : ''].filter(Boolean).map(esc).join(', ')}</div>`)), 'No service contract.'), { count: d.contracts.length })}
     ${custSec('jobs', 'Active jobs', listOf(d.jobs.map((j) => item(j, `<div class="cust-progress"><span class="bar"><span style="width:${Math.min(100, Math.round((j.progress || 0) * 100))}%"></span></span><small class="muted">${Math.round((j.progress || 0) * 100)}% complete${j.updated ? `, updated ${esc(agoText(j.updated))}` : ''}</small></div>`)), 'No active jobs.'), { count: d.jobs.length })}
     ${custSec('quotes', 'Open quotes', listOf(d.quotes.map((x) => simple(x, [x.assignee, x.updated ? `updated ${agoText(x.updated)}` : ''].filter(Boolean).map(esc).join(', '))), 'No open quotes.'), { count: d.quotes.length })}
@@ -6946,7 +6955,7 @@ async function quoteNewHtml() {
       <label>Customer
         <input type="search" id="q-customer-search" placeholder="Search customers" value="${esc(quoteNew.prospectMode ? 'New Potential Customer' : picked ? picked.name : '')}"></label>
       <ul class="list plain q-customers" ${picked || quoteNew.prospectMode ? 'hidden' : ''}>
-        <li class="q-prospect-row"><button class="linklike" data-q-prospect="1"><strong>New Potential Customer</strong></button> <span class="muted">No project in Jira yet</span></li>
+        <li class="q-prospect-row"><button class="linklike" data-pros-new="1"><strong>New customer?</strong></button> <span class="muted">Add them under Prospects first. Their quote is started from there.</span></li>
         ${quoteCustomers.map((c) =>
         `<li data-q-customer-row><button class="linklike" data-q-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
       <div id="q-prospect" ${quoteNew.prospectMode ? '' : 'hidden'}>
@@ -6990,9 +6999,10 @@ async function quoteAnswerHtml() {
 
 async function quotesHomeHtml() {
   const data = await api(`/api/quotes?scope=${quotesScope}`);
-  const tabs = data.canCreate ? `<div class="tabs q-tabs">${[['builder', 'Quote builder'], ['open', 'Open quotes']].map(([k, l]) =>
+  const tabs = data.canCreate ? `<div class="tabs q-tabs">${[['builder', 'Quote builder'], ['prospects', 'Prospects'], ['open', 'Open quotes']].map(([k, l]) =>
     `<button class="tab${quotesTab === k ? ' on' : ''}" data-q-tab="${k}">${l}</button>`).join('')}</div>` : '';
   if (data.canCreate && quotesTab === 'open') return `${tabs}${await quotesOpenHtml()}`;
+  if (data.canCreate && quotesTab === 'prospects') return `${tabs}${await prospectsHtml()}`;
   const asks = data.requests.length ? `<h2>Waiting for your estimate</h2><ul class="list approvals">${data.requests.map((r) => `<li>
       <span class="title">${esc(r.title)}, ${qDisc(r.discipline)}</span>
       <span class="sub">${esc(r.customer || '')}. Asked by ${esc(r.requested_name || 'someone')}.</span>
@@ -7011,6 +7021,194 @@ async function quotesHomeHtml() {
       <input type="search" id="q-search" placeholder="Search quotes" aria-label="Search quotes"></div>
       ${quotesTeam === 'Projecting' ? '<p class="help" style="margin-top:0">Projecting includes Condor quotes.</p>' : ''}` : ''}
     ${rows ? `<ul class="list q-list">${rows}</ul>` : `<div class="card"><p style="margin:0">${data.canCreate ? (quotesTeam ? `No ${esc(quotesTeam)} quotes here.` : 'No quotes here yet.') : 'When someone asks for your estimate on a quote, it appears here.'}</p></div>`}`;
+}
+
+// ---------- prospects ----------
+// New potential customers, before there's a quote: who they are, what they'd like, who to talk
+// to and where. A quote is started from here when they're ready for one.
+let prosShow = 'open';
+let prosQuery = '';
+let prosData = null;       // the one open, as last loaded
+let prosDraft = null;      // its fields, as typed
+let prosQuote = null;      // { title, disciplines, team } for starting the quote
+let prosTitle = '';        // the name in the band
+const PROS_STATUS_CLASS = { new: 'info', talking: 'plain', quoted: 'good', won: 'good', lost: 'plain' };
+
+async function prospectsHtml() {
+  const d = await api(`/api/quotes/prospects?show=${prosShow}`);
+  const q = prosQuery.trim().toLowerCase();
+  const list = d.prospects.filter((p) => !q || [p.name, p.business, p.sector, p.contact_name, p.contact_email, p.interest, p.owner_name].join(' ').toLowerCase().includes(q));
+  const today = new Date().toISOString().slice(0, 10);
+  const card = (p) => `<article class="card pros-card" data-pros-open="${p.id}" role="button" tabindex="0" aria-label="${esc(p.name)}">
+      <div class="pros-card-top"><strong>${esc(p.name)}</strong><span class="psc-chip ${PROS_STATUS_CLASS[p.status] || 'plain'}">${esc(p.statusName)}</span></div>
+      <p class="muted pros-sub">${[p.sector, d.bothCountries ? (p.region === 'sa' ? 'South Africa' : 'UK') : '', p.source ? `From ${p.source === 'PSC' && p.psc_key ? p.psc_key : p.source}` : ''].filter(Boolean).map(esc).join(' · ')}</p>
+      ${p.interest ? `<p class="pros-interest">${esc(p.interest.length > 180 ? `${p.interest.slice(0, 180)}…` : p.interest)}</p>` : ''}
+      <p class="pros-meta">${p.contact_name || p.contact_email || p.contact_phone ? `<span>${esc([p.contact_name, p.contact_email || p.contact_phone].filter(Boolean).join(', '))}</span>` : '<span class="muted">No contact yet</span>'}
+        ${p.next_step || p.next_date ? `<span class="${p.next_date && p.next_date < today && !['won', 'lost'].includes(p.status) ? 'bad' : ''}">Next: ${esc(p.next_step || 'follow up')}${p.next_date ? `, ${esc(fullDate(p.next_date))}` : ''}</span>` : ''}
+        ${p.quote_id ? `<span>Quote: ${esc(p.quote_title || '')}${p.quote_key ? ` (${esc(p.quote_key)})` : ''}</span>` : ''}
+        ${p.project_key ? `<span>Customer ${esc(p.project_key)}</span>` : ''}</p>
+      <p class="muted pros-sub">${esc(p.owner_name || p.created_name || '')}${p.updated_at ? `${p.owner_name || p.created_name ? ', ' : ''}updated ${esc(agoText(p.updated_at))}` : ''}</p>
+    </article>`;
+  const shows = [['open', 'Open'], ['closed', 'Customers and closed'], ['all', 'All']];
+  return `<div class="row" style="margin:1rem 0"><button class="btn" data-pros-new="1">Add a prospect</button></div>
+    <div class="row jobs-tools q-tools"><span class="segment">${shows.map(([k, l]) => `<button class="seg${prosShow === k ? ' on' : ''}" data-pros-show="${k}">${l}</button>`).join('')}</span>
+      <input type="search" id="pros-search" placeholder="Search prospects" aria-label="Search prospects" value="${esc(prosQuery)}"></div>
+    ${list.length ? `<div class="pros-list">${list.map(card).join('')}</div>`
+      : `<div class="card"><p style="margin:0">${q ? 'No prospects match that.' : prosShow === 'open' ? 'No open prospects. New customers from PSC land here, or add one yourself.' : 'None yet.'}</p></div>`}`;
+}
+
+const PROS_TEXT = (k, label, { long = false, rows = 3, placeholder = '', type = 'text', hint = '' } = {}) => {
+  const v = prosDraft?.[k] ?? '';
+  return `<label>${label}${hint ? ` <span class="muted">${hint}</span>` : ''}${long
+    ? `<textarea rows="${rows}" data-pros-f="${k}" placeholder="${esc(placeholder)}">${esc(v)}</textarea>`
+    : `<input type="${type}" data-pros-f="${k}" value="${esc(v)}" placeholder="${esc(placeholder)}">`}</label>`;
+};
+const PROS_SELECT = (k, label, options, none = 'Not known') => `<label>${label}<select data-pros-f="${k}"><option value="">${none}</option>${options.map((o) =>
+  `<option value="${esc(o)}"${prosDraft?.[k] === o ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select></label>`;
+
+function prospectCapture() {
+  if (!prosDraft) return;
+  view.querySelectorAll('[data-pros-f]').forEach((el) => { prosDraft[el.dataset.prosF] = el.value; });
+  const t = view.querySelector('[data-pros-quote-title]');
+  if (t && prosQuote) prosQuote.title = t.value;
+}
+
+async function prospectHtml() {
+  const id = quotesView.id;
+  if (id && (!prosData || String(prosData.prospect.id) !== String(id))) {
+    prosData = await api(`/api/quotes/prospects/one?id=${encodeURIComponent(id)}`);
+    prosDraft = { ...prosData.prospect, areas: [...prosData.prospect.areas] };
+    prosQuote = null;
+  }
+  if (!id && !prosDraft) {
+    prosData = null;
+    prosDraft = { areas: [], region: myCountry(), status: 'new' };
+  }
+  const lists = prosData?.sources ? prosData : { sources: ['PSC', 'Referral', 'Website', 'Phone or email enquiry', 'Trade show or event', 'Existing contact', 'Our outreach', 'Other'],
+    sizes: ['1 to 10 people', '11 to 50 people', '51 to 250 people', 'More than 250 people'], timescales: ['As soon as possible', 'Within 3 months', '3 to 6 months', '6 to 12 months', 'Just looking'],
+    statuses: { new: 'New', talking: 'In conversation', quoted: 'Quote started', won: 'Now a customer', lost: 'Not going ahead' }, bothCountries: countryBoth('quotes') };
+  const p = id ? prosData.prospect : null;
+  const d = prosDraft;
+  const locked = p?.status === 'won';
+  const statusPick = !p || ['new', 'talking', 'lost'].includes(p.status)
+    ? `<label>Status<select data-pros-f="status">${['new', 'talking', 'lost'].map((k) => `<option value="${k}"${d.status === k ? ' selected' : ''}>${esc(lists.statuses[k])}</option>`).join('')}</select></label>`
+    : `<p style="margin:0"><span class="muted">Status</span><br><strong>${esc(lists.statuses[p.status] || p.status)}</strong></p>`;
+  const country = lists.bothCountries ? `<label>Country<select data-pros-f="region"><option value="uk"${d.region !== 'sa' ? ' selected' : ''}>UK</option><option value="sa"${d.region === 'sa' ? ' selected' : ''}>South Africa</option></select></label>` : '';
+  const areas = `<div><p class="acc-label" style="margin-top:.8rem">What it could involve</p><div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((x) =>
+    `<button class="chip${(d.areas || []).includes(x) ? ' on' : ''}" data-pros-area="${x}" type="button">${qDisc(x)}</button>`).join('')}</div></div>`;
+  const quoteCard = !p ? '' : p.quote_id
+    ? `<section class="card pros-quote"><h2>Their quote</h2><p style="margin:0">${esc(p.quote_title || 'Quote')}${p.quote_key ? ` · ${esc(p.quote_key)}` : ''} · ${esc({ open: 'Being worked on', ready: 'Ready to send', accepted: 'Accepted', lost: 'Not going ahead', won: 'Became an order' }[p.quote_status] || p.quote_status || '')}</p>
+        ${p.project_key ? `<p class="help">They're a customer now, as ${esc(p.project_key)}. Their address, contact and what's known about them are on their page in Customers.</p>
+          <div class="row"><a class="btn secondary" href="#/customers" data-pros-customer="${esc(p.project_key)}">Open in Customers</a></div>`
+          : '<p class="help">It\'s kept in the Quotes tile until they have a project in Jira, then goes into its Quote List, and these details go into the Customers tile.</p>'}
+        <div class="row"><button class="btn secondary" data-pros-quote-open="${p.quote_id}">Open the quote</button></div></section>`
+    : p.status === 'lost' ? ''
+    : (() => {
+      prosQuote = prosQuote || { title: `Quote for ${p.name}`, disciplines: [...(p.areas || [])], team: null };
+      return `<section class="card pros-quote"><h2>Ready for a quote?</h2>
+        <p class="help" style="margin-top:0">This starts their quote in the Quote builder, as a new customer's quote, with what's known here as its description. It goes into Jira once they have a project.</p>
+        <label>Quote title<input type="text" data-pros-quote-title value="${esc(prosQuote.title)}"></label>
+        <p class="acc-label">Categories</p><div class="chips">${['software', 'hardware', 'engineering', 'condor'].map((x) =>
+          `<button class="chip${prosQuote.disciplines.includes(x) ? ' on' : ''}" data-pros-quote-disc="${x}" type="button">${qDisc(x)}</button>`).join('')}</div>
+        <p class="acc-label">Promtek team</p><span class="segment" role="group" aria-label="Promtek team">${QUOTE_TEAMS.map((x) =>
+          `<button class="seg${(prosQuote.team || suggestTeam(prosQuote.disciplines)) === x ? ' on' : ''}" data-pros-quote-team="${x}" type="button">${x}</button>`).join('')}</span>
+        <div class="row" style="margin-top:1rem"><button class="btn" data-pros-quote="1">Start the quote</button></div>
+        <div class="result" id="pros-quote-result" role="status"></div></section>`;
+    })();
+  const dis = locked ? ' disabled' : '';
+  return `<div class="pros-form${locked ? ' locked' : ''}">
+    <fieldset class="card pros-sec"${dis}><h2>The company</h2>
+      ${p?.psc_key ? `<p class="muted" style="margin:-.25rem 0 0">From ${jiraLink(p.psc_key)} in PSC.</p>` : ''}
+      <div class="pros-grid">${PROS_TEXT('name', 'Company name', { placeholder: 'As they trade' })}${PROS_TEXT('sector', 'Industry or sector', { placeholder: 'Food, chemicals, water…' })}
+        ${PROS_TEXT('website', 'Website', { placeholder: 'www.example.com' })}${PROS_SELECT('size', 'Size', lists.sizes)}
+        ${PROS_TEXT('sites', 'Sites', { placeholder: 'How many, and where' })}${country}</div>
+      ${PROS_TEXT('business', 'What their business does', { long: true, placeholder: 'What they make or do, and the processes they run' })}</fieldset>
+    <fieldset class="card pros-sec"${dis}><h2>What they'd like from Promtek</h2>
+      ${PROS_TEXT('interest', 'What they\'re interested in', { long: true, rows: 5, placeholder: 'The problem they want solved, the kit or systems involved, anything they\'ve already tried' })}
+      ${areas}
+      <div class="pros-grid">${PROS_SELECT('timescale', 'Timescale', lists.timescales)}${PROS_TEXT('budget', 'Budget', { placeholder: 'If they\'ve said' })}
+        ${PROS_TEXT('competitors', 'Who they use now', { placeholder: 'Current supplier or integrator, if any' })}</div></fieldset>
+    <fieldset class="card pros-sec"${dis}><h2>Primary contact</h2>
+      <div class="pros-grid">${PROS_TEXT('contact_name', 'Name')}${PROS_TEXT('contact_title', 'Job title')}
+        ${PROS_TEXT('contact_email', 'Email', { type: 'email' })}${PROS_TEXT('contact_phone', 'Phone', { type: 'tel' })}</div></fieldset>
+    <fieldset class="card pros-sec"${dis}><h2>Addresses</h2>
+      <div class="pros-grid">${PROS_TEXT('site_address', 'Site address', { long: true, placeholder: 'Where the work would be' })}
+        ${PROS_TEXT('billing_address', 'Billing address', { long: true, hint: '(if different)' })}</div></fieldset>
+    <fieldset class="card pros-sec"${dis}><h2>Where they came from, and what's next</h2>
+      <div class="pros-grid">${PROS_SELECT('source', 'How they found us', lists.sources, 'Choose…')}${PROS_TEXT('source_detail', 'Details', { placeholder: 'Who referred them, which event…' })}
+        ${PROS_TEXT('next_step', 'Next step', { placeholder: 'Site visit, call back, send brochure…' })}${PROS_TEXT('next_date', 'By', { type: 'date' })}
+        ${statusPick}</div>
+      ${PROS_TEXT('notes', 'Notes', { long: true, rows: 4, placeholder: 'Anything else worth knowing' })}</fieldset>
+    ${locked ? '<p class="help">They\'re a customer now, so these details are kept as they were. Change their address and contacts in the Customers tile.</p>' : `<div class="row">
+      <button class="btn" data-pros-save="1">${p ? 'Save' : 'Add the prospect'}</button>
+      ${p && !p.quote_id ? '<button class="btn secondary" data-pros-remove="1">Remove</button>' : ''}
+      <button class="btn secondary" data-pros-back="1">Back to prospects</button></div>
+      <div class="result" id="pros-result" role="status"></div>`}
+    ${quoteCard}
+    ${locked ? '<div class="row"><button class="btn secondary" data-pros-back="1">Back to prospects</button></div>' : ''}</div>`;
+}
+
+async function prospectsClick(t) {
+  if (t('[data-pros-new]')) { prosTitle = ''; quotesTab = 'prospects'; quotesView = { kind: 'prospect', id: null }; prosData = null; prosDraft = null; prosQuote = null; window.scrollTo(0, 0); await render(); return true; }
+  const show = t('[data-pros-show]');
+  if (show) { prosShow = show.dataset.prosShow; await render(); return true; }
+  const open = t('[data-pros-open]');
+  if (open) { prosTitle = open.querySelector('strong')?.textContent || ''; quotesView = { kind: 'prospect', id: open.dataset.prosOpen }; prosData = null; prosDraft = null; window.scrollTo(0, 0); await render(); return true; }
+  if (quotesView?.kind !== 'prospect') return false;
+  if (t('[data-pros-back]')) { quotesView = null; prosData = null; prosDraft = null; prosQuote = null; await render(); return true; }
+  const area = t('[data-pros-area]');
+  if (area) { prospectCapture(); const x = area.dataset.prosArea; prosDraft.areas = prosDraft.areas.includes(x) ? prosDraft.areas.filter((y) => y !== x) : [...prosDraft.areas, x]; await render(); return true; }
+  const qd = t('[data-pros-quote-disc]');
+  if (qd) { prospectCapture(); const x = qd.dataset.prosQuoteDisc; prosQuote.disciplines = prosQuote.disciplines.includes(x) ? prosQuote.disciplines.filter((y) => y !== x) : [...prosQuote.disciplines, x]; await render(); return true; }
+  const qt = t('[data-pros-quote-team]');
+  if (qt) { prospectCapture(); prosQuote.team = qt.dataset.prosQuoteTeam; await render(); return true; }
+  const qo = t('[data-pros-quote-open]');
+  if (qo) { quotesTab = 'builder'; quotesView = { kind: 'quote', id: qo.dataset.prosQuoteOpen }; prosData = null; prosDraft = null; window.scrollTo(0, 0); await render(); return true; }
+  const cust = t('[data-pros-customer]');
+  if (cust) { custOpen = cust.dataset.prosCustomer; return false; }
+  const out = (id, msg, bad = true) => { const el = document.getElementById(id); if (el) { el.textContent = msg; el.className = `result${bad ? ' bad' : ''}`; } else toast(msg); };
+  const save = t('[data-pros-save]');
+  if (save) {
+    prospectCapture();
+    save.disabled = true;
+    const id = quotesView.id;
+    try {
+      if (id) {
+        await api('/api/quotes/prospects/save', { method: 'POST', body: JSON.stringify({ ...prosDraft, id }) });
+        prosTitle = prosDraft.name || prosTitle; prosData = null; prosDraft = null;
+        toast('Saved');
+      } else {
+        const r = await api('/api/quotes/prospects/add', { method: 'POST', body: JSON.stringify(prosDraft) });
+        prosTitle = (prosDraft.name || '').trim();
+        quotesView = { kind: 'prospect', id: r.id }; prosData = null; prosDraft = null;
+        toast(`${prosTitle || 'Prospect'} added`);
+        window.scrollTo(0, 0);
+      }
+      await render();
+    } catch (err) { save.disabled = false; out('pros-result', err.message); }
+    return true;
+  }
+  if (t('[data-pros-remove]')) {
+    if (!confirm(`Remove ${prosData?.prospect?.name || 'this prospect'}? It can't be brought back.`)) return true;
+    try { await api('/api/quotes/prospects/remove', { method: 'POST', body: JSON.stringify({ id: quotesView.id }) }); toast('Removed'); quotesView = null; prosData = null; prosDraft = null; await render(); }
+    catch (err) { out('pros-result', err.message); }
+    return true;
+  }
+  const go = t('[data-pros-quote]');
+  if (go) {
+    prospectCapture();
+    if (!prosQuote.disciplines.length) { out('pros-quote-result', 'Choose at least one category.'); return true; }
+    go.disabled = true;
+    try {
+      const r = await api('/api/quotes/prospects/quote', { method: 'POST', body: JSON.stringify({ id: quotesView.id, title: prosQuote.title, disciplines: prosQuote.disciplines,
+        team: prosQuote.team || suggestTeam(prosQuote.disciplines) }) });
+      toast(`Quote started for ${prosData?.prospect?.name || 'them'}`);
+      quotesTab = 'builder'; quotesView = { kind: 'quote', id: r.quoteId }; prosData = null; prosDraft = null; prosQuote = null;
+      window.scrollTo(0, 0); await render();
+    } catch (err) { go.disabled = false; out('pros-quote-result', err.message); }
+    return true;
+  }
+  return false;
 }
 
 // Every open quote in Jira, wherever it was made, to filter and search.
@@ -7088,6 +7286,7 @@ function qQueueSave(d) {
 
 async function quotesClick(event) {
   const t = (sel) => event.target.closest(sel);
+  if (await prospectsClick(t)) return true;
   if (t('[data-q-scope]')) { quotesScope = t('[data-q-scope]').dataset.qScope; return render(); }
   if (t('[data-q-new-open]')) { quotesView = { kind: 'new' }; quoteNew = null; return render(); }
   if (t('[data-q-open]')) { quotesView = { kind: 'quote', id: t('[data-q-open]').dataset.qOpen }; window.scrollTo(0, 0); return render(); }
@@ -7380,6 +7579,12 @@ async function quotesChange(event) {
 
 function quotesInput(event) {
   const el = event.target;
+  if (el.id === 'pros-search') {
+    prosQuery = el.value;
+    const q = prosQuery.trim().toLowerCase();
+    view.querySelectorAll('.pros-card').forEach((c) => { c.hidden = Boolean(q) && !c.textContent.toLowerCase().includes(q); });
+    return true;
+  }
   if (el.dataset.qo != null && quotesOpenData) {
     quotesOpen[el.dataset.qo] = el.value;
     // Only the results redraw, so typing in the search box keeps its place.
@@ -13267,7 +13472,7 @@ function pscHeadLine(data) {
   return `<div class="psc-headline"><p class="help">${data.reading ? `Reading everything from Jira: ${data.reading.count} items so far. The rest follows over the next few minutes.` : `Read from Jira ${data.syncedAt ? agoText(data.syncedAt) : 'not yet'}.`}</p>
       <button class="btn secondary" data-psc-refresh="1">Refresh</button></div>
     ${data.pending.length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.pending.map((w) => `${esc(w.label || 'A change')} on ${esc(w.issue_key)}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
-    ${(data.handoffs || []).length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.handoffs.map((h) => `${esc(h.issue_key)} ${h.kind === 'condor' ? 'to Condor Dev' : 'to a quote'}${h.error ? ` (${esc(h.error)})` : ''}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
+    ${(data.handoffs || []).length ? `<div class="card notice"><p><strong>Waiting for Jira:</strong> ${data.handoffs.map((h) => `${esc(h.issue_key)} ${h.kind === 'condor' ? 'to Condor Dev' : h.kind === 'prospect' ? 'to Prospects' : 'to a quote'}${h.error ? ` (${esc(h.error)})` : ''}`).join('; ')}. The hub keeps trying.</p></div>` : ''}
     ${pscOrgFlagsHtml(data)}`;
 }
 
@@ -14822,9 +15027,16 @@ async function pscHandHtml(d) {
       <ul class="list plain q-customers psc-hand-customers" ${picked || h.prospectMode ? 'hidden' : ''}>
         <li class="q-prospect-row"><button class="linklike" data-psc-hand-prospect="1"><strong>New Potential Customer</strong></button> <span class="muted">No project in Jira yet</span></li>
         ${(pscCustomers || []).map((c) => `<li data-psc-hand-row><button class="linklike" data-psc-hand-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
-      ${h.prospectMode ? `<label style="margin-top:.75rem">New potential customer's name<input type="text" data-psc-hand-field="prospect" value="${esc(h.prospect || '')}" placeholder="The company asking for the quote"></label>
-        <p class="help">Their quote is kept in the Quotes tile until they have a project in Jira, then goes into its Quote List.</p>` : ''}`
+      ${h.prospectMode ? `<label style="margin-top:.75rem">New potential customer's name<input type="text" data-psc-hand-field="prospect" value="${esc(h.prospect || '')}" placeholder="The company asking"></label>
+        <p class="help">They go to Prospects in the Quotes tile, with what they asked here and who asked it, for the sales team to fill in and quote when they're ready.</p>` : ''}`
     : `<p>It becomes a Quote in ${esc(d.customer || d.project)}'s Quote List in Jira, and joins the Quotes tile for the sales team.</p>`;
+  if (onBoard && h.prospectMode) {
+    return `<div class="psc-hand card-inset">
+      <h3>Turn into a quote</h3>
+      ${customer}
+      <div class="row" style="margin-top:1rem"><button class="btn" data-psc-hand-go="1">Send to Prospects</button><button class="linklike" data-psc-hand="">Cancel</button></div>
+      <div class="result" id="psc-hand-result" role="status"></div></div>`;
+  }
   return `<div class="psc-hand card-inset">
       <h3>Turn into a quote</h3>
       ${customer}
@@ -14865,7 +15077,7 @@ async function pscHandClick(t) {
         ? await api('/api/psc/condor', { method: 'POST', body: JSON.stringify({ key: h.key }) })
         : await api('/api/psc/quote', { method: 'POST', body: JSON.stringify({ key: h.key, disciplines: h.disciplines, team: h.team || suggestTeam(h.disciplines),
           projectKey: h.prospectMode ? '' : h.projectKey, customer: h.customer, prospect: h.prospectMode ? h.prospect : '' }) });
-      toast(!r.saved ? r.message : h.kind === 'condor' ? `Sent to Condor Dev as ${r.target}` : r.target ? `${h.key} is now quote ${r.target}` : `Quote started for ${h.prospect}`);
+      toast(!r.saved ? r.message : h.kind === 'condor' ? `Sent to Condor Dev as ${r.target}` : r.target ? `${h.key} is now quote ${r.target}` : r.prospectId ? `${h.prospect} added to Prospects` : `Quote started for ${h.prospect}`);
       pscHand = null; pscOpen = null; pscFetchedAt = 0;
       return render();
     } catch (err) {
@@ -16745,7 +16957,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump], [data-psc-tri-jump], [data-nm-open]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-pros-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump], [data-psc-tri-jump], [data-nm-open]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 

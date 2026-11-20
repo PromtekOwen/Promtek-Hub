@@ -42,7 +42,7 @@ const saveHandoff = (env, h) => env.DB.prepare(
 
 async function existing(env, key) {
   const h = await env.DB.prepare('SELECT * FROM psc_handoffs WHERE issue_key = ?').bind(key).first();
-  if (h?.status === 'done') throw refuse(h.kind === 'condor' ? `That PSC is already in Condor Dev as ${h.target_key}.` : `That PSC is already a quote${h.target_key ? `, ${h.target_key}` : ''}.`, 409);
+  if (h?.status === 'done') throw refuse(h.kind === 'condor' ? `That PSC is already in Condor Dev as ${h.target_key}.` : h.kind === 'prospect' ? `That PSC is already in Prospects${h.customer ? ` as ${h.customer}` : ''}.` : `That PSC is already a quote${h.target_key ? `, ${h.target_key}` : ''}.`, 409);
   return h;
 }
 
@@ -142,6 +142,14 @@ async function convertInProject(env, h, quote) {
   return p.made;
 }
 
+// A new potential customer: the PSC is noted, and leaves the PSC tile; the prospect is already in the hub.
+async function doProspect(env, h) {
+  await jira(env, `/rest/api/3/issue/${encodeURIComponent(h.source_key || h.issue_key)}/comment`, { method: 'POST',
+    body: JSON.stringify({ body: { type: 'doc', version: 1, content: [para(`Sent to Prospects in the hub as ${h.customer || 'a new potential customer'}, for the sales team.`)] },
+      properties: [{ key: 'sd.public.comment', value: { internal: true } }] }) });
+  return null;
+}
+
 async function doQuote(env, h) {
   const quote = await env.DB.prepare('SELECT * FROM quotes WHERE id = ?').bind(h.quote_id).first();
   if (!quote) throw new Error('The quote in the hub has gone.');
@@ -172,6 +180,16 @@ export async function toQuote(env, viewer, input) {
   if (projectKey && !/^[A-Z][A-Z0-9_]+$/.test(projectKey)) throw refuse('Choose the customer from the list.');
   let description = '';
   try { description = adfText((await jira(env, `/rest/api/3/issue/${encodeURIComponent(row.issue_key)}?fields=description`))?.fields?.description).trim(); } catch { /* the summary is enough */ }
+  // Someone who isn't a customer yet: a prospect for the sales team, not a quote straight away.
+  if (onBoard && !projectKey) {
+    const email = await env.DB.prepare('SELECT email FROM psc_contact_links WHERE issue_key = ? ORDER BY rowid DESC LIMIT 1').bind(row.issue_key).first().catch(() => null);
+    const Prospects = await import('./prospects.js');
+    const id = await Prospects.fromPsc(env, viewer, { name: prospect, pscKey: row.issue_key, summary: row.summary, description, reporter: row.reporter_name, email: email?.email || null });
+    await saveHandoff(env, { issue_key: row.issue_key, source_key: d.sourceKey, kind: 'prospect', summary: row.summary, customer: prospect, project_key: row.project_key,
+      created_by: viewer.accountId || viewer.email, created_name: viewer.employee?.name || viewer.email, payload: { prospectId: id } });
+    const r = await attempt(env, await env.DB.prepare('SELECT * FROM psc_handoffs WHERE issue_key = ?').bind(row.issue_key).first());
+    return { ...r, prospectId: id };
+  }
   const Quotes = await import('./quotes.js');
   const made = await Quotes.createFor(env, viewer, {
     projectKey: projectKey || '', customer: projectKey ? (input.customer || d.customer || projectKey) : prospect, prospect: projectKey ? null : prospect,
@@ -189,12 +207,12 @@ export async function toQuote(env, viewer, input) {
 
 async function attempt(env, h) {
   try {
-    const target = h.kind === 'condor' ? await doCondor(env, h) : await doQuote(env, h);
+    const target = h.kind === 'condor' ? await doCondor(env, h) : h.kind === 'prospect' ? await doProspect(env, h) : await doQuote(env, h);
     await env.DB.prepare("UPDATE psc_handoffs SET status = 'done', target_key = COALESCE(?, target_key), done_at = ?, error = NULL WHERE issue_key = ?")
       .bind(target, new Date().toISOString(), h.issue_key).run();
     // Its "no Organization" alert goes with it: as a quote or a Bug, it's no longer support time to charge.
     await env.DB.prepare("UPDATE contract_flags SET resolved_at = ?, resolved_by = ? WHERE kind = 'psc-org' AND resolved_at IS NULL AND ref_key IN (?, ?)")
-      .bind(new Date().toISOString(), `${h.created_name || 'The hub'}, ${h.kind === 'condor' ? 'sent to Condor Dev' : `turned into a quote${h.customer ? ` for ${h.customer}` : ''}`}`, h.issue_key, h.source_key || h.issue_key).run().catch(() => {});
+      .bind(new Date().toISOString(), `${h.created_name || 'The hub'}, ${h.kind === 'condor' ? 'sent to Condor Dev' : h.kind === 'prospect' ? `sent to Prospects${h.customer ? ` as ${h.customer}` : ''}` : `turned into a quote${h.customer ? ` for ${h.customer}` : ''}`}`, h.issue_key, h.source_key || h.issue_key).run().catch(() => {});
     await changed(env);
     return { ok: true, saved: true, target };
   } catch (err) {
@@ -202,7 +220,7 @@ async function attempt(env, h) {
     const attempts = err.status === 404 && /\/issue\/[^/]+(\?|$)/.test(String(err.message)) ? MAX_TRIES : (h.attempts || 0) + 1;
     await env.DB.prepare('UPDATE psc_handoffs SET attempts = ?, error = ? WHERE issue_key = ?').bind(attempts, String(err.message).slice(0, 400), h.issue_key).run();
     if (attempts === ALERT_AFTER) {
-      await raiseAlert(env, { kind: 'psc-handoff', dedupe: `psc-handoff:${h.issue_key}`, subject: `${h.issue_key} couldn't be ${h.kind === 'condor' ? 'sent to Condor Dev' : 'turned into a quote'}`,
+      await raiseAlert(env, { kind: 'psc-handoff', dedupe: `psc-handoff:${h.issue_key}`, subject: `${h.issue_key} couldn't be ${h.kind === 'condor' ? 'sent to Condor Dev' : h.kind === 'prospect' ? 'noted as sent to Prospects' : 'turned into a quote'}`,
         body: `${h.created_name || 'Someone'} asked for ${h.issue_key} (${h.summary || ''}) to be ${h.kind === 'condor' ? 'copied to MES as a Bug' : 'turned into a quote'}, and Jira refused:\n\n${err.message}\n\nThe hub keeps trying.` });
     }
     await changed(env);

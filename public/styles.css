@@ -2761,3 +2761,26 @@ p .cust-shield { width: 18px; height: 18px; }
 .psc-tri > summary::before { content: '›'; font-size: 1.4rem; line-height: 1; color: var(--muted); transition: transform .15s; }
 .psc-tri[open] > summary::before { transform: rotate(90deg); }
 .psc-tri > summary h2 { margin: .4rem 0; }
+
+/* Prospects */
+.pros-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: .75rem; }
+.pros-card { cursor: pointer; margin: 0; display: flex; flex-direction: column; gap: .3rem; }
+.pros-card:hover, .pros-card:focus-visible { box-shadow: 0 0 0 2px var(--blue-deep) inset; }
+.pros-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; }
+.pros-card p { margin: 0; }
+.pros-sub { font-size: .88rem; }
+.pros-interest { font-size: .95rem; }
+.pros-meta { display: flex; flex-direction: column; font-size: .9rem; gap: .1rem; }
+.pros-form fieldset { border: 0; min-width: 0; }
+.pros-form .pros-sec { margin: 0 0 1rem; }
+.pros-form > .row { margin-bottom: 1rem; }
+.pros-sec h2 { margin-top: 0; }
+.pros-sec > label, .pros-sec > div > label { margin-top: .75rem; }
+.pros-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .25rem 1rem; }
+.pros-grid > label { margin-top: .75rem; }
+@media (max-width: 640px) { .pros-grid { grid-template-columns: 1fr; } }
+.pros-form.locked fieldset { opacity: .85; }
+.pros-quote h2 { margin-top: 0; }
+.cust-about dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .5rem 1rem; margin: 0; }
+.cust-about dt { font-size: .82rem; color: var(--muted); }
+.cust-about dd { margin: 0; white-space: pre-wrap; }

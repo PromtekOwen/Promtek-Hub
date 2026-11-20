@@ -711,8 +711,8 @@ async function route(request, env, url, user) {
       const H = await import('./psc-handoff.js');
       const condor = pathname === '/api/psc/condor';
       const r = condor ? await H.toCondor(env, user, body) : await H.toQuote(env, user, body);
-      await Audit.record(env, user, { area: 'PSC', action: condor ? 'Sent to Condor Dev' : 'Turned into a quote', subjectType: 'psc', subjectId: body.key, label: body.key,
-        changes: [{ label: condor ? 'MES ticket' : 'Quote', before: '', after: r.target || (r.saved ? (body.prospect ? `For ${body.prospect}` : 'Made') : 'Waiting for Jira') }] });
+      await Audit.record(env, user, { area: 'PSC', action: condor ? 'Sent to Condor Dev' : r.prospectId ? 'Sent to Prospects' : 'Turned into a quote', subjectType: 'psc', subjectId: body.key, label: body.key,
+        changes: [{ label: condor ? 'MES ticket' : r.prospectId ? 'Prospect' : 'Quote', before: '', after: r.target || (r.saved ? (body.prospect ? `For ${body.prospect}` : 'Made') : 'Waiting for Jira') }] });
       return json(r);
     }
     if (method === 'POST' && pathname === '/api/psc/flag-org') {
@@ -931,6 +931,14 @@ async function route(request, env, url, user) {
   if (pathname.startsWith('/api/quotes')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     if (method === 'GET' && pathname === '/api/quotes') return json(await Quotes.list(env, user, { scope: url.searchParams.get('scope') || 'open' }));
+    if (pathname.startsWith('/api/quotes/prospects')) {
+      const P = await import('./prospects.js');
+      const sub = pathname.slice('/api/quotes/prospects'.length);
+      if (method === 'GET' && sub === '') return json(await P.list(env, user, { show: url.searchParams.get('show') || 'open' }));
+      if (method === 'GET' && sub === '/one') return json(await P.get(env, user, url.searchParams.get('id')));
+      const post = { '/add': P.create, '/save': P.save, '/remove': P.remove, '/quote': P.startQuote };
+      if (method === 'POST' && post[sub]) return json(await post[sub](env, user, body));
+    }
     if (method === 'GET' && pathname === '/api/quotes/get') return json(await Quotes.get(env, user, url.searchParams.get('id')));
     if (method === 'GET' && pathname === '/api/quotes/people') return json({ people: await Quotes.people(env) });
     if (method === 'GET' && pathname === '/api/quotes/customers') {

@@ -230,11 +230,13 @@ export async function linkProject(env, viewer, { id, projectKey }) {
   if (!p) throw new Error('Choose the customer\'s project from the list.');
   await env.DB.prepare('UPDATE quotes SET project_key = ?, customer = ?, updated_at = ? WHERE id = ?').bind(p.key, p.name, new Date().toISOString(), q.id).run();
   const after = await retryJira(env, q.id);
+  // What was known about them as a prospect goes into the Customers tile.
+  await (await import('./prospects.js')).becameCustomer(env, q.id, p.key).catch((err) => console.warn('Prospect to customer:', err.message));
   return { ok: true, project: p.key, customer: p.name, quoteKey: after?.quote_key || null, jiraError: after?.jira_error || null, was: q.prospect };
 }
 
 export async function matchProspects(env) {
-  const { results } = await env.DB.prepare("SELECT id, prospect FROM quotes WHERE (project_key = '' OR project_key IS NULL) AND prospect IS NOT NULL AND status != 'lost' LIMIT 50").all();
+  const { results } = await env.DB.prepare("SELECT id, prospect FROM quotes WHERE (project_key = '' OR project_key IS NULL) AND prospect IS NOT NULL AND status NOT IN ('lost', 'prospect') LIMIT 50").all();
   if (!results.length) return { matched: 0 };
   const { customerProjects } = await import('./jira.js');
   // Read fresh, so a project made since the last read is found.
@@ -254,7 +256,7 @@ export async function matchProspects(env) {
 export async function list(env, viewer, { scope = 'open' } = {}) {
   let rows;
   if (canCreate(viewer)) {
-    const where = scope === 'mine' ? 'WHERE q.created_by = ?' : scope === 'open' ? "WHERE q.status IN ('open', 'ready') OR (q.status = 'accepted' AND q.epic_key IS NULL)" : '';
+    const where = scope === 'mine' ? "WHERE q.created_by = ? AND q.status != 'prospect'" : scope === 'open' ? "WHERE q.status IN ('open', 'ready') OR (q.status = 'accepted' AND q.epic_key IS NULL)" : "WHERE q.status != 'prospect'";
     const stmt = env.DB.prepare(`SELECT q.*, COALESCE(q.team, j.team) AS team, e.name AS created_name, e.chart_sa AS created_sa FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by
       LEFT JOIN jira_quotes j ON j.issue_key = q.quote_key ${where} ORDER BY q.id DESC LIMIT 200`);
     rows = (scope === 'mine' ? await stmt.bind(viewer.accountId).all() : await stmt.all()).results;
@@ -791,6 +793,7 @@ export async function hourly(env) {
   for (const q of results) await retryJira(env, q.id);
   const { results: unsynced } = await env.DB.prepare('SELECT * FROM quotes WHERE description_synced = 0 AND quote_key IS NOT NULL LIMIT 10').all();
   for (const q of unsynced) await syncDescription(env, q);
+  await (await import('./prospects.js')).adoptOldQuotes(env).catch(() => {});
   const prospects = await matchProspects(env).catch(() => ({ matched: 0 }));
   const handed = await handOff(env);
   const checks = await queueCountChecks(env);

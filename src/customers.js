@@ -280,8 +280,38 @@ export async function detail(env, viewer, raw) {
     jobs: jobs.map((j) => ({ key: j.issue_key, summary: j.summary, status: j.status, progress: j.progress, updated: j.updated, contact: contactFor(j.issue_key), site: siteFor(j.issue_key) })),
     quotes: quotes.map((q) => ({ key: q.issue_key, summary: q.summary, status: q.status, assignee: q.assignee_name, updated: q.updated_at })),
     pscs: pscs.map((p) => ({ key: p.issue_key, summary: p.summary, type: p.issuetype, status: p.status, assignee: p.assignee_name, updated: p.updated_at })),
+    about: await (await import('./prospects.js')).aboutCustomer(env, k).catch(() => null),
     canStats: canStats(viewer), canManage: canManage(viewer),
   };
+}
+
+// ---------- from a prospect ----------
+
+// A new customer's details, as the sales team kept them while they were a prospect: their
+// site and billing addresses, and their contact, who becomes the primary contact unless one
+// has already been chosen. Kept as changed here, so reads from Jira don't overwrite them.
+export async function fromProspect(env, projectKey, p) {
+  const now = new Date().toISOString();
+  const by = 'From their prospect';
+  let siteId = null;
+  for (const [address, label] of [[p.site_address, 'Site'], [p.billing_address, 'Billing']]) {
+    const text = clip(address, 400);
+    if (text.length < 5) continue;
+    await env.DB.prepare(`INSERT INTO customer_sites (project_key, match_key, address, label, source, edited, created_at, updated_at, updated_by) VALUES (?, ?, ?, ?, 'prospect', 1, ?, ?, ?)
+      ON CONFLICT(project_key, match_key) DO NOTHING`).bind(projectKey, siteKey(text), text, label, now, now, by).run();
+    if (label === 'Site') siteId = (await env.DB.prepare('SELECT id FROM customer_sites WHERE project_key = ? AND match_key = ?').bind(projectKey, siteKey(text)).first())?.id || null;
+  }
+  const v = { name: clip(p.contact_name, 120) || null, phone: clip(p.contact_phone, 40) || null, email: clip(p.contact_email, 160).toLowerCase() || null, job: clip(p.contact_title, 100) || null };
+  if (v.name || v.email || v.phone) {
+    const match = contactKey({ contact: v.name, phone: v.phone, email: v.email });
+    const chosen = await env.DB.prepare('SELECT 1 FROM customer_contacts WHERE project_key = ? AND is_primary = 1').bind(projectKey).first();
+    await env.DB.prepare(`INSERT INTO customer_contacts (project_key, match_key, name, phone, email, job_title, site_id, is_primary, source, edited, created_at, updated_at, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'prospect', 1, ?, ?, ?)
+      ON CONFLICT(project_key, match_key) DO UPDATE SET job_title = COALESCE(customer_contacts.job_title, excluded.job_title), phone = COALESCE(customer_contacts.phone, excluded.phone),
+        is_primary = CASE WHEN ? THEN customer_contacts.is_primary ELSE 1 END`)
+      .bind(projectKey, match, v.name, v.phone, v.email, v.job, siteId, chosen ? 0 : 1, now, now, by, chosen ? 1 : 0).run();
+  }
+  return { ok: true };
 }
 
 // ---------- putting sites and contacts right ----------

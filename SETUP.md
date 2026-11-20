@@ -633,11 +633,11 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 
 **Triage** opens with three counts: items missing an Organization (on the PSC board), missing an assignee, and waiting for a first look. Below them are the same three lists, each folding open or shut; tapping a count opens its list and goes to it. An item can be in more than one list. Items assigned to Richard Key or Simon Williams count as missing an assignee until that person has commented, moved it on, changed its description, picked it up in the hub or logged time on it (the names are `PLACEHOLDER_OWNERS` in `src/psc.js`). **I'm on it**, **Assign to…** and the Organization list save to Jira; if Jira is busy, the change waits in the hub, is retried, and admins are emailed if it keeps failing. The Organization list comes from the service desk, so the hub's Jira account needs agent access to it.
 
-**PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira, **New Customer**, which opens the item ready to turn into a quote for a New Potential Customer (see below), and **Mark resolved**. Turning an item into a quote, or sending it to Condor Dev, resolves its alert.
+**PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira, **New Customer**, which opens the item ready to send to Prospects (see below), and **Mark resolved**. Turning an item into a quote, or sending it to Condor Dev, resolves its alert.
 
 **Not support work: Quote and Condor.** Each open item has two buttons, on its card in the Triage and Open lists (next to I'm on it) and on the item itself; from a card they open the item with the quote or Condor step ready. Run `schema-053.sql` in the D1 console before using them.
 - **Quote** turns it into a quote, with its categories and Promtek team chosen first. In a customer's project, the item's issue type is changed to Quote and it's moved under that project's Quote List; where Jira won't change the type (a different workflow, say), a new Quote is made there instead and linked to it. Either way the quote joins the Quotes tile, with the PSC's description, for the sales team.
-- On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. A new potential customer's quote is kept in the Quotes tile, where it can be worked on and marked **Accepted**. Once they have a project in Jira, the quote is made in its Quote List: chosen on the quote, or found by the hub every hour when exactly one customer project has their name. The PSC board item gets an internal comment saying what happened.
+- On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. They go to **Prospects** in the Quotes tile (see Part 21), with the PSC's summary and description as what they're interested in and its reporter as the contact. The PSC board item gets an internal comment saying so, and leaves the PSC tile.
 - **Condor** copies it to the MES project as a Bug, with its summary and description, linked to the PSC with the Sync To / Sync From link type (the PSC Syncs To the Bug). It then shows in Condor Dev's **PSC** tab, with the Bug's status, until the Bug is done.
 - Once either has gone through, the item, and its PSC board original, leave the PSC tile. If Jira refuses, the hub keeps it, tries again every few minutes, and emails admins after three tries.
 
@@ -1039,7 +1039,22 @@ Alert emails go to each lead or supervisor's own email address through the mail 
 
 ## Part 21: Quotes
 
-**New Potential Customer.** At the top of the customer list when starting a quote, for a company with no project in Jira yet. Their quote stays in the hub, can be marked **Accepted**, and goes into their Quote List in Jira once they have a project: chosen on the quote, or found every hour by name. Until then it has no Jira key to use as the quote number in Quoter.
+**Prospects.** New potential customers, with no project in Jira yet, are kept in the **Prospects** tab rather than as quotes. Each one records:
+- **The company:** name, industry or sector, website, size, sites, the country (for people who see both), and what their business does.
+- **What they'd like from Promtek:** what they're interested in, what it could involve (Software, Hardware, Site visit, Condor), timescale, budget, and who they use now.
+- **Primary contact:** name, job title, email and phone.
+- **Addresses:** site address, and billing address if different.
+- **Where they came from, and what's next:** how they found us and the details, the next step and when by, the status (New, In conversation or Not going ahead), and notes.
+
+New ones come from **Add a prospect**, or from a PSC sent there. The list shows open ones by default, with next steps past their date in red.
+
+**Ready for a quote?** at the bottom of a prospect starts their quote in the Quote builder, as a new customer's quote, with a title, categories and team, and what's known about them as its description. From then it follows the usual process: it stays in the hub, can be marked **Accepted**, and goes into their Quote List in Jira once they have a project (chosen on the quote, or found every hour by name). Until then it has no Jira key to use as the quote number in Quoter.
+
+**When they become a customer.** Once their quote is in their new project, their site and billing addresses and primary contact (with job title) go into the Customers tile, with the contact as primary unless one has already been chosen there, and an **About them** section on their page shows what the sales team knew. The prospect is marked **Now a customer** and can no longer be changed.
+
+New customers are no longer started from the Quote builder's customer list; it points to Prospects instead. Quotes for new potential customers made before Prospects existed became prospects automatically: open ones wait there, with their estimates kept for when a quote is started again; accepted ones carry on as quotes, with their prospect alongside.
+
+**Setting it up:** run `schema-076.sql` in the D1 console.
 
 **Who uses it.** The sales team and team leads start and edit quotes. Anyone asked for an estimate can open that quote and give theirs; nobody else sees it.
 
