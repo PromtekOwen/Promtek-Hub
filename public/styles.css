@@ -2785,3 +2785,16 @@ p .cust-shield { width: 18px; height: 18px; }
 .cust-about dt { font-size: .82rem; color: var(--muted); }
 .cust-about dd { margin: 0; white-space: pre-wrap; }
 .coshh-undo { margin-left: .5rem; font-size: .9rem; }
+
+/* WIP: the orders behind a month */
+.wipc-col.drill { cursor: pointer; }
+.wip-drill { max-width: 46rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+.wip-drill-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; position: sticky; top: -1.25rem; background: var(--surface); padding-top: .25rem; z-index: 1; }
+.wip-drill-head h2 { margin: 0; }
+.wip-drill-group h3 { margin: 1.1rem 0 .4rem; font-size: 1rem; }
+.wip-drill-list { list-style: none; margin: 0; padding: 0; }
+.wip-drill-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .5rem 0; border-top: 1px solid var(--line); }
+.wip-drill-main { display: flex; flex-direction: column; min-width: 0; }
+.wip-drill-amt { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
+:where(:root[data-theme="dark"]) .wip-drill-host .icon-btn { background: var(--surface); }
+.wip-drill-main > .linklike { align-self: flex-start; text-align: left; padding: 0; font-weight: 700; }

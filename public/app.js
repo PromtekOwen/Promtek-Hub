@@ -11238,7 +11238,7 @@ const wipMonthLabel = (m, i, n) => {
 };
 
 // Columns for each month (or bucket): series side by side, or stacked. Values below zero go under the line.
-function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = false, count = false, note = '', marks = [] }) {
+function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = false, count = false, note = '', marks = [], drill = null }) {
   const len = labels.length;
   const val = (s, i) => s.values[i];
   let min = 0, max = 0;
@@ -11274,7 +11274,9 @@ function wipColumns({ title, sub, labels, tips, series, stacked = false, pct = f
         return `<span class="wipc-slot"><span class="wipc-bar${v < 0 ? ' neg' : ''}" style="bottom:${y(Math.min(0, v))}%;height:${Math.max((Math.abs(v) / range) * 100, v ? 0.6 : 0)}%;background:${s.color}"></span></span>`;
       }).join('')}</span>`;
     }
-    return `<div class="wipc-col" tabindex="0" data-tip="${esc(tip)}" aria-label="${esc(tip.replace(/\n/g, ', '))}">${bars}
+    const to = drill?.months?.[i];
+    const tipped = to ? `${tip}\nTap to see the orders` : tip;
+    return `<div class="wipc-col${to ? ' drill' : ''}" tabindex="0" data-tip="${esc(tipped)}" aria-label="${esc(tipped.replace(/\n/g, ', '))}"${to ? ` role="button" data-wip-drill="${drill.chart}" data-month="${esc(to)}"` : ''}>${bars}
       <span class="wipc-x">${i % every === 0 ? esc(label) : ''}</span></div>`;
   }).join('');
   const legend = series.length > 1 || marks.length ? `<p class="wipc-legend">${series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')}${marks.map((m) => `<span><i class="mark" style="border-color:${m.color}"></i>${esc(m.name)}</span>`).join('')}</p>` : '';
@@ -11321,32 +11323,35 @@ async function wipChartsHtml() {
       ${stat('Typical time to finish', months(t.all), `Projects ${months(t.projects)}, Service ${months(t.service)}`)}
       ${stat('To invoice this month', wipMoney(d.forecast.months[0]?.value), d.forecast.late.count ? `${wipMoney(d.forecast.late.value)} past its planned date` : 'Nothing past its planned date')}
     </dl>`;
+  // Months with orders kept for them: those the hub has, not the old sheet's totals alone.
+  const drillFor = (chart) => ({ chart, months: shown.map((m) => (m.hasOrders === false ? null : m.month)) });
   const flowNote = '<p class="help wipc-help">Months before the hub took over come from the old sheet\'s tabs; a month needs the month before it to show what changed.</p>';
   const charts = [
-    wipColumns({ title: 'Value added and finished', labels, tips,
+    wipColumns({ title: 'Value added and finished', labels, tips, drill: drillFor('flow'),
       sub: 'New orders accepted each month, against orders that reached Done. The gap between them is how much the books really grew or shrank.',
       series: Object.assign([{ name: 'Added', color: WIP_C.blue, values: col('added') }, { name: 'Finished', color: WIP_C.orange, values: col('finished') }],
         { extra: (i) => (shown[i].finished === null ? [] : [`Net: ${wipMoney((shown[i].added || 0) - (shown[i].finished || 0), { sign: true })}`]) }) }),
-    wipColumns({ title: 'Open order book at month end', labels, tips, stacked: true,
+    wipColumns({ title: 'Open order book at month end', labels, tips, stacked: true, drill: drillFor('book'),
       sub: 'Orders not yet Done, so finished jobs don\'t linger. The darker part is work already done on them, the lighter part what is still to do.',
       series: [{ name: 'Work done', color: WIP_C.blue, values: col('openDone') }, { name: 'Still to do', color: WIP_C.tint, values: col('openToDo') }] }),
-    wipColumns({ title: 'Invoiced and paid in each month', labels, tips,
+    wipColumns({ title: 'Invoiced and paid in each month', labels, tips, drill: drillFor('money'),
       sub: 'What was actually invoiced and actually paid during each month, not running totals carried over. Since the hub took over, this comes from each invoice\'s invoice date and the day it was marked paid.',
       series: [{ name: 'Invoiced', color: WIP_C.blue, values: col('invoicedIn') }, { name: 'Paid', color: WIP_C.orange, values: col('paidIn') }] }),
-    wipColumns({ title: 'Invoiced, not yet paid, at month end', labels, tips,
+    wipColumns({ title: 'Invoiced, not yet paid, at month end', labels, tips, drill: drillFor('owed'),
       sub: 'Money owed to us on orders at the end of each month.',
       series: [{ name: 'Owed', color: WIP_C.blue, values: col('endAwaiting') }] }),
-    wipColumns({ title: 'Value of work done each month', labels, tips,
+    wipColumns({ title: 'Value of work done each month', labels, tips, drill: drillFor('work'),
       sub: 'Each order\'s value times how much further it got that month.',
       series: [{ name: 'Projects', color: WIP_C.blue, values: col('projectsValue') }, { name: 'Service', color: WIP_C.orange, values: col('serviceValue') }] }),
-    wipColumns({ title: 'Progress each month, Projects', labels, tips, pct: true,
+    wipColumns({ title: 'Progress each month, Projects', labels, tips, pct: true, drill: drillFor('progress-projects'),
       sub: 'Average progress made on each order: Jira progress counts every item; non admin leaves out invoices and paperwork.',
       series: [{ name: 'Jira progress', color: WIP_C.blue, values: col('projectsProgress') }, { name: 'Non admin', color: WIP_C.orange, values: col('projectsWork') }] }),
-    wipColumns({ title: 'Progress each month, Service', labels, tips, pct: true,
+    wipColumns({ title: 'Progress each month, Service', labels, tips, pct: true, drill: drillFor('progress-service'),
       sub: 'The same for Service orders.',
       series: [{ name: 'Jira progress', color: WIP_C.blue, values: col('serviceProgress') }, { name: 'Non admin', color: WIP_C.orange, values: col('serviceWork') }] }),
     wipColumns({ title: 'Invoices to raise in the coming months', labels: ['Past date', ...d.forecast.months.map((m, i) => wipMonthLabel(m.month, i, 6))],
       tips: ['Planned for a date already passed', ...d.forecast.months.map((m) => wipMonthName(m.month))], stacked: true,
+      drill: { chart: 'forecast', months: ['late', ...d.forecast.months.map((m) => m.month)] },
       sub: `Milestones not invoiced yet, by the date they are planned for.${d.forecast.undated.count ? ` ${n(d.forecast.undated.count)} more (${wipMoney(d.forecast.undated.value)}) have no planned date.` : ''}`,
       series: [{ name: 'Past its planned date', color: WIP_C.orange, values: [d.forecast.late.value, ...d.forecast.months.map(() => 0)] },
         { name: 'Planned', color: WIP_C.blue, values: [0, ...d.forecast.months.map((m) => m.value)] }] }),
@@ -11549,7 +11554,54 @@ async function wipClick(event) {
   if (event.target.closest('a')) return;
   const open = t('[data-wip-open]');
   if (open) { wipOpen = open.dataset.wipOpen; return render(); }
+  const drill = t('[data-wip-drill]');
+  if (drill) { wipTip(null); wipDrillOpen(drill.dataset.wipDrill, drill.dataset.month); return true; }
   return false;
+}
+
+// ---------- WIP: the orders behind a month on the charts ----------
+async function wipDrillOpen(chart, month) {
+  document.querySelector('.wip-drill-host')?.remove();
+  const host = document.createElement('div');
+  host.className = 'modal-backdrop wip-drill-host';
+  const when = month === 'late' ? 'Past their planned date' : wipMonthName(month);
+  host.innerHTML = `<div class="modal card wip-drill" role="dialog" aria-modal="true" aria-label="${esc(when)}"><div class="wip-drill-head"><h2>${esc(when)}</h2>
+    <button class="icon-btn" data-wip-drill-close aria-label="Close">✕</button></div><p class="muted">Loading the orders…</p></div>`;
+  document.body.appendChild(host);
+  const close = () => { host.remove(); removeEventListener('keydown', esc_); };
+  const esc_ = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', esc_);
+  host.addEventListener('click', (e) => {
+    if (e.target === host || e.target.closest('[data-wip-drill-close]')) return close();
+    const o = e.target.closest('[data-wip-drill-order]');
+    if (o) { close(); wipOpen = o.dataset.wipDrillOrder; render(); }
+  });
+  let d;
+  try { d = await api(`/api/wip/month?region=${wipRegion}&chart=${encodeURIComponent(chart)}&month=${encodeURIComponent(month)}`); }
+  catch (err) { host.querySelector('.wip-drill').insertAdjacentHTML('beforeend', `<p class="bad">${esc(err.message)}</p>`); host.querySelector('.wip-drill > .muted')?.remove(); return; }
+  wipSymFor = d.region === 'sa' ? 'R' : '£';
+  try { host.querySelector('.wip-drill').innerHTML = wipDrillHtml(d, when); } finally { wipSymFor = null; }
+}
+
+function wipDrillHtml(d, when) {
+  const pct = (v) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${wipAvg(v)}`);
+  const order = (r) => `<button class="linklike" data-wip-drill-order="${esc(r.key)}">${esc(r.key)}</button>`;
+  const sub = (r) => [r.org, r.title].filter(Boolean).map(esc).join(' · ');
+  const extra = (g, r) => {
+    if (g.kind === 'book') return `<small class="muted">${wipAvg(r.progress)} done: ${wipMoney(r.done)} done, ${wipMoney(r.toDo)} to do</small>`;
+    if (g.kind === 'progress') return `<small class="muted">Now ${wipAvg(r.progress)}</small>`;
+    return [r.item ? `${esc(r.item)}${r.note ? ` ${esc(r.note)}` : ''}` : '', r.date ? esc(fullDate(String(r.date).slice(0, 10))) : '', r.invoiced !== undefined ? `${wipAvg(r.invoiced)} invoiced, ${wipAvg(r.paid)} paid` : '']
+      .filter(Boolean).map((x) => `<small class="muted">${x}</small>`).join(' ');
+  };
+  const amount = (g, r) => (g.kind === 'progress'
+    ? `<span class="wip-drill-amt"><span>${pct(r.change)}</span><small class="muted">non admin ${pct(r.work)}</small></span>`
+    : `<span class="wip-drill-amt">${r.amount === null ? '—' : wipMoney(r.amount)}</span>`);
+  const groups = d.noOrders ? '<p class="muted">The hub didn\'t keep the orders for this month: its figures come from the old sheet\'s totals.</p>'
+    : d.groups.map((g) => `<section class="wip-drill-group"><h3>${esc(g.name)} <span class="muted">(${n(g.rows.length)}${g.total !== null ? `, ${wipMoney(g.total)}` : ''})</span></h3>
+      ${g.rows.length ? `<ul class="wip-drill-list">${g.rows.map((r) => `<li><span class="wip-drill-main">${order(r)} <span>${sub(r)}</span>${extra(g, r)}</span>${amount(g, r)}</li>`).join('')}</ul>`
+        : '<p class="muted" style="margin:0">None.</p>'}</section>`).join('');
+  return `<div class="wip-drill-head"><div><h2>${esc(when)}</h2><p class="muted" style="margin:0">${esc(d.title)}</p></div>
+      <button class="icon-btn" data-wip-drill-close aria-label="Close">✕</button></div>${groups}`;
 }
 
 function wipChange2(event) {

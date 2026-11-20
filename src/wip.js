@@ -1227,7 +1227,7 @@ export async function insights(env, viewer, { region } = {}) {
     const f = rows ? flows(m, rows, prevRows) : { month: m };
     if (m >= datedFrom) { f.invoicedIn = dated.get(m)?.invoiced || 0; f.paidIn = dated.get(m)?.paid || 0; f.dated = true; }
     return {
-      ...f, live: m === now,
+      ...f, live: m === now, hasOrders: Boolean(rows?.length),
       projectsProgress: h.projectsProgress ?? null, serviceProgress: h.serviceProgress ?? null,
       projectsWork: h.projectsWork ?? null, serviceWork: h.serviceWork ?? null,
       projectsValue: h.projectsValue ?? null, serviceValue: h.serviceValue ?? null,
@@ -1325,6 +1325,115 @@ export async function insights(env, viewer, { region } = {}) {
     statuses, customers: top, ageing, completion, typical,
     forecast: { late: { value: late, count: lateCount }, months: ahead, later, undated: { value: undated, count: undatedCount } },
   };
+}
+
+// ---------- the jobs behind a month on the charts ----------
+
+// Which orders make up one month's bars on an Overview chart, and how much each adds.
+// Months from before the hub took over only have the old sheet's totals, so no orders.
+export const CHART_PARTS = {
+  flow: 'Value added and finished', book: 'Open order book at month end', money: 'Invoiced and paid in the month', owed: 'Invoiced, not yet paid, at month end',
+  work: 'Value of work done', 'progress-projects': 'Progress, Projects', 'progress-service': 'Progress, Service', forecast: 'Invoices to raise',
+};
+export async function monthJobs(env, viewer, { region, month, chart } = {}) {
+  mustSee(viewer);
+  region = regionArg(region);
+  if (!CHART_PARTS[chart]) throw refuse('Choose a chart.', 400);
+  const now = thisMonth();
+  const today = londonDate();
+  const late = chart === 'forecast' && month === 'late';
+  if (!late && !/^\d{4}-\d{2}$/.test(String(month || ''))) throw refuse('Choose a month.', 400);
+  const head = { month: late ? null : month, chart, title: CHART_PARTS[chart], region };
+  const line = (r, amount, extra = {}) => ({ key: r.key, org: r.org || '', title: r.title || '', status: r.status || '', division: r.division || null, amount, ...extra });
+  const group = (name, rows, { kind = 'money' } = {}) => ({ name, kind, rows: rows.sort((a, b) => Math.abs(b.amount || 0) - Math.abs(a.amount || 0)),
+    total: kind === 'progress' ? null : rows.reduce((t, r) => t + (r.amount || 0), 0) });
+
+  // Invoices still to raise, by their planned month.
+  if (chart === 'forecast') {
+    const live = await liveRows(env, region, now);
+    const byId = new Map(live.filter((r) => r.id).map((r) => [r.id, r]));
+    const rows = [];
+    for (const i of (await itemsFor(env, [...byId.keys()])).filter((x) => x.level === 1 && isInvoice(x) && !isTokenInvoice(x))) {
+      if (invoiceState(i).invoiced || !i.inv_due) continue;
+      if (late ? i.inv_due >= today : (i.inv_due < today || monthOf(i.inv_due) !== month)) continue;
+      const r = byId.get(i.order_id);
+      const amount = (r.value || 0) * (Number(i.share) || 0);
+      if (amount) rows.push(line(r, amount, { item: i.issue_key, note: String(i.summary || '').trim(), date: i.inv_due }));
+    }
+    return { ...head, groups: [group(late ? 'Past their planned date' : 'Planned for this month', rows)] };
+  }
+
+  const rowsOf = async (m) => (m === now ? liveRows(env, region, now) : snapshotRows(env, region, m));
+  const rows = await rowsOf(month);
+  if (!rows.length) return { ...head, groups: [], noOrders: true };
+  const v = (r) => (r.value === null || r.value === undefined ? 0 : r.value);
+  const prevRows = await snapshotRows(env, region, shiftMonth(month, -1));
+  const prev = prevRows.length ? new Map(prevRows.map((r) => [r.key, r])) : null;
+
+  if (chart === 'flow') {
+    const groups = [group('Added', rows.filter((r) => r.isNew).map((r) => line(r, v(r), { date: r.accepted })))];
+    if (prev) groups.push(group('Finished', rows.filter((r) => isDone(r) && !(prev.get(r.key) && isDone(prev.get(r.key)))).map((r) => line(r, v(r), { date: r.doneAt }))));
+    return { ...head, groups };
+  }
+  if (chart === 'book') {
+    const open = rows.filter((r) => !isDone(r)).map((r) => line(r, v(r), { done: v(r) * (r.progress || 0), toDo: v(r) * (1 - (r.progress || 0)), progress: r.progress || 0 }));
+    return { ...head, groups: [group('Open orders', open, { kind: 'book' })] };
+  }
+  if (chart === 'owed') {
+    const owed = rows.map((r) => line(r, v(r) * Math.max(0, (r.invoiced || 0) - (r.paid || 0)), { invoiced: r.invoiced || 0, paid: r.paid || 0 })).filter((r) => r.amount > 0.005);
+    return { ...head, groups: [group('Owed at month end', owed)] };
+  }
+  if (chart === 'money') {
+    const firstHub = await env.DB.prepare("SELECT MIN(month) AS m FROM wip_snapshots WHERE region = ? AND source = 'hub'").bind(region).first();
+    const datedFrom = firstHub?.m || now;
+    const inv = [], paid = [];
+    if (month >= datedFrom) {
+      // From the invoices' own dates, as the chart has them.
+      const { results: orders } = await env.DB.prepare('SELECT issue_id, issue_key, org, summary, status, upfront, token_only FROM wip_orders WHERE region = ? AND customer_item = 0').bind(region).all();
+      const { over, seed } = await overridesAndSeeds(env, orders.map((o) => o.issue_key));
+      const byId = new Map(orders.map((o) => [o.issue_id, o]));
+      const valueOf = (o) => (o.token_only ? 0 : (over.get(o.issue_key)?.upfront ?? seed.get(o.issue_key)?.upfront ?? o.upfront ?? 0));
+      const from = `${month}-01`, to = `${shiftMonth(month, 1)}-01`;
+      for (const part of chunk(orders.map((o) => o.issue_id), IN - 4)) {
+        const { results } = await env.DB.prepare(
+          `SELECT order_id, issue_key, share, summary, issuetype, status, status_cat, inv_date, paid_at FROM wip_items
+            WHERE level = 1 AND order_id IN (${marks(part.length)}) AND ((inv_date >= ? AND inv_date < ?) OR (paid_at >= ? AND paid_at < ?))`
+        ).bind(...part, from, to, from, to).all();
+        for (const i of results) {
+          if (!isInvoice(i) || isTokenInvoice(i)) continue;
+          const o = byId.get(i.order_id);
+          const amount = valueOf(o) * (Number(i.share) || 0);
+          const st = invoiceState(i);
+          const base = { key: o.issue_key, org: o.org || '', title: seed.get(o.issue_key)?.title || o.summary || '', status: o.status || '', item: i.issue_key, note: String(i.summary || '').trim() };
+          if (st.invoiced && i.inv_date >= from && i.inv_date < to) inv.push({ ...base, amount, date: i.inv_date });
+          if (st.paid && i.paid_at >= from && i.paid_at < to) paid.push({ ...base, amount, date: String(i.paid_at).slice(0, 10) });
+        }
+      }
+    } else if (prev) {
+      // Before then, from how much further each order's invoicing and payment got.
+      for (const r of rows) {
+        const p = prev.get(r.key) || (r.isNew ? { invoiced: 0, paid: 0 } : null);
+        if (!p) continue;
+        const di = v(r) * ((r.invoiced || 0) - (p.invoiced || 0));
+        const dp = v(r) * ((r.paid || 0) - (p.paid || 0));
+        if (Math.abs(di) > 0.005) inv.push(line(r, di));
+        if (Math.abs(dp) > 0.005) paid.push(line(r, dp));
+      }
+    }
+    return { ...head, groups: [group('Invoiced', inv), group('Paid', paid)] };
+  }
+  // Work done, and progress: how much further each order got this month.
+  const division = chart === 'progress-projects' ? (r) => r.division !== 'ServiceTeam' : chart === 'progress-service' ? (r) => r.division === 'ServiceTeam' : () => true;
+  const moved = rows.filter(division).map((r) => {
+    const change = r.lastProgress === null || r.lastProgress === undefined ? null : (r.progress || 0) - r.lastProgress;
+    const work = r.nonAdmin === null || r.nonAdmin === undefined || r.lastNonAdmin === null || r.lastNonAdmin === undefined ? null : r.nonAdmin - r.lastNonAdmin;
+    return line(r, chart === 'work' ? (change === null ? null : v(r) * change) : change, { change, work, progress: r.progress || 0 });
+  }).filter((r) => (chart === 'work' ? r.amount : r.change || r.work));
+  if (chart === 'work') {
+    const isService = (r) => r.division === 'ServiceTeam';
+    return { ...head, groups: [group('Projects', moved.filter((r) => !isService(r))), group('Service', moved.filter(isService))] };
+  }
+  return { ...head, groups: [group('Orders that moved on', moved, { kind: 'progress' })] };
 }
 
 // ---------- settings and changes ----------
