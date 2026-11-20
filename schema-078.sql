@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS wip_old_orders (issue_id TEXT PRIMARY KEY, issue_key TEXT NOT NULL, region TEXT, org TEXT, title TEXT, upfront REAL, quote_no TEXT, labels TEXT, created TEXT, customer_item INTEGER NOT NULL DEFAULT 0);

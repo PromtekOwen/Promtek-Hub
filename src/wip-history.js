@@ -9,7 +9,9 @@
 import { jira } from './jira.js';
 import { toMs } from './capacity.js';
 import { getState, setState, londonDate } from './sync.js';
+import { CUSTOMER_CATEGORIES } from './jira.js';
 import {
+  text, options, num, regionOf, regionMap, fieldIds, overridesAndSeeds, thisMonth,
   F, OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, isTokenInvoice, invoiceState, snapshotRows, historyRow, metrics, historyFrom,
   shiftMonth, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit,
 } from './wip.js';
@@ -66,6 +68,10 @@ export async function step(env) {
   const b = budget(env, RUN_CALLS);
   const out = { phase: s.phase };
   try {
+    if (s.phase === 'discover') {
+      await discover(env, b, s);
+      if (s.phase === 'discover') { out.partial = true; out.calls = b.used; await saveState(env, s); return out; }
+    }
     if (s.phase === 'statuses') {
       const list = await b.call('/rest/api/3/status');
       const map = {};
@@ -142,6 +148,7 @@ export async function step(env) {
       }
     }
     if (s.phase === 'compute') {
+      if (s.older) out.placed = await placeOlder(env);
       out.result = await compute(env);
       Object.assign(s, { pending: false, phase: null, doneAt: new Date().toISOString(), result: out.result, error: null });
       await saveState(env, s);
@@ -259,7 +266,7 @@ export function stateAt(order, items, at, statuses) {
     if (moves.length) doneAt = londonDate(moves[moves.length - 1].t);
   }
   return {
-    status: os.name, progress: floorPct(level1.filter(done).length, level1.length) ?? 0, nonAdmin: floorPct(work.filter(done).length, work.length),
+    status: os.name, cat: os.cat, progress: floorPct(level1.filter(done).length, level1.length) ?? 0, nonAdmin: floorPct(work.filter(done).length, work.length),
     invoiced: round4(invoiced), paid: round4(paid), doneAt, items: level1.length,
   };
 }
@@ -325,6 +332,125 @@ async function compute(env) {
   return { rows: rebuilt, notFound, months: [...touched.values()].reduce((t, s) => t + s.size, 0) };
 }
 
+// ---------- months from before the old sheets ----------
+// With no WIP sheet for them, the orders on the WIP each month are worked out from Jira alone:
+// every order (an Epic in a customer project) made by the end of the month and not already Done
+// when it began. Its value, quote number and division are what Jira has on it (or, if it's on a
+// later sheet, the sheet's), and the rest is rebuilt from its history like any other month.
+
+const OLD_PAGES = 8;
+const cut = (month) => `${month}-01`;
+
+// The first month each country has from a sheet or the hub; older months are made from Jira.
+// A country with no months kept at all starts from this month.
+async function firstMonths(env) {
+  const { results } = await env.DB.prepare("SELECT region, MIN(month) AS m FROM wip_snapshots WHERE source IS NOT 'jira:jira' GROUP BY region").all();
+  const out = {};
+  for (const r of results) if (['uk', 'sa'].includes(r.region) && r.m) out[r.region] = r.m;
+  return out;
+}
+
+async function discover(env, b, s) {
+  const first = await firstMonths(env);
+  const before = cut(Object.values(first).sort().at(-1) || thisMonth());
+  const ids = await fieldIds(env, b).catch(() => ({}));
+  const projects = await regionMap(env);
+  const fields = ['summary', 'status', 'issuetype', 'project', 'created', 'labels', 'parent', F.upfront, F.quote, F.entity, F.share, ids.customerItem].filter(Boolean);
+  const scope = `(cf[${F.entity.split('_')[1]}] is not EMPTY OR category in (${CUSTOMER_CATEGORIES.map((c) => `"${c}"`).join(', ')}))`;
+  for (;;) {
+    const jql = `issuetype = Epic AND ${scope} AND created < "${before}"${s.since ? ` AND created >= "${s.since}"` : ''} ORDER BY created ASC`;
+    const { issues, more } = await search(b, jql, fields, { pages: OLD_PAGES });
+    const stmts = [];
+    for (const i of issues) {
+      const f = i.fields || {};
+      const project = projects.get(String(f.project?.key || i.key.split('-')[0]).toUpperCase());
+      const region = regionOf(text(f[F.entity]), project);
+      if (!region) continue;
+      const custom = ids.customerItem ? options(f[ids.customerItem]).map((o) => lower(o.value)) : [];
+      stmts.push(env.DB.prepare(
+        `INSERT INTO wip_old_orders (issue_id, issue_key, region, org, title, upfront, quote_no, labels, created, customer_item) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(issue_id) DO UPDATE SET issue_key = excluded.issue_key, region = excluded.region, org = excluded.org, title = excluded.title, upfront = excluded.upfront,
+           quote_no = excluded.quote_no, labels = excluded.labels, created = excluded.created, customer_item = excluded.customer_item`
+      ).bind(String(i.id), i.key, region, f.project?.name || project?.name || '', f.summary || '', num(f[F.upfront]), text(f[F.quote]) || null,
+        JSON.stringify(f.labels || []), String(f.created || '').slice(0, 10) || null, custom.includes('customer item') ? 1 : 0));
+      stmts.push(pastStatement(env, i, i.id, 0));
+    }
+    await runAll(env, stmts);
+    s.found = (s.found || 0) + issues.length;
+    if (!more) { s.phase = 'statuses'; s.since = null; return; }
+    // Carry on from the day of the last one read (those on that day are read again, and kept once).
+    const last = String(issues.at(-1)?.fields?.created || '').slice(0, 10);
+    if (!last || last === s.since) { s.phase = 'statuses'; s.since = null; return; }
+    s.since = last;
+    if (b.left() < OLD_PAGES + 1) return;
+  }
+}
+
+// Division from the order's labels, as the hub reads them for current orders; otherwise by value.
+function oldDivision(labels, value) {
+  let list = [];
+  try { list = JSON.parse(labels || '[]'); } catch { /* none */ }
+  const found = new Set();
+  for (const l of list) { const t = lower(l); if (/service/.test(t)) found.add('ServiceTeam'); else if (/project/.test(t)) found.add('ProjectsTeam'); }
+  if (found.size === 1) return [...found][0];
+  if (found.has('ProjectsTeam')) return 'ProjectsTeam';
+  return value === null || value === undefined || value < 10000 ? 'ServiceTeam' : 'ProjectsTeam';
+}
+
+// Each older month's orders, put on the WIP for compute() to fill in as it does any other month.
+async function placeOlder(env) {
+  let statuses = {};
+  try { statuses = JSON.parse((await getState(env, 'wip_status_map')) || '{}'); } catch { /* names as read */ }
+  const first = await firstMonths(env);
+  const { results: olds } = await env.DB.prepare('SELECT * FROM wip_old_orders WHERE customer_item = 0 AND created IS NOT NULL').all();
+  if (!olds.length) return { orders: 0, rows: 0 };
+  const { over, seed } = await overridesAndSeeds(env, olds.map((o) => o.issue_key));
+  const byId = new Map();
+  for (const part of chunk(olds.map((o) => o.issue_id), IN)) {
+    for (const o of (await env.DB.prepare(`SELECT * FROM wip_past_items WHERE level = 0 AND issue_id IN (${marks(part.length)})`).bind(...part).all()).results) byId.set(o.issue_id, { ...o, ev: sortedEvents(o), items: [] });
+  }
+  for (const part of chunk([...byId.keys()], IN)) {
+    for (const i of (await env.DB.prepare(`SELECT * FROM wip_past_items WHERE level > 0 AND order_id IN (${marks(part.length)})`).bind(...part).all()).results) {
+      byId.get(i.order_id)?.items.push({ ...i, ev: sortedEvents(i) });
+    }
+  }
+  const stmts = [];
+  let used = 0;
+  for (const o of olds) {
+    const past = byId.get(o.issue_id);
+    if (!past || over.get(o.issue_key)?.excluded) continue;
+    const end = first[o.region] || thisMonth();
+    const value = over.get(o.issue_key)?.upfront ?? seed.get(o.issue_key)?.upfront ?? o.upfront ?? null;
+    const division = over.get(o.issue_key)?.division || seed.get(o.issue_key)?.division || oldDivision(o.labels, value);
+    const accepted = seed.get(o.issue_key)?.accepted || o.created;
+    let placed = false;
+    for (let m = o.created.slice(0, 7); m < end; m = shiftMonth(m, 1)) {
+      // Done before the month began: no longer on the WIP.
+      const atStart = stateAt(past, past.items, londonMidnight(`${m}-01`), statuses);
+      if (atStart.cat === 'done' && m > o.created.slice(0, 7)) break;
+      const st = stateAt(past, past.items, monthEnd(m), statuses);
+      stmts.push(env.DB.prepare(
+        `INSERT OR IGNORE INTO wip_snapshots (month, issue_key, region, org, title, status, division, upfront, token, quote_no, accepted, done_at, progress, non_admin, invoiced, paid, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, 'jira:jira')`
+      ).bind(m, o.issue_key, o.region, seed.get(o.issue_key)?.org || o.org, seed.get(o.issue_key)?.title || o.title, st.status, division, value,
+        seed.get(o.issue_key)?.quote_no || o.quote_no, accepted, st.doneAt, st.progress, st.nonAdmin, st.invoiced, st.paid));
+      placed = true;
+      if (st.cat === 'done') break;
+    }
+    if (placed) used++;
+  }
+  await runAll(env, stmts);
+  return { orders: used, rows: stmts.length };
+}
+
+// Asked for from the WIP settings: older months from Jira alone.
+export async function startOlder(env, viewer) {
+  mustEdit(viewer);
+  const s = (await readState(env)) || {};
+  await saveState(env, { ...s, pending: true, older: true, phase: 'discover', since: null, found: 0, queuedAt: new Date().toISOString(), error: null });
+  return { ok: true };
+}
+
 // ---------- what management sees ----------
 
 export async function status(env) {
@@ -333,7 +459,9 @@ export async function status(env) {
     `SELECT (SELECT COUNT(*) FROM wip_past_items WHERE level = 0) AS orders, (SELECT COUNT(*) FROM wip_past_items) AS items,
             (SELECT COUNT(*) FROM wip_past_items WHERE events IS NOT NULL) AS logs`
   ).first();
-  return { ...(s || {}), missing: (s?.missing || []).slice(0, 200), missingCount: (s?.missing || []).length, counts };
+  const older = await env.DB.prepare(`SELECT COUNT(*) AS orders, SUM(CASE WHEN upfront IS NULL THEN 1 ELSE 0 END) AS noValue, MIN(created) AS since,
+    (SELECT MIN(month) FROM wip_snapshots WHERE source = 'jira:jira') AS fromMonth FROM wip_old_orders WHERE customer_item = 0`).first().catch(() => null);
+  return { ...(s || {}), missing: (s?.missing || []).slice(0, 200), missingCount: (s?.missing || []).length, counts, older };
 }
 
 // Month by month, how far Jira's history and the old sheet differ.

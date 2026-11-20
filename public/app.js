@@ -12190,10 +12190,11 @@ async function invTermsClick(event) {
 
 // ---------- WIP: settings ----------
 
-const WIP_REBUILD_PHASES = { statuses: 'Starting', keys: 'Finding each order in Jira', children: 'Reading what was under each order',
+const WIP_REBUILD_PHASES = { discover: 'Finding the older orders in Jira', statuses: 'Starting', keys: 'Finding each order in Jira', children: 'Reading what was under each order',
   subs: 'Reading sub-tasks', logs: 'Reading each item\'s change history', compute: 'Working out each month' };
 function wipRebuildHtml(r) {
   const c = r.counts || {};
+  const o = r.older || {};
   const state = r.pending
     ? `<p><strong>${esc(WIP_REBUILD_PHASES[r.phase] || 'Waiting to start')}.</strong> ${n(c.orders)} orders and ${n(c.items)} items found so far; history read for ${n(c.logs)} of them.
         It carries on by itself a few minutes at a time, so this can take a few hours the first time.</p>`
@@ -12206,6 +12207,11 @@ function wipRebuildHtml(r) {
       <p>The old sheets say which orders were on the WIP each month, with their value and division. Each order's status, progress, and what was invoiced and paid are then rebuilt from Jira's change history as they stood on the last day of that month. History compares the two.</p>
       ${state}${r.error ? `<p class="bad">Last problem: ${esc(r.error)}</p>` : ''}${missing}
       <div class="row"><button class="btn secondary" data-wips-rebuild="1"${r.pending ? ' disabled' : ''}>Rebuild again</button></div>
+      <h3 style="margin-top:1.25rem">Months before the old sheets</h3>
+      <p>With no sheet for them, the orders on the WIP each month are worked out from Jira alone: every order made by the end of the month and not already Done when it began, with the value, quote number and division Jira has on it (or a later sheet's, where it has one). The rest is rebuilt from history as above. Orders with no value in Jira count in the order numbers but add nothing to the money.</p>
+      ${o.orders ? `<p>${n(o.orders)} older order${o.orders === 1 ? '' : 's'} found, made from ${esc(fullDate(o.since))}${o.noValue ? `; ${n(o.noValue)} have no value in Jira` : ''}.${o.fromMonth ? ` The WIP now goes back to ${esc(wipMonthName(o.fromMonth))}.` : ''}</p>` : ''}
+      ${r.pending && r.phase === 'discover' ? `<p class="muted">${n(r.found || 0)} found so far.</p>` : ''}
+      <div class="row"><button class="btn secondary" data-wips-older="1"${r.pending ? ' disabled' : ''}>${o.orders ? 'Look for older orders again' : 'Add the older months from Jira'}</button></div>
     </div>`;
 }
 
@@ -12405,6 +12411,10 @@ async function wipSettingsClick(event) {
     return true;
   }
   if (t('[data-wips-import-cancel]')) { wipImport = null; render(); return true; }
+  if (t('[data-wips-older]')) {
+    try { await api('/api/wip/rebuild-older', { method: 'POST', body: '{}' }); toast('Finding the older orders in Jira. It carries on by itself'); settingsData.wip = await api('/api/wip/settings').catch(() => settingsData.wip); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
   if (t('[data-wips-rebuild]')) {
     try { await api('/api/wip/rebuild', { method: 'POST', body: '{}' }); toast('Rebuilding the past months from Jira'); render(); } catch (err) { toast(err.message); }
     return true;

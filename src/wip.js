@@ -1636,7 +1636,7 @@ export async function importSheet(env, viewer, body) {
 }
 
 // Shared with the rebuild of past months from Jira's own history (wip-history.js).
-export { overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse, OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };
+export { text, options, num, regionOf, regionMap, fieldIds, overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse, OutOfCalls, budget, search, CATEGORY_TYPES, ADMIN_TYPES, isInvoice, snapshotRows, historyRow, chunk, marks, lower, floorPct, round4, runAll, IN, mustSee, mustEdit, regionArg };
 
 // ---------- Invoicing ----------
 // Every invoice milestone on the live orders, by where it has got to, and when the

@@ -801,6 +801,11 @@ async function route(request, env, url, user) {
       await Audit.record(env, user, { area: 'WIP', action: 'Past months rebuilt from Jira history' });
       return json(r);
     }
+    if (method === 'POST' && pathname === '/api/wip/rebuild-older') {
+      const r = await (await import('./wip-history.js')).startOlder(env, user);
+      await Audit.record(env, user, { area: 'WIP', action: 'Months before the old sheets added from Jira' });
+      return json(r);
+    }
     if (method === 'POST' && pathname === '/api/wip/import') {
       const r = await Wip.importSheet(env, user, body);
       await Audit.record(env, user, { area: 'WIP', action: 'Sheet read in', label: r.region.toUpperCase(),
