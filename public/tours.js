@@ -159,8 +159,10 @@ export const TOURS = {
 
   '#/quotes': {
     practice: true,
-    intro: 'Build a quote from what the job involves, and give your estimate when someone asks for it.',
+    intro: 'Keep new potential customers as prospects, build a quote from what the job involves, and give your estimate when someone asks for it.',
     steps: [
+      { when: (me) => me.user.can?.quotes, target: '[data-q-tab="prospects"]', title: 'Prospects', text: 'New potential customers start here, including ones sent from PSC: who they are, what they\'d like and who to talk to. Their quote is started from the prospect when they\'re ready.' },
+      { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-tab="builder"]', title: 'The Quote builder', text: 'Tap Quote builder, for quotes for existing customers.' },
       { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-new-open]', title: 'Start a quote', text: 'Tap Start a quote.' },
       { when: (me) => me.user.can?.quotes, act: 'type', target: '#q-customer-search', value: 'North', title: 'The customer', text: 'Type North to find Northgate Bakery.' },
       { when: (me) => me.user.can?.quotes, act: 'click', target: '[data-q-customer="NGB"]', title: 'Choose them', text: 'Tap Northgate Bakery.' },

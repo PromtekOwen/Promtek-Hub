@@ -180,7 +180,7 @@ Set all of this on each person under **Admin → Employees**. Changes to anyone'
 
 **Admin → Who can use what** lists every tile, then the parts inside tiles that are only for some people. For each one, choose **Everyone** (tiles only) or any mix of roles, teams and **Leads of** a team; the count and names of who that comes to update as you tick, before saving. Each change is in the audit log, takes effect within about half a minute, and **Back to how it started** returns it to the default. A tile's own settings cog shows the same for that tile.
 
-- A tile someone can't open is hidden from their home screen, and the hub refuses its requests: Condor Dev, Jobs, Obsolescence, Point of work, PSC, Service contracts, Capacity, WIP, Invoicing, IT support, Requests, Feedback, Vehicles, Employee of the Quarter, the XP shop and Reports. XP & rank, My time, Quotes, 8x8 calls and the Company chart are only hidden, because other parts of the hub (logging time, the home screen) use them.
+- A tile someone can't open is hidden from their home screen, and the hub refuses its requests: Condor Dev, Jobs, Obsolescence, Point of work, PSC, Service contracts, Capacity, WIP, Invoicing, IT support, Requests, Feedback, Vehicles, Employee of the Quarter, the XP shop and Reports. XP & rank, My time, Sales, 8x8 calls and the Company chart are only hidden, because other parts of the hub (logging time, the home screen) use them.
 - Inside the tiles: Team oversight, Build quotes, Condor planning, Employee of the Quarter results, Change the WIP (including payment terms), Contract insights, Feedback moderation and Developer tools.
 - Admins always have everything, and the Admin tile and Admin permission can't be changed, so nobody can lock themselves out.
 - **Tile admins**, at the bottom, name people for one tile at a time, whatever their role. A tile admin can open that tile, has everything inside it (every permission that belongs to the tile), and sees both the UK and South Africa there. It's also under each tile's settings cog. Use it for someone who needs, say, both countries' service contracts without being a manager.
@@ -189,7 +189,7 @@ Set all of this on each person under **Admin → Employees**. Changes to anyone'
 
 The hub is split between Promtek UK and Promtek Africa. Someone's country is the **Promtek Africa** tick on their employee record.
 
-- **Split tiles:** Jobs, Quotes, Service contracts, PSC, Capacity, Invoicing, Vehicles, 8x8 calls and Customers. People see their own country's customers and items, and nothing of the other country's. Everything else (the company chart, leaderboards, training, IMS and so on) is for the whole company. The WIP keeps its own UK/SA switch.
+- **Split tiles:** Jobs, Sales (quotes and prospects), Service contracts, PSC, Capacity, Invoicing, Vehicles, 8x8 calls and Customers. People see their own country's customers and items, and nothing of the other country's. Everything else (the company chart, leaderboards, training, IMS and so on) is for the whole company. The WIP keeps its own UK/SA switch.
 - **Who sees both:** admins, Management and developers everywhere, and tile admins in their tile.
 - **How an item's country is known:** its customer project's Jira category (Promtek UK Customers or Promtek SA Customers). PSC items on the PSC board go by the customer their Organization matches; until one is matched, both countries see them. A quote for a new potential customer goes by who started it. Capacity and the 8x8 everyone view go by the person. Each vehicle has a **Country** on Admin → Vehicles (UK until set).
 - **Involve user from SA / UK:** every PSC item and every job has this button. It lists the other country's people who can open that tile; whoever is picked sees that one item in their lists and works on it like their own (commenting, logging time, changing it). The names involved show on the item, with a × to stop involving someone. Each change is in the audit log.
@@ -376,6 +376,13 @@ The **COSHH** tile holds an assessment for each substance Promtek keeps, filled 
 - files each waiting PDF as a new version of its file, a dozen at a time (the button carries on until they're all done; if it's left part way, the hub carries on within the hour);
 - moves the page's control table on an issue (**Version** Issue 5 to Issue 6) with today as **Last Reviewed**, leaving Ref, Owner, Team and the rest alone;
 - adds a row at the top of **Version History**: Ref (IMS1.09.06 and so on), the same Owner and Team as the control table, Released today, and the **Release notes**. The hub writes the notes from what changed (reviewed with no changes, reviewed with changes, added, in or out of house); they can be edited before pressing.
+
+**Cancelling a change made by mistake.** Each change waiting for COSHH review complete is listed on the card with **Cancel**:
+- **A review**, with or without changes: it comes off, and the assessment goes back to how it was just before, including its review dates and the form.
+- **In or out of house**: it goes back, and so does the dates table on the page.
+- **A new product**: it's already on the page, so it's only left out of the release notes; remove the product itself if it shouldn't be there.
+
+Where the same assessment has more than one change waiting, the latest is cancelled first. Changes made before Cancel was added can be cancelled too, but a review with changes from then keeps its edits to the form, to be changed back by hand. Each cancel is in the audit log. Run `schema-077.sql` in the D1 console.
 
 The tables are found by their headings (Version and Last Reviewed; Ref and Released), so they can move about the page. If one can't be found, the rest is done and an alert says what to set by hand. Page changes are saved as minor edits. If reviews wait three days or more, people with Manage COSHH get a notification and email (again every three days) and an alert on their home screen.
 
@@ -636,8 +643,8 @@ No tier is covered on Christmas Eve, Christmas Day, Boxing Day, New Year's Eve o
 **PSC with no Organization.** PSC board items with time logged but no Organization are listed at the top of the Triage and Open tabs, with the Organization list to set it in Jira, **New Customer**, which opens the item ready to send to Prospects (see below), and **Mark resolved**. Turning an item into a quote, or sending it to Condor Dev, resolves its alert.
 
 **Not support work: Quote and Condor.** Each open item has two buttons, on its card in the Triage and Open lists (next to I'm on it) and on the item itself; from a card they open the item with the quote or Condor step ready. Run `schema-053.sql` in the D1 console before using them.
-- **Quote** turns it into a quote, with its categories and Promtek team chosen first. In a customer's project, the item's issue type is changed to Quote and it's moved under that project's Quote List; where Jira won't change the type (a different workflow, say), a new Quote is made there instead and linked to it. Either way the quote joins the Quotes tile, with the PSC's description, for the sales team.
-- On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. They go to **Prospects** in the Quotes tile (see Part 21), with the PSC's summary and description as what they're interested in and its reporter as the contact. The PSC board item gets an internal comment saying so, and leaves the PSC tile.
+- **Quote** turns it into a quote, with its categories and Promtek team chosen first. In a customer's project, the item's issue type is changed to Quote and it's moved under that project's Quote List; where Jira won't change the type (a different workflow, say), a new Quote is made there instead and linked to it. Either way the quote joins the Sales tile, with the PSC's description, for the sales team.
+- On the PSC board (no Organization), the customer is chosen first, and **New Potential Customer** at the top of the list takes a name instead. They go to **Prospects** in the Sales tile (see Part 21), with the PSC's summary and description as what they're interested in and its reporter as the contact. The PSC board item gets an internal comment saying so, and leaves the PSC tile.
 - **Condor** copies it to the MES project as a Bug, with its summary and description, linked to the PSC with the Sync To / Sync From link type (the PSC Syncs To the Bug). It then shows in Condor Dev's **PSC** tab, with the Bug's status, until the Bug is done.
 - Once either has gone through, the item, and its PSC board original, leave the PSC tile. If Jira refuses, the hub keeps it, tries again every few minutes, and emails admins after three tries.
 
@@ -1037,7 +1044,7 @@ Once agreed:
 
 Alert emails go to each lead or supervisor's own email address through the mail relay, falling back to `ALERT_EMAIL` when there's nobody to send them to.
 
-## Part 21: Quotes
+## Part 21: Sales (prospects and quotes)
 
 **Prospects.** New potential customers, with no project in Jira yet, are kept in the **Prospects** tab rather than as quotes. Each one records:
 - **The company:** name, industry or sector, website, size, sites, the country (for people who see both), and what their business does.
@@ -1071,7 +1078,7 @@ Alongside, the hub suggests hours from the three-point estimate, adjusted by how
 
 **The learned estimate** starts for each kind of work once 15 quoted jobs of that kind have finished. It learns how the counts, conditions, novelty and spec relate to actual hours and to the job's learned difficulty, and shows its figures beside the others.
 
-**Asking an engineer** emails them and puts the request at the top of Quotes for them. Their answer is posted as a comment on the Jira quote. If the category is still empty it fills it in; otherwise sales can choose to use it.
+**Asking an engineer** emails them and puts the request at the top of the Sales tile for them. Their answer is posted as a comment on the Jira quote. If the category is still empty it fills it in; otherwise sales can choose to use it.
 
 **When the quote becomes an order.** Every hour, the hub looks for orders whose Quote Number matches a quote. It then writes each category's job ELO and its hours (Original Estimate) to Jira, and the difficulty scores onto the order. Categories can arrive a little after the order, so it waits up to a week for them before saying any are missing. If Jira refuses, nothing is marked done, an alert is raised, and it tries again the next hour. Once linked, the quote is marked as won and can no longer change.
 

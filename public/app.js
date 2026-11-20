@@ -673,7 +673,7 @@ const pages = {
 
   '#/quotes': {
     band: () => (quotesView?.kind === 'prospect' ? `<h1>${esc(prosTitle || 'New prospect')}</h1><p>A potential customer: who they are, what they'd like from us, and who to talk to.</p>`
-      : `<h1>Quotes</h1><p>${quotesView?.kind === 'answer' ? 'Your view on how long it will take and how hard it is.' : 'What the job involves, how long it should take and how hard it is.'}</p>`),
+      : `<h1>Sales</h1><p>${quotesView?.kind === 'answer' ? 'Your view on how long it will take and how hard it is.' : !quotesView && quotesTab === 'prospects' && me?.user?.can?.quotes ? 'New potential customers: who they are and what they\'d like, until they\'re ready for a quote.' : 'What the job involves, how long it should take and how hard it is.'}</p>`),
     async render() {
       if (quotesView?.kind === 'new') return quoteNewHtml();
       if (quotesView?.kind === 'quote') return quoteHtml();
@@ -4054,10 +4054,15 @@ function coshhReleaseHtml(r) {
     </div>`;
   if (!r.waiting.length && !r.changes) return '';
   if (coshhNotes == null) coshhNotes = r.notes;
-  const kinds = { reviewed: 'reviewed, no changes', changed: 'reviewed, with changes' };
+  const kinds = { reviewed: 'reviewed, no changes', changed: 'reviewed, with changes', added: 'added', in: 'back in house', out: 'no longer in house' };
+  const listed = r.list || [];
+  const changeRow = (c) => `<li><button class="linklike" data-coshh-open="${c.itemId}">${c.no ? `COSHH ${esc(String(c.no))} ` : ''}${esc(c.product || '')}</button>
+      <small class="muted">${kinds[c.kind] || esc(c.kind)}${c.by ? `, by ${esc(c.by)}` : ''}${c.at ? `, ${esc(agoText(c.at))}` : ''}</small>
+      ${c.latest || c.kind === 'added' ? `<button class="linklike coshh-undo" data-coshh-undo="${c.id}" data-kind="${esc(c.kind)}" data-label="${esc(`${c.no ? `COSHH ${c.no} ` : ''}${c.product || ''}`)}">Cancel</button>` : ''}</li>`;
   return `<div class="card coshh-release">
       <h3 style="margin-top:0">${r.waiting.length ? `${r.waiting.length} review${r.waiting.length === 1 ? '' : 's'} waiting to go to Confluence` : 'Changes since the last COSHH review'}</h3>
-      ${r.waiting.length ? `<ul class="coshh-waiting">${r.waiting.map((w) => `<li><button class="linklike" data-coshh-open="${w.id}">COSHH ${esc(String(w.no || ''))} ${esc(w.product)}</button> <small class="muted">${kinds[w.kind]}</small></li>`).join('')}</ul>` : ''}
+      ${listed.length ? `<ul class="coshh-waiting">${listed.map(changeRow).join('')}</ul>`
+        : r.waiting.length ? `<ul class="coshh-waiting">${r.waiting.map((w) => `<li><button class="linklike" data-coshh-open="${w.id}">COSHH ${esc(String(w.no || ''))} ${esc(w.product)}</button> <small class="muted">${kinds[w.kind]}</small></li>`).join('')}</ul>` : ''}
       <p class="help">When the review is finished, ${r.waiting.length ? 'their PDFs go to the COSHH page as new versions of the same files, and ' : ''}the page moves on to the next issue${r.last ? ` after ${esc(r.last.ref)}` : ''}, with a row in its Version History. New products and in or out of house dates are on the page already.</p>
       <label><span>Release notes</span><textarea rows="3" id="coshh-notes" maxlength="1000">${esc(coshhNotes)}</textarea></label>
       <div class="row" style="margin-top:.6rem"><button class="btn" data-coshh-release="1">COSHH review complete</button></div>
@@ -4241,6 +4246,19 @@ async function coshhClick(event) {
   if (relBtn) { coshhNotes = view.querySelector('#coshh-notes')?.value ?? coshhNotes; return coshhSendRelease(relBtn, true); }
   const relGo = t('[data-coshh-release-go]');
   if (relGo) return coshhSendRelease(relGo, false);
+  const undo = t('[data-coshh-undo]');
+  if (undo) {
+    const k = undo.dataset.kind;
+    const what = { reviewed: 'This review comes off and its review dates go back.', changed: 'This review comes off, and the assessment goes back to how it was before it.',
+      in: 'It goes back to not in house, on the Confluence page too.', out: 'It goes back to in house, on the Confluence page too.',
+      added: 'It\'s already on the Confluence page, so it\'s only left out of the release notes. Remove the product itself if it shouldn\'t be there.' }[k] || '';
+    if (!confirm(`Cancel this change to ${undo.dataset.label}? ${what}`)) return;
+    return busy(undo, async () => {
+      const r = await api('/api/coshh/undo-change', { method: 'POST', body: JSON.stringify({ id: Number(undo.dataset.coshhUndo) }) });
+      toast(r.partial ? 'Cancelled. The edits made to the form in that review couldn\'t be undone, so change them back on the form if needed' : r.page?.error ? `Cancelled. The dates on the Confluence page catch up within the hour (${r.page.error})` : 'Change cancelled');
+      coshhNotes = null; coshhItem = null; await coshhLoad(true); render();
+    });
+  }
   const rev = t('[data-coshh-review]');
   if (rev) return busy(rev, async () => {
     const r = await api('/api/coshh/review', { method: 'POST', body: JSON.stringify({ id: Number(rev.dataset.coshhReview), note: view.querySelector('#coshh-review-note')?.value || '' }) });
@@ -6808,7 +6826,7 @@ async function modifiersClick(event) {
 
 let quotesView = null;      // null, { kind: 'new' }, { kind: 'quote', id } or { kind: 'answer', id }
 let quotesScope = 'open';
-let quotesTab = 'builder';   // 'builder' (quotes made here) or 'open' (every open quote in Jira)
+let quotesTab = 'prospects'; // 'prospects' (new potential customers), 'builder' (quotes made here) or 'open' (every open quote in Jira)
 let quotesTeam = '';         // team filter for the builder list
 let quotesOpen = { customer: '', team: '', status: '', q: '', sort: 'new' };
 let quotesOpenData = null;
@@ -6999,7 +7017,7 @@ async function quoteAnswerHtml() {
 
 async function quotesHomeHtml() {
   const data = await api(`/api/quotes?scope=${quotesScope}`);
-  const tabs = data.canCreate ? `<div class="tabs q-tabs">${[['builder', 'Quote builder'], ['prospects', 'Prospects'], ['open', 'Open quotes']].map(([k, l]) =>
+  const tabs = data.canCreate ? `<div class="tabs q-tabs">${[['prospects', 'Prospects'], ['builder', 'Quote builder'], ['open', 'Open quotes']].map(([k, l]) =>
     `<button class="tab${quotesTab === k ? ' on' : ''}" data-q-tab="${k}">${l}</button>`).join('')}</div>` : '';
   if (data.canCreate && quotesTab === 'open') return `${tabs}${await quotesOpenHtml()}`;
   if (data.canCreate && quotesTab === 'prospects') return `${tabs}${await prospectsHtml()}`;
@@ -7100,7 +7118,7 @@ async function prospectHtml() {
     ? `<section class="card pros-quote"><h2>Their quote</h2><p style="margin:0">${esc(p.quote_title || 'Quote')}${p.quote_key ? ` · ${esc(p.quote_key)}` : ''} · ${esc({ open: 'Being worked on', ready: 'Ready to send', accepted: 'Accepted', lost: 'Not going ahead', won: 'Became an order' }[p.quote_status] || p.quote_status || '')}</p>
         ${p.project_key ? `<p class="help">They're a customer now, as ${esc(p.project_key)}. Their address, contact and what's known about them are on their page in Customers.</p>
           <div class="row"><a class="btn secondary" href="#/customers" data-pros-customer="${esc(p.project_key)}">Open in Customers</a></div>`
-          : '<p class="help">It\'s kept in the Quotes tile until they have a project in Jira, then goes into its Quote List, and these details go into the Customers tile.</p>'}
+          : '<p class="help">It\'s kept in the Sales tile until they have a project in Jira, then goes into its Quote List, and these details go into the Customers tile.</p>'}
         <div class="row"><button class="btn secondary" data-pros-quote-open="${p.quote_id}">Open the quote</button></div></section>`
     : p.status === 'lost' ? ''
     : (() => {
@@ -15028,8 +15046,8 @@ async function pscHandHtml(d) {
         <li class="q-prospect-row"><button class="linklike" data-psc-hand-prospect="1"><strong>New Potential Customer</strong></button> <span class="muted">No project in Jira yet</span></li>
         ${(pscCustomers || []).map((c) => `<li data-psc-hand-row><button class="linklike" data-psc-hand-customer="${esc(c.key)}" data-name="${esc(c.name)}">${esc(c.name)}</button> <span class="muted">${esc(c.key)}</span></li>`).join('')}</ul>
       ${h.prospectMode ? `<label style="margin-top:.75rem">New potential customer's name<input type="text" data-psc-hand-field="prospect" value="${esc(h.prospect || '')}" placeholder="The company asking"></label>
-        <p class="help">They go to Prospects in the Quotes tile, with what they asked here and who asked it, for the sales team to fill in and quote when they're ready.</p>` : ''}`
-    : `<p>It becomes a Quote in ${esc(d.customer || d.project)}'s Quote List in Jira, and joins the Quotes tile for the sales team.</p>`;
+        <p class="help">They go to Prospects in the Sales tile, with what they asked here and who asked it, for the sales team to fill in and quote when they're ready.</p>` : ''}`
+    : `<p>It becomes a Quote in ${esc(d.customer || d.project)}'s Quote List in Jira, and joins the Sales tile for the sales team.</p>`;
   if (onBoard && h.prospectMode) {
     return `<div class="psc-hand card-inset">
       <h3>Turn into a quote</h3>
@@ -17218,7 +17236,7 @@ const TILE_TABS = {
   '#/invoicing': [() => invTab, (v) => { invTab = v; }, 'invoices'],
   '#/contracts': [() => conTab, (v) => { conTab = v; }, 'contracts'],
   '#/psc': [() => pscTab, (v) => { pscTab = v; }, 'open'],
-  '#/quotes': [() => quotesTab, (v) => { quotesTab = v; }, 'builder'],
+  '#/quotes': [() => quotesTab, (v) => { quotesTab = v; }, 'prospects'],
   '#/nearmiss': [() => nmTab, (v) => { nmTab = v; }, 'report'],
   '#/condor': [() => condorTab, (v) => { condorTab = v; }, 'day'],
   '#/feedback': [() => fbTab, (v) => { fbTab = v; }, 'board'],

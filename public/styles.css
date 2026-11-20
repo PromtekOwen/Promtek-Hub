@@ -2784,3 +2784,4 @@ p .cust-shield { width: 18px; height: 18px; }
 .cust-about dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .5rem 1rem; margin: 0; }
 .cust-about dt { font-size: .82rem; color: var(--muted); }
 .cust-about dd { margin: 0; white-space: pre-wrap; }
+.coshh-undo { margin-left: .5rem; font-size: .9rem; }

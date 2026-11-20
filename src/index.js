@@ -1126,7 +1126,7 @@ async function route(request, env, url, user) {
     }
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
     const post = { save: C.save, submit: C.submit, review: C.review, 'in-house': C.setInHouse, locations: C.setLocations, details: C.setDetails, remove: C.remove,
-      'photo-remove': C.removePhoto, refile: C.refile, import: C.importFromConfluence, change: C.change, release: C.release, 'release-continue': C.continueRelease };
+      'photo-remove': C.removePhoto, refile: C.refile, import: C.importFromConfluence, change: C.change, release: C.release, 'release-continue': C.continueRelease, 'undo-change': C.undoChange };
     const sub = pathname.slice('/api/coshh/'.length);
     if (method === 'POST' && post[sub]) return json(await post[sub](env, user, body));
   }

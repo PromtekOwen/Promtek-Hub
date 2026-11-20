@@ -42,10 +42,10 @@ export const MODULES = [
   },
   {
     id: 'quotes',
-    name: 'Quotes',
+    name: 'Sales',
     route: '#/quotes',
     icon: icon('<path d="M6 3.5h9l3 3V20.5H6z"/><path d="M9 10h6M9 13.5h6M9 17h3.5"/>'),
-    detail: (me) => (me.user.can?.quotes ? 'Build a quote from what the job involves' : 'Estimates you have been asked for'),
+    detail: (me) => (me.user.can?.quotes ? 'Prospects, and quotes built from what the job involves' : 'Estimates you have been asked for'),
   },
   {
     id: 'jobs',

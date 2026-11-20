@@ -164,7 +164,7 @@ async function doQuote(env, h) {
     await comment(`Turned into quote ${q.quote_key} from the PSC tile.`);
     return q.quote_key;
   }
-  await comment(`Turned into a quote for ${quote.prospect || 'a new potential customer'} from the PSC tile. It waits in the hub's Quotes tile until they have a project in Jira.`);
+  await comment(`Turned into a quote for ${quote.prospect || 'a new potential customer'} from the PSC tile. It waits in the hub's Sales tile until they have a project in Jira.`);
   return null;
 }
 

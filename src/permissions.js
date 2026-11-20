@@ -64,7 +64,7 @@ export const TILES = {
   xp: { name: 'XP & rank' },
   time: { name: 'My time' },
   condor: { name: 'Condor Dev', groups: ['management', 'lead'], teams: ['Condor', 'Condor Dev'] },
-  quotes: { name: 'Quotes' },
+  quotes: { name: 'Sales' },
   jobs: { name: 'Jobs' },
   obsolescence: { name: 'Obsolescence' },
   pow: { name: 'Point of work' },

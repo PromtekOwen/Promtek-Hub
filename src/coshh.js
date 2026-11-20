@@ -219,9 +219,17 @@ async function buildPdf(env, r, data) {
 }
 
 // What's changed since the last "COSHH review complete", for its release notes.
-async function logChange(env, r, kind, viewer) {
-  await env.DB.prepare('INSERT INTO coshh_changes (item_id, coshh_no, product, kind, by_name, at) VALUES (?, ?, ?, ?, ?, ?)')
-    .bind(r.id, r.coshh_no || null, r.product || '', kind, viewer ? nameOf(viewer) : null, new Date().toISOString()).run();
+// How the assessment was just before, so a change made by mistake can be cancelled.
+const UNDO_FIELDS = ['product', 'data', 'status', 'source', 'assessed_by', 'assessed_by_id', 'assessed_on', 'last_review_on', 'next_review_on', 'review_told', 'pending', 'release_n',
+  'in_house', 'in_house_by', 'in_house_at', 'in_date', 'out_date'];
+async function logChange(env, r, kind, viewer, before = null) {
+  const args = [r.id, r.coshh_no || null, r.product || '', kind, viewer ? nameOf(viewer) : null, new Date().toISOString()];
+  const snap = before ? JSON.stringify(Object.fromEntries(UNDO_FIELDS.map((f) => [f, before[f] ?? null]))) : null;
+  try {
+    await env.DB.prepare('INSERT INTO coshh_changes (item_id, coshh_no, product, kind, by_name, at, before_state) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(...args, snap).run();
+  } catch {
+    await env.DB.prepare('INSERT INTO coshh_changes (item_id, coshh_no, product, kind, by_name, at) VALUES (?, ?, ?, ?, ?, ?)').bind(...args).run();
+  }
 }
 
 // A review today: added to the Next Reviews columns, or in place of one already made today.
@@ -323,7 +331,7 @@ export async function review(env, viewer, { id, note }) {
   data.reviews = withReview(data.reviews, viewer, note);
   await env.DB.prepare('UPDATE coshh_items SET data = ?, last_review_on = ?, next_review_on = ?, review_told = NULL, pending = CASE WHEN release_n IS NULL THEN COALESCE(pending, ?) ELSE ? END, release_n = NULL, updated_at = ? WHERE id = ?')
     .bind(JSON.stringify(data), today, addYear(today), 'review', 'review', new Date().toISOString(), r.id).run();
-  await logChange(env, r, 'reviewed', viewer);
+  await logChange(env, r, 'reviewed', viewer, r);
   await record(env, viewer, { area: 'COSHH', action: 'reviewed a COSHH assessment', subjectType: 'coshh', subjectId: String(r.id),
     label: `${r.coshh_no ? `COSHH ${r.coshh_no}: ` : ''}${r.product}`.slice(0, 120), changes: note ? [{ label: 'Note', before: '', after: clip(note, 300) }] : [] }).catch(() => {});
   return { ok: true, nextReviewOn: addYear(today), reviews: data.reviews.length, waiting: true };
@@ -349,7 +357,7 @@ export async function change(env, viewer, { id, product, data, note, changed = t
       last_review_on = ?, next_review_on = ?, review_told = NULL, pending = ?, release_n = NULL, updated_at = ? WHERE id = ?`)
     .bind(clip(product, 200), JSON.stringify(kept), first ? clip(assessedBy, 120) || nameOf(viewer) : r.assessed_by, first ? null : r.assessed_by_id,
       first ? assessedOn || r.assessed_on : r.assessed_on, today, addYear(today), changed ? 'changes' : 'review', new Date().toISOString(), r.id).run();
-  await logChange(env, { ...r, product: clip(product, 200) }, changed ? 'changed' : 'reviewed', viewer);
+  await logChange(env, { ...r, product: clip(product, 200) }, changed ? 'changed' : 'reviewed', viewer, r);
   await record(env, viewer, { area: 'COSHH', action: changed ? 'reviewed a COSHH assessment and changed it' : 'reviewed a COSHH assessment', subjectType: 'coshh', subjectId: String(r.id),
     label: `COSHH ${r.coshh_no}: ${clip(product, 200)}`.slice(0, 120), changes: first ? [{ label: 'Kept by', before: 'Confluence', after: 'The hub' }] : [] }).catch(() => {});
   return { ok: true, id: r.id, nextReviewOn: addYear(today), waiting: true };
@@ -368,7 +376,7 @@ export async function setInHouse(env, viewer, { id, inHouse }) {
   const now = new Date().toISOString();
   await env.DB.prepare(`UPDATE coshh_items SET in_house = ?, in_house_by = ?, in_house_at = ?, ${on ? 'in_date' : 'out_date'} = ?, updated_at = ? WHERE id = ?`)
     .bind(on, nameOf(viewer), now, today, now, r.id).run();
-  await logChange(env, r, on ? 'in' : 'out', viewer);
+  await logChange(env, r, on ? 'in' : 'out', viewer, r);
   const page = await syncHouse(env).catch((err) => ({ error: err.message }));
   await record(env, viewer, { area: 'COSHH', action: on ? 'marked a COSHH product in house' : 'marked a COSHH product no longer in house', subjectType: 'coshh', subjectId: String(r.id), label: r.product }).catch(() => {});
   return { ok: true, inHouse: Boolean(on), page };
@@ -694,9 +702,55 @@ export async function releaseState(env) {
   return {
     waiting: waiting.map((w) => ({ id: w.id, no: w.coshh_no, product: w.product, kind: w.pending === 'review' ? 'reviewed' : 'changed' })),
     changes: changes.length, since: changes[0]?.at || null, notes: notesFor(changes),
+    list: changes.map((c) => ({ id: c.id, itemId: c.item_id, no: c.coshh_no, product: c.product, kind: c.kind, by: c.by_name, at: c.at,
+      latest: !changes.some((x) => x.item_id === c.item_id && x.id > c.id) })),
     open: open ? { n: open.n, ref: open.ref, status: open.status, error: open.error, left, by: open.by_name } : null,
     last: last ? { n: last.n, ref: last.ref, on: last.released_on, by: last.by_name } : null,
   };
+}
+
+// Cancelling a change made by mistake, before the review is completed. The assessment goes back to
+// how it was just before (a review, a change to the form, or in or out of house, with the dates table
+// on the page put back too). A new product is already on the page, so it's only left out of the notes.
+export async function undoChange(env, viewer, { id }) {
+  mustSee(viewer);
+  const c = await env.DB.prepare('SELECT * FROM coshh_changes WHERE id = ?').bind(Number(id)).first();
+  if (!c) throw refuse('That change has gone already.', 404);
+  if (c.release_n != null) throw refuse('That change has already gone to Confluence with a completed review.', 409);
+  const later = await env.DB.prepare('SELECT kind FROM coshh_changes WHERE item_id = ? AND id > ? AND release_n IS NULL ORDER BY id DESC LIMIT 1').bind(c.item_id, c.id).first();
+  if (later && c.kind !== 'added') throw refuse('A later change to the same assessment is waiting too. Cancel that one first.', 409);
+  const r = await env.DB.prepare('SELECT * FROM coshh_items WHERE id = ?').bind(c.item_id).first();
+  const label = `${c.coshh_no ? `COSHH ${c.coshh_no}: ` : ''}${c.product || ''}`.slice(0, 120);
+  let page = null;
+  if (r && c.kind !== 'added') {
+    const before = c.before_state ? json(c.before_state, null) : null;
+    const now = new Date().toISOString();
+    if (before) {
+      const fields = ['reviewed', 'changed'].includes(c.kind) ? UNDO_FIELDS.filter((f) => !['in_house', 'in_house_by', 'in_house_at', 'in_date', 'out_date'].includes(f))
+        : ['in_house', 'in_house_by', 'in_house_at', 'in_date', 'out_date'];
+      await env.DB.prepare(`UPDATE coshh_items SET ${fields.map((f) => `${f} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).bind(...fields.map((f) => before[f]), now, r.id).run();
+    } else if (['reviewed', 'changed'].includes(c.kind)) {
+      // From before changes were kept: the review it added comes off, and the dates go back to the one before.
+      const data = json(r.data, {});
+      const reviews = [...(data.reviews || [])];
+      if (reviews.length && reviews.at(-1).date === String(c.at).slice(0, 10)) reviews.pop();
+      data.reviews = reviews;
+      const lastOn = reviews.at(-1)?.date || r.assessed_on || null;
+      const others = await env.DB.prepare("SELECT 1 FROM coshh_changes WHERE item_id = ? AND id != ? AND release_n IS NULL AND kind IN ('reviewed', 'changed')").bind(r.id, c.id).first();
+      await env.DB.prepare('UPDATE coshh_items SET data = ?, last_review_on = ?, next_review_on = ?, pending = ?, updated_at = ? WHERE id = ?')
+        .bind(JSON.stringify(data), lastOn, lastOn ? addYear(lastOn) : r.next_review_on, others ? r.pending : null, now, r.id).run();
+    } else {
+      const on = c.kind === 'in' ? 0 : 1;
+      const today = String(c.at).slice(0, 10);
+      await env.DB.prepare(`UPDATE coshh_items SET in_house = ?, ${on ? 'out_date' : 'in_date'} = CASE WHEN ${on ? 'out_date' : 'in_date'} = ? THEN NULL ELSE ${on ? 'out_date' : 'in_date'} END, updated_at = ? WHERE id = ?`)
+        .bind(on, today, now, r.id).run();
+    }
+    if (c.kind === 'in' || c.kind === 'out') page = await syncHouse(env).catch((err) => ({ error: err.message }));
+  }
+  await env.DB.prepare('DELETE FROM coshh_changes WHERE id = ?').bind(c.id).run();
+  const what = { reviewed: 'review', changed: 'review with changes', added: 'new product', in: 'back in house', out: 'no longer in house' }[c.kind] || c.kind;
+  await record(env, viewer, { area: 'COSHH', action: `cancelled a COSHH change (${what})`, subjectType: 'coshh', subjectId: String(c.item_id || ''), label }).catch(() => {});
+  return { ok: true, kind: c.kind, page, partial: !c.before_state && c.kind === 'changed' };
 }
 
 // The button: everything waiting goes out as the next issue.
