@@ -8,7 +8,7 @@ import * as Disputes from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Quotes from './quotes.js';
 import * as Audit from './audit.js';
-import { access, canTile, loadAccessConfig, saveAccessConfig, rulesFrom, cleanRule, defaultTileRule, defaultPermissionRule, groupsOf, teamsOf, leadOf, TILES, PERMISSIONS, GROUPS, TEAMS as ALL_TEAMS } from './permissions.js';
+import { access, canTile, loadAccessConfig, saveAccessConfig, rulesFrom, cleanRule, defaultTileRule, defaultPermissionRule, groupsOf, teamsOf, leadOf, TILES, PERMISSIONS, GROUPS, TEAMS as ALL_TEAMS, onlyCountry, countryOf, COUNTRY_TILES } from './permissions.js';
 import * as OrgDocs from './orgdocs.js';
 import { getState, setState, ledgerChanged, ledgerStamp, remembered, pollRecent, runScheduled, londonDate, snapshotWeek, sendAlerts, sendRaisedSince, backdateRate, reconcileUser } from './sync.js';
 import { teamWeeks, engineerReport, leaderboard, eloReport, exportCsv } from './reports.js';
@@ -205,6 +205,18 @@ export default {
     ctx.waitUntil(runScheduled(env));
   },
 };
+
+// Involving someone from the other country in one PSC item or job, noted in the audit log.
+async function involveRoute(env, user, C, action, input) {
+  if (!canTile(user, input.kind === 'psc' ? 'psc' : 'jobs')) { const err = new Error('That tile isn\'t open to you.'); err.status = 403; throw err; }
+  const r = await C[action](env, user, input);
+  if (action !== 'involvement') {
+    const { results } = await env.DB.prepare('SELECT name FROM employees WHERE account_id = ?').bind(String(input.accountId || '')).all();
+    await Audit.record(env, user, { area: input.kind === 'psc' ? 'PSC' : 'Jobs', action: action === 'involve' ? 'Involved someone from the other country' : 'Stopped involving someone from the other country',
+      subjectType: 'issue', subjectId: input.key, label: `${input.key}: ${results[0]?.name || input.accountId}` });
+  }
+  return r;
+}
 
 // Combines the signed-in identity with the role stored against their profile.
 // The emails in ADMIN_EMAILS are always admins, so you can't lock yourself out.
@@ -477,7 +489,7 @@ async function route(request, env, url, user) {
         all: url.searchParams.get('all') === '1',
       }));
     }
-    if (method === 'GET' && pathname === '/api/calls/customers') return json(await Calls.customerList(env));
+    if (method === 'GET' && pathname === '/api/calls/customers') return json(await Calls.customerList(env, user));
     if (method === 'GET' && pathname === '/api/calls/pscs') return json(await Calls.openPscs(env, url.searchParams.get('projectKey')));
     if (method === 'POST' && pathname === '/api/calls/link') return json(await Calls.linkNumber(env, user, body));
     if (method === 'POST' && pathname === '/api/calls/handled') return json(await Calls.markHandled(env, user, body));
@@ -669,6 +681,11 @@ async function route(request, env, url, user) {
       if (method === 'POST' && pathname === '/api/psc/contacts/add') return json(await Contacts.add(env, user, body, orgs));
       if (method === 'POST' && pathname === '/api/psc/contacts/remove') return json(await Contacts.remove(env, user, body, orgs));
       if (method === 'POST' && pathname === '/api/psc/contacts/move') return json(await Contacts.move(env, user, body, orgs));
+    }
+    if (pathname === '/api/psc/involve' || pathname === '/api/psc/uninvolve') {
+      const C = await import('./country.js');
+      const input = method === 'POST' ? body : { key: url.searchParams.get('key') };
+      return json(await involveRoute(env, user, C, pathname.endsWith('uninvolve') ? 'uninvolve' : method === 'POST' ? 'involve' : 'involvement', { ...input, kind: 'psc' }));
     }
     if (method === 'GET' && pathname === '/api/psc/item') return json(await Psc.item(env, user, url.searchParams.get('key') || ''));
     if (method === 'GET' && pathname === '/api/psc/insights') return json(await Psc.insights(env, user));
@@ -918,7 +935,7 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/quotes/people') return json({ people: await Quotes.people(env) });
     if (method === 'GET' && pathname === '/api/quotes/customers') {
       const { customerList } = await import('./calls.js');
-      return json(await customerList(env));
+      return json(await customerList(env, user, 'quotes'));
     }
     if (method === 'POST' && pathname === '/api/quotes/create') return json(await Quotes.create(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/link-project') {
@@ -943,7 +960,8 @@ async function route(request, env, url, user) {
       const data = await Lists.openQuotes(env);
       const { customerProjects } = await import('./jira.js');
       const names = new Map((await customerProjects(env).catch(() => [])).map((p) => [p.key, p.name]));
-      return json({ ...data, quotes: data.quotes.map((q) => ({ ...q, customer: names.get(q.project) || q.hubCustomer || q.project })), teams: Quotes.QUOTE_TEAMS });
+      const country = await (await import('./country.js')).scopeFor(env, user, 'quotes');
+      return json({ ...data, quotes: data.quotes.filter((q) => country.seesProject(q.project)).map((q) => ({ ...q, customer: names.get(q.project) || q.hubCustomer || q.project })), teams: Quotes.QUOTE_TEAMS });
     }
     if (method === 'POST' && pathname === '/api/quotes/section') return json(await Quotes.saveSection(env, user, body));
     if (method === 'POST' && pathname === '/api/quotes/status') return json(await Quotes.setStatus(env, user, body));
@@ -957,6 +975,11 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/jobs') || pathname.startsWith('/api/modifiers') || pathname === '/api/approvals') {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
+    if (pathname === '/api/jobs/involve' || pathname === '/api/jobs/uninvolve') {
+      const C = await import('./country.js');
+      const input = method === 'POST' ? body : { kind: 'job', key: url.searchParams.get('key') };
+      return json(await involveRoute(env, user, C, pathname.endsWith('uninvolve') ? 'uninvolve' : method === 'POST' ? 'involve' : 'involvement', { ...input, kind: 'job' }));
+    }
     if (method === 'GET' && pathname === '/api/jobs') return json(await Disputes.listActive(env, user, { scope: url.searchParams.get('scope') || 'mine' }));
     if (method === 'GET' && pathname === '/api/jobs/category') return json(await Disputes.categoryDetail(env, url.searchParams.get('id')));
     if (method === 'POST' && pathname === '/api/jobs/dispute') return json(await Disputes.raiseDispute(env, user, body));
@@ -987,11 +1010,12 @@ async function route(request, env, url, user) {
 
   if (pathname.startsWith('/api/vehicles')) {
     const body = method === 'POST' ? await request.json().catch(() => ({})) : {};
-    if (method === 'GET' && pathname === '/api/vehicles') return json(await Vehicles.listVehicles(env));
-    if (method === 'GET' && pathname === '/api/vehicles/week') return json(await Vehicles.weekBookings(env, url.searchParams.get('week') || londonDate()));
+    const vehicleCountry = onlyCountry(user, 'vehicles');
+    if (method === 'GET' && pathname === '/api/vehicles') return json(await Vehicles.listVehicles(env, { country: vehicleCountry }));
+    if (method === 'GET' && pathname === '/api/vehicles/week') return json(await Vehicles.weekBookings(env, url.searchParams.get('week') || londonDate(), { country: vehicleCountry }));
     if (method === 'GET' && pathname === '/api/vehicles/mine') return json(await Vehicles.myBookings(env, user));
     if (method === 'GET' && pathname === '/api/vehicles/check-schema') return json(Vehicles.checkSchema());
-    if (method === 'GET' && pathname === '/api/vehicles/defects') return json(await Vehicles.listDefects(env, { status: url.searchParams.get('status') || 'open' }));
+    if (method === 'GET' && pathname === '/api/vehicles/defects') return json(await Vehicles.listDefects(env, { status: url.searchParams.get('status') || 'open', country: vehicleCountry }));
     if (method === 'POST' && pathname === '/api/vehicles/book') return json(await Vehicles.book(env, user, body));
     if (method === 'POST' && pathname === '/api/vehicles/cancel') return json(await Vehicles.cancelBooking(env, user, body.id));
     if (method === 'POST' && pathname === '/api/vehicles/check') return json(await Vehicles.submitCheck(env, user, body));
@@ -1461,7 +1485,9 @@ function weekStart() {
 async function getMe(env, user) {
   const base = {
     user: { email: user.email, role: user.role, team: user.team, teams: user.teams, leads: user.leads, groups: user.groups, can: user.can, tiles: user.tiles,
-      scopeTeams: user.scopeTeams, isAdmin: user.isAdmin, isLead: user.isLead },
+      scopeTeams: user.scopeTeams, isAdmin: user.isAdmin, isLead: user.isLead,
+      // UK or South Africa, and the split tiles where they see both countries.
+      country: user.country || 'uk', bothCountries: Object.fromEntries(COUNTRY_TILES.map((t) => [t, !onlyCountry(user, t)])) },
     jiraBaseUrl: env.JIRA_BASE_URL,
     teamsList: ALL_TEAMS,
     ledgerStart: await getState(env, 'ledger_start'),
@@ -1569,18 +1595,38 @@ async function accessOverview(env) {
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   return {
     groups: Object.entries(GROUPS).map(([k, g]) => [k, g.name]), teams: ALL_TEAMS,
-    tiles: Object.entries(TILES).map(([id, t]) => ({ id, name: t.name, rule: rules.tiles[id], changed: !same(rules.tiles[id], defaultTileRule(id)) })),
+    tiles: Object.entries(TILES).map(([id, t]) => ({ id, name: t.name, rule: rules.tiles[id], changed: !same(rules.tiles[id], defaultTileRule(id)),
+      admins: Array.isArray(config.tileAdmins?.[id]) ? config.tileAdmins[id] : [], split: COUNTRY_TILES.includes(id) })),
     permissions: Object.entries(PERMISSIONS).map(([key, p]) => ({ key, name: p.name, about: p.about, tile: p.tile || null, fixed: Boolean(p.fixed),
       rule: rules.permissions[key], changed: !same(rules.permissions[key], defaultPermissionRule(key)) })),
     people: results.map((e) => {
       const groups = groupsOf(e);
       const admin = groups.includes('admin') || admins.includes(String(e.email || '').toLowerCase());
-      return { id: e.account_id, name: e.name, admin, groups, teams: teamsOf(e), leads: groups.includes('lead') ? leadOf(e) : [] };
+      return { id: e.account_id, name: e.name, admin, groups, teams: teamsOf(e), leads: groups.includes('lead') ? leadOf(e) : [], country: countryOf(e) };
     }),
   };
 }
 
+// Tile admins: named people who can open a tile, do everything in it and see both countries there.
+async function saveTileAdmins(env, user, body) {
+  const tile = String(body.tile || '');
+  if (!TILES[tile]) { const err = new Error('That isn\'t a tile the hub knows.'); err.status = 400; throw err; }
+  const { results } = await env.DB.prepare("SELECT account_id, name FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending-%'").all();
+  const names = new Map(results.map((e) => [e.account_id, e.name]));
+  const people = [...new Set(Array.isArray(body.people) ? body.people.map(String) : [])].filter((id) => names.has(id));
+  const config = JSON.parse(JSON.stringify(await loadAccessConfig(env)));
+  config.tileAdmins ||= {};
+  const before = config.tileAdmins[tile] || [];
+  if (people.length) config.tileAdmins[tile] = people; else delete config.tileAdmins[tile];
+  await saveAccessConfig(env, config);
+  const say = (ids) => ids.map((id) => names.get(id) || id).join(', ') || 'Nobody';
+  await Audit.record(env, user, { area: 'Admin', action: 'Tile admins changed', subjectType: 'access', subjectId: `tileAdmins:${tile}`,
+    label: TILES[tile].name, changes: [{ label: 'Tile admins', before: say(before), after: say(people) }] });
+  return { ok: true, tile, people };
+}
+
 async function saveAccess(env, user, body) {
+  if (body.kind === 'tileAdmins') return saveTileAdmins(env, user, body);
   const kind = body.kind === 'tile' ? 'tile' : body.kind === 'permission' ? 'permission' : null;
   const key = String(body.key || '');
   const bad = (message) => { const err = new Error(message); err.status = 400; return err; };

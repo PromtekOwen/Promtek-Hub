@@ -7,7 +7,7 @@
 import { jira, searchJql, CUSTOMER_CATEGORY_IDS, BLOCKED_PROJECTS, projectKeyOf } from './jira.js';
 import { customerFilter } from './jobs.js';
 import { getState, setState } from './sync.js';
-import { canTile } from './permissions.js';
+import { canTile, onlyCountry } from './permissions.js';
 import { PSC_TYPES } from './psc.js';
 
 const CONTACT_FIELD = 'customfield_14261';
@@ -188,6 +188,8 @@ export async function list(env, viewer) {
     const { customerProjects } = await import('./jira.js');
     customers = (await customerProjects(env).catch(() => [])).filter((p) => !isTemplate(p.key)).map((p) => ({ project_key: p.key, name: p.name, region: p.region, last_update: null }));
   }
+  const only = onlyCountry(viewer, 'customers');
+  if (only) customers = customers.filter((c) => !c.region || c.region === only);
   const quotes = await countsBy(env, 'SELECT project_key, COUNT(*) AS n, MAX(updated_at) AS last FROM jira_quotes WHERE done = 0 GROUP BY project_key');
   const pscs = await countsBy(env, `SELECT project_key, SUM(CASE WHEN done = 0 THEN 1 ELSE 0 END) AS n, MAX(updated_at) AS last FROM psc_items WHERE issuetype IN (${marks(PSC_TYPES.length)}) GROUP BY project_key`, PSC_TYPES);
   const jobs = await countsBy(env, `SELECT project_key, SUM(CASE WHEN status_cat IS NOT 'done' THEN 1 ELSE 0 END) AS n, MAX(updated) AS last FROM wip_orders
@@ -211,10 +213,18 @@ export async function list(env, viewer) {
       contact: contactOut(primaryOf(peopleBy.get(k) || [])),
     };
   });
-  return { customers: rows, syncedAt: Number((await getState(env, 'customers_at')) || 0) || null, canStats: canStats(viewer) };
+  return { customers: rows, syncedAt: Number((await getState(env, 'customers_at')) || 0) || null, canStats: canStats(viewer), bothCountries: !only };
 }
 
 // ---------- one customer ----------
+
+// One customer, if they're from the viewer's country (or the viewer sees both).
+async function customerFor(env, viewer, raw) {
+  const c = await customerRow(env, raw);
+  const only = onlyCountry(viewer, 'customers');
+  if (only && c.region && c.region !== only) throw refuse(`${c.name} is a Promtek ${c.region === 'sa' ? 'Africa' : 'UK'} customer.`, 403);
+  return c;
+}
 
 async function customerRow(env, raw) {
   const key = projectKeyOf(String(raw || '').toUpperCase());
@@ -229,7 +239,7 @@ async function customerRow(env, raw) {
 
 export async function detail(env, viewer, raw) {
   mustSee(viewer);
-  const c = await customerRow(env, raw);
+  const c = await customerFor(env, viewer, raw);
   const k = c.project_key;
   const { results: items } = await env.DB.prepare('SELECT * FROM customer_items WHERE project_key = ? ORDER BY kind, updated DESC').bind(k).all();
   const { results: quotes } = await env.DB.prepare('SELECT issue_key, summary, status, assignee_name, created_at, updated_at FROM jira_quotes WHERE project_key = ? AND done = 0 ORDER BY updated_at DESC').bind(k).all();
@@ -280,7 +290,7 @@ const clip = (v, n = 300) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0
 async function mustManage(env, viewer, raw) {
   mustSee(viewer);
   if (!canManage(viewer)) throw refuse('Only admins can change a customer\'s sites and contacts.', 403);
-  return customerRow(env, raw);
+  return customerFor(env, viewer, raw);
 }
 async function note(env, viewer, c, action, label) {
   const { record } = await import('./audit.js');
@@ -452,7 +462,7 @@ export function emailOf(body) {
 
 export async function comms(env, viewer, raw, { fresh = false } = {}) {
   mustSee(viewer);
-  const c = await customerRow(env, raw);
+  const c = await customerFor(env, viewer, raw);
   const k = c.project_key;
   const cacheKey = `customer_comms:${k}`;
   if (!fresh) {
@@ -495,7 +505,7 @@ async function idsIn(env, sql, binds) { return (await env.DB.prepare(sql).bind(.
 export async function stats(env, viewer, raw, { fresh = false } = {}) {
   mustSee(viewer);
   if (!canStats(viewer)) throw refuse('Customer statistics are for management.', 403);
-  const c = await customerRow(env, raw);
+  const c = await customerFor(env, viewer, raw);
   const k = c.project_key;
   const cacheKey = `customer_stats:${k}`;
   if (!fresh) {

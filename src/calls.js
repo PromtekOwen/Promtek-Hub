@@ -2,6 +2,7 @@
 // engineer who took them, and turned into time logs or service items.
 import { searchJql, customerProjects, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { londonDate } from './sync.js';
+import { onlyCountry, countryOf } from './permissions.js';
 
 const PSC_TYPES = ['Snag', 'Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request'];
 const PSC_CLOSED = ['Resolved [Promtek]', 'Verified [Customer]'];
@@ -130,12 +131,28 @@ export async function myCalls(env, viewer, { date, all = false } = {}) {
   ).bind(viewer.accountId).all();
   const handled = new Map(actions.map((a) => [a.call_id, a]));
 
+  // The everyone view: their own country's calls, by who took them, or failing that, the customer's country.
+  let shown = mine;
+  const only = all ? onlyCountry(viewer, 'calls') : null;
+  if (only) {
+    const { results: staff } = await env.DB.prepare('SELECT name, chart_sa FROM employees WHERE active = 1').all();
+    const countryBy = new Map(staff.map((e) => [String(e.name || '').trim().toLowerCase(), countryOf(e)]));
+    const regions = new Map((await customerProjects(env).catch(() => [])).map((p) => [p.key, p.region]));
+    shown = mine.filter((call) => {
+      if (call.mine) return true;
+      const by = countryBy.get(String(call.handledBy || '').trim().toLowerCase());
+      if (by) return by === only;
+      const r = regions.get(known.get(call.other)?.project_key);
+      return !r || r === only;
+    });
+  }
+
   return {
     date: day,
-    total: calls.length,
+    total: only ? shown.length : calls.length,
     matched: calls.filter((c) => c.mine).length,
     showingAll: all,
-    calls: mine
+    calls: shown
       .sort((a, b) => b.startedAt - a.startedAt)
       .map((call) => ({
         ...call,
@@ -199,8 +216,10 @@ export async function openPscs(env, rawProjectKey) {
 }
 
 // Customer projects, for picking who an unknown number belongs to.
-export async function customerList(env) {
-  const projects = (await customerProjects(env)).map((p) => ({ key: p.key, name: p.name }));
+// Only their own country's, unless they see both.
+export async function customerList(env, viewer = null, tile = 'calls') {
+  const only = onlyCountry(viewer, tile);
+  const projects = (await customerProjects(env)).filter((p) => !only || p.region === only).map((p) => ({ key: p.key, name: p.name }));
   const seen = new Set();
   return { customers: projects.filter((p) => (seen.has(p.key) ? false : seen.add(p.key))) };
 }

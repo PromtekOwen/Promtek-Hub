@@ -9,7 +9,7 @@
 import { customerProjects } from './jira.js';
 import { getState, setState, londonDate } from './sync.js';
 import { budget, search, OutOfCalls, chunk, marks, IN } from './wip.js';
-import { TEAMS, canTile } from './permissions.js';
+import { TEAMS, canTile, onlyCountry, countryOf } from './permissions.js';
 import { workDaysOf, weekHoursOf, DEFAULT_DAYS } from './hours.js';
 
 const RUN_CALLS = 30;
@@ -155,13 +155,15 @@ export async function overview(env, viewer, { team = null } = {}) {
   if (!teams.length) throw refuse('You don\'t lead a team.');
   const today = londonDate();
   const monday = mondayOf(today);
+  // Their own country's people, unless they see both.
+  const only = onlyCountry(viewer, 'capacity');
   const { results: emps } = await env.DB.prepare(
-    `SELECT e.account_id, e.name, e.teams, e.team, e.weekly_hours, e.work_days, c.hours_per_week, c.days, c.away FROM employees e
+    `SELECT e.account_id, e.name, e.teams, e.team, e.chart_sa, e.weekly_hours, e.work_days, c.hours_per_week, c.days, c.away FROM employees e
        LEFT JOIN mes_capacity c ON c.account_id = e.account_id WHERE e.active = 1 AND e.account_id NOT LIKE 'pending-%' ORDER BY e.name`
   ).all();
   const teamOf = (e) => { const t = parse(e.teams, []); return t.length ? t : e.team ? [e.team] : []; };
   const people = emps.map((e) => ({ ...e, teamList: teamOf(e).filter((t) => TEAMS.includes(t)) }))
-    .filter((e) => e.teamList.some((t) => teams.includes(t)));
+    .filter((e) => e.teamList.some((t) => teams.includes(t)) && (!only || countryOf(e) === only));
   const ids = people.map((p) => p.account_id);
 
   const items = [];
@@ -260,12 +262,20 @@ export async function overview(env, viewer, { team = null } = {}) {
   });
   // Unassigned support requests, the first thing a lead hands out.
   const { results: unassigned } = await env.DB.prepare(
-    `SELECT issue_key, summary, org, status, priority, created_at FROM psc_items WHERE done = 0 AND assignee_id IS NULL ORDER BY created_at LIMIT 50`
+    `SELECT issue_key, project_key, summary, org, status, priority, created_at FROM psc_items WHERE done = 0 AND assignee_id IS NULL ORDER BY created_at LIMIT 50`
   ).all();
+  let regionOfPsc = () => null;
+  if (only) {
+    const { context } = await import('./psc.js');
+    const ctx = await context(env).catch(() => null);
+    const regions = new Map((ctx?.projects || []).map((p) => [p.key, p.region]));
+    regionOfPsc = (u) => regions.get(u.project_key === 'PSC' ? (u.org ? u.org.split(' | ').map(ctx.match).find(Boolean) : null) : u.project_key) || null;
+  }
+  const shownUnassigned = unassigned.filter((u) => !only || [null, only].includes(regionOfPsc(u)));
   const syncedAt = Number((await getState(env, 'capacity_sync_at')) || 0);
   return {
     teams, team: team && teams.includes(team) ? team : null, today, monday, people: out,
-    unassigned: unassigned.map((u) => ({ key: u.issue_key, summary: u.summary, org: u.org, status: u.status, priority: u.priority, days: daysSince(u.created_at, today) })),
+    unassigned: shownUnassigned.map((u) => ({ key: u.issue_key, summary: u.summary, org: u.org, status: u.status, priority: u.priority, days: daysSince(u.created_at, today) })),
     syncedAt: syncedAt ? new Date(syncedAt).toISOString() : null, error: (await getState(env, 'capacity_error')) || null,
     rules: { quietDays: QUIET_DAYS, stuckDays: STUCK_DAYS },
   };

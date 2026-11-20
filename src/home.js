@@ -3,7 +3,8 @@
 // news; the hub adds alerts of its own for things already waiting on someone.
 import { londonDate, mondayOf, raiseAlert } from './sync.js';
 import { record } from './audit.js';
-import { teamsOf, TEAMS } from './permissions.js';
+import { teamsOf, TEAMS, onlyCountry } from './permissions.js';
+import { scopeFor, pscRegions } from './country.js';
 import { pendingDisputes } from './disputes.js';
 import * as Modifiers from './modifiers.js';
 import * as Eotq from './eotq.js';
@@ -198,11 +199,14 @@ async function systemAlerts(env, viewer) {
   // PSCs and service contracts are the Service team's: its members and those leading it.
   const service = (viewer.teams || []).includes('Service') || (viewer.leads || []).includes('Service');
   if (service) {
-    const row = await env.DB.prepare(
-      `SELECT COUNT(*) AS n FROM psc_items p WHERE p.done = 0 AND p.assignee_id IS NULL AND p.team_first_at IS NULL
+    const { results: fresh } = await env.DB.prepare(
+      `SELECT p.project_key, p.org FROM psc_items p WHERE p.done = 0 AND p.assignee_id IS NULL AND p.team_first_at IS NULL
           AND p.issuetype NOT IN ('Snag', 'Sub-Snag') AND NOT (p.project_key = 'PSC' AND p.org IS NOT NULL)
           AND NOT EXISTS (SELECT 1 FROM psc_actions a WHERE a.issue_id = p.issue_id)`
-    ).first().catch(() => ({ n: 0 }));
+    ).all().catch(() => ({ results: [] }));
+    const onlyRegion = onlyCountry(viewer, 'psc');
+    const regionOf = onlyRegion ? await pscRegions(env) : null;
+    const row = { n: fresh.filter((p) => !regionOf || [null, onlyRegion].includes(regionOf(p))).length };
     if (row?.n) out.push({ key: 'psc-new', tone: 'important', title: row.n === 1 ? '1 new PSC needs picking up' : `${row.n} new PSCs need picking up`, body: 'Nobody has them or has looked at them yet.', link: '#/psc' });
   }
 
@@ -217,7 +221,9 @@ async function systemAlerts(env, viewer) {
   }
 
   if (service) {
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM contract_flags WHERE resolved_at IS NULL AND kind != 'psc-org'").first().catch(() => ({ n: 0 }));
+    const { results: flags } = await env.DB.prepare("SELECT contract_key FROM contract_flags WHERE resolved_at IS NULL AND kind != 'psc-org'").all().catch(() => ({ results: [] }));
+    const country = await scopeFor(env, viewer, 'contracts');
+    const row = { n: flags.filter((f) => !f.contract_key || country.seesProject(f.contract_key)).length };
     if (row?.n) out.push({ key: 'contracts', tone: 'info', title: `${plural(row.n, 'contract problem')} to look at`, body: 'Contract dates or acceptance to sort out.', link: '#/contracts' });
   }
   return out;
@@ -266,11 +272,13 @@ async function newOrderAlerts(env, viewer) {
   if (!leads.length || !viewer.groups?.includes('lead')) return [];
   const since = new Date(Date.now() - ORDER_DAYS * DAY_MS).toISOString().slice(0, 10);
   const { results } = await env.DB.prepare(
-    `SELECT o.issue_key, o.summary, o.org, o.created, COALESCE(v.division, s.division, o.division_jira) AS division
+    `SELECT o.issue_key, o.summary, o.org, o.created, o.region, COALESCE(v.division, s.division, o.division_jira) AS division
        FROM wip_orders o LEFT JOIN wip_overrides v ON v.issue_key = o.issue_key LEFT JOIN wip_seed s ON s.issue_key = o.issue_key
       WHERE o.created >= ? AND o.gone = 0 ORDER BY o.created DESC LIMIT 60`
   ).bind(since).all();
+  const onlyRegion = onlyCountry(viewer, 'jobs');
   const mine = results.filter((o) => {
+    if (onlyRegion && o.region && o.region !== onlyRegion) return false;
     const team = DIVISION_TEAM[o.division];
     return team ? leads.includes(team) : true;
   });
@@ -292,7 +300,9 @@ async function newPscAlerts(env, viewer) {
       WHERE done = 0 AND created_at >= ? AND issuetype NOT IN ('Snag', 'Sub-Snag') ORDER BY created_at DESC LIMIT 60`
   ).bind(since).all();
   const myName = viewer.employee?.name || viewer.name;
-  const others = results.filter((p) => !myName || p.reporter_name !== myName);
+  const onlyRegion = onlyCountry(viewer, 'psc');
+  const regionOf = onlyRegion ? await pscRegions(env) : null;
+  const others = results.filter((p) => (!myName || p.reporter_name !== myName) && (!regionOf || [null, onlyRegion].includes(regionOf(p))));
   const gone = await dismissedOf(env, viewer, 'psc-added', others.map((p) => p.issue_key));
   const fresh = others.filter((p) => !gone.has(p.issue_key));
   return grouped('psc-added', fresh,

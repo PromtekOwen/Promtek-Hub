@@ -183,6 +183,20 @@ Set all of this on each person under **Admin → Employees**. Changes to anyone'
 - A tile someone can't open is hidden from their home screen, and the hub refuses its requests: Condor Dev, Jobs, Obsolescence, Point of work, PSC, Service contracts, Capacity, WIP, Invoicing, IT support, Requests, Feedback, Vehicles, Employee of the Quarter, the XP shop and Reports. XP & rank, My time, Quotes, 8x8 calls and the Company chart are only hidden, because other parts of the hub (logging time, the home screen) use them.
 - Inside the tiles: Team oversight, Build quotes, Condor planning, Employee of the Quarter results, Change the WIP (including payment terms), Contract insights, Feedback moderation and Developer tools.
 - Admins always have everything, and the Admin tile and Admin permission can't be changed, so nobody can lock themselves out.
+- **Tile admins**, at the bottom, name people for one tile at a time, whatever their role. A tile admin can open that tile, has everything inside it (every permission that belongs to the tile), and sees both the UK and South Africa there. It's also under each tile's settings cog. Use it for someone who needs, say, both countries' service contracts without being a manager.
+
+### UK and South Africa
+
+The hub is split between Promtek UK and Promtek Africa. Someone's country is the **Promtek Africa** tick on their employee record.
+
+- **Split tiles:** Jobs, Quotes, Service contracts, PSC, Capacity, Invoicing, Vehicles, 8x8 calls and Customers. People see their own country's customers and items, and nothing of the other country's. Everything else (the company chart, leaderboards, training, IMS and so on) is for the whole company. The WIP keeps its own UK/SA switch.
+- **Who sees both:** admins, Management and developers everywhere, and tile admins in their tile.
+- **How an item's country is known:** its customer project's Jira category (Promtek UK Customers or Promtek SA Customers). PSC items on the PSC board go by the customer their Organization matches; until one is matched, both countries see them. A quote for a new potential customer goes by who started it. Capacity and the 8x8 everyone view go by the person. Each vehicle has a **Country** on Admin → Vehicles (UK until set).
+- **Involve user from SA / UK:** every PSC item and every job has this button. It lists the other country's people who can open that tile; whoever is picked sees that one item in their lists and works on it like their own (commenting, logging time, changing it). The names involved show on the item, with a × to stop involving someone. Each change is in the audit log.
+- **Alert emails** for PSCs and service contracts go to the Service team of the customer's country (falling back to everyone in the usual list if that country has nobody in Service). The home screen's PSC, order and contract alerts follow the same split.
+- **Theme:** Promtek Africa's people have the hub in green instead of blue, in light and dark.
+
+**Setting it up:** run `schema-075.sql` in the D1 console, tick **Promtek Africa** for each South African employee, and set each South African vehicle's country under Admin → Vehicles.
 
 ### Reports
 
@@ -399,7 +413,7 @@ Two things to set in Jira: make Peter the project lead with the default assignee
 
 ## Part 13: Vehicles
 
-- **The fleet** is managed on the Admin page: registration, make, model, MOT, insurance, tax and service dates, mileage, and who looks after repairs.
+- **The fleet** is managed on the Admin page: registration, make, model, MOT, insurance, tax and service dates, mileage, who looks after repairs, and the country it's in. People see their own country's vehicles (see UK and South Africa, in Part 10).
 - **Booking** is by hour, with clashes refused and off-road vehicles unbookable.
 - **The walkaround check** covers the same thirteen items as the paper form. A fail asks what's wrong and goes to admins and the maintenance contact. "Not fit to drive" takes the vehicle off the road until a lead clears the defect.
 - **The linked job moves on** when the check is done: New Order and Commissioning Site Visits to Commissioning, Service, Calibration and Service Contract Site Visits to Visit In-Progress. If that transition isn't available, the check still saves and the team lead is told.

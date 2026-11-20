@@ -8,6 +8,7 @@ import { ALL_FIELDS, categoryRows, customerFilter, disciplineOf, isDone, teamOf 
 import { raiseAlert, recalcIssues, getState, setState, sendAlerts } from './sync.js';
 import { weightedScore, jobEloFromScore } from './progression.js';
 import { forMe, leadsOfTeam } from './permissions.js';
+import { scopeFor } from './country.js';
 import { STAFF_FIELD } from './staff.js';
 
 export const DISPUTE_REASONS = [
@@ -116,6 +117,9 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
 
   // Theirs: categories they're in Promtek Staff Involved on (the hub adds anyone who logs time there).
   const mine = viewer.accountId ? await staffedCategories(env, viewer.accountId, cats) : new Set();
+  // Their own country's orders, any they've been involved in, and any they're on.
+  const country = await scopeFor(env, viewer, 'jobs');
+  const seen = (x) => country.sees({ project: x.epic_key, keys: [x.epic_key, x.issue_key] });
 
   const orders = new Map();
   const inTeam = (team) => viewer.teams?.includes(team) || (team === 'Condor' && viewer.teams?.includes('Projecting'));
@@ -128,7 +132,11 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     people.set(key, p);
   };
   const orderFor = (x, legacy = false) => {
-    if (!orders.has(x.epic_key)) orders.set(x.epic_key, { key: x.epic_key, summary: x.order_summary, customer: x.project_name, team: x.team, legacy, categories: [] });
+    if (!orders.has(x.epic_key)) {
+      const region = country.regionOf(x.epic_key);
+      orders.set(x.epic_key, { key: x.epic_key, summary: x.order_summary, customer: x.project_name, team: x.team, legacy, categories: [],
+        region, involved: country.involved.has(x.epic_key) });
+    }
     return orders.get(x.epic_key);
   };
   for (const c of cats) {
@@ -136,6 +144,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     if (scope === 'mine' && !isMine) continue;
     // Condor orders are Projecting's too.
     if (scope === 'team' && !inTeam(c.team)) continue;
+    if (!isMine && !seen(c)) continue;
     const o = overrides.get(c.issue_id);
     const estimate = o?.estimate_seconds ?? c.estimate_seconds;
     orderFor(c);
@@ -155,7 +164,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
   // on My team and All, every open item on every open one.
   const legacyItems = scope === 'mine'
     ? legacy.filter((i) => viewer.accountId && i.assignee === viewer.accountId && !i.done)
-    : legacy.filter((i) => !i.done && (scope === 'all' || inTeam(i.team)));
+    : legacy.filter((i) => !i.done && (scope === 'all' || inTeam(i.team)) && (i.assignee === viewer.accountId || seen(i)));
   for (const item of legacyItems) {
     orderFor(item, true).categories.push({
       id: item.issue_id, key: item.issue_key, summary: item.summary, legacy: true, status: item.status, done: item.done,
@@ -174,6 +183,11 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     if (!directory[id]) { const e = byId.get(id); directory[id] = { name: e?.name || 'Someone not in the hub', avatar: e?.avatar || null }; }
     return id;
   };
+  // Who from the other country has been involved in each order.
+  const { results: inv } = await env.DB.prepare("SELECT i.issue_key, i.account_id, e.name FROM item_involvements i LEFT JOIN employees e ON e.account_id = i.account_id WHERE i.kind = 'job'").all()
+    .catch(() => ({ results: [] }));
+  const involvedBy = new Map();
+  for (const r of inv) involvedBy.set(r.issue_key, [...(involvedBy.get(r.issue_key) || []), { id: r.account_id, name: r.name || 'Someone not in the hub' }]);
   const list = [...orders.values()].map((o) => {
     const p = people.get(o.key) || { assignee: null, staff: new Set() };
     for (const c of o.categories) {
@@ -183,9 +197,10 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     }
     const others = [...p.staff].filter((id) => id !== p.assignee).map(ref);
     others.sort((a, b) => directory[a].name.localeCompare(directory[b].name));
-    return { ...o, assignee: ref(p.assignee), people: others };
+    return { ...o, assignee: ref(p.assignee), people: others, involvedPeople: involvedBy.get(o.key) || [] };
   });
-  return { scope, orders: list, people: directory, reasons: DISPUTE_REASONS, canSetDifficulty: Boolean(viewer.isLead) };
+  return { scope, orders: list, people: directory, reasons: DISPUTE_REASONS, canSetDifficulty: Boolean(viewer.isLead), country: viewer.country || 'uk',
+    bothCountries: !country.only };
 }
 
 // ---------- each category's sub-tasks ----------
@@ -429,8 +444,9 @@ export async function pendingDisputes(env, viewer) {
     `SELECT d.*, e.name AS raised_by FROM job_disputes d LEFT JOIN employees e ON e.account_id = d.account_id
       WHERE d.status = 'pending' ORDER BY d.id`
   ).all();
-  // Waiting-for-you lists hold the viewer's own teams; anyone with oversight can still decide any.
-  return results.filter((d) => canDecideDispute(viewer, d) && forMe(viewer, d.team)).map((d) => ({ ...d, reasons: JSON.parse(d.reasons || '[]') }));
+  // Waiting-for-you lists hold the viewer's own teams and country; anyone with oversight can still decide any.
+  const country = await scopeFor(env, viewer, 'jobs');
+  return results.filter((d) => canDecideDispute(viewer, d) && forMe(viewer, d.team) && country.sees({ project: d.category_key, keys: [d.epic_key, d.category_key] })).map((d) => ({ ...d, reasons: JSON.parse(d.reasons || '[]') }));
 }
 
 export async function decideDispute(env, viewer, input) {

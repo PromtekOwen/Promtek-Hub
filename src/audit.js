@@ -14,7 +14,7 @@ const LABELS = {
   vehicles: {
     registration: 'Registration', make: 'Make', model: 'Model', kind: 'Type', mot_due: 'MOT due', insurance_due: 'Insurance due',
     tax_due: 'Tax due', service_due: 'Service due', mileage: 'Mileage', status: 'Status', responsible_email: 'Looked after by',
-    notes: 'Notes', active: 'In use',
+    notes: 'Notes', active: 'In use', country: 'Country',
   },
   mes_capacity: { hours_per_week: 'Hours a week', days: 'Days', away: 'Days away', included: 'Planned for' },
 };
@@ -23,6 +23,7 @@ const shown = (field, v) => {
   if (v === null || v === undefined || v === '') return '';
   if (field === 'avatar') return 'a photo';
   if (field === 'active' || field === 'included' || field === 'chart_ceremonial' || field === 'chart_sa') return Number(v) ? 'Yes' : 'No';
+  if (field === 'country') return v === 'sa' ? 'Promtek Africa' : 'Promtek UK';
   if (field === 'chart_roles') return chartRolesText(v);
   if (field === 'chart_covers') return chartCoversText(v);
   if (field === 'chart_level') return chartLevelText(v) || String(v);

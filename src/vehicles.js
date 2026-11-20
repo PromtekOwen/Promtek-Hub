@@ -32,10 +32,19 @@ export function checkSchema() {
 
 // ---------- The fleet ----------
 
-export async function listVehicles(env, { includeInactive = false } = {}) {
-  const { results } = await env.DB.prepare(
+// Each vehicle is Promtek UK's or Promtek Africa's; people see their own country's, unless they see both.
+const vehicleCountry = (v) => (v?.country === 'sa' ? 'sa' : 'uk');
+async function vehicleIdsFor(env, only) {
+  if (!only) return null;
+  const { results } = await env.DB.prepare('SELECT * FROM vehicles').all();
+  return new Set(results.filter((v) => vehicleCountry(v) === only).map((v) => v.id));
+}
+
+export async function listVehicles(env, { includeInactive = false, country = null } = {}) {
+  let { results } = await env.DB.prepare(
     `SELECT * FROM vehicles${includeInactive ? '' : ' WHERE active = 1'} ORDER BY registration`
   ).all();
+  if (country) results = results.filter((v) => vehicleCountry(v) === country);
   const { results: defects } = await env.DB.prepare(
     "SELECT vehicle_id, COUNT(*) AS open_defects, SUM(severity = 'not-fit') AS serious FROM vehicle_defects WHERE status = 'open' GROUP BY vehicle_id"
   ).all();
@@ -50,6 +59,7 @@ export async function listVehicles(env, { includeInactive = false } = {}) {
       const open = defectsBy.get(v.id);
       return {
         ...v,
+        country: vehicleCountry(v),
         expiries,
         soonest,
         openDefects: open?.open_defects || 0,
@@ -77,19 +87,21 @@ export async function saveVehicle(env, vehicle) {
     vehicle.motDue || null, vehicle.insuranceDue || null, vehicle.taxDue || null, vehicle.serviceDue || null,
     Number(vehicle.mileage) || null, vehicle.status || 'available', vehicle.responsibleEmail || null,
     vehicle.notes || null, vehicle.active === false ? 0 : 1, now, now).run();
+  if (vehicle.country === 'sa' || vehicle.country === 'uk') await env.DB.prepare('UPDATE vehicles SET country = ? WHERE id = ?').bind(vehicle.country, id).run();
   return { id };
 }
 
 // ---------- Bookings ----------
 
-export async function weekBookings(env, weekStart) {
+export async function weekBookings(env, weekStart, { country = null } = {}) {
+  const ids = await vehicleIdsFor(env, country);
   const from = `${weekStart}T00:00:00`;
   const to = `${londonDate(Date.parse(`${weekStart}T12:00:00Z`) + 7 * 86_400_000)}T00:00:00`;
   const { results } = await env.DB.prepare(
     `SELECT b.*, e.name AS engineer FROM vehicle_bookings b LEFT JOIN employees e ON e.account_id = b.account_id
       WHERE b.starts_at < ? AND b.ends_at > ? ORDER BY b.starts_at`
   ).bind(to, from).all();
-  return { weekStart, bookings: results };
+  return { weekStart, bookings: ids ? results.filter((b) => ids.has(b.vehicle_id)) : results };
 }
 
 export async function book(env, viewer, { vehicleId, startsAt, endsAt, issueKey, issueId, purpose }) {
@@ -215,13 +227,14 @@ async function moveToOnSite(env, rawIssueKey) {
 
 // ---------- Defects ----------
 
-export async function listDefects(env, { status = 'open' } = {}) {
+export async function listDefects(env, { status = 'open', country = null } = {}) {
+  const ids = await vehicleIdsFor(env, country);
   const { results } = await env.DB.prepare(
     `SELECT d.*, v.registration, v.make, v.model, e.name AS reporter
        FROM vehicle_defects d JOIN vehicles v ON v.id = d.vehicle_id LEFT JOIN employees e ON e.account_id = d.account_id
       WHERE d.status = ? ORDER BY d.created_at DESC LIMIT 60`
   ).bind(status).all();
-  return { defects: results };
+  return { defects: ids ? results.filter((d) => ids.has(d.vehicle_id)) : results };
 }
 
 export async function resolveDefect(env, viewer, { id, note }) {

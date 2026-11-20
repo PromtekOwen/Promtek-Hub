@@ -172,13 +172,20 @@ export function access(emp, { fallbackAdmin = false, config = null } = {}) {
   const admin = groups.has('admin');
   const rules = rulesFrom(config);
   const who = { groups: [...groups], teams, leads };
-  const can = Object.fromEntries(Object.keys(PERMISSIONS).map((key) => [key, admin || (key !== 'admin' && matches(rules.permissions[key], who))]));
-  const tiles = Object.fromEntries(Object.keys(TILES).map((id) => [id, admin || matches(rules.tiles[id], who)]));
+  // Tile admins: named people who can open a tile, do everything inside it and see both countries there.
+  const tileAdmin = tileAdminsOf(config, emp?.account_id);
+  const can = Object.fromEntries(Object.keys(PERMISSIONS).map((key) => [key, admin || (key !== 'admin' && (matches(rules.permissions[key], who)
+    || Boolean(PERMISSIONS[key].tile && tileAdmin.includes(PERMISSIONS[key].tile))))]));
+  const tiles = Object.fromEntries(Object.keys(TILES).map((id) => [id, admin || tileAdmin.includes(id) || matches(rules.tiles[id], who)]));
   // The names older parts of the hub ask for.
   can.wip = tiles.wip;
   can.shop = tiles.shop;
   return {
     tiles,
+    // UK or South Africa (the Promtek Africa tick). Admins, Management and developers see both everywhere.
+    country: countryOf(emp),
+    allCountries: admin || groups.has('management') || groups.has('developer'),
+    tileAdmin,
     groups: [...groups],
     teams,
     leads,
@@ -192,6 +199,25 @@ export function access(emp, { fallbackAdmin = false, config = null } = {}) {
     role: groups.has('admin') ? 'admin' : can.oversight ? 'lead' : 'engineer',
     team: teams[0] || null,
   };
+}
+
+export const countryOf = (emp) => (Number(emp?.chart_sa) ? 'sa' : 'uk');
+export const COUNTRY_NAMES = { uk: 'UK', sa: 'SA' };
+// The tiles split between the UK and South Africa.
+export const COUNTRY_TILES = ['jobs', 'quotes', 'contracts', 'psc', 'capacity', 'invoicing', 'vehicles', 'calls', 'customers'];
+
+// Tile admins as saved: { tileId: [accountId, ...] }.
+export function tileAdminsOf(config, accountId) {
+  if (!accountId) return [];
+  const t = config?.tileAdmins && typeof config.tileAdmins === 'object' ? config.tileAdmins : {};
+  return Object.keys(TILES).filter((id) => Array.isArray(t[id]) && t[id].includes(accountId));
+}
+
+// Null when someone sees both countries in a tile, otherwise the one country they see.
+export function onlyCountry(viewer, tile) {
+  if (!viewer || viewer.isAdmin || viewer.allCountries || viewer.country == null) return null;
+  if (tile && viewer.tileAdmin?.includes(tile)) return null;
+  return viewer.country;
 }
 
 // Whether an item for a team belongs in this person's own list.
@@ -241,8 +267,11 @@ export async function leadsOfTeam(env, team) {
 
 // Who looks after the Service team's alerts (PSCs and service contracts): its leads, and
 // management in the team; failing those, everyone in the team. Never the other admins and managers.
-export async function serviceAlertEmails(env) {
-  const { results } = await env.DB.prepare("SELECT * FROM employees WHERE active = 1 AND email IS NOT NULL AND account_id NOT LIKE 'pending%'").all();
+// With a country, only that country's people, unless it has nobody to tell.
+export async function serviceAlertEmails(env, country = null) {
+  const { results: all } = await env.DB.prepare("SELECT * FROM employees WHERE active = 1 AND email IS NOT NULL AND account_id NOT LIKE 'pending%'").all();
+  const theirs = country ? all.filter((e) => countryOf(e) === country) : all;
+  const results = theirs.some((e) => teamsOf(e).includes('Service')) ? theirs : all;
   const inTeam = results.filter((e) => teamsOf(e).includes('Service'));
   const heads = results.filter((e) => (groupsOf(e).includes('lead') && leadOf(e).includes('Service')) || (groupsOf(e).includes('management') && teamsOf(e).includes('Service')));
   return [...new Set((heads.length ? heads : inTeam).map((e) => String(e.email).toLowerCase()))];

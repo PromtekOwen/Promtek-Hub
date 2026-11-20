@@ -6,7 +6,7 @@
 // history, read in the background a hundred invoices a call, and read again whenever its
 // status or dates change. Marking one in the hub writes its dates straight away.
 import { londonDate } from './sync.js';
-import { canTile } from './permissions.js';
+import { canTile, onlyCountry } from './permissions.js';
 import {
   expectedPayment, F, REGIONS, OutOfCalls, budget, isInvoice, isTokenInvoice, invoiceState, overridesAndSeeds, rowFor, contractsIn, isActiveContract, refuse,
   contractSchedule, paymentTerms, paymentDue, chunk, marks, IN, lower, regionArg, runAll, shiftMonth,
@@ -271,7 +271,7 @@ const ageOf = (r, today) => {
 
 export async function insights(env, viewer, { region, months: span } = {}) {
   if (!canTile(viewer, 'invoicing')) throw refuse('Invoicing isn\'t open to you.');
-  region = regionArg(region);
+  region = onlyCountry(viewer, 'invoicing') || regionArg(region);
   const today = londonDate();
   const thisMonth = today.slice(0, 7);
   const n = [6, 12, 24].includes(Number(span)) ? Number(span) : 12;

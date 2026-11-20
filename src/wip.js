@@ -15,7 +15,7 @@
 import { jira, searchPage, customerProjects } from './jira.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
 import { canonStatus } from './contracts.js';
-import { canTile } from './permissions.js';
+import { canTile, onlyCountry } from './permissions.js';
 
 export const F = {
   upfront: 'customfield_12003',
@@ -1598,6 +1598,11 @@ export async function invoiceAction(env, viewer, { key, action, date } = {}) {
   if (!item || !isInvoice(item)) throw refuse('That isn\'t an invoice the hub knows.', 404);
   const order = await env.DB.prepare('SELECT issue_key, project_key FROM wip_orders WHERE issue_id = ?').bind(item.order_id).first()
     || await env.DB.prepare('SELECT issue_key, project_key FROM wip_contracts WHERE issue_id = ?').bind(item.order_id).first();
+  const onlyRegion = onlyCountry(viewer, 'invoicing');
+  if (onlyRegion && order) {
+    const r = await env.DB.prepare('SELECT region FROM wip_orders WHERE issue_id = ? UNION ALL SELECT region FROM wip_contracts WHERE issue_id = ?').bind(item.order_id, item.order_id).first();
+    if (r?.region && r.region !== onlyRegion) throw refuse('That invoice belongs to the other country.');
+  }
   const s = invoiceState(item);
   const today = londonDate();
   let label, after = {};
@@ -1730,7 +1735,9 @@ const stageOf = (s, targetEnd, invoiceDue, today) => (s.cancelled ? 'cancelled' 
 
 export async function invoicing(env, viewer, { region } = {}) {
   if (!canTile(viewer, 'invoicing')) throw refuse('Invoicing isn\'t open to you.');
-  region = regionArg(region);
+  // Their own country only, unless they see both.
+  const onlyRegion = onlyCountry(viewer, 'invoicing');
+  region = onlyRegion || regionArg(region);
   const today = londonDate();
   const month = thisMonth();
   const [head, rows, terms] = await Promise.all([header(env), liveRows(env, region, month), paymentTerms(env)]);
@@ -1790,7 +1797,7 @@ export async function invoicing(env, viewer, { region } = {}) {
   // Terms matter until an invoice has its own due date.
   const missing = [...new Set(invoices.filter((i) => !i.hasTerms && i.guessed).map((i) => i.account))].sort();
   return {
-    ...head, region, regions: REGIONS, today, month, invoices, orders,
+    ...head, region, regions: REGIONS, regionLocked: Boolean(onlyRegion), today, month, invoices, orders,
     forecast: [...forecast.values()].sort((a, b) => a.month.localeCompare(b.month)).map(shapeBucket), earlier: shapeBucket(earlier),
     terms, termTypes: TERM_TYPES, missingTerms: missing, canEdit: canChange(viewer), canUpdate: canUpdateInvoices(viewer), canSetDates: canSetDates(viewer), overdueOn: await overdueOn(env), overdueMoves: await overdueMoves(env),
   };

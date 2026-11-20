@@ -17,6 +17,10 @@ const accountDialog = document.getElementById('account');
 const toastEl = document.getElementById('toast');
 
 let me = null;
+// Promtek UK or Promtek Africa, and whether someone sees both countries in a split tile.
+const myCountry = () => (me?.user?.country === 'sa' ? 'sa' : 'uk');
+const countryBoth = (tile) => me?.user?.bothCountries?.[tile] !== false;
+const otherCountryName = (c) => (c === 'sa' ? 'UK' : 'SA');
 let installPrompt = null;
 let weekOffset = 0;
 
@@ -392,7 +396,7 @@ function ring(progress, size = 104, light = false) {
   const sub = light ? 'var(--muted)' : 'rgba(255,255,255,.85)';
   return `<svg class="ring${light ? ' light' : ''}" width="${size}" height="${size}" viewBox="0 0 100 100" role="img"
       aria-label="Level ${progress.level}, ${Math.round(pct * 100)}% of the way to level ${progress.level + 1}">
-    <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgb(14,98,147)"/><stop offset="1" stop-color="rgb(0,141,198)"/></linearGradient></defs>
+    <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--brand-a)"/><stop offset="1" style="stop-color:var(--brand-b)"/></linearGradient></defs>
     <circle class="outer" cx="50" cy="50" r="48" fill="none" stroke-width="1.5"/>
     <circle class="track" cx="50" cy="50" r="${r}" fill="none" stroke-width="8"/>
     <circle class="arc" cx="50" cy="50" r="${r}" fill="none" stroke-width="8" stroke-linecap="round"
@@ -2379,15 +2383,16 @@ function settingsVehiclesHtml() {
   return `<div class="card">
       <h2 style="margin-top:0">The fleet</h2>
       <div class="table-wrap"><table>
-        <thead><tr><th>Registration</th><th>Vehicle</th><th>Status</th><th>MOT</th><th>Insurance</th><th>Tax</th><th>Service</th><th class="num">Miles</th></tr></thead>
+        <thead><tr><th>Registration</th><th>Vehicle</th><th>Country</th><th>Status</th><th>MOT</th><th>Insurance</th><th>Tax</th><th>Service</th><th class="num">Miles</th></tr></thead>
         <tbody>${vehicles.map((v) => `<tr>
           <td><button class="linklike" data-admin-vehicle="${esc(v.id)}">${esc(v.registration)}</button></td>
           <td>${esc([v.make, v.model, v.kind].filter(Boolean).join(' '))}</td>
+          <td>${v.country === 'sa' ? 'South Africa' : 'UK'}</td>
           <td>${v.active ? (v.offRoad ? '<span class="bad">Off the road</span>' : 'Available') : '<span class="muted">Retired</span>'}</td>
           <td>${esc(v.mot_due || '—')}</td><td>${esc(v.insurance_due || '—')}</td>
           <td>${esc(v.tax_due || '—')}</td><td>${esc(v.service_due || '—')}</td>
           <td class="num">${v.mileage ? n(v.mileage) : '—'}</td>
-        </tr>`).join('') || '<tr><td colspan="8" class="muted">No vehicles yet.</td></tr>'}</tbody>
+        </tr>`).join('') || '<tr><td colspan="9" class="muted">No vehicles yet.</td></tr>'}</tbody>
       </table></div>
       <div class="row" style="margin-top:1rem">
         <button class="btn" data-admin-vehicle="">Add a vehicle</button>
@@ -4297,6 +4302,101 @@ view.addEventListener('change', async (event) => {
   }
 });
 
+// ---------- involving someone from the other country ----------
+// A PSC item or job can be opened up to one person at a time from the other country,
+// who then sees it and works on it like their own country's items.
+const involveCache = new Map();   // kind:key -> what the hub says about it
+const involveOpen = new Set();      // picker showing
+const involveLoading = new Set();
+
+function involveHtml(kind, key, region, { involved = false, open = false, people = null } = {}) {
+  const id = `${kind}:${key}`;
+  const country = region || myCountry();
+  const d = involveCache.get(id);
+  const label = d?.label || `Involve user from ${otherCountryName(country)}`;
+  // On an open item, who's involved is read straight away; the picker waits for the button.
+  if (open && !d && !involveLoading.has(id)) { involveLoading.add(id); involveLoad(kind, key); }
+  const picking = involveOpen.has(id);
+  const who = d?.people || people || [];
+  const chips = who.length ? `<div class="involve-people"><span class="muted">Involved:</span> ${who.map((p) => `<span class="involve-chip" title="${p.addedBy ? `Involved by ${esc(p.addedBy)}` : ''}">${esc(p.name)}
+      <button type="button" data-involve-remove="${esc(p.id)}" aria-label="Stop involving ${esc(p.name)}">×</button></span>`).join('')}</div>` : '';
+  const pick = picking && d ? (d.options.length
+    ? `<div class="involve-pick"><select data-involve-who aria-label="${esc(label)}"><option value="">Choose someone</option>${d.options.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}</select>
+        <button class="btn secondary" type="button" data-involve-add>Involve</button><button class="linklike" type="button" data-involve-cancel>Cancel</button><span class="result" data-involve-result role="status"></span></div>`
+    : `<p class="muted" style="margin:.3rem 0 0">Nobody from Promtek ${d.otherCountry === 'sa' ? 'Africa' : 'UK'} is left to involve here.</p>`) : '';
+  return `<div class="involve" data-involve="${esc(id)}">
+      ${involved ? '<span class="involved-tag">You\'re involved from the other country</span>' : ''}
+      ${chips}
+      ${picking ? '' : `<button class="btn secondary involve-btn" type="button" data-involve-toggle>${esc(label)}</button>`}
+      ${picking && !d ? '<p class="muted" style="margin:.3rem 0 0">Loading…</p>' : ''}
+      ${pick}
+    </div>`;
+}
+
+async function involveLoad(kind, key) {
+  const id = `${kind}:${key}`;
+  try { involveCache.set(id, await api(`/api/${kind === 'psc' ? 'psc' : 'jobs'}/involve?key=${encodeURIComponent(key)}`)); }
+  catch (err) { involveCache.set(id, { people: [], options: [], label: err.message, otherCountry: 'uk' }); }
+  // The page may still be being drawn: wait for it.
+  for (let i = 0; i < 30 && !document.querySelector(`[data-involve="${CSS.escape(id)}"]`); i++) await new Promise((r) => setTimeout(r, 100));
+  involveRedraw(id);
+}
+function involveRedraw(id) {
+  document.querySelectorAll(`[data-involve="${CSS.escape(id)}"]`).forEach((el) => {
+    const [kind, key] = id.split(':');
+    const wasInvolved = Boolean(el.querySelector('.involved-tag'));
+    el.outerHTML = involveHtml(kind, key, null, { involved: wasInvolved });
+  });
+}
+
+view.addEventListener('click', async (event) => {
+  const box = event.target.closest('[data-involve]');
+  if (!box) return;
+  const id = box.dataset.involve;
+  const [kind, key] = id.split(':');
+  const api2 = `/api/${kind === 'psc' ? 'psc' : 'jobs'}`;
+  if (event.target.closest('[data-involve-toggle]')) {
+    event.stopPropagation(); event.preventDefault();
+    involveOpen.add(id);
+    involveRedraw(id);
+    involveLoad(kind, key);
+    return;
+  }
+  if (event.target.closest('[data-involve-cancel]')) {
+    event.stopPropagation();
+    involveOpen.delete(id);
+    involveRedraw(id);
+    return;
+  }
+  const add = event.target.closest('[data-involve-add]');
+  if (add) {
+    event.stopPropagation();
+    const who = box.querySelector('[data-involve-who]')?.value;
+    const out = box.querySelector('[data-involve-result]');
+    if (!who) { if (out) { out.textContent = 'Choose someone first.'; out.className = 'result bad'; } return; }
+    add.disabled = true;
+    try {
+      const r = await api(`${api2}/involve`, { method: 'POST', body: JSON.stringify({ key, accountId: who }) });
+      involveCache.set(id, r);
+      involveOpen.delete(id);
+      involveRedraw(id);
+      toast(`${r.name} can now see ${key}`);
+    } catch (err) { if (out) { out.textContent = err.message; out.className = 'result bad'; } add.disabled = false; }
+    return;
+  }
+  const remove = event.target.closest('[data-involve-remove]');
+  if (remove) {
+    event.stopPropagation();
+    remove.disabled = true;
+    try {
+      involveCache.set(id, await api(`${api2}/uninvolve`, { method: 'POST', body: JSON.stringify({ key, accountId: remove.dataset.involveRemove }) }));
+      involveRedraw(id);
+    } catch (err) { toast(err.message); remove.disabled = false; }
+    return;
+  }
+  if (event.target.closest('select, .involve-pick')) event.stopPropagation();
+}, true);
+
 // ---------- customers ----------
 // Every live customer project: what's open there, their contract, when anything last changed and who
 // to contact. Tapping one shows their sites, contacts, contracts, jobs, quotes, PSCs and recent emails;
@@ -4342,7 +4442,8 @@ async function customersHtml() {
       <p class="cust-when muted">Last update ${esc(custWhen(c.lastUpdate))}</p>
       <div class="cust-card-contact">${custContactHtml(c.contact, { compact: true })}</div>
     </article>`;
-  const shows = [['all', 'All'], ['uk', 'UK'], ['sa', 'Africa'], ['psc', 'Open PSCs']];
+  const shows = custData.bothCountries === false ? [['all', 'All'], ['psc', 'Open PSCs']] : [['all', 'All'], ['uk', 'UK'], ['sa', 'Africa'], ['psc', 'Open PSCs']];
+  if (!shows.some(([k]) => k === custShow)) custShow = 'all';
   return `<div class="row cust-tools">
       <input type="search" id="cust-search" placeholder="Search customers, keys or contacts" value="${esc(custQuery)}" aria-label="Search customers">
       <span class="segment">${shows.map(([k, l]) => `<button class="seg${custShow === k ? ' on' : ''}" data-cust-show="${k}">${l}</button>`).join('')}</span>
@@ -6085,7 +6186,7 @@ function eloChart(data, width = 640) {
   const first = points.find((p) => p.when)?.when;
   const last = points[points.length - 1].when;
   return `<svg class="elo-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="ELO over time, now ${n(Math.round(data.elo ?? data.start))}">
-    <defs><linearGradient id="eloFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="rgb(0,141,198)" stop-opacity=".22"/><stop offset="1" stop-color="rgb(0,141,198)" stop-opacity="0"/></linearGradient></defs>
+    <defs><linearGradient id="eloFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--brand-b)" stop-opacity=".22"/><stop offset="1" style="stop-color:var(--brand-b)" stop-opacity="0"/></linearGradient></defs>
     ${lines}
     <path d="${area}" fill="url(#eloFill)"/>
     <path d="${path}" fill="none" stroke="var(--blue-deep)" stroke-width="2.5" stroke-linejoin="round"/>
@@ -6421,6 +6522,7 @@ async function jobsHomeHtml() {
           <span class="muted">${esc(o.customer || '')}${o.team ? `, ${esc(o.team)}` : ''}${o.legacy ? '. Older order, from before categories' : ''}</span></p>
       </div>
       <ul class="list plain">${o.categories.map(jobsCategoryRow).join('')}</ul>
+      ${involveHtml('job', o.key, o.region, { involved: o.involved, people: o.involvedPeople })}
       <span hidden>${(o.people || []).concat(o.assignee ? [o.assignee] : [], o.categories.flatMap((c) => [c.assignee, ...(c.people || [])])).filter(Boolean).map((id) => esc(data.people?.[id]?.name || '')).join(' ')}</span></div>`).join('');
   const filtered = jobsFilter.customer || jobsFilter.assignee || jobsFilter.status || jobsFilter.team || jobsFilter.category;
   const empty = filtered
@@ -8410,7 +8512,7 @@ view.addEventListener('drop', (event) => {
 
 let planVersion = null;
 let planCapacityOpen = null;
-const PRIORITY_COLOURS = { Must: 'var(--blue-deep)', Should: 'rgb(0,141,198)', Could: 'rgb(140,196,224)' };
+const PRIORITY_COLOURS = { Must: 'var(--blue-deep)', Should: 'var(--brand-b)', Could: 'var(--brand-c)' };
 const WEEKDAYS = [['1', 'Mon'], ['2', 'Tue'], ['3', 'Wed'], ['4', 'Thu'], ['5', 'Fri']];
 const dayDiff = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / 86_400_000);
 
@@ -8955,6 +9057,64 @@ function accRuleHtml(kind, item, { title = item.name, about = '', expanded = fal
     </div>`;
 }
 
+// Tile admins for one tile: who they are, and picking them.
+const tadmEditing = new Set();
+function tadmRowHtml(t, { title = t.name } = {}) {
+  const d = accessData;
+  const byId = new Map(d.people.map((p) => [p.id, p]));
+  const names = (t.admins || []).map((id) => byId.get(id)?.name).filter(Boolean);
+  const editing = tadmEditing.has(t.id);
+  const country = (p) => (p.country === 'sa' ? ' <small class="muted">SA</small>' : '');
+  return `<div class="acc-rule" data-tadm="${esc(t.id)}">
+      <div class="acc-head"><span><b>${esc(title)}</b>${t.split ? '<small class="muted">Sees both countries here</small>' : ''}</span>
+        <button class="linklike" data-tadm-edit>${editing ? 'Done' : 'Change'}</button></div>
+      <p class="acc-summary">${names.length ? names.map(esc).join(', ') : '<span class="muted">Nobody</span>'}</p>
+      <div class="acc-edit"${editing ? '' : ' hidden'}>
+        <input type="search" data-tadm-find placeholder="Find someone" aria-label="Find someone">
+        <div class="tadm-people">${d.people.map((p) => `<label class="inline-check" data-tadm-name="${esc(p.name.toLowerCase())}"><input type="checkbox" value="${esc(p.id)}"${(t.admins || []).includes(p.id) ? ' checked' : ''}> ${esc(p.name)}${country(p)}</label>`).join('')}</div>
+        <div class="row acc-actions"><button class="btn secondary" data-tadm-save>Save</button><span class="result" data-acc-result role="status"></span></div>
+      </div>
+    </div>`;
+}
+
+async function tadmClick(event) {
+  const box = event.target.closest('[data-tadm]');
+  if (!box || !accessData) return false;
+  const id = box.dataset.tadm;
+  const t = accessData.tiles.find((x) => x.id === id);
+  const title = box.querySelector('.acc-head b')?.textContent;
+  if (event.target.closest('[data-tadm-edit]')) {
+    if (tadmEditing.has(id)) tadmEditing.delete(id); else tadmEditing.add(id);
+    box.outerHTML = tadmRowHtml(t, { title });
+    return true;
+  }
+  const save = event.target.closest('[data-tadm-save]');
+  if (save) {
+    save.disabled = true;
+    const people = [...box.querySelectorAll('.tadm-people input:checked')].map((c) => c.value);
+    try {
+      await api('/api/admin/access', { method: 'POST', body: JSON.stringify({ kind: 'tileAdmins', tile: id, people }) });
+      await loadAccess();
+      tadmEditing.delete(id);
+      const fresh = accessData.tiles.find((x) => x.id === id);
+      document.querySelectorAll(`[data-tadm="${CSS.escape(id)}"]`).forEach((el) => { el.outerHTML = tadmRowHtml(fresh, { title: el.querySelector('.acc-head b')?.textContent }); });
+      toast(`${t.name} tile admins saved`);
+    } catch (err) {
+      const out = box.querySelector('[data-acc-result]');
+      if (out) { out.textContent = err.message; out.className = 'result bad'; }
+      save.disabled = false;
+    }
+    return true;
+  }
+  return event.target.closest('.acc-edit') ? 'passive' : false;
+}
+document.addEventListener('input', (event) => {
+  const find = event.target.closest('[data-tadm-find]');
+  if (!find) return;
+  const q = find.value.trim().toLowerCase();
+  find.closest('[data-tadm]').querySelectorAll('[data-tadm-name]').forEach((el) => { el.hidden = Boolean(q) && !el.dataset.tadmName.includes(q); });
+});
+
 // What the ticks in one row add up to.
 function accRuleFrom(box) {
   const on = (attr) => [...box.querySelectorAll(`[data-acc-${attr}].on`)].map((c) => c.dataset[`acc${attr[0].toUpperCase()}${attr.slice(1)}`]);
@@ -8974,6 +9134,9 @@ function accessAdminHtml(d) {
         <div class="acc-rule"><div class="acc-head"><span><b>Admin</b><small class="muted">Admins, and developers for the technical side. This can't be changed.</small></span></div></div></div>
       <h3 style="margin-top:1.5rem">Inside the tiles</h3>
       <div class="acc-list">${d.permissions.map((p) => accRuleHtml('permission', p, { about: `${p.about}${p.tile ? ` (${tileName(p.tile)})` : ''}` })).join('')}</div>
+      <h3 style="margin-top:1.5rem">Tile admins</h3>
+      <p class="muted" style="margin-top:0">Named people who can open a tile and do everything inside it, whatever their role. In Jobs, Quotes, Service contracts, PSC, Capacity, Invoicing, Vehicles, 8x8 calls and Customers they also see both the UK and South Africa. Admins, Management and developers already see both everywhere.</p>
+      <div class="acc-list">${d.tiles.map((t) => tadmRowHtml(t)).join('')}</div>
     </div>`;
 }
 
@@ -8987,7 +9150,8 @@ function accessCardHtml(route) {
   return `<div class="card acc-card" style="margin-top:1rem">
       <h2 style="margin-top:0">Who can use this</h2>
       <div class="acc-list">${tile ? accRuleHtml('tile', tile, { title: 'Open the tile', expanded: true }) : ''}
-        ${perms.map((p) => accRuleHtml('permission', p, { about: p.about, expanded: true })).join('')}</div>
+        ${perms.map((p) => accRuleHtml('permission', p, { about: p.about, expanded: true })).join('')}
+        ${tile ? tadmRowHtml(tile, { title: 'Tile admins' }) : ''}</div>
       <p class="help" style="padding:0">Every tile is listed in Admin, under Who can use what.</p>
     </div>`;
 }
@@ -11244,6 +11408,7 @@ const invTabsHtml = () => `<div class="tabs wip-tabs">${[['invoices', 'Invoices'
   `<button class="tab${invTab === k ? ' on' : ''}" data-inv-tab="${k}">${l}</button>`).join('')}</div>`;
 
 async function invoicingHtml() {
+  if (!countryBoth('invoicing')) invRegion = myCountry();
   if (invTab === 'insights') return invInsightsHtml();
   const d = invData = invKeep && invData?.region === invRegion ? invData : await api(`/api/invoicing?region=${invRegion}`);
   invKeep = false;
@@ -11262,7 +11427,7 @@ async function invoicingHtml() {
   const jumpStat = (stage, label, value, small = '') => `<div class="inv-jump" data-inv-jump="${stage}" role="button" tabindex="0" aria-label="${esc(label)}: show the list">
       <dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
 
-  const regions = `<span class="segment">${Object.entries(d.regions).map(([k, r]) =>
+  const regions = d.regionLocked ? '' : `<span class="segment">${Object.entries(d.regions).map(([k, r]) =>
     `<button class="seg${invRegion === k ? ' on' : ''}" data-inv-region="${k}">${esc(r.name)}</button>`).join('')}</span>`;
   const missing = d.missingTerms.length ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>No payment terms for ${n(d.missingTerms.length)} ${d.missingTerms.length === 1 ? 'customer' : 'customers'}:</strong>
       ${d.missingTerms.map(esc).join(', ')}. Until terms are added${d.canEdit ? ' under the cog above' : ''}, payment on invoices without an Invoice Due Date is expected on Target End itself.</p></div>` : '';
@@ -11543,7 +11708,7 @@ function invInsightsBody(d) {
   const k = d.kpis;
   const money = wipMoney;
   const stat = (label, value, small = '') => `<div><dt>${label}</dt><dd>${value}${small ? `<small>${small}</small>` : ''}</dd></div>`;
-  const regions = `<span class="segment">${Object.entries(d.regions).map(([key, r]) =>
+  const regions = !countryBoth('invoicing') ? '' : `<span class="segment">${Object.entries(d.regions).map(([key, r]) =>
     `<button class="seg${invRegion === key ? ' on' : ''}" data-inv-region="${key}">${esc(r.name)}</button>`).join('')}</span>`;
   const span = `<label class="wip-month">Covering <select data-inv-span>${[6, 12, 24].map((m) => `<option value="${m}"${d.span === m ? ' selected' : ''}>the last ${m} months</option>`).join('')}</select></label>`;
   const cover = d.coverage.read < d.coverage.invoices ? `<div class="card notice" style="margin-bottom:1rem"><p style="margin:0"><strong>Still reading invoice histories from Jira:</strong>
@@ -14736,6 +14901,7 @@ async function pscItemHtml() {
         ${await pscMoveSelect(d)}
         ${d.project === 'PSC' ? pscOrgSelect(d) : ''}
       </div>
+      ${involveHtml('psc', d.key, d.region, { involved: d.involved, open: true })}
       ${d.state !== 'resolved' && !d.orderWork ? `<div class="psc-actions psc-handoff-actions">
         <span class="muted">Not support work?</span>
         <button class="btn secondary${pscHand?.key === d.key && pscHand.kind === 'quote' ? ' on' : ''}" data-psc-hand="quote" data-key="${esc(d.key)}">Quote</button>
@@ -15929,6 +16095,7 @@ async function adminAction(action, button) {
           taxDue: value('veh-form-tax'), serviceDue: value('veh-form-service'),
           mileage: value('veh-form-miles'), responsibleEmail: value('veh-form-email'),
           active: document.getElementById('veh-form-active').value === '1',
+          country: document.getElementById('veh-form-country').value,
         }),
       });
       out('vehicle-result', 'Saved.');
@@ -16249,6 +16416,7 @@ view.addEventListener('click', async (event) => {
       <div class="row" style="margin-top:.75rem">
         <label>Mileage <input id="veh-form-miles" type="number" value="${v.mileage || ''}"></label>
         <label style="flex:1">Who looks after repairs <input id="veh-form-email" type="email" value="${esc(v.responsible_email || '')}" placeholder="name@promtek.com"></label>
+        <label>Country <select id="veh-form-country"><option value="uk"${v.country === 'sa' ? '' : ' selected'}>UK</option><option value="sa"${v.country === 'sa' ? ' selected' : ''}>South Africa</option></select></label>
         <label>In service <select id="veh-form-active"><option value="1"${v.active === 0 ? '' : ' selected'}>Yes</option><option value="0"${v.active === 0 ? ' selected' : ''}>Retired</option></select></label>
       </div>
       <div class="row" style="margin-top:1rem"><button class="btn" data-action="save-vehicle">Save vehicle</button></div>`;
@@ -16302,6 +16470,7 @@ view.addEventListener('click', async (event) => {
   }
   if (currentRoute() === '#/contracts' && settingsOpen !== '#/contracts' && await contractsClick(event) !== false) return;
   if (event.target.closest('[data-acc-rule]') && await accessClick(event) !== false) return;
+  if (event.target.closest('[data-tadm]')) { const r = await tadmClick(event); if (r === true) return; if (r === 'passive') return; }
   if (currentRoute() === '#/requests' && await requestsClick(event) !== false) return;
   if (currentRoute() === '#/feedback' && await feedbackClick(event) !== false) return;
   if (currentRoute() === '#/invoicing' && await invoicingClick(event) !== false) return;
@@ -16491,6 +16660,9 @@ async function render() {
   const keepY = samePage ? scrollY : 0;
   const page = pages[route];
   back.hidden = route === '#/';
+  // Promtek Africa's people have the hub in green.
+  document.documentElement.classList.toggle('theme-sa', myCountry() === 'sa');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', myCountry() === 'sa' ? '#2A4D1B' : '#0E6293');
   avatar.textContent = initials();
   if (notifyOpen && notifyOpen !== route) { notifyOpen = null; notifyData = null; notifyDraft = null; }
   band.innerHTML = settingsOpen === route

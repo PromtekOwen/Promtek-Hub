@@ -5,6 +5,7 @@
 // themselves, through the portal or by email. Once made it's read into the tile at once.
 import { jira, jiraFetch, customerProjects } from './jira.js';
 import { record } from './audit.js';
+import { onlyCountry } from './permissions.js';
 import { mustSee, readOne, changed } from './psc.js';
 import { PSC_HOME, LISTS } from './customer-lists.js';
 
@@ -21,7 +22,7 @@ export async function options(env, viewer) {
     env.DB.prepare("SELECT account_id, name FROM employees WHERE active = 1 AND account_id NOT LIKE 'pending%' ORDER BY name").all(),
   ]);
   return {
-    customers: projects.map((p) => ({ key: p.key, name: p.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    customers: projects.filter((p) => { const only = onlyCountry(viewer, 'psc'); return !only || p.region === only; }).map((p) => ({ key: p.key, name: p.name })).sort((a, b) => a.name.localeCompare(b.name)),
     types: CREATE_TYPES,
     people: people.map((p) => ({ id: p.account_id, name: p.name })),
     me: viewer.accountId || null,

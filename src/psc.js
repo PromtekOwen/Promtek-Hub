@@ -9,7 +9,8 @@ import { jira, searchPage, customerProjects, statusAllowed } from './jira.js';
 import * as Contacts from './psccontacts.js';
 import { staffIds } from './psccontacts.js';
 import { raiseAlert, getState, setState, londonDate } from './sync.js';
-import { canTile } from './permissions.js';
+import { canTile, countryOf } from './permissions.js';
+import { scopeFor } from './country.js';
 import { orgMatcher, tokenCounts, holidaysFor, chargeOf, CHARGE } from './contracts.js';
 
 export const PSC_TYPES = ['Incident', 'Further Investigation', 'PSC', 'Problem', 'Change', 'Service Request', 'Snag', 'Sub-Snag'];
@@ -500,7 +501,7 @@ async function readContext(env) {
     env.DB.prepare('SELECT * FROM contract_org_map').all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contracts WHERE status IN ('In Contract', 'Requires Renewal', 'Required Renewal')").all().catch(() => ({ results: [] })),
     env.DB.prepare("SELECT * FROM contract_items WHERE kind = 'token'").all().catch(() => ({ results: [] })),
-    env.DB.prepare('SELECT account_id, name, email, teams, team FROM employees WHERE active = 1').all(),
+    env.DB.prepare('SELECT account_id, name, email, teams, team, chart_sa FROM employees WHERE active = 1').all(),
     env.DB.prepare("SELECT issue_key, source_key FROM psc_handoffs WHERE status = 'done'").all().catch(() => ({ results: [] })),
   ]);
   let projects = [];
@@ -651,6 +652,7 @@ export function describe(original, ctx, now = new Date().toISOString()) {
     id: row.issue_id, key: row.issue_key, project: row.project_key, summary: row.summary, type: row.issuetype, status: row.status,
     priority: row.priority, assignee: row.assignee_name, assigneeId: row.assignee_id, reporter: row.reporter_name,
     created: row.created_at, resolvedAt: row.resolved_at, org: row.org, customer: customerName, customerKey,
+    region: customerKey ? (ctx.projects.find((p) => p.key === customerKey)?.region || null) : null,
     orderWork: ORDER_TYPES.includes(row.issuetype),
     contract: contract ? { key: contract.issue_key, tier: contract.tier, status: contract.status, bankHoliday: Boolean(contract.bank_holiday),
       end: contract.end_date, tokensFree: tokenCounts(ctx.tokens.filter((t) => t.contract_key === contract.issue_key)).free } : null,
@@ -682,12 +684,20 @@ export function mustSee(viewer) {
   if (!canSee(viewer)) { const err = new Error('PSC isn\'t open to you.'); err.status = 403; throw err; }
 }
 
+// Their own country's items, and any they've been involved in.
+async function countryView(env, viewer) {
+  const s = await scopeFor(env, viewer, 'psc');
+  return { ...s, item: (d) => s.sees({ region: d.region || null, keys: [d.key, d.sourceKey] }) };
+}
+
 export async function overview(env, viewer) {
   mustSee(viewer);
   const ctx = await context(env);
   const now = new Date().toISOString();
-  const items = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).sort(byAttention);
-  const people = ctx.emps.filter((e) => e.account_id).map((e) => ({ id: e.account_id, name: e.name,
+  const country = await countryView(env, viewer);
+  const items = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).filter(country.item)
+    .map((d) => (country.involved.has(d.key) ? { ...d, involved: true } : d)).sort(byAttention);
+  const people = ctx.emps.filter((e) => e.account_id && (!country.only || countryOf(e) === country.only)).map((e) => ({ id: e.account_id, name: e.name,
     service: String(e.teams || e.team || '').includes('Service') })).sort((a, b) => Number(b.service) - Number(a.service) || a.name.localeCompare(b.name));
   const { results: pending } = await env.DB.prepare("SELECT issue_key, label, error, attempts FROM psc_writes WHERE done_at IS NULL AND kind != 'reporter' ORDER BY id").all();
   const { results: orgFlags } = await env.DB.prepare("SELECT id, ref_key, detail, created_at FROM contract_flags WHERE kind = 'psc-org' AND resolved_at IS NULL ORDER BY id DESC LIMIT 50").all()
@@ -709,6 +719,7 @@ export async function item(env, viewer, key) {
   const row = ctx.items.find((r) => r.issue_key === key);
   if (!row) throw new Error('That item isn\'t in the list any more.');
   const d = describe(row, ctx);
+  if (!(await countryView(env, viewer)).item(d)) { const err = new Error(`That item belongs to Promtek ${d.region === 'sa' ? 'Africa' : 'UK'}.`); err.status = 403; throw err; }
   const m = merged(row);
   const ids = m.ids || [row.issue_id];
   const timeline = JSON.parse(m.timeline || '[]');
@@ -854,9 +865,9 @@ export async function refresh(env, viewer) {
 
 // ---------- background job ----------
 
-async function serviceLeads(env) {
+async function serviceLeads(env, country = null) {
   const { serviceAlertEmails } = await import('./permissions.js');
-  const to = await serviceAlertEmails(env);
+  const to = await serviceAlertEmails(env, country);
   return to.length ? to : [null];
 }
 
@@ -868,7 +879,7 @@ async function alerts(env, ctx) {
     const d = describe(row, ctx, now);
     if (d.orderWork || d.state === 'resolved') continue;
     if (d.state === 'late') {
-      for (const to of await serviceLeads(env)) {
+      for (const to of await serviceLeads(env, d.region)) {
         await raiseAlert(env, { kind: 'psc-response', dedupe: `psc-response:${d.key}:${to || 'default'}`, recipient: to,
           link: `#/psc?open=${encodeURIComponent(d.key)}`, ref: { key: d.key, customer: d.customerKey || null, priority: d.priority || null },
           subject: `${d.tier !== 'none' ? `${d.tierName}: ` : ''}${d.key} has waited ${hoursText(d.response.waitMs)} for a first response`,
@@ -877,7 +888,7 @@ async function alerts(env, ctx) {
     }
     if (d.customerWaiting && d.customerWaitMs > d.response.targetMs) {
       const owner = d.assigneeId ? ctx.emps.find((e) => e.account_id === d.assigneeId)?.email : null;
-      for (const to of owner ? [owner] : await serviceLeads(env)) {
+      for (const to of owner ? [owner] : await serviceLeads(env, d.region)) {
         await raiseAlert(env, { kind: 'psc-waiting', dedupe: `psc-waiting:${d.key}:${d.customerLast.at}:${to || 'default'}`, recipient: to,
           link: `#/psc?open=${encodeURIComponent(d.key)}`, ref: { key: d.key, customer: d.customerKey || null, priority: d.priority || null },
           subject: `${d.customer || 'A customer'} is waiting on ${d.key}`,
@@ -960,7 +971,8 @@ export async function insights(env, viewer) {
   mustSee(viewer);
   const ctx = await context(env);
   const now = new Date().toISOString();
-  const all = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).filter((d) => !d.orderWork);
+  const country = await countryView(env, viewer);
+  const all = ctx.items.filter((r) => !r.hidden || r.uncopied).map((r) => describe(r, ctx, now)).filter((d) => !d.orderWork && country.item(d));
   const since = Date.now() - RECENT_DAYS * 86400000;
   // Items the team raised itself (from a call, say) were answered before they existed, so they're left out of response times.
   const recent = all.filter((d) => ms(d.created) >= since && d.response.at && !d.raisedByTeam);

@@ -8,6 +8,7 @@
 // job, kept to a fixed number of calls per run, and picked up again on the next
 // run if they don't finish.
 import { jira, searchPage, customerProjects, projectFilter } from './jira.js';
+import { scopeFor, mustSeeItem, projectRegions, projectOf } from './country.js';
 import { raiseAlert, getState, setState, londonDate, ledgerStamp } from './sync.js';
 import { leadsOfTeam, groupsOf, canTile } from './permissions.js';
 
@@ -145,9 +146,9 @@ async function moveTo(b, key, target, via = []) {
 
 // ---------- who hears about contracts ----------
 
-export async function recipients(env) {
+export async function recipients(env, country = null) {
   const { serviceAlertEmails } = await import('./permissions.js');
-  const leads = await serviceAlertEmails(env);
+  const leads = await serviceAlertEmails(env, country);
   let extra = [];
   try { extra = JSON.parse((await getState(env, 'contracts_recipients')) || '[]'); } catch { /* none */ }
   const all = [...new Set([...leads, ...extra].map((e) => String(e).toLowerCase()))];
@@ -155,7 +156,9 @@ export async function recipients(env) {
 }
 
 async function tell(env, { kind, dedupe, subject, body, also = [] }) {
-  const to = [...new Set([...(await recipients(env)), ...also.map((e) => e && e.toLowerCase())].filter((e) => e !== undefined))];
+  // The contract's country, from its key in the dedupe, so each country's Service team hears about its own.
+  const country = (await projectRegions(env)).get(projectOf(String(dedupe).split(':')[1])) || null;
+  const to = [...new Set([...(await recipients(env, country)), ...also.map((e) => e && e.toLowerCase())].filter((e) => e !== undefined))];
   for (const r of to) await raiseAlert(env, { kind, dedupe: `${dedupe}:${r || 'default'}`, subject, body, recipient: r });
 }
 
@@ -1144,7 +1147,8 @@ export async function overview(env, viewer) {
   const { st, clocks } = await stateAndClocks(env, head);
   const { results: ch } = await env.DB.prepare('SELECT contract_key, COUNT(*) AS n FROM contract_charges GROUP BY contract_key').all();
   const charged = new Map(ch.map((r) => [r.contract_key, r.n]));
-  const contracts = st.contracts.filter((c) => !MANUAL.includes(c.status))
+  const country = await scopeFor(env, viewer, 'contracts');
+  const contracts = st.contracts.filter((c) => !MANUAL.includes(c.status) && country.seesProject(c.project_key || c.issue_key))
     .map((c) => summarise(c, st.items, clocks.get(c.issue_key), charged.get(c.issue_key), head.clockStart))
     .sort((a, b) => String(a.end || '9999').localeCompare(String(b.end || '9999')));
   const { results: flags } = await env.DB.prepare(
@@ -1154,7 +1158,7 @@ export async function overview(env, viewer) {
   const today = londonDate();
   const holidays = await holidaysFor(env);
   const bankHoliday = { today: holidays.find((h) => h.date === today) || null, next: holidays.find((h) => h.date > today) || null };
-  return { ...head, contracts, flags, canInsights: canInsights(viewer), isAdmin: Boolean(viewer.isAdmin), today, bankHoliday };
+  return { ...head, contracts, flags: flags.filter((f) => !f.contract_key || country.seesProject(f.contract_key)), canInsights: canInsights(viewer), isAdmin: Boolean(viewer.isAdmin), today, bankHoliday };
 }
 
 export async function detail(env, viewer, key) {
@@ -1163,6 +1167,7 @@ export async function detail(env, viewer, key) {
   const { st, clocks } = await stateAndClocks(env, head);
   const c = st.contracts.find((x) => x.issue_key === key);
   if (!c) throw new Error('That contract is no longer in the list.');
+  await mustSeeItem(env, viewer, 'contracts', { project: c.project_key || c.issue_key });
   const clock = clocks.get(key);
   const [{ results: charges }, { results: events }] = await Promise.all([
     env.DB.prepare('SELECT * FROM contract_charges WHERE contract_key = ? ORDER BY seq DESC').bind(key).all(),
@@ -1546,7 +1551,9 @@ export async function holidaysFor(env) {
 export async function insights(env, viewer) {
   mustSee(viewer, true);
   const today = londonDate();
-  const st = await loadState(env);
+  const country = await scopeFor(env, viewer, 'contracts');
+  const all = await loadState(env);
+  const st = { ...all, contracts: all.contracts.filter((c) => country.seesProject(c.project_key || c.issue_key)) };
   const year = Number(today.slice(0, 4));
   const active = st.contracts.filter((c) => [STATUS.inContract, STATUS.renewal].includes(c.status) && c.start_date && c.end_date);
 

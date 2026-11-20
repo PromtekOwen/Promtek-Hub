@@ -6,6 +6,7 @@ import { DISCIPLINES, disciplineOf, customerFilter, stageShares } from './jobs.j
 import { raiseAlert, sendAlerts, getState, setState, londonDate } from './sync.js';
 import { quoteElo } from './progression.js';
 import { forMe } from './permissions.js';
+import { scopeFor } from './country.js';
 
 export const DISCIPLINE_ORDER = ['software', 'hardware', 'engineering', 'condor'];
 const QUOTE_NUMBER_FIELD = 'customfield_14259';
@@ -105,11 +106,17 @@ export async function saveConfig(env, input) {
 
 const canCreate = (viewer) => Boolean(viewer.can?.quotes);
 
+// A quote's country: its customer's, or for a new potential customer, whoever started it.
+const quoteCountry = (country, q) => (q.project_key ? country.regionOf(q.project_key) : (q.created_sa == null ? null : Number(q.created_sa) ? 'sa' : 'uk'));
+
 async function canView(env, viewer, quoteId) {
-  if (canCreate(viewer)) return true;
-  if (!viewer.accountId) return false;
-  const r = await env.DB.prepare('SELECT 1 FROM quote_requests WHERE quote_id = ? AND account_id = ? LIMIT 1').bind(quoteId, viewer.accountId).first();
-  return Boolean(r);
+  if (!viewer.accountId && !canCreate(viewer)) return false;
+  const asked = viewer.accountId ? await env.DB.prepare('SELECT 1 FROM quote_requests WHERE quote_id = ? AND account_id = ? LIMIT 1').bind(quoteId, viewer.accountId).first() : null;
+  if (asked) return true;
+  if (!canCreate(viewer)) return false;
+  const q = await env.DB.prepare('SELECT q.project_key, e.chart_sa AS created_sa FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by WHERE q.id = ?').bind(quoteId).first();
+  const country = await scopeFor(env, viewer, 'quotes');
+  return !q || country.seesRegion(quoteCountry(country, q));
 }
 
 // ---------- Jira ----------
@@ -248,9 +255,11 @@ export async function list(env, viewer, { scope = 'open' } = {}) {
   let rows;
   if (canCreate(viewer)) {
     const where = scope === 'mine' ? 'WHERE q.created_by = ?' : scope === 'open' ? "WHERE q.status IN ('open', 'ready') OR (q.status = 'accepted' AND q.epic_key IS NULL)" : '';
-    const stmt = env.DB.prepare(`SELECT q.*, COALESCE(q.team, j.team) AS team, e.name AS created_name FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by
+    const stmt = env.DB.prepare(`SELECT q.*, COALESCE(q.team, j.team) AS team, e.name AS created_name, e.chart_sa AS created_sa FROM quotes q LEFT JOIN employees e ON e.account_id = q.created_by
       LEFT JOIN jira_quotes j ON j.issue_key = q.quote_key ${where} ORDER BY q.id DESC LIMIT 200`);
     rows = (scope === 'mine' ? await stmt.bind(viewer.accountId).all() : await stmt.all()).results;
+    const country = await scopeFor(env, viewer, 'quotes');
+    if (country.only) rows = rows.filter((q) => q.created_by === viewer.accountId || country.seesRegion(quoteCountry(country, q)));
   } else {
     rows = (await env.DB.prepare(
       `SELECT DISTINCT q.*, COALESCE(q.team, (SELECT j.team FROM jira_quotes j WHERE j.issue_key = q.quote_key)) AS team, e.name AS created_name FROM quotes q JOIN quote_requests r ON r.quote_id = q.id
