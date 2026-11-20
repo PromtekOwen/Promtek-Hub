@@ -2751,3 +2751,13 @@ p .cust-shield { width: 18px; height: 18px; }
 .involve-pick { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .4rem; }
 .involve-pick select { max-width: 280px; }
 .involved-tag { font-size: .75rem; font-weight: 700; padding: .05rem .45rem; border-radius: 999px; background: var(--info-bg); color: var(--brand-deep); vertical-align: middle; }
+
+/* PSC triage lists */
+.psc-tri-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 640px) { .psc-tri-stats { grid-template-columns: 1fr; } }
+.psc-tri { margin-top: 1rem; scroll-margin-top: 4.5rem; }
+.psc-tri > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: .5rem; }
+.psc-tri > summary::-webkit-details-marker { display: none; }
+.psc-tri > summary::before { content: '›'; font-size: 1.4rem; line-height: 1; color: var(--muted); transition: transform .15s; }
+.psc-tri[open] > summary::before { transform: rotate(90deg); }
+.psc-tri > summary h2 { margin: .4rem 0; }

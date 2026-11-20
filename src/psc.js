@@ -23,6 +23,10 @@ const CHARGE_FIELD = 'customfield_16884';
 const SOLUTION_FIELD = 'customfield_15180';               // PSC solution: the root cause, written when it's resolved
 export const RESOLVE_TO = 'Resolved [Promtek]';
 const PSC_PROJECT = 'PSC';
+// Who new PSCs land with by default. An item with one of them as its assignee counts as having
+// no one until they've done something on it: a comment, a status or description change, picking
+// it up in the hub, or time logged.
+export const PLACEHOLDER_OWNERS = ['richard key', 'simon williams'];
 export const DEFAULTS = { targets: { platinum: 1, gold: 2, silver: 4, none: 8 }, shiftStart: 8, shiftEnd: 17, staleDays: 2 };
 
 // What each contract promises, from the Maintenance Level Agreements. The rank
@@ -504,6 +508,14 @@ async function readContext(env) {
     env.DB.prepare('SELECT account_id, name, email, teams, team, chart_sa FROM employees WHERE active = 1').all(),
     env.DB.prepare("SELECT issue_key, source_key FROM psc_handoffs WHERE status = 'done'").all().catch(() => ({ results: [] })),
   ]);
+  // Time the default assignees have logged on PSC items.
+  const holders = emps.filter((e) => PLACEHOLDER_OWNERS.includes(String(e.name || '').trim().toLowerCase())).map((e) => e.account_id);
+  const holderTime = new Set();
+  if (holders.length) {
+    const { results } = await env.DB.prepare(`SELECT DISTINCT l.issue_id, l.account_id FROM xp_ledger l WHERE l.account_id IN (${holders.map(() => '?').join(',')})
+      AND l.issue_id IN (SELECT issue_id FROM psc_items WHERE done = 0)`).bind(...holders).all().catch(() => ({ results: [] }));
+    for (const r of results) holderTime.add(`${r.issue_id}:${r.account_id}`);
+  }
   let projects = [];
   try { projects = await customerProjects(env); } catch { /* names fall back to keys */ }
   let bankHolidays = new Set();
@@ -514,7 +526,7 @@ async function readContext(env) {
   const gone = new Set(handed.flatMap((h) => [h.issue_key, h.source_key]).filter(Boolean));
   const shown = pairCopies(items, match).filter((r) => !HIDDEN_STATUSES.includes(String(r.status || '').trim().toLowerCase()))
     .filter((r) => !gone.has(r.issue_key) && !gone.has(r.source?.issue_key));
-  return { settings, items: shown, actions, match, projects, contracts, tokens, emps, bankHolidays };
+  return { settings, items: shown, actions, match, projects, contracts, tokens, emps, bankHolidays, holderTime };
 }
 
 // A PSC board item with an Organization is copied into the customer's project
@@ -636,9 +648,21 @@ export function describe(original, ctx, now = new Date().toISOString()) {
   const customerWaitMs = customerWaiting ? elapsedMs(row.customer_last_at, now) : 0;
   const quietMs = !resolved && lastTeam ? elapsedMs(lastTeam.at, now) : 0;
   const stale = !resolved && first && !customerWaiting && quietMs > settings.staleDays * 24 * hour;
+  // A default assignee who hasn't touched it yet doesn't count as someone having it.
+  const owner = String(row.assignee_name || '').trim().toLowerCase();
+  let holding = false;
+  if (row.assignee_id && PLACEHOLDER_OWNERS.includes(owner)) {
+    let events = [];
+    try { events = JSON.parse(row.timeline || '[]'); } catch { /* none */ }
+    const same = (name) => String(name || '').trim().toLowerCase() === owner;
+    const touched = events.some((e) => same(e.by) && ['comment', 'status', 'description'].includes(e.kind))
+      || same(row.team_first_by) || acts.some((a) => same(a.name))
+      || ids.some((id) => ctx.holderTime?.has(`${id}:${row.assignee_id}`));
+    holding = !touched;
+  }
   const missing = [];
   if (!resolved && isPsc && !row.org) missing.push('org');
-  if (!resolved && !row.assignee_id) missing.push('assignee');
+  if (!resolved && (!row.assignee_id || holding)) missing.push('assignee');
   if (!resolved && !first) missing.push('response');
 
   let state = 'active';
@@ -664,7 +688,7 @@ export function describe(original, ctx, now = new Date().toISOString()) {
     lastTeam, customerLast: row.customer_last_at ? { at: row.customer_last_at, by: row.customer_last_by } : null,
     customerWaiting: Boolean(customerWaiting), customerWaitMs, quietMs, stale: Boolean(stale),
     chargeable: row.chargeable || null, sourceKey: row.source?.issue_key || null,
-    missing, state, rank,
+    missing, state, rank, holding,
     copyOf: row.source?.issue_key || null,
     uncopied: Boolean(original.uncopied),
   };

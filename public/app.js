@@ -13175,9 +13175,9 @@ function pscOrgSelect(d) {
 }
 
 function pscTriageActions(d) {
-  const need = { org: 'No Organization', assignee: 'No one assigned', response: 'No one has looked at it' };
+  const need = { org: 'No Organization', assignee: d.holding ? `With ${d.assignee}, not started` : 'No one assigned', response: 'No one has looked at it' };
   return `<div class="psc-triage">
-      <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${need[m]}</span>`).join('')}</p>
+      <p class="psc-needs">${d.missing.map((m) => `<span class="psc-chip bad">${esc(need[m])}</span>`).join('')}</p>
       <div class="psc-actions">
         ${d.missing.includes('response') || d.assigneeId !== pscData?.me ? '<button class="btn" data-psc-pickup="KEY">I\'m on it</button>'.replace('KEY', esc(d.key)) : ''}
         ${pscQuickHand(d)}
@@ -13296,6 +13296,19 @@ async function pscHtml() {
   return `${await pscPageHtml()}${pscResolveModal()}`;
 }
 
+// The Triage tab's three lists, each with its count at the top.
+const PSC_TRIAGE = [
+  ['org', 'Missing an Organization', 'Every PSC board item has an Organization.'],
+  ['assignee', 'Missing an assignee', 'Everything has someone on it.'],
+  ['response', 'Waiting for a first look', 'Everything has had a first look.'],
+];
+const pscTriClosed = new Set();
+view.addEventListener('toggle', (event) => {
+  const d = event.target;
+  if (!d.matches?.('details[data-psc-tri]')) return;
+  if (d.open) pscTriClosed.delete(d.dataset.pscTri); else pscTriClosed.add(d.dataset.pscTri);
+}, true);
+
 async function pscPageHtml() {
   if (pscNew) return pscNewHtml();
   if (pscOpen) return pscItemHtml();
@@ -13304,9 +13317,16 @@ async function pscPageHtml() {
   if (pscTab === 'triage') {
     const list = data.items.filter((d) => !d.orderWork && d.missing.length);
     if (list.some((d) => d.missing.includes('org')) && !pscOrgs) pscOrgs = await api('/api/psc/orgs').catch((err) => ({ orgs: [], error: err.message }));
+    const groups = PSC_TRIAGE.map(([id, label, empty]) => ({ id, label, empty, items: list.filter((d) => d.missing.includes(id)) }));
+    const bubble = (g) => `<div class="inv-jump" data-psc-tri-jump="${g.id}" role="button" tabindex="0" aria-label="${esc(g.label)}: show the list">
+        <dt>${esc(g.label)}</dt><dd>${g.items.length}</dd></div>`;
+    const section = (g) => `<details class="psc-tri" id="psc-tri-${g.id}" data-psc-tri="${g.id}"${pscTriClosed.has(g.id) ? '' : ' open'}>
+        <summary><h2 class="psc-group">${esc(g.label)} <span class="muted">(${g.items.length})</span></h2></summary>
+        <div class="psc-list">${g.items.map((d) => pscCardHtml(d, { triage: true })).join('') || `<div class="card"><p style="margin:0">${esc(g.empty)}</p></div>`}</div></details>`;
     return `${pscTabsHtml(data)}${pscHeadLine(data)}
-      <p class="help">New items, and any missing an Organization, an owner, a first look, or whether it's chargeable. Each leaves this list once it has them all.</p>
-      ${pscWithNew(list, (d) => pscCardHtml(d, { triage: true }), '<div class="card"><p style="margin:0">Nothing to triage. Every item has a customer, an owner, a first look and a chargeable answer.</p></div>')}`;
+      <dl class="stats con-stats psc-tri-stats">${groups.map(bubble).join('')}</dl>
+      <p class="help">An item stays here until it has an Organization (on the PSC board), someone who has picked it up, and a first look. Items left with Richard Key or Simon Williams count as having no one until they've done something on them.</p>
+      ${groups.map(section).join('')}`;
   }
   const base = data.items.filter((d) => (pscSnags || !d.orderWork) && (pscShow === 'resolved' ? d.state === 'resolved' : d.state !== 'resolved'));
   const customers = [...new Set(base.map((d) => d.customer || 'No customer'))].sort();
@@ -14984,6 +15004,12 @@ async function pscClick(event) {
   if (await pscHandClick(t)) return true;
   if (t('label')) return false;
   if (t('[data-psc-all-flags]')) { pscAllFlags = !pscAllFlags; return render(); }
+  const jump = t('[data-psc-tri-jump]');
+  if (jump) {
+    const sec = document.getElementById(`psc-tri-${jump.dataset.pscTriJump}`);
+    if (sec) { sec.open = true; pscTriClosed.delete(sec.dataset.pscTri); sec.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    return true;
+  }
   // A new customer, not yet in Jira: straight into the quote for a New Potential Customer.
   const nc = t('[data-psc-flag-new]');
   if (nc) {
@@ -16719,7 +16745,7 @@ async function render() {
 
 // Contract cards open with Enter or Space too.
 view.addEventListener('keydown', (event) => {
-  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump], [data-nm-open]');
+  const card = event.target.closest?.('[data-con-open], [data-psc-open], [data-wip-open], [data-usage-person], [data-inv-month], [data-inv-jump], [data-psc-tri-jump], [data-nm-open]');
   if (card && (event.key === 'Enter' || event.key === ' ') && event.target === card) { event.preventDefault(); card.click(); }
 });
 
