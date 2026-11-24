@@ -2798,3 +2798,86 @@ p .cust-shield { width: 18px; height: 18px; }
 .wip-drill-amt { display: flex; flex-direction: column; align-items: flex-end; white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
 :where(:root[data-theme="dark"]) .wip-drill-host .icon-btn { background: var(--surface); }
 .wip-drill-main > .linklike { align-self: flex-start; text-align: left; padding: 0; font-weight: 700; }
+
+/* Job documents */
+.job-docs.docs-due { border-color: var(--gold); }
+.job-docs.docs-done { color: var(--muted); }
+.docs-orders, .docs-feed { list-style: none; margin: 0; padding: 0; }
+.docs-order { padding: .65rem 0; border-top: 1px solid var(--line); }
+.docs-order:first-child { border-top: 0; }
+.docs-order-head { margin-bottom: .35rem; }
+.docs-cat { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; margin: .3rem 0 0 .25rem; }
+.docs-cat-key { font-weight: 700; }
+.docs-chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.docs-chips .chip-btn { text-decoration: none; font-size: .88rem; }
+.docs-chips .chip-btn.started { background: var(--tint); }
+.docs-foot { margin: .75rem 0 0; }
+.docs-list { list-style: none; margin: 0; padding: 0; }
+.docs-list li { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .7rem 0; border-top: 1px solid var(--line); }
+.docs-list li:first-child { border-top: 0; }
+.docs-list-main { min-width: 0; display: flex; flex-direction: column; gap: .2rem; }
+.docs-aud { align-self: flex-start; font-size: .78rem; font-weight: 700; color: var(--blue-deep); background: var(--tint); border-radius: 999px; padding: .1rem .5rem; }
+.docs-state { font-weight: 700; font-size: .9rem; }
+.docs-state.none { color: var(--muted); }
+.docs-state.draft { color: #a16207; }
+.docs-state.done { color: var(--good, #15803d); }
+.docs-needs fieldset { border: 0; padding: 0; margin: .75rem 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .35rem 1rem; }
+.docs-needs legend { font-weight: 700; margin-bottom: .35rem; }
+.docs-needs .inline-check { font-weight: 500; align-items: flex-start; }
+.doc-ed { display: flex; flex-direction: column; gap: 1rem; }
+.doc-bar { display: flex; flex-direction: column; gap: .6rem; }
+.doc-bar-state { display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: baseline; }
+.doc-bar .row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.doc-panel { border-top: 1px solid var(--line); padding-top: .75rem; display: flex; flex-direction: column; gap: .6rem; }
+.doc-panel h3 { margin: 0; }
+.doc-panel p { margin: 0; }
+.doc-sec { border: 0; min-width: 0; margin: 0; }
+.doc-sec h2 { margin-top: 0; }
+.doc-fh { font-size: 1rem; font-style: italic; margin: 1rem 0 .4rem; }
+.doc-f { margin-top: .75rem; }
+.doc-help { margin: .3rem 0 0; font-size: .88rem; }
+.doc-note { color: var(--muted); font-size: .9rem; font-style: italic; margin: .5rem 0 0; }
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .6rem 1rem; }
+.doc-grid .wide { grid-column: 1 / -1; }
+.doc-tw { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+.doc-t { border-collapse: collapse; width: 100%; font-size: .9rem; }
+.doc-t th { background: #008DC6; color: #fff; text-align: left; padding: .45rem .5rem; font-size: .82rem; white-space: nowrap; }
+.doc-t td { border-top: 1px solid var(--line); padding: .25rem; vertical-align: top; }
+.doc-t td input, .doc-t td select, .doc-t td textarea { width: 100%; padding: .35rem .45rem; border-radius: 6px; font-size: .9rem; margin: 0; }
+.doc-t-no { color: var(--muted); text-align: right; padding-top: .55rem !important; }
+.doc-t-x .icon-btn, .doc-steps .icon-btn { width: 30px; height: 30px; border-radius: 8px; }
+.doc-check td:first-child { padding: .5rem; min-width: 14rem; }
+.doc-t-actions { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-top: .5rem; }
+.doc-steps { margin: 0; padding-left: 1.4rem; display: flex; flex-direction: column; gap: .4rem; }
+.doc-steps li { display: flex; gap: .4rem; align-items: flex-start; }
+.doc-steps textarea { margin: 0; }
+.doc-photos { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: .75rem; margin-bottom: .5rem; }
+.doc-photos figure { margin: 0; display: flex; flex-direction: column; gap: .3rem; }
+.doc-photos img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); background: #fff; }
+.doc-add { cursor: pointer; margin-top: .4rem; }
+.doc-files { margin: 0 0 .4rem; padding-left: 1.1rem; }
+.doc-signs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.doc-sign h3 { margin: 0 0 .4rem; }
+.doc-sig-label { display: block; font-weight: 600; font-size: .95rem; margin-top: .6rem; }
+.doc-sig { display: block; width: 100%; max-width: 480px; aspect-ratio: 480 / 140; border: 1px dashed var(--line); border-radius: 8px; background: #fff; touch-action: none; margin: .3rem 0; }
+.doc-chapter { border: 1px solid var(--line); border-radius: 12px; padding: .75rem 1rem; margin-bottom: .75rem; }
+.doc-chapter-head { display: flex; gap: 1rem; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; }
+.doc-chapter-head label { flex: 1; min-width: 200px; }
+.doc-vt, .doc-lib { width: 100%; border-collapse: collapse; font-size: .92rem; }
+.doc-vt th, .doc-vt td, .doc-lib th, .doc-lib td { text-align: left; padding: .45rem .5rem; border-top: 1px solid var(--line); vertical-align: top; }
+.doc-lib th { background: var(--tint); border-top: 0; }
+.doc-lib .num { text-align: right; white-space: nowrap; }
+.doc-lib tr.off { opacity: .6; }
+.docs-lib-secs { font-size: .82rem; max-width: 26rem; white-space: normal; }
+.doc-lib td:first-child { min-width: 14rem; }
+.docs-lib-edit td { background: var(--tint); }
+.docs-lib-disc { border: 0; padding: 0; margin: .75rem 0; display: flex; flex-wrap: wrap; gap: .4rem 1rem; }
+.docs-lib-edit .row { display: flex; gap: .5rem; margin-top: .75rem; }
+.doc-ed.locked .doc-sec { opacity: .92; }
+:root[data-theme="dark"] .doc-photos img, :root[data-theme="dark"] .doc-sig { background: #fff; }
+.docs-needs .row, .docs-other .row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.docs-feed .docs-order { border-top-color: rgba(255,255,255,.25); }
+.docs-feed .muted { color: rgba(255,255,255,.78); }
+.docs-feed .docs-cat-key { color: #fff; }
+.doc-drive { display: inline-flex; gap: .4rem; flex-wrap: wrap; }
+.docs-drive .row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }

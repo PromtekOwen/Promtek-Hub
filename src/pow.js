@@ -337,7 +337,7 @@ const base64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
   .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
 // Signs in as the service account and returns a short-lived access token.
-async function googleToken(env) {
+export async function googleToken(env) {
   if (!env.GOOGLE_SERVICE_ACCOUNT) throw new Error('No Google service account configured');
   const account = JSON.parse(env.GOOGLE_SERVICE_ACCOUNT);
   const now = Math.floor(Date.now() / 1000);

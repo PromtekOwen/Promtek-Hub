@@ -40,6 +40,7 @@ export const EVENTS = {
     { id: 'order-new', label: 'New order', about: 'A new order comes in for a team you lead', app: true, email: true },
     { id: 'estimate', label: 'Job near or past its estimate', about: 'A job in your team reaches 90% or passes its estimate', app: true, email: true },
     { id: 'modifier', label: 'Something to take into account', about: 'Someone you manage asks for something to be taken into account', app: true, email: true },
+    { id: 'docs-weekly', label: 'Job documents outstanding', about: 'Each Monday, the documents still to finish on jobs in a team you lead', app: true, email: true },
     { id: 'missing-stage', label: 'Possible missing stage', about: 'Time is logged to a job because no stage matched the work', app: true, email: true },
   ],
   xp: [

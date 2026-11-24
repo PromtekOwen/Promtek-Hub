@@ -514,6 +514,7 @@ export async function moveAfterLog(env, viewer, { issueId, transitionId }) {
   const { key, transitions } = await nextStatus(env, issueId, viewer);
   const t = transitions.find((x) => x.id === String(transitionId));
   if (!t) throw refuse('Jira doesn\'t offer that move from where it is now.');
+  if (t.cat === 'done') await (await import('./docs.js')).mustAllowDone(env, key);
   await jira(env, `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: t.id } }) });
   await record(env, viewer, { area: 'Log time', action: 'moved an item on', subjectType: 'jira', subjectId: key, label: key, changes: [{ label: 'Status', before: '', after: t.to }] }).catch(() => {});
   return { key, status: t.to };

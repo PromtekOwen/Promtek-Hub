@@ -1048,6 +1048,33 @@ Once agreed:
 
 Alert emails go to each lead or supervisor's own email address through the mail relay, falling back to `ALERT_EMAIL` when there's nobody to send them to.
 
+## Part 20b: Job documents
+
+Each category on a job has the documents it needs. The engineers on the job fill them in as the work goes on, a piece at a time, and the hub lays each one out as a Promtek document (the blue band and logo, the date and order number, the customer's details, the version table, contents, tables headed in Promtek blue and the accreditations and company details on every page). It's for everyone who can open Jobs.
+
+- **Choosing them.** Each category in Jobs has a **Documents** button showing how many are issued of those it needs. A team lead, Management or an admin ticks which documents a category needs. Categories made from the day this went live start with those usual for their kind ticked (Software: Requirements Specification, I/O List, Software Test Specification, Software Backup Record and Operator Manual; Hardware: Panel Build and Wiring Check, Factory Acceptance Test and Electrical Drawings; Site visit: Site Visit Report and Commissioning Report; Condor: Condor Configuration Record, Network and IP Schedule and Software Backup Record). Older categories have none until a lead ticks them. Anyone can also start a document that isn't on the list.
+- **Filling them in.** Each document opens as a form of its own: text, tables (with **Paste from Excel**, matched by the headings in the first row where it has them, otherwise taken in the order shown), numbered tests with Pass, Fail or Not applicable, checklists, steps, pictures with captions, files, signatures drawn on screen, and repeating sections for manuals (one per area of the plant). It saves as you type. The Software Test Specification starts with the usual tests, and the Requirements Specification with the usual contingency wording. **Preview** shows the PDF as it stands, marked DRAFT.
+- **Issuing.** **Issue it** asks what the version is, adds it to the version table, lays the document out and puts it on the category in Jira as `FDL-668 Requirements Specification v1.pdf`, and (with Drive filing on, below) straight into the job's Drive folder, with a link to it from the document. The long lists (I/O, alarms, recipe parameters, network, spares and loop checks) go on as a spreadsheet as well, grouped and filterable. Files added to a document (backups, drawings, the customer's spec) go straight onto the category in Jira too, up to 25 MB each. **Change it** opens it again; the next issue is the next version.
+- **Holding a category back.** A category can't be moved to Done from the hub, nor its last open sub-task, while any document it needs isn't issued. Moves made in Jira itself aren't stopped.
+- **Time and XP.** **Log time** on a document logs to the category in Tempo, like any other time on the job, so it counts towards the job's hours and its ELO as normal. Its description starts "Documentation:", and it earns 1.5 times the XP (set per document).
+- **Reminders.** Each person's outstanding documents are on the home screen in a **Documents** tab of their own, by job: those on categories they're assigned to, in Promtek Staff Involved on or have logged time on. Each Monday morning team leads get one alert listing the documents outstanding in their team, by job (Jobs notifications, **Job documents outstanding**).
+- **The list.** **Every kind of job document** (from the Documents page) lists them all, with how many have been issued and the average time logged on each, for quoting. Admins and Management can rename them, change who each is for, which categories start with it ticked and its XP rate, take one out of use, or add their own from a list of sections.
+
+**Filing in Google Drive.** The hub can take over from the Jira automations "(NEW) ADMIN - Upload Documentation" and "LEGACY - Upload Documentation" and their two Zaps. Every few minutes it looks for attachments added to customer jobs and puts each one, once, in the job's folder in the shared drive:
+- on the order (the Epic): in its folder, named by its key (FDL-668);
+- on a category, or one of its sub-tasks: in the folder for its kind inside that (Hardware, Software, Condor Software, Commissioning);
+- on an older order's item: in the folder for its kind, as the old Zap did (Assembly, Configuration & Testing; Purchase Order; Kestrel Software; StoraWeigh Software; Condor Software; Hardware Delivery; Commissioning).
+
+Items ticked Customer Item, the template project, sub-tasks of older items and other kinds aren't filed, as before. A missing kind folder is made; a missing order folder is waited for and tried again with longer gaps, and after ten tries Admin is alerted, with a Retry in Job documents. Documents issued in the hub go in as soon as they're issued. Only attachments added after it's switched on are filed.
+
+To switch it over:
+1. If the hub doesn't have its Google service account yet, set it up as in Part 11's *Setting up the Google Drive upload*, steps 1 to 4 and 6 (`GOOGLE_SERVICE_ACCOUNT`).
+2. Add the service account's email as a **Content manager** of the shared drive the job folders are in.
+3. In Jira, turn off the two automations, and in Zapier turn off "NEW Documentation Auto Upload" and "Documentation Auto Upload".
+4. In the hub, open Jobs, any category's **Documents**, then **Every kind of job document**. Under **Filing in Google Drive**, select **Check the hub can reach the drive**, then **Switch on** (admins only).
+
+**Setting it up:** run `schema-079.sql` in the D1 console. The day the hub first reads Jobs after that is the day new categories start getting their usual documents.
+
 ## Part 21: Sales (prospects and quotes)
 
 **Prospects.** New potential customers, with no project in Jira yet, are kept in the **Prospects** tab rather than as quotes. Each one records:

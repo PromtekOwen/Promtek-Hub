@@ -165,6 +165,10 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
   const { results: mesRows } = await env.DB.prepare('SELECT issue_id, ticket_elo FROM mes_estimates WHERE ticket_elo IS NOT NULL').all();
   for (const m of mesRows) overrides.set(m.issue_id, m.ticket_elo);
 
+  // Time logged against a job's documents earns more XP.
+  const { multipliersFor } = await import('./docs.js');
+  const docRates = await multipliersFor(env, wls.map((w) => w.id));
+
   const existing = new Map();
   for (const part of chunk(wls.map((w) => w.id), CHUNK)) {
     const { results } = await env.DB.prepare(
@@ -205,7 +209,7 @@ export async function processWorklogs(env, worklogs, { backfill = false } = {}) 
     const isMes = /^MES-/i.test(job.issue_key || '');
     const engineerElo = prev?.engineer_elo
       ?? (isMes ? emp.condor_elo_week ?? emp.condor_elo : emp.elo_week ?? emp.elo) ?? DEFAULT_ELO;
-    const override = rateFor(rateHistory.get(String(wl.issueId)), wl.startDate, job.xp_override ?? 1) ?? 1;
+    const override = (rateFor(rateHistory.get(String(wl.issueId)), wl.startDate, job.xp_override ?? 1) ?? 1) * (docRates.get(String(wl.id)) || 1);
     const jobElo = overrides.get(String(wl.issueId)) ?? (job.parent_id ? overrides.get(job.parent_id) : undefined) ?? job.job_elo;
     const rate = xpRate({ jobElo, engineerElo, baseline: emp.baseline ?? DEFAULT_BASELINE, override });
     // Overtime keeps its share until the week is worked out again below.
@@ -278,10 +282,12 @@ async function rateStep(env, ids) {
   if (!ids.length) return { checked: 0, items: 0, fixed: 0, keys: [] };
   const earned = new Map();
   for (const part of chunk(ids, CHUNK)) {
-    const { results } = await env.DB.prepare(
+    // Time on a job's documents earns its own rate on top, so it's left out of this check.
+    const q = (docs) => env.DB.prepare(
       `SELECT issue_id, work_date, COALESCE(override, 1) AS override FROM xp_ledger WHERE issue_id IN (${placeholders(part.length)})
-        GROUP BY issue_id, work_date, COALESCE(override, 1)`
+        ${docs ? 'AND worklog_id NOT IN (SELECT worklog_id FROM doc_worklogs)' : ''} GROUP BY issue_id, work_date, COALESCE(override, 1)`
     ).bind(...part).all();
+    const { results } = await q(true).catch(() => q(false));
     for (const r of results) (earned.get(String(r.issue_id)) || earned.set(String(r.issue_id), []).get(String(r.issue_id))).push(r);
   }
   const { syncRateHistory } = await import('./xprates.js');
@@ -828,6 +834,8 @@ export async function runScheduled(rawEnv) {
   await attempt('PSC changes', async () => (await import('./psc.js')).quickRead(env));
   // Orders and invoices changed in the last few minutes, so the WIP stays current.
   await attempt('WIP', async () => (await import('./wip.js')).quick(env));
+  // Attachments on customer jobs filed in the job's Drive folder, once switched on in Job documents.
+  if ((await getState(env, 'drive_filing')) === 'on') await attempt('Drive filing', async () => (await import('./drive-filing.js')).run(env));
   // One of the last 14 days is re-read every 10 minutes, so each day is checked every couple of hours.
   if (Date.now() - Number((await getState(env, 'reconcile_at')) || 0) >= RECONCILE_EVERY_MS) {
     await setState(env, 'reconcile_at', Date.now());
@@ -879,6 +887,7 @@ export async function runScheduled(rawEnv) {
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {
       await attempt('Quotes', async () => (await import('./quotes.js')).hourly(env));
       await attempt('Company chart', async () => (await import('./orgdocs.js')).hourly(env));
+      if (new Date().getUTCHours() >= 7) await attempt('Job documents', async () => (await import('./docs.js')).weeklyLeads(env));
       if (new Date().getUTCHours() === 7) await attempt('Vehicle expiries', async () => (await import('./vehicles.js')).checkExpiries(env));
       if (new Date().getUTCHours() === 5) await attempt('Jira lists retry', async () => (await import('./customer-lists.js')).daily(env));
       if (new Date().getUTCHours() === 4) await attempt('XP rate check', () => checkXpRates(env));

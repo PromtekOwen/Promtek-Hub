@@ -26,7 +26,7 @@ function clean(text) {
   let out = String(text ?? '');
   for (const [pattern, replacement] of SUBSTITUTIONS) out = out.replace(pattern, replacement);
   // Keep to characters the standard font can show.
-  return out.replace(/[^\x20-\x7E\u00a3\u00b0\u00e9\u00e8]/g, ' ');
+  return out.replace(/\r\n?/g, '\n').replace(/[^\n\x20-\x7E\u00a3\u00b0\u00e9\u00e8]/g, ' ');
 }
 
 export function widthOf(text, size, bold = false) {
@@ -57,7 +57,7 @@ export function wrap(text, size, maxWidth, bold = false) {
   return lines;
 }
 
-const escapeText = (text) => clean(text).replace(/([\\()])/g, '\\$1');
+const escapeText = (text) => clean(text).replace(/\n/g, ' ').replace(/([\\()])/g, '\\$1');
 const round = (n) => Math.round(n * 100) / 100;
 
 export class Pdf {
@@ -141,21 +141,22 @@ export class Pdf {
     return this;
   }
 
-  text(value, x, y, { size = 10, bold = false, colour = [0.08, 0.17, 0.24], align = 'left', width = 0 } = {}) {
+  text(value, x, y, { size = 10, bold = false, italic = false, colour = [0.08, 0.17, 0.24], align = 'left', width = 0 } = {}) {
     let drawX = x;
     if (align !== 'left' && width) {
       const textWidth = widthOf(value, size, bold);
       drawX = align === 'center' ? x + (width - textWidth) / 2 : x + width - textWidth;
     }
     this.colour(colour);
-    this.ops.push(`BT /${bold ? 'FB' : 'FR'} ${size} Tf ${round(drawX)} ${round(y)} Td (${escapeText(value)}) Tj ET`);
+    const font = italic ? (bold ? 'FBI' : 'FI') : bold ? 'FB' : 'FR';
+    this.ops.push(`BT /${font} ${size} Tf ${round(drawX)} ${round(y)} Td (${escapeText(value)}) Tj ET`);
     return this;
   }
 
   // Wrapped paragraph; returns the height used.
-  paragraph(value, x, y, width, { size = 10, bold = false, colour, leading = 1.35 } = {}) {
+  paragraph(value, x, y, width, { size = 10, bold = false, italic = false, colour, leading = 1.35 } = {}) {
     const lines = wrap(value, size, width, bold);
-    lines.forEach((line, i) => this.text(line, x, y - i * size * leading, { size, bold, colour }));
+    lines.forEach((line, i) => this.text(line, x, y - i * size * leading, { size, bold, italic, colour }));
     return lines.length * size * leading;
   }
 
@@ -172,6 +173,8 @@ export class Pdf {
 
     const fontRegular = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
     const fontBold = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+    const fontItalic = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>');
+    const fontBoldItalic = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-BoldOblique /Encoding /WinAnsiEncoding >>');
 
     const imageIds = [];
     for (const [name, image] of this.images) {
@@ -192,7 +195,7 @@ export class Pdf {
       const contentId = add(`<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
       pageIds.push(add(
         `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${round(this.size.width)} ${round(this.size.height)}]`
-        + ` /Resources << /Font << /FR ${fontRegular} 0 R /FB ${fontBold} 0 R >>${xobjects} >> /Contents ${contentId} 0 R >>`
+        + ` /Resources << /Font << /FR ${fontRegular} 0 R /FB ${fontBold} 0 R /FI ${fontItalic} 0 R /FBI ${fontBoldItalic} 0 R >>${xobjects} >> /Contents ${contentId} 0 R >>`
       ));
     }
     const realPagesId = add(`<< /Type /Pages /Count ${pageIds.length} /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] >>`);

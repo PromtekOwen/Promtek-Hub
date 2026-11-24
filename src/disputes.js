@@ -21,7 +21,7 @@ const SCORE_KEYS = ['tech', 'scope', 'risk', 'dep'];
 const chunk = (list, size) => Array.from({ length: Math.ceil(list.length / size) }, (_, i) => list.slice(i * size, i * size + size));
 const hoursText = (s) => `${Math.round((s || 0) / 360) / 10}h`;
 
-const JOB_FIELDS = [...ALL_FIELDS, STAFF_FIELD, 'assignee'];
+const JOB_FIELDS = [...ALL_FIELDS, STAFF_FIELD, 'assignee', 'created'];
 const STAFF_JQL = `cf[${STAFF_FIELD.replace('customfield_', '')}]`;
 // Invoices and paperwork sit under legacy orders too, but aren't work to do.
 const LEGACY_ADMIN_TYPES = ['invoice', 'documentation check phase'];
@@ -49,7 +49,7 @@ export async function activeJobs(env) {
       children.get(String(epic.id)).push(item);
       if (!disciplineOf(item)) continue;
       const [row] = categoryRows({ epic, category: item, categoryStages: [] });
-      categories.push({ ...row, done: isDone(item), order_summary: epic.fields?.summary || '', staff: staffOf(item), assignee: item.fields?.assignee?.accountId || null,
+      categories.push({ ...row, done: isDone(item), order_summary: epic.fields?.summary || '', staff: staffOf(item), assignee: item.fields?.assignee?.accountId || null, created: item.fields?.created || null,
         epic_assignee: epic.fields?.assignee?.accountId || null, epic_staff: staffOf(epic) });
     }
   }
@@ -70,6 +70,8 @@ export async function activeJobs(env) {
       });
     }
   }
+  // Noted for the documents each category needs, so they can be chased after it's finished.
+  try { await (await import('./docs.js')).noteCategories(env, categories); } catch (err) { console.warn('Job documents not noted:', err.message); }
   return { categories, legacy };
 }
 
@@ -188,7 +190,10 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     .catch(() => ({ results: [] }));
   const involvedBy = new Map();
   for (const r of inv) involvedBy.set(r.issue_key, [...(involvedBy.get(r.issue_key) || []), { id: r.account_id, name: r.name || 'Someone not in the hub' }]);
+  const docSummary = await (await import('./docs.js')).summaryFor(env, [...orders.values()].flatMap((o) => o.categories.filter((c) => !c.legacy).map((c) => c.id)))
+    .catch(() => new Map());
   const list = [...orders.values()].map((o) => {
+    for (const c of o.categories) if (!c.legacy) c.docs = docSummary.get(c.id) || { needed: 0, done: 0, started: 0 };
     const p = people.get(o.key) || { assignee: null, staff: new Set() };
     for (const c of o.categories) {
       if (c.legacy) c.assigneeName = c.assignee ? byId.get(c.assignee)?.name || null : null;
@@ -199,7 +204,7 @@ export async function listActive(env, viewer, { scope = 'mine' } = {}) {
     others.sort((a, b) => directory[a].name.localeCompare(directory[b].name));
     return { ...o, assignee: ref(p.assignee), people: others, involvedPeople: involvedBy.get(o.key) || [] };
   });
-  return { scope, orders: list, people: directory, reasons: DISPUTE_REASONS, canSetDifficulty: Boolean(viewer.isLead), country: viewer.country || 'uk',
+  return { scope, orders: list, people: directory, reasons: DISPUTE_REASONS, canSetDifficulty: Boolean(viewer.isLead), canDocNeeds: (await import('./docs.js')).canNeeds(viewer), country: viewer.country || 'uk',
     bothCountries: !country.only };
 }
 
@@ -247,6 +252,7 @@ export async function transition(env, viewer, { key, id }) {
   const { transitions = [] } = (await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}/transitions`)) || {};
   const t = transitions.find((x) => String(x.id) === String(id) && statusAllowed(viewer, x.to?.name || x.name));
   if (!t) throw new Error('Jira doesn\'t offer that move from where it is now.');
+  if (t.to?.statusCategory?.key === 'done') await (await import('./docs.js')).mustAllowDone(env, k);
   await jira(env, `/rest/api/3/issue/${encodeURIComponent(k)}/transitions`, { method: 'POST', body: JSON.stringify({ transition: { id: String(t.id) } }) });
   const to = t.to?.name || t.name;
   await record(env, viewer, { area: 'Jobs', action: 'moved a sub-task', subjectType: 'jira', subjectId: k, label: `${k} ${issue.fields?.summary || ''}`.trim(),

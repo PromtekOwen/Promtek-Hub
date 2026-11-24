@@ -56,13 +56,16 @@ export async function feed(env, viewer) {
     ).bind(m.id, reader, now)));
   }
 
-  const [system, week, anniversaries, forms, birthdays] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer),
-    Eotq.anniversaries(env).catch(() => []), import('./forms.js').then((F) => F.forFeed(env, viewer)).catch(() => []), Eotq.birthdays(env).catch(() => [])]);
+  const [system, week, anniversaries, forms, birthdays, docs] = await Promise.all([systemAlerts(env, viewer).catch(() => []), weekSoFar(env, viewer),
+    Eotq.anniversaries(env).catch(() => []), import('./forms.js').then((F) => F.forFeed(env, viewer)).catch(() => []), Eotq.birthdays(env).catch(() => []),
+    import('./docs.js').then((D) => D.mine(env, viewer)).catch(() => ({ orders: [], count: 0 }))]);
   const important = (a) => (a.tone === 'important' ? 0 : 1);
   return {
     alerts: [...forms, ...mine.filter((m) => m.kind === 'alert').map(shape), ...system].sort((a, b) => important(a) - important(b)),
     news: [...Eotq.birthdayNews(birthdays, viewer), ...Eotq.anniversaryNews(anniversaries, viewer), ...mine.filter((m) => m.kind === 'announcement').map(shape)].sort((a, b) => important(a) - important(b)),
     week,
+    // Job documents still to finish: a tab of their own, as there can be many.
+    docs,
   };
 }
 

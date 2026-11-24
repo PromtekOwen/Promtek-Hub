@@ -784,6 +784,11 @@ const pages = {
     },
   },
 
+  '#/docs': {
+    band: () => docsBand(),
+    render: () => docsRender(),
+  },
+
   '#/it': {
     band: () => `<h1>IT support</h1><p>Report a problem or ask for what you need.</p>`,
     async render() {
@@ -980,6 +985,8 @@ function homeSlides() {
     slides.push({ id: 'news', label: 'News', count: f.news.length,
       html: `<ul class="feed-list">${feedItemHtml(f.news[0])}</ul>${f.news.length > 1 ? `<button class="feed-more" data-feed-all="news">See all ${f.news.length}</button>` : ''}` });
   }
+  // Job documents still to finish: a tab of their own, kept apart from the other alerts.
+  if (f.docs?.count) slides.push({ id: 'docs', label: 'Documents', count: f.docs.count, html: docsSlideHtml(f.docs, room) });
   if (f.week) slides.push({ id: 'week', label: 'Week', html: weekSlideHtml(f.week) });
   return slides;
 }
@@ -6350,10 +6357,17 @@ function jobsCategoryRow(c) {
       <span class="cat-meta">${status}<span class="elo-pill" title="Job ELO">${c.jobElo ? n(Math.round(c.jobElo)) : '—'}</span>${jobsPeopleHtml(c, 'md')}</span></div>
     <div class="bar"><span style="width:${Math.min(100, Math.round(pct * 100))}%"></span></div>
     <div class="job-cat-foot"><span class="sub">${hoursShort(c.loggedSeconds)} of ${hoursShort(c.estimateSeconds)}${c.estimateSeconds ? `, ${Math.round(pct * 100)}%` : ''}${c.unscored ? '. Difficulty not set' : ''}${notes ? `. ${notes}` : ''}</span>
-      <span class="cat-foot-actions">${count}${action}</span></div>
+      <span class="cat-foot-actions">${count}${jobsDocChip(c)}${action}</span></div>
     ${prompt}
     ${jobsSubsSlot(c.key)}
   </li>`;
+}
+
+// Its documents: how many are issued of those it needs.
+function jobsDocChip(c) {
+  const d = c.docs || { needed: 0, done: 0 };
+  const state = !d.needed ? '' : d.done >= d.needed ? ' docs-done' : ' docs-due';
+  return `<a class="chip-btn job-docs${state}" href="#/docs?cat=${encodeURIComponent(c.id)}" title="Its documents">${d.needed ? `Documents ${n(d.done)}/${n(d.needed)}` : 'Documents'}</a>`;
 }
 
 // ---------- each category's sub-tasks ----------
@@ -16800,6 +16814,7 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/wip' && settingsOpen !== '#/wip' && await wipClick(event) !== false) return;
   if (currentRoute() === '#/capacity' && await capTileClick(event) !== false) return;
   if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  if (currentRoute() === '#/docs' && await docsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
   const teamChip = event.target.closest('[data-person-team]');
@@ -16905,6 +16920,7 @@ const sectionLoading = (label = 'Loading') => `<div class="card loading-card sma
 // Some pages know what they are waiting for.
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
+  '#/docs': () => 'Loading the documents',
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : quotesOpenRefresh ? 'Reading quotes from Jira' : 'Loading'),
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
@@ -17020,6 +17036,7 @@ async function render() {
       logFab();
       if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
+      if (route === '#/docs' && docEdit) docSigs();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -17047,6 +17064,7 @@ view.addEventListener('keydown', (event) => {
 
 let searchTimer = null;
 view.addEventListener('input', (event) => {
+  if (currentRoute() === '#/docs' && docsInput(event)) return;
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/nearmiss' && nmInput(event)) return;
   if (currentRoute() === '#/feedback' && feedbackInput(event)) return;
@@ -17165,6 +17183,7 @@ view.addEventListener('change', async (event) => {
   if (event.target.closest('[data-draft-ticket]') && dayChange(event)) return;
   if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
+  if (currentRoute() === '#/docs' && await docsChange(event)) return;
   if (currentRoute() === '#/invoicing' && !settingsOpen && invoicingChange(event)) return;
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesChange(event)) return;
   if (currentRoute() === '#/nearmiss' && !settingsOpen && nmChange(event)) return;
@@ -18667,3 +18686,567 @@ async function start() {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
 start();
+
+// ---------- Job documents ----------
+// Each category's documents, chosen by a team lead, filled in by the engineers on the job a
+// piece at a time and laid out by the hub as a Promtek document. #/docs is someone's own
+// outstanding documents; ?cat= a category's; ?doc= one document; ?library the list of them all.
+
+let docsMine = null;           // { orders, count }
+let docsCat = null;            // a category's documents
+let docsLib = null;            // the list of every kind of document
+let docEdit = null;            // the document open: { doc, template, ..., dirty, timer, state }
+let docsPanel = null;          // 'log' | 'finish' | { paste: path } | { libEdit: id }
+let docsShow = {};             // how many rows of each long table are shown
+let docsDrive = null;          // how filing in Google Drive stands
+const DOC_ROWS = 100;
+const DOC_AUDIENCE = { customer: 'For the customer', internal: 'Internal' };
+
+function docsQuery() {
+  const q = new URLSearchParams(location.hash.split('?')[1] || '');
+  return { cat: q.get('cat'), type: q.get('type'), doc: q.get('doc'), library: q.has('library') };
+}
+
+const docsBand = () => {
+  const q = docsQuery();
+  if (q.doc && docEdit?.doc) {
+    const c = docEdit.category;
+    return `<h1>${esc(docEdit.doc.name)}</h1><p>${esc(c.key)}${c.order ? `, ${esc(c.order)}` : ''}${c.customer ? ` for ${esc(c.customer)}` : ''}</p>`;
+  }
+  if (q.cat && docsCat) return `<h1>Documents for ${esc(docsCat.category.key)}</h1><p>${esc([docsCat.category.disciplineName, docsCat.category.order, docsCat.category.customer].filter(Boolean).join(', '))}</p>`;
+  if (q.library) return '<h1>Job documents</h1><p>Every kind of document a job can need, what it asks for, and how long each takes.</p>';
+  return '<h1>Your job documents</h1><p>The documents still to finish on the jobs you\'re on.</p>';
+};
+
+async function docsRender() {
+  const q = docsQuery();
+  if (q.cat && q.type) {
+    const r = await api(`/api/docs/open?category=${encodeURIComponent(q.cat)}&type=${encodeURIComponent(q.type)}`);
+    docEditSet(r);
+    location.replace(`#/docs?doc=${r.doc.id}`);
+    return spinner('Opening the document');
+  }
+  if (q.doc) {
+    if (!docEdit || String(docEdit.doc.id) !== String(q.doc)) docEditSet(await api(`/api/docs/open?id=${encodeURIComponent(q.doc)}`));
+    band.innerHTML = docsBand();
+    return docEditorHtml();
+  }
+  if (q.cat) {
+    docsCat = await api(`/api/docs/category?id=${encodeURIComponent(q.cat)}`);
+    band.innerHTML = docsBand();
+    return docsCatHtml();
+  }
+  if (q.library) {
+    docsLib = await api('/api/docs/library');
+    docsDrive = docsLib.canEdit ? await api('/api/docs/drive').catch(() => null) : null;
+    return docsLibHtml();
+  }
+  docsMine = await api('/api/docs/mine');
+  return docsMineHtml();
+}
+
+function docEditSet(r) {
+  docEdit = { ...r, dirty: false, timer: null, state: 'saved' };
+  docsPanel = null; docsShow = {};
+}
+
+// ---------- someone's own ----------
+
+function docsOrderList(orders, { limit = Infinity } = {}) {
+  const docLink = (c, d) => (d.docId ? `#/docs?doc=${d.docId}` : `#/docs?cat=${encodeURIComponent(c.id)}&type=${encodeURIComponent(d.type)}`);
+  return orders.slice(0, limit).map((o) => `<li class="docs-order">
+      <div class="docs-order-head"><strong>${esc(o.key || '')}</strong>${o.summary ? ` ${esc(o.summary)}` : ''}${o.customer ? ` <span class="muted">${esc(o.customer)}</span>` : ''}</div>
+      ${o.categories.map((c) => `<div class="docs-cat"><a class="docs-cat-key" href="#/docs?cat=${encodeURIComponent(c.id)}">${esc(c.key)}</a>
+        <span class="muted">${esc(jobName(c.summary) || c.summary || '')}${c.done ? ', finished' : ''}</span>
+        <span class="docs-chips">${c.docs.map((d) => `<a class="chip-btn${d.started ? ' started' : ''}" href="${docLink(c, d)}">${esc(d.name)}${d.started ? ' <small>(started)</small>' : ''}</a>`).join('')}</span></div>`).join('')}
+    </li>`).join('');
+}
+
+function docsMineHtml() {
+  const m = docsMine || { orders: [], count: 0 };
+  return `<section class="card"><h2>Still to finish</h2>
+    ${m.orders.length ? `<ul class="docs-orders">${docsOrderList(m.orders)}</ul>`
+      : '<p class="muted">Nothing outstanding. Documents chosen for the categories you\'re on show up here until they\'re finished.</p>'}
+    </section>
+    <p class="docs-foot"><a class="linklike" href="#/docs?library">Every kind of job document</a></p>`;
+}
+
+// On the home screen: a tab of their own, as there can be many.
+function docsSlideHtml(docs, room) {
+  const list = docsOrderList(docs.orders, { limit: room });
+  return `<ul class="feed-list docs-feed">${list}</ul>${docs.orders.length > room ? `<a class="feed-more" href="#/docs">See all ${n(docs.count)}</a>` : '<a class="feed-more" href="#/docs">Open</a>'}`;
+}
+
+// ---------- a category's ----------
+
+function docsCatHtml() {
+  const d = docsCat;
+  const c = d.category;
+  const when = (iso) => (iso ? fullDate(String(iso).slice(0, 10)) : '');
+  const state = (x) => (!x.item ? '<span class="docs-state none">Not started</span>'
+    : x.item.version && x.item.status === 'done' ? `<span class="docs-state done">Issued, version ${n(x.item.version)}</span> <span class="muted">${esc(when(x.item.finishedAt))}</span>`
+      : `<span class="docs-state draft">${x.item.version ? `Being changed after version ${n(x.item.version)}` : 'Started'}</span> <span class="muted">last changed by ${esc(x.item.updatedBy || 'someone')} ${esc(when(x.item.updatedAt))}</span>`);
+  const open = (x) => (x.item ? `#/docs?doc=${x.item.id}` : `#/docs?cat=${encodeURIComponent(c.id)}&type=${encodeURIComponent(x.type)}`);
+  const rows = d.docs.length ? `<ul class="docs-list">${d.docs.map((x) => `<li>
+      <div class="docs-list-main"><strong>${esc(x.name)}</strong> <span class="docs-aud">${esc(DOC_AUDIENCE[x.audience] || '')}</span>${x.needed ? '' : ' <span class="muted">(extra)</span>'}
+        <div>${state(x)}${x.item?.seconds ? ` <span class="muted">· ${esc(duration(x.item.seconds))} logged</span>` : ''}${x.item?.error ? ` <span class="bad">${esc(x.item.error)}</span>` : ''}</div></div>
+      <a class="btn small${x.item ? ' secondary' : ''}" href="${open(x)}">${x.item ? 'Open' : 'Start'}</a></li>`).join('')}</ul>`
+    : `<p class="muted">No documents are chosen for this category yet.${d.canNeeds ? '' : ' Its team lead chooses which it needs.'}</p>`;
+  const have = new Set(d.docs.map((x) => x.type));
+  const extra = d.library.filter((t) => !have.has(t.id));
+  const groups = [...new Set(d.library.map((t) => t.group))];
+  const chooser = d.canNeeds ? `<section class="card docs-needs"><h2>Which documents it needs</h2>
+      <p class="muted">Ticked documents must be finished before ${esc(c.key)} can be moved to done in the hub. Those usual for ${esc(c.disciplineName || 'this kind of category')} are marked.</p>
+      ${groups.map((g) => `<fieldset><legend>${esc(g)}</legend>${d.library.filter((t) => t.group === g).map((t) => `<label class="inline-check"><input type="checkbox" data-docs-need="${esc(t.id)}"${d.docs.some((x) => x.type === t.id && x.needed) ? ' checked' : ''}>
+        <span>${esc(t.name)} <small class="muted">${esc(DOC_AUDIENCE[t.audience] || '')}${t.usual ? ', usual' : ''}</small></span></label>`).join('')}</fieldset>`).join('')}
+      <div class="row"><button class="btn" data-docs-needs-save="1">Save</button><button class="btn secondary" data-docs-needs-usual="1">Tick the usual ones</button></div></section>` : '';
+  const other = extra.length ? `<section class="card docs-other"><h2>Another document</h2><p class="muted">Anything else worth writing up for this job.</p>
+      <div class="row"><select data-docs-other>${extra.map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select>
+      <button class="btn secondary" data-docs-other-go="1">Start it</button></div></section>` : '';
+  return `<section class="card"><h2>Documents</h2>
+      <p class="muted"><a href="${esc(me.jiraBaseUrl)}/browse/${esc(c.key)}" target="_blank" rel="noopener">${esc(c.key)}</a> ${esc(jobName(c.summary) || '')}${c.done ? ', finished' : ''}. Finished documents go onto it in Jira, and from there into the job's Drive folder.</p>
+      ${rows}</section>${chooser}${other}`;
+}
+
+async function docsCatClick(event) {
+  const t = (s) => event.target.closest(s);
+  if (t('[data-docs-needs-usual]')) {
+    const usual = new Set(docsCat.library.filter((x) => x.usual).map((x) => x.id));
+    view.querySelectorAll('[data-docs-need]').forEach((b) => { b.checked = usual.has(b.dataset.docsNeed); });
+    return true;
+  }
+  if (t('[data-docs-needs-save]')) {
+    const types = [...view.querySelectorAll('[data-docs-need]:checked')].map((b) => b.dataset.docsNeed);
+    try { docsCat = await api('/api/docs/needs', { method: 'POST', body: JSON.stringify({ categoryId: docsCat.category.id, types }) }); toast('Saved'); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  if (t('[data-docs-other-go]')) {
+    const type = view.querySelector('[data-docs-other]')?.value;
+    if (type) location.hash = `#/docs?cat=${encodeURIComponent(docsCat.category.id)}&type=${encodeURIComponent(type)}`;
+    return true;
+  }
+  return false;
+}
+
+// ---------- one document ----------
+
+const docGet = (obj, path) => String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
+function docSet(obj, path, value) {
+  const keys = String(path).split('.');
+  let o = obj;
+  keys.slice(0, -1).forEach((k, i) => {
+    if (o[k] == null || typeof o[k] !== 'object') o[k] = /^\d+$/.test(keys[i + 1]) ? [] : {};
+    o = o[k];
+  });
+  o[keys[keys.length - 1]] = value;
+}
+const docKey = () => Math.random().toString(36).slice(2, 9);
+
+function docEditorHtml() {
+  const e = docEdit;
+  const d = e.doc;
+  const done = d.status === 'done';
+  const dis = done ? ' disabled' : '';
+  const t = e.template;
+  const head = Object.entries(e.headerFields).map(([k, f]) => docInput(f.type, `h:${k}`, f.label, d.header[k], { dis })).join('');
+  const bar = `<div class="card doc-bar">
+      <div class="doc-bar-state">${done ? `<span class="docs-state done">Issued, version ${n(d.version)}</span>` : `<span class="docs-state draft">${d.version ? `Changing version ${n(d.version)}` : 'Draft'}</span>`}
+        <span class="muted" id="doc-saved">${done ? `${esc(d.finishedBy || '')} ${esc(fullDate(String(d.finishedAt || '').slice(0, 10)))}` : 'Saved as you go'}</span>
+        <span class="muted">${d.seconds ? `${esc(duration(d.seconds))} logged` : ''}</span>
+        ${done && e.drive ? `<span class="doc-drive">${e.drive.map((x) => (x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(/\.xlsx$/i.test(x.name) ? 'Spreadsheet' : 'PDF')} in Drive</a>`
+          : x.status === 'waiting' ? `<span class="muted">Going into Drive${x.error ? `: ${esc(x.error)}` : ''}</span>` : `<span class="bad">Not in Drive${x.error ? `: ${esc(x.error)}` : ''}</span>`)).join(' · ')}</span>` : ''}</div>
+      <div class="row">
+        <a class="btn secondary small" href="/api/docs/preview?id=${d.id}" target="_blank" rel="noopener" data-doc-preview="1">Preview</a>
+        <button class="btn secondary small" data-doc-panel="log">Log time</button>
+        ${done ? '<button class="btn small" data-doc-reopen="1">Change it</button>' : `<button class="btn small" data-doc-panel="finish">Issue it</button>`}
+        <a class="btn secondary small" href="#/docs?cat=${encodeURIComponent(e.category.id)}">All for ${esc(e.category.key)}</a>
+      </div>
+      ${docsPanel === 'log' ? `<div class="doc-panel"><h3>Log time on this document</h3>
+        <p class="muted">It goes to ${esc(e.category.key)} in Tempo like any time on the job, and earns ${esc(String(d.multiplier))}× the XP.</p>
+        <div class="doc-grid"><label>Hours<input type="number" min="0.25" max="16" step="0.25" value="1" data-doc-log="hours"></label>
+          <label>Date<input type="date" value="${todayIso()}" max="${todayIso()}" data-doc-log="date"></label>
+          <label class="wide">What you did<input data-doc-log="note" placeholder="Optional"></label></div>
+        <div class="row"><button class="btn" data-doc-log-go="1">Log it</button><button class="btn secondary" data-doc-panel="">Cancel</button></div></div>` : ''}
+      ${docsPanel === 'finish' ? `<div class="doc-panel"><h3>Issue version ${n((d.version || 0) + 1)}</h3>
+        <p class="muted">The hub lays it out, adds it to the version table and puts it on ${esc(e.category.key)} in Jira${t.spreadsheet ? ', with a spreadsheet of its lists' : ''}. Check the preview first.</p>
+        <label>What this version is<input data-doc-finish-desc value="${d.version ? '' : 'First issue'}" placeholder="What changed"></label>
+        <div class="row"><button class="btn" data-doc-finish-go="1">Issue it</button><button class="btn secondary" data-doc-panel="">Cancel</button></div></div>` : ''}
+    </div>`;
+  const sections = t.sections.map((s, i) => `<fieldset class="card doc-sec"${dis}><h2>${i + 1}. ${esc(s.title)}</h2>
+      ${s.fields.map((f) => docFieldHtml(f, f.id, f.id, { dis, title: s.title })).join('')}</fieldset>`).join('');
+  const versions = d.versions.length ? `<section class="card"><h2>Versions</h2><table class="doc-vt"><thead><tr><th>Version</th><th>By</th><th>Date</th><th>Description</th></tr></thead>
+      <tbody>${d.versions.map((v) => `<tr><td>${n(v.version)}</td><td>${esc(v.name || v.initials)}</td><td>${esc(fullDate(v.date))}</td><td>${esc(v.description)}</td></tr>`).join('')}</tbody></table></section>` : '';
+  return `<div class="doc-ed${done ? ' locked' : ''}">${bar}
+    ${done ? `<p class="help">This version has been issued. Change it to issue the next one.</p>` : ''}
+    <fieldset class="card doc-sec"${dis}><h2>Details</h2><p class="muted">The date, order number and customer are filled in for you.</p><div class="doc-grid">${head}</div></fieldset>
+    ${sections}${versions}</div>`;
+}
+
+function docInput(type, path, label, value, { dis = '', options = [], rows = 3, placeholder = '', cls = '' } = {}) {
+  const v = value ?? '';
+  const ph = placeholder ? ` placeholder="${esc(placeholder)}"` : '';
+  const ctl = type === 'textarea' ? `<textarea rows="${rows}" data-dp="${esc(path)}"${ph}${dis}>${esc(v)}</textarea>`
+    : type === 'select' ? `<select data-dp="${esc(path)}"${dis}><option value=""></option>${options.map((o) => `<option${o === v ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`
+      : `<input type="${type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'}" data-dp="${esc(path)}" value="${esc(v)}"${ph}${dis}>`;
+  return label === null ? ctl : `<label class="${cls}${type === 'textarea' ? ' wide' : ''}">${esc(label)}${ctl}</label>`;
+}
+
+// One field: data at dpath, pictures and files filed under mpath.
+function docFieldHtml(f, dpath, mpath, { dis = '', title = '' } = {}) {
+  const e = docEdit;
+  const v = docGet(e.doc.data, dpath);
+  const label = String(f.label || '').toLowerCase() === String(title).toLowerCase() ? '' : f.label;
+  const help = f.help ? `<p class="muted doc-help">${esc(f.help)}</p>` : '';
+  const h = label ? `<h3 class="doc-fh">${esc(label)}</h3>` : '';
+  switch (f.type) {
+    case 'note': return `<p class="doc-note">${esc(f.text)}</p>`;
+    case 'text': case 'number': case 'date': case 'select':
+      return `<div class="doc-f">${docInput(f.type, dpath, f.label, v, { dis, options: f.options || [], placeholder: f.blank ? `Leave empty for "${f.blank}"` : '' })}${help}</div>`;
+    case 'textarea':
+      return `<div class="doc-f">${docInput('textarea', dpath, label || null, v, { dis, rows: f.rows || 4, placeholder: f.blank ? `Leave empty for "${f.blank}"` : '' })}${help}</div>`;
+    case 'table': return `<div class="doc-f">${h}${help}${docTableHtml(f.columns, dpath, v, { dis })}</div>`;
+    case 'tests': {
+      const cols = [{ id: 'action', label: 'Test', w: 34, long: true }, ...(f.columns || []).filter((c) => c.id !== 'test').map((c) => ({ ...c, long: true })),
+        { id: 'result', label: 'Result', w: 10, type: 'select', options: ['Pass', 'Fail', 'Not applicable'] }, { id: 'date', label: 'Date', w: 11, type: 'date' },
+        { id: 'initials', label: 'Initials', w: 6 }, ...(f.witness ? [{ id: 'witness', label: 'Witness', w: 7 }] : []), { id: 'note', label: 'Comments', w: 16 }];
+      return `<div class="doc-f">${h}${help}${docTableHtml(cols, dpath, v, { dis, numbered: true, initials: true })}</div>`;
+    }
+    case 'checklist': {
+      const list = Array.isArray(v) ? v : [];
+      const answers = f.answers || ['Yes', 'No', 'Not applicable'];
+      return `<div class="doc-f">${h}${help}<table class="doc-t doc-check"><thead><tr><th>Check</th><th>Answer</th><th>Notes</th></tr></thead><tbody>
+        ${(f.items || []).map((item, i) => `<tr><td>${esc(item)}</td><td>${docInput('select', `${dpath}.${i}.answer`, null, list[i]?.answer, { dis, options: answers })}</td>
+          <td>${docInput('text', `${dpath}.${i}.note`, null, list[i]?.note, { dis })}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    case 'steps': {
+      const list = Array.isArray(v) && v.length ? v : [''];
+      return `<div class="doc-f">${h}${help}<ol class="doc-steps">${list.map((s, i) => `<li>${docInput('textarea', `${dpath}.${i}`, null, s, { dis, rows: 2 })}
+        ${dis ? '' : `<button class="icon-btn" data-doc-rowdel="${esc(dpath)}" data-i="${i}" aria-label="Remove this step">✕</button>`}</li>`).join('')}</ol>
+        ${dis ? '' : `<button class="chip-btn" data-doc-rowadd="${esc(dpath)}" data-kind="step">Add a step</button>`}</div>`;
+    }
+    case 'photos': {
+      const list = e.photos.filter((p) => p.field === mpath);
+      return `<div class="doc-f">${h}${help}<div class="doc-photos">${list.map((p) => `<figure><img src="/api/docs/photo?id=${p.id}" alt="${esc(p.caption || 'Picture')}" loading="lazy">
+          <input data-doc-cap="${p.id}" value="${esc(p.caption || '')}" placeholder="Caption"${dis}>${dis ? '' : `<button class="linklike danger" data-doc-photodel="${p.id}">Remove</button>`}</figure>`).join('')}</div>
+        ${dis ? '' : `<label class="btn secondary small doc-add">Add pictures<input type="file" accept="image/*" multiple hidden data-doc-photoadd="${esc(mpath)}"></label>`}</div>`;
+    }
+    case 'files': {
+      const list = e.files.filter((x) => x.field === mpath);
+      const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+      return `<div class="doc-f">${h}${help}<ul class="doc-files">${list.map((x) => `<li>${esc(x.name)} <span class="muted">${size(x.size)}, ${esc(x.created_by || '')}</span>
+          ${dis ? '' : `<button class="linklike danger" data-doc-filedel="${x.id}">Remove</button>`}</li>`).join('') || '<li class="muted">None yet.</li>'}</ul>
+        ${dis ? '' : `<label class="btn secondary small doc-add">Add files<input type="file" multiple hidden data-doc-fileadd="${esc(mpath)}"></label>`}
+        <p class="muted doc-help">Files go straight onto ${esc(e.category.key)} in Jira. Up to 25 MB each.</p></div>`;
+    }
+    case 'signoff': {
+      const list = Array.isArray(v) ? v : [];
+      return `<div class="doc-f doc-signs">${(f.who || ['Signed']).map((who, i) => `<div class="doc-sign"><h3>${esc(who)}</h3>
+          <div class="doc-grid">${docInput('text', `${dpath}.${i}.name`, 'Name', list[i]?.name, { dis })}${docInput('text', `${dpath}.${i}.position`, 'Position', list[i]?.position, { dis })}
+          ${docInput('date', `${dpath}.${i}.date`, 'Date', list[i]?.date, { dis })}</div>
+          <span class="doc-sig-label">Signature</span><canvas class="doc-sig" width="480" height="140" data-doc-sig="${esc(`${dpath}.${i}.sig`)}"${dis ? ' data-locked="1"' : ''}></canvas>
+          ${dis ? '' : `<button class="linklike" data-doc-sigclear="${esc(`${dpath}.${i}.sig`)}">Clear</button>`}</div>`).join('')}</div>`;
+    }
+    case 'chapters': {
+      const list = Array.isArray(v) ? v : [];
+      return `<div class="doc-f">${list.map((ch, i) => `<div class="doc-chapter"><div class="doc-chapter-head">
+          ${docInput('text', `${dpath}.${i}.title`, `${f.label} ${i + 1}`, ch?.title, { dis, placeholder: 'Its name' })}
+          ${dis ? '' : `<button class="linklike danger" data-doc-rowdel="${esc(dpath)}" data-i="${i}">Remove this ${esc(String(f.label).toLowerCase())}</button>`}</div>
+          ${f.fields.map((inner) => docFieldHtml(inner, `${dpath}.${i}.${inner.id}`, `${mpath}.${ch?._k || i}.${inner.id}`, { dis })).join('')}</div>`).join('')}
+        ${dis ? '' : `<button class="btn secondary small" data-doc-rowadd="${esc(dpath)}" data-kind="chapter">Add ${list.length ? 'another' : 'a'} ${esc(String(f.label).toLowerCase())}</button>`}</div>`;
+    }
+    case 'docs':
+      return `<div class="doc-f">${e.finished.length ? `<ul class="doc-files">${e.finished.map((x) => `<li>${esc(x.name)} <span class="muted">version ${n(x.version)}, ${esc(fullDate(x.date))}</span></li>`).join('')}</ul>`
+        : '<p class="muted">No documents have been issued on this order yet. They\'re listed here as they are.</p>'}</div>`;
+    default: return '';
+  }
+}
+
+function docTableHtml(cols, path, value, { dis = '', numbered = false, initials = false } = {}) {
+  const rows = Array.isArray(value) ? value : [];
+  const show = docsShow[path] || DOC_ROWS;
+  const cell = (c, r, i) => docInput(c.type === 'select' ? 'select' : c.type === 'date' ? 'date' : c.long ? 'textarea' : 'text', `${path}.${i}.${c.id}`, null, r?.[c.id],
+    { dis, options: c.options || [], rows: 2 });
+  const body = rows.slice(0, show).map((r, i) => `<tr>${numbered ? `<td class="doc-t-no">${i + 1}</td>` : ''}${cols.map((c) => `<td>${cell(c, r, i)}</td>`).join('')}
+      ${dis ? '' : `<td class="doc-t-x"><button class="icon-btn" data-doc-rowdel="${esc(path)}" data-i="${i}" aria-label="Remove row ${i + 1}">✕</button></td>`}</tr>`).join('');
+  const more = rows.length > show ? `<button class="chip-btn" data-doc-more="${esc(path)}">Show ${n(Math.min(DOC_ROWS, rows.length - show))} more of ${n(rows.length - show)}</button>` : '';
+  const paste = docsPanel?.paste === path ? `<div class="doc-panel"><h3>Paste from Excel</h3>
+      <p class="muted">Copy the rows in Excel (with their headings if you like) and paste them here. Columns are matched by heading, or taken in the order shown.</p>
+      <textarea rows="6" data-doc-paste-text placeholder="Paste here"></textarea>
+      ${cols.filter((c) => c.type === 'select').map((c) => `<label>${esc(c.label)} for rows that don't say<select data-doc-paste-fill="${esc(c.id)}"><option value=""></option>${c.options.map((o) => `<option>${esc(o)}</option>`).join('')}</select></label>`).join('')}
+      <div class="row"><button class="btn" data-doc-paste-go="${esc(path)}">Add the rows</button><button class="btn secondary" data-doc-panel="">Cancel</button></div></div>` : '';
+  return `<div class="doc-tw"><table class="doc-t"><thead><tr>${numbered ? '<th>No</th>' : ''}${cols.map((c) => `<th style="min-width:${Math.max(4.5, (c.w || 10) * 0.5)}rem">${esc(c.label)}</th>`).join('')}${dis ? '' : '<th></th>'}</tr></thead>
+      <tbody>${body || `<tr><td class="muted" colspan="${cols.length + 2}">None yet.</td></tr>`}</tbody></table></div>
+    ${more}${dis ? '' : `<div class="row doc-t-actions"><button class="chip-btn" data-doc-rowadd="${esc(path)}"${initials ? ' data-initials="1"' : ''}>Add a row</button>
+      <button class="chip-btn" data-doc-panel-paste="${esc(path)}">Paste from Excel</button>${rows.length ? `<span class="muted">${n(rows.length)} ${rows.length === 1 ? 'row' : 'rows'}</span>` : ''}</div>`}${paste}`;
+}
+
+// The columns of a table at a path, wherever it is in the template.
+function docColumnsAt(path) {
+  const parts = path.split('.');
+  let fields = docEdit.template.sections.flatMap((s) => s.fields);
+  let f = null;
+  for (const p of parts) {
+    if (/^\d+$/.test(p)) continue;
+    f = fields.find((x) => x.id === p);
+    if (!f) return [];
+    fields = f.fields || [];
+  }
+  if (f?.type === 'tests') return [{ id: 'action', label: 'Test' }, ...(f.columns || []).filter((c) => c.id !== 'test'), { id: 'result', label: 'Result', type: 'select', options: ['Pass', 'Fail', 'Not applicable'] }, { id: 'date', label: 'Date' }, { id: 'initials', label: 'Initials' }, ...(f.witness ? [{ id: 'witness', label: 'Witness' }] : []), { id: 'note', label: 'Comments' }];
+  return f?.columns || [];
+}
+
+// Tab-separated rows from Excel, matched to the columns by heading if the first row has them.
+function docParsePaste(text, cols) {
+  const lines = String(text).replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!lines.length) return [];
+  const cells = lines.map((l) => l.split('\t').map((x) => x.trim()));
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9/]+/g, ' ').trim();
+  const match = (h) => cols.findIndex((c) => [c.label, c.id, ...(c.aka || [])].some((x) => norm(x) === norm(h)));
+  const heads = cells[0].map(match);
+  const byHeading = heads.filter((x) => x >= 0).length >= Math.min(2, cols.length);
+  const map = byHeading ? heads : cols.map((_, i) => i);
+  return (byHeading ? cells.slice(1) : cells).map((row) => {
+    const r = {};
+    row.forEach((v, i) => { const ci = byHeading ? map[i] : i; if (ci >= 0 && cols[ci] && v) r[cols[ci].id] = v; });
+    return r;
+  }).filter((r) => Object.keys(r).length);
+}
+
+function docSaveSoon() {
+  if (!docEdit) return;
+  docEdit.dirty = true;
+  const s = document.getElementById('doc-saved');
+  if (s) s.textContent = 'Saving…';
+  clearTimeout(docEdit.timer);
+  docEdit.timer = setTimeout(docSaveNow, 1200);
+}
+async function docSaveNow() {
+  const e = docEdit;
+  if (!e?.dirty) return;
+  clearTimeout(e.timer);
+  e.dirty = false;
+  try {
+    await api('/api/docs/save', { method: 'POST', body: JSON.stringify({ id: e.doc.id, header: e.doc.header, data: e.doc.data }) });
+    const s = document.getElementById('doc-saved');
+    if (s && docEdit === e) s.textContent = 'Saved';
+  } catch (err) {
+    e.dirty = true;
+    const s = document.getElementById('doc-saved');
+    if (s) s.textContent = `Not saved: ${err.message}`;
+  }
+}
+addEventListener('hashchange', () => { if (docEdit?.dirty) docSaveNow(); if (!location.hash.startsWith('#/docs')) { docEdit = null; docsCat = null; } });
+addEventListener('pagehide', () => { if (docEdit?.dirty) navigator.sendBeacon?.('/api/docs/save', new Blob([JSON.stringify({ id: docEdit.doc.id, header: docEdit.doc.header, data: docEdit.doc.data })], { type: 'application/json' })); });
+
+function docsInput(event) {
+  const el = event.target.closest('[data-dp]');
+  if (!el || !docEdit) return false;
+  const p = el.dataset.dp;
+  if (p.startsWith('h:')) docEdit.doc.header[p.slice(2)] = el.value; else docSet(docEdit.doc.data, p, el.value);
+  docSaveSoon();
+  return true;
+}
+
+async function docsClick(event) {
+  const q = docsQuery();
+  if (q.cat && !q.doc && docsCat) return docsCatClick(event);
+  if (q.library) return docsLibClick(event);
+  if (!docEdit) return false;
+  const t = (s) => event.target.closest(s);
+  const e = docEdit;
+  const data = e.doc.data;
+  let b;
+  if ((b = t('[data-doc-panel]'))) { docsPanel = b.dataset.docPanel || null; render(); return true; }
+  if ((b = t('[data-doc-panel-paste]'))) { docsPanel = { paste: b.dataset.docPanelPaste }; render(); return true; }
+  if ((b = t('[data-doc-more]'))) { docsShow[b.dataset.docMore] = (docsShow[b.dataset.docMore] || DOC_ROWS) + DOC_ROWS; render(); return true; }
+  if ((b = t('[data-doc-rowadd]'))) {
+    const path = b.dataset.docRowadd;
+    const list = Array.isArray(docGet(data, path)) ? docGet(data, path) : [];
+    if (b.dataset.kind === 'step') list.push('');
+    else if (b.dataset.kind === 'chapter') list.push({ _k: docKey(), title: '' });
+    else list.push(b.dataset.initials ? { date: todayIso(), initials: initials() } : {});
+    docSet(data, path, list);
+    docSaveSoon(); render(); return true;
+  }
+  if ((b = t('[data-doc-rowdel]'))) {
+    const path = b.dataset.docRowdel;
+    const list = docGet(data, path);
+    const i = Number(b.dataset.i);
+    if (!Array.isArray(list)) return true;
+    const row = list[i];
+    if (row && typeof row === 'object' && row._k && e.photos.some((p) => p.field.startsWith(`${path}.${row._k}.`))) { toast('Remove its pictures first.'); return true; }
+    list.splice(i, 1);
+    docSaveSoon(); render(); return true;
+  }
+  if ((b = t('[data-doc-paste-go]'))) {
+    const path = b.dataset.docPasteGo;
+    const cols = docColumnsAt(path);
+    const rows = docParsePaste(view.querySelector('[data-doc-paste-text]')?.value || '', cols);
+    view.querySelectorAll('[data-doc-paste-fill]').forEach((s) => { if (s.value) rows.forEach((r) => { if (!r[s.dataset.docPasteFill]) r[s.dataset.docPasteFill] = s.value; }); });
+    if (!rows.length) { toast('Nothing to add: copy the rows in Excel first.'); return true; }
+    const list = Array.isArray(docGet(data, path)) ? docGet(data, path) : [];
+    docSet(data, path, [...list.filter((r) => r && Object.values(r).some((x) => String(x ?? '').trim())), ...rows]);
+    docsPanel = null;
+    docSaveSoon(); render(); toast(`${n(rows.length)} ${rows.length === 1 ? 'row' : 'rows'} added`); return true;
+  }
+  if ((b = t('[data-doc-photodel]'))) {
+    await api('/api/docs/photo-change', { method: 'POST', body: JSON.stringify({ photoId: Number(b.dataset.docPhotodel), remove: true }) }).catch((err) => toast(err.message));
+    e.photos = e.photos.filter((p) => p.id !== Number(b.dataset.docPhotodel)); render(); return true;
+  }
+  if ((b = t('[data-doc-filedel]'))) {
+    try { await api('/api/docs/file-remove', { method: 'POST', body: JSON.stringify({ fileId: Number(b.dataset.docFiledel) }) }); e.files = e.files.filter((x) => x.id !== Number(b.dataset.docFiledel)); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-doc-sigclear]'))) { docSet(data, b.dataset.docSigclear, ''); docSaveSoon(); render(); return true; }
+  if (t('[data-doc-preview]')) { await docSaveNow(); return false; }
+  if (t('[data-doc-log-go]')) {
+    const v = (k) => view.querySelector(`[data-doc-log="${k}"]`)?.value;
+    const seconds = Math.round(Number(v('hours')) * 3600);
+    try {
+      const r = await api('/api/docs/log', { method: 'POST', body: JSON.stringify({ id: e.doc.id, seconds, date: v('date'), description: v('note') }) });
+      e.doc.seconds += r.seconds; docsPanel = null; toast(`${duration(r.seconds)} logged to ${r.issueKey || e.category.key}`); render();
+    } catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-doc-finish-go]'))) {
+    b.disabled = true; b.textContent = 'Laying it out…';
+    await docSaveNow();
+    try {
+      const r = await api('/api/docs/finish', { method: 'POST', body: JSON.stringify({ id: e.doc.id, description: view.querySelector('[data-doc-finish-desc]')?.value || '' }) });
+      docEditSet(await api(`/api/docs/open?id=${e.doc.id}`));
+      toast(`Version ${r.version} is on ${e.category.key} in Jira`); render();
+    } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Issue it'; }
+    return true;
+  }
+  if (t('[data-doc-reopen]')) {
+    try { await api('/api/docs/reopen', { method: 'POST', body: JSON.stringify({ id: e.doc.id }) }); e.doc.status = 'draft'; render(); } catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}
+
+async function docsChange(event) {
+  if (!docEdit) return false;
+  const e = docEdit;
+  const cap = event.target.closest('[data-doc-cap]');
+  if (cap) { await api('/api/docs/photo-change', { method: 'POST', body: JSON.stringify({ photoId: Number(cap.dataset.docCap), caption: cap.value }) }).catch((err) => toast(err.message)); const p = e.photos.find((x) => x.id === Number(cap.dataset.docCap)); if (p) p.caption = cap.value; return true; }
+  const ph = event.target.closest('[data-doc-photoadd]');
+  if (ph?.files?.length) {
+    const field = ph.dataset.docPhotoadd;
+    for (const file of ph.files) {
+      try {
+        toast('Adding the picture…');
+        const blob = await coshhShrink(file);
+        const p = await api(`/api/docs/photo?id=${e.doc.id}&field=${encodeURIComponent(field)}&caption=${encodeURIComponent(file.name.replace(/\.[^.]+$/, ''))}`, { method: 'POST', body: blob, headers: { 'content-type': 'image/jpeg' } });
+        e.photos.push({ ...p, field });
+      } catch (err) { toast(err.message); }
+    }
+    render(); return true;
+  }
+  const fi = event.target.closest('[data-doc-fileadd]');
+  if (fi?.files?.length) {
+    const field = fi.dataset.docFileadd;
+    for (const file of fi.files) {
+      try {
+        toast(`Putting ${file.name} on ${e.category.key}…`);
+        const r = await api(`/api/docs/file?id=${e.doc.id}&field=${encodeURIComponent(field)}&name=${encodeURIComponent(file.name)}`, { method: 'POST', body: file, headers: { 'content-type': file.type || 'application/octet-stream' } });
+        e.files.push({ ...r, created_by: me.employee?.name || '' });
+      } catch (err) { toast(err.message); }
+    }
+    render(); return true;
+  }
+  return false;
+}
+
+// Signatures, drawn with a finger, pen or mouse, kept as a small picture.
+function docSigs() {
+  view.querySelectorAll('canvas[data-doc-sig]').forEach((cv) => {
+    const ctx = cv.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+    const saved = docGet(docEdit.doc.data, cv.dataset.docSig);
+    if (saved) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, cv.width, cv.height); img.src = saved; }
+    if (cv.dataset.locked) return;
+    let drawing = false;
+    const at = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * (cv.width / r.width), (ev.clientY - r.top) * (cv.height / r.height)]; };
+    cv.addEventListener('pointerdown', (ev) => { drawing = true; cv.setPointerCapture(ev.pointerId); ctx.beginPath(); ctx.moveTo(...at(ev)); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.strokeStyle = '#14213d'; });
+    cv.addEventListener('pointermove', (ev) => { if (!drawing) return; ctx.lineTo(...at(ev)); ctx.stroke(); });
+    const end = () => { if (!drawing) return; drawing = false; docSet(docEdit.doc.data, cv.dataset.docSig, cv.toDataURL('image/jpeg', 0.7)); docSaveSoon(); };
+    cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+  });
+}
+
+// ---------- the list of documents ----------
+
+function docsLibHtml() {
+  const L = docsLib;
+  const disc = L.disciplines;
+  const editing = docsPanel?.libEdit;
+  const form = (x) => `<tr class="docs-lib-edit"><td colspan="7"><div class="doc-grid">
+      <label>Name<input data-lib="name" value="${esc(x?.name || '')}"></label>
+      <label>Group<input data-lib="group" value="${esc(x?.group || '')}" placeholder="Design, Software, Site…"></label>
+      <label>Who it's for<select data-lib="audience"><option value="customer"${x?.audience !== 'internal' ? ' selected' : ''}>For the customer</option><option value="internal"${x?.audience === 'internal' ? ' selected' : ''}>Internal</option></select></label>
+      <label>XP rate on its time<input type="number" min="1" max="3" step="0.05" data-lib="multiplier" value="${x?.multiplier ?? 1.5}"></label></div>
+      <fieldset class="docs-lib-disc"><legend>Ticked to start with on</legend>${Object.entries(disc).map(([k, v]) => `<label class="inline-check"><input type="checkbox" data-lib-disc="${k}"${x?.disciplines?.includes(k) ? ' checked' : ''}> ${esc(v)} categories</label>`).join('')}</fieldset>
+      ${!x || x.custom ? `<label>Its sections, one to a line<textarea rows="5" data-lib="sections" placeholder="Equipment used&#10;Results&#10;Comments">${esc((x?.sections || []).join('\n'))}</textarea></label>` : ''}
+      ${x ? `<label class="inline-check"><input type="checkbox" data-lib="active"${x.active ? ' checked' : ''}> In use</label>` : ''}
+      <div class="row"><button class="btn" data-lib-save="${esc(x?.id || '')}">${x ? 'Save' : 'Add it'}</button><button class="btn secondary" data-lib-cancel="1">Cancel</button></div></td></tr>`;
+  const avg = (s) => (s ? duration(s) : '—');
+  const rows = L.types.map((x) => (editing === x.id ? form(x) : `<tr class="${x.active ? '' : 'off'}">
+      <td><strong>${esc(x.name)}</strong>${x.active ? '' : ' <span class="muted">(not in use)</span>'}<div class="muted docs-lib-secs">${esc(x.sections.join(', '))}</div></td>
+      <td>${esc(x.group)}</td><td>${esc(DOC_AUDIENCE[x.audience])}</td><td>${esc(x.disciplines.map((d) => disc[d]).join(', ') || '—')}</td>
+      <td class="num">${esc(String(x.multiplier))}×</td><td class="num">${n(x.finished)}</td><td class="num">${avg(x.avgSeconds)}${L.canEdit ? ` <button class="linklike" data-lib-edit="${esc(x.id)}">Change</button>` : ''}</td></tr>`)).join('');
+  return `<section class="card"><h2>Every kind of job document</h2>
+    <p class="muted">Team leads choose which a category needs. Categories made${L.from ? ` since ${esc(fullDate(L.from))}` : ''} start with those ticked for their kind. Average time is what's been logged against each, for quoting.</p>
+    <div class="doc-tw"><table class="doc-lib"><thead><tr><th>Document</th><th>Group</th><th>For</th><th>Usual on</th><th class="num">XP rate</th><th class="num">Issued</th><th class="num">Average time</th></tr></thead>
+    <tbody>${rows}${editing === 'new' ? form(null) : ''}</tbody></table></div>
+    ${L.canEdit && editing !== 'new' ? '<div class="row"><button class="btn secondary" data-lib-edit="new">Add a document</button></div>' : ''}</section>
+    ${docsDriveHtml()}`;
+}
+
+function docsDriveHtml() {
+  const v = docsDrive;
+  if (!v) return '';
+  const problems = v.problems.length ? `<ul class="doc-files">${v.problems.map((p) => `<li><strong>${esc(p.filename)}</strong> on ${esc(p.issue_key)}
+      <span class="${p.status === 'failed' ? 'bad' : 'muted'}">${p.status === 'failed' ? 'Gave up' : `Trying again (${n(p.tries)})`}: ${esc(p.error || '')}</span>
+      <button class="linklike" data-drive-retry="${esc(p.attachment_id)}">Retry</button></li>`).join('')}</ul>` : '';
+  return `<section class="card docs-drive"><h2>Filing in Google Drive</h2>
+    <p class="muted">The hub puts every attachment added to an order, its categories and their sub-tasks (and older orders' items) into the job's folder in the shared drive the Zaps used, each one once.
+      Issued documents go in as soon as they're issued, anything else within a few minutes.</p>
+    <p><strong>${v.on ? `On since ${esc(fullDate(String(v.since || '').slice(0, 10)))}` : 'Off'}</strong>${v.on ? ` · ${n(v.week)} filed in the last week · ${n(v.waiting)} waiting${v.failed ? ` · <span class="bad">${n(v.failed)} couldn't be filed</span>` : ''}` : ''}</p>
+    ${v.on ? '' : `<p class="help">Before switching it on, turn off the Jira automations “(NEW) ADMIN - Upload Documentation” and “LEGACY - Upload Documentation” (or both Zaps), or files will be filed twice. Only attachments added after it's switched on are filed.${v.configured ? '' : ' The hub needs its Google service account first (SETUP.md, Part 20b).'}</p>`}
+    ${problems}
+    <div class="row">${v.canSwitch ? `<button class="btn${v.on ? ' secondary' : ''}" data-drive-set="${v.on ? 'off' : 'on'}">${v.on ? 'Switch off' : 'Switch on'}</button>` : ''}
+      <button class="btn secondary" data-drive-check="1">Check the hub can reach the drive</button>${v.failed ? '<button class="btn secondary" data-drive-retry="">Retry all</button>' : ''}</div></section>`;
+}
+
+async function docsLibClick(event) {
+  const t = (s) => event.target.closest(s);
+  let b;
+  if ((b = t('[data-drive-set]'))) {
+    b.disabled = true;
+    try { docsDrive = await api('/api/docs/drive', { method: 'POST', body: JSON.stringify({ on: b.dataset.driveSet === 'on' }) }); toast(docsDrive.on ? 'Drive filing is on' : 'Drive filing is off'); render(); }
+    catch (err) { toast(err.message); b.disabled = false; }
+    return true;
+  }
+  if (t('[data-drive-check]')) {
+    try { await api('/api/docs/drive-check', { method: 'POST', body: '{}' }); toast('The hub can reach the shared drive'); } catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-drive-retry]'))) {
+    try { docsDrive = await api('/api/docs/drive-retry', { method: 'POST', body: JSON.stringify({ id: b.dataset.driveRetry || null }) }); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-lib-edit]'))) { docsPanel = { libEdit: b.dataset.libEdit }; render(); return true; }
+  if (t('[data-lib-cancel]')) { docsPanel = null; render(); return true; }
+  if ((b = t('[data-lib-save]'))) {
+    const v = (k) => view.querySelector(`[data-lib="${k}"]`);
+    const body = { id: b.dataset.libSave || null, name: v('name').value, group: v('group').value, audience: v('audience').value, multiplier: Number(v('multiplier').value),
+      disciplines: [...view.querySelectorAll('[data-lib-disc]:checked')].map((x) => x.dataset.libDisc), active: v('active') ? v('active').checked : true,
+      ...(v('sections') ? { sections: v('sections').value.split('\n').map((x) => x.trim()).filter(Boolean) } : {}) };
+    try { await api('/api/docs/type', { method: 'POST', body: JSON.stringify(body) }); docsPanel = null; toast('Saved'); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}

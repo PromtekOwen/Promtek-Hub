@@ -1110,6 +1110,29 @@ async function route(request, env, url, user) {
     if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
   }
 
+  // Job documents: chosen per category, filled in on the job, laid out by the hub and put on the category in Jira.
+  if (pathname.startsWith('/api/docs')) {
+    const D = await import('./docs.js');
+    const q = (k) => url.searchParams.get(k);
+    const sub = pathname.slice('/api/docs'.length);
+    if (method === 'GET') {
+      if (sub === '/category') return json(await D.forCategory(env, user, q('id')));
+      if (sub === '/open') return json(await D.open(env, user, { id: q('id'), categoryId: q('category'), type: q('type') }));
+      if (sub === '/mine') return json(await D.mine(env, user));
+      if (sub === '/library') return json(await D.libraryView(env, user));
+      if (sub === '/drive') return json(await D.driveView(env, user));
+      if (sub === '/photo') return new Response(await D.photo(env, user, q('id')), { headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
+      if (sub === '/preview') {
+        const { bytes, filename } = await D.preview(env, user, q('id'));
+        return new Response(bytes, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${filename.replace(/[^\w .()-]+/g, '_')}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+      }
+    }
+    if (method === 'POST' && sub === '/photo') return json(await D.addPhoto(env, user, { id: q('id'), field: q('field'), caption: q('caption') }, request));
+    if (method === 'POST' && sub === '/file') return json(await D.addFile(env, user, { id: q('id'), field: q('field'), name: q('name') }, request));
+    const post = { '/needs': D.setNeeds, '/save': D.save, '/finish': D.finish, '/reopen': D.reopen, '/log': D.logTime, '/photo-change': D.photoChange, '/file-remove': D.removeFile, '/type': D.saveType, '/drive': D.driveSet, '/drive-retry': D.driveRetry, '/drive-check': D.driveCheck };
+    if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
+  }
+
   if (pathname.startsWith('/api/coshh')) {
     const C = await import('./coshh.js');
     const q = (k) => url.searchParams.get(k);

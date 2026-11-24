@@ -1,0 +1,14 @@
+CREATE TABLE IF NOT EXISTS doc_types (id TEXT PRIMARY KEY, name TEXT, grp TEXT, audience TEXT, disciplines TEXT, multiplier REAL, active INTEGER NOT NULL DEFAULT 1, custom INTEGER NOT NULL DEFAULT 0, intro TEXT, sections TEXT, updated_at TEXT, updated_by TEXT);
+CREATE TABLE IF NOT EXISTS doc_categories (category_id TEXT PRIMARY KEY, category_key TEXT NOT NULL, epic_id TEXT, epic_key TEXT, summary TEXT, order_summary TEXT, customer TEXT, discipline TEXT, team TEXT, status TEXT, done INTEGER NOT NULL DEFAULT 0, assignee TEXT, staff TEXT, created TEXT, set_up INTEGER NOT NULL DEFAULT 0, seen_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_doc_categories_epic ON doc_categories(epic_key);
+CREATE TABLE IF NOT EXISTS doc_needs (category_id TEXT NOT NULL, doc_type TEXT NOT NULL, set_by TEXT, set_at TEXT, PRIMARY KEY (category_id, doc_type));
+CREATE TABLE IF NOT EXISTS doc_items (id INTEGER PRIMARY KEY AUTOINCREMENT, category_id TEXT NOT NULL, doc_type TEXT NOT NULL, header TEXT, data TEXT, status TEXT NOT NULL DEFAULT 'draft', version INTEGER NOT NULL DEFAULT 0, versions TEXT, started_by TEXT, started_at TEXT, updated_at TEXT, updated_by TEXT, finished_at TEXT, finished_by TEXT, file_name TEXT, attachments TEXT, error TEXT, UNIQUE (category_id, doc_type));
+CREATE TABLE IF NOT EXISTS doc_photos (id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER NOT NULL, field TEXT NOT NULL, data TEXT NOT NULL, width INTEGER, height INTEGER, caption TEXT, created_at TEXT, created_by TEXT);
+CREATE INDEX IF NOT EXISTS idx_doc_photos_doc ON doc_photos(doc_id);
+CREATE TABLE IF NOT EXISTS doc_files (id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER NOT NULL, field TEXT NOT NULL, name TEXT, size INTEGER, attachment_id TEXT, created_at TEXT, created_by TEXT);
+CREATE INDEX IF NOT EXISTS idx_doc_files_doc ON doc_files(doc_id);
+CREATE TABLE IF NOT EXISTS doc_worklogs (worklog_id TEXT PRIMARY KEY, doc_id INTEGER, doc_type TEXT, category_id TEXT, account_id TEXT, seconds INTEGER, multiplier REAL NOT NULL DEFAULT 1, created_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_doc_worklogs_doc ON doc_worklogs(doc_id);
+CREATE TABLE IF NOT EXISTS drive_files (attachment_id TEXT PRIMARY KEY, issue_key TEXT, parent_key TEXT, epic_key TEXT, folder TEXT, filename TEXT, size INTEGER, mime TEXT, created TEXT, source TEXT, status TEXT NOT NULL DEFAULT 'waiting', tries INTEGER NOT NULL DEFAULT 0, next_at TEXT, drive_id TEXT, error TEXT, filed_at TEXT, seen_at TEXT);
+CREATE INDEX IF NOT EXISTS idx_drive_files_status ON drive_files(status, next_at);
+CREATE TABLE IF NOT EXISTS drive_folders (path TEXT PRIMARY KEY, folder_id TEXT NOT NULL, found_at TEXT);
