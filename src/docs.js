@@ -5,7 +5,7 @@
 // Drive folder. Time logged against a document goes to the category in Tempo, as any other
 // time on it does (so it counts towards the job's hours, and its ELO), and earns more XP.
 // A category can't be moved to Done from the hub while its documents are outstanding.
-import { LIBRARY, HEADER_FIELDS, customTemplate, fieldsOf, DISCIPLINE_NAMES } from './docs-library.js';
+import { LIBRARY, HEADER_FIELDS, customTemplate, cleanTemplate, fieldsOf, DISCIPLINE_NAMES, FIELD_KINDS } from './docs-library.js';
 import { getState, setState, londonDate, raiseAlert, recalcIssues } from './sync.js';
 import { jira, jiraFetch, getIssue, searchJql } from './jira.js';
 import { record } from './audit.js';
@@ -31,8 +31,8 @@ const fromBase64 = (b64) => { const s = atob(b64); const out = new Uint8Array(s.
 
 const canSee = (viewer) => canTile(viewer, 'jobs');
 function mustSee(viewer) { if (!canSee(viewer)) throw refuse('Jobs isn\'t open to you.', 403); }
-// The list of documents and what each asks for: admins and Management.
-export const canLibrary = (viewer) => Boolean(viewer?.isAdmin || viewer?.groups?.includes('management'));
+// The kinds of document, which are usual on each kind of category, and new ones: the Jobs settings cog.
+export const canLibrary = (viewer) => Boolean(viewer?.isAdmin || viewer?.can?.jobDocs);
 // Which documents a category needs: team leads, Management and admins.
 export const canNeeds = (viewer) => Boolean(viewer?.isAdmin || viewer?.isLead || viewer?.groups?.includes('management') || viewer?.groups?.includes('lead'));
 
@@ -47,16 +47,18 @@ export async function library(env, { all = false } = {}) {
     return {
       id: t.id, name: s?.name || t.name, group: s?.grp || t.group, audience: s?.audience || t.audience,
       disciplines: s?.disciplines ? json(s.disciplines, t.disciplines) : t.disciplines,
-      multiplier: s?.multiplier ?? DEFAULT_MULTIPLIER, active: s ? Boolean(s.active) : true, custom: false,
+      multiplier: s?.multiplier ?? DEFAULT_MULTIPLIER, active: s ? Boolean(s.active) && !s.deleted : true, deleted: Boolean(s?.deleted), custom: false,
       template: { title: t.title, intro: t.intro, header: t.header || [], sections: t.sections, landscape: Boolean(t.landscape), spreadsheet: Boolean(t.spreadsheet) },
     };
   });
   for (const s of results.filter((r) => r.custom)) {
     const sections = json(s.sections, []);
+    const built = json(s.template, null);
+    const template = built?.sections?.length ? built : { ...customTemplate({ name: s.name, intro: s.intro, sections }), landscape: false, spreadsheet: false };
     out.push({ id: s.id, name: s.name, group: s.grp || 'Other', audience: s.audience || 'customer', disciplines: json(s.disciplines, []),
-      multiplier: s.multiplier ?? DEFAULT_MULTIPLIER, active: Boolean(s.active), custom: true, sectionNames: sections,
-      template: { ...customTemplate({ name: s.name, intro: s.intro, sections }), landscape: false, spreadsheet: false } });
+      multiplier: s.multiplier ?? DEFAULT_MULTIPLIER, active: Boolean(s.active) && !s.deleted, deleted: Boolean(s.deleted), custom: true, sectionNames: template.sections.map((x) => x.title), template });
   }
+  // Deleted ones are only kept for documents already written with them.
   return all ? out : out.filter((t) => t.active);
 }
 
@@ -68,43 +70,132 @@ export async function libraryView(env, viewer) {
     `SELECT doc_type, SUM(seconds) AS seconds, COUNT(DISTINCT doc_id) AS docs FROM doc_worklogs GROUP BY doc_type`
   ).all().catch(() => ({ results: [] }));
   const { results: done } = await env.DB.prepare("SELECT doc_type, COUNT(*) AS n FROM doc_items WHERE version > 0 GROUP BY doc_type").all().catch(() => ({ results: [] }));
+  const { results: onJobs } = await env.DB.prepare('SELECT doc_type, COUNT(*) AS n FROM doc_needs GROUP BY doc_type').all().catch(() => ({ results: [] }));
+  const jobs = new Map(onJobs.map((r) => [r.doc_type, r.n]));
   const t = new Map(time.map((r) => [r.doc_type, r]));
   const d = new Map(done.map((r) => [r.doc_type, r.n]));
   return {
-    types: types.map((x) => ({ id: x.id, name: x.name, group: x.group, audience: x.audience, disciplines: x.disciplines, multiplier: x.multiplier, active: x.active, custom: x.custom,
-      sections: x.custom ? x.sectionNames : x.template.sections.map((s) => s.title), finished: d.get(x.id) || 0,
+    deleted: types.filter((x) => x.deleted).map((x) => ({ id: x.id, name: x.name, custom: x.custom })),
+    types: types.filter((x) => !x.deleted).map((x) => ({ id: x.id, name: x.name, group: x.group, audience: x.audience, disciplines: x.disciplines, multiplier: x.multiplier, active: x.active, custom: x.custom,
+      sections: x.custom ? x.sectionNames : x.template.sections.map((s) => s.title), finished: d.get(x.id) || 0, onJobs: jobs.get(x.id) || 0,
       avgSeconds: t.get(x.id)?.docs ? Math.round(t.get(x.id).seconds / t.get(x.id).docs) : null })),
-    disciplines: DISCIPLINE_NAMES, canEdit: canLibrary(viewer), from: await getState(env, 'docs_from'),
+    disciplines: DISCIPLINE_NAMES, canEdit: canLibrary(viewer), builder: BUILDER, from: await getState(env, 'docs_from'),
   };
 }
 
+const noLibrary = () => refuse('Only admins, team leads, Management and developers can change the kinds of job document.', 403);
+
+async function upsertType(env, viewer, t, now) {
+  await env.DB.prepare(`INSERT INTO doc_types (id, name, grp, audience, disciplines, multiplier, active, deleted, custom, intro, sections, template, updated_at, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET name = excluded.name, grp = excluded.grp, audience = excluded.audience, disciplines = excluded.disciplines,
+      multiplier = excluded.multiplier, active = excluded.active, deleted = excluded.deleted, template = COALESCE(excluded.template, doc_types.template),
+      updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+    .bind(t.id, t.name, t.group, t.audience, JSON.stringify(t.disciplines), t.multiplier, t.active ? 1 : 0, t.deleted ? 1 : 0, t.custom ? 1 : 0,
+      t.custom && t.template ? JSON.stringify(t.template) : null, now, nameOf(viewer)).run();
+}
+
+// One kind of document, everything about it, for the builder.
+export async function typeDef(env, viewer, id) {
+  if (!canLibrary(viewer)) throw noLibrary();
+  const t = (await library(env, { all: true })).find((x) => x.id === String(id));
+  if (!t) throw refuse('That kind of document has gone.', 404);
+  const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM doc_items WHERE doc_type = ?').bind(t.id).first();
+  return { id: t.id, name: t.name, group: t.group, audience: t.audience, disciplines: t.disciplines, multiplier: t.multiplier, active: t.active, deleted: t.deleted, custom: t.custom, used: n, template: t.template };
+}
+
+// A kind of document: its name, who it's for, where it's usual and its XP rate; for one made
+// up in the hub, its sections and fields as well. A built-in one's fields stay as they are
+// (copy it to change them).
 export async function saveType(env, viewer, input) {
-  if (!canLibrary(viewer)) throw refuse('Only admins and Management can change the list of documents.', 403);
+  if (!canLibrary(viewer)) throw noLibrary();
   const types = await library(env, { all: true });
   let id = String(input.id || '');
   const existing = types.find((t) => t.id === id);
   const name = clip(input.name, 80).trim();
   if (!name) throw refuse('Give the document a name.');
-  const disciplines = DISCIPLINES.filter((d) => (input.disciplines || []).includes(d));
-  const multiplier = Math.min(3, Math.max(1, Number(input.multiplier) || DEFAULT_MULTIPLIER));
-  const audience = input.audience === 'internal' ? 'internal' : 'customer';
-  const now = new Date().toISOString();
+  if (types.some((t) => t.id !== id && !t.deleted && t.name.toLowerCase() === name.toLowerCase())) throw refuse(`There's already a document called ${name}.`);
   if (!existing) {
     id = `c-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'doc'}`;
     if (types.some((t) => t.id === id)) id = `${id}-${Date.now().toString(36)}`;
   }
   const custom = existing ? existing.custom : true;
-  const sections = custom ? (Array.isArray(input.sections) ? input.sections.map((x) => clip(x, 80).trim()).filter(Boolean).slice(0, 20) : existing?.sectionNames || []) : null;
-  await env.DB.prepare(`INSERT INTO doc_types (id, name, grp, audience, disciplines, multiplier, active, custom, intro, sections, updated_at, updated_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET name = excluded.name, grp = excluded.grp, audience = excluded.audience, disciplines = excluded.disciplines,
-      multiplier = excluded.multiplier, active = excluded.active, intro = COALESCE(excluded.intro, doc_types.intro), sections = COALESCE(excluded.sections, doc_types.sections),
-      updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
-    .bind(id, name, clip(input.group || existing?.group || 'Other', 40), audience, JSON.stringify(disciplines), multiplier, input.active === false ? 0 : 1, custom ? 1 : 0,
-      custom ? clip(input.intro, 300) || null : null, sections ? JSON.stringify(sections) : null, now, nameOf(viewer)).run();
-  await record(env, viewer, { area: 'Jobs', action: existing ? 'Changed a document in the list' : 'Added a document to the list', subjectType: 'doc-type', subjectId: id, label: name }).catch(() => {});
+  const template = custom && input.template ? cleanTemplate(input.template, name) : null;
+  if (custom && !existing && !template) throw refuse('Add at least one section with a field in it.');
+  await upsertType(env, viewer, {
+    id, name, custom, template,
+    group: clip(input.group || existing?.group || 'Other', 40).trim() || 'Other',
+    audience: input.audience === 'internal' ? 'internal' : input.audience === 'customer' ? 'customer' : existing?.audience || 'customer',
+    disciplines: DISCIPLINES.filter((d) => (input.disciplines ?? existing?.disciplines ?? []).includes(d)),
+    multiplier: Math.min(3, Math.max(1, Number(input.multiplier ?? existing?.multiplier) || DEFAULT_MULTIPLIER)),
+    active: input.active === undefined ? existing?.active ?? true : Boolean(input.active),
+    deleted: Boolean(existing?.deleted),
+  }, new Date().toISOString());
+  await record(env, viewer, { area: 'Jobs', action: existing ? 'Changed a kind of job document' : 'Added a kind of job document', subjectType: 'doc-type', subjectId: id, label: name }).catch(() => {});
   return { ok: true, id };
 }
+
+// The table in the Jobs settings: which are in use, and usual on each kind of category.
+export async function saveUsual(env, viewer, { types }) {
+  if (!canLibrary(viewer)) throw noLibrary();
+  const all = await library(env, { all: true });
+  const now = new Date().toISOString();
+  const changes = [];
+  for (const row of Array.isArray(types) ? types : []) {
+    const t = all.find((x) => x.id === String(row.id));
+    if (!t || t.deleted) continue;
+    const next = { ...t, template: null, disciplines: DISCIPLINES.filter((d) => (row.disciplines || []).includes(d)), active: Boolean(row.active),
+      multiplier: Math.min(3, Math.max(1, Number(row.multiplier) || t.multiplier)) };
+    if (JSON.stringify([next.disciplines, next.active, next.multiplier]) === JSON.stringify([t.disciplines, t.active, t.multiplier])) continue;
+    await upsertType(env, viewer, next, now);
+    changes.push({ label: t.name, before: `${t.active ? 'In use' : 'Not in use'}, usual on ${t.disciplines.map((d) => DISCIPLINE_NAMES[d]).join(', ') || 'none'}, ${t.multiplier}x XP`,
+      after: `${next.active ? 'In use' : 'Not in use'}, usual on ${next.disciplines.map((d) => DISCIPLINE_NAMES[d]).join(', ') || 'none'}, ${next.multiplier}x XP` });
+  }
+  if (changes.length) await record(env, viewer, { area: 'Jobs', action: 'Changed which job documents are usual', subjectType: 'setting', subjectId: 'doc-types', label: 'Job documents', changes }).catch(() => {});
+  return { ok: true, changed: changes.length };
+}
+
+// Deleted: off the list everywhere, and no longer needed on any job, so it holds nothing back.
+// One made up in the hub and never started goes altogether. Any other (the hub's own, or one
+// already written on a job) is kept out of sight, so documents written with it still open and
+// lay out, and it can be brought back.
+export async function removeType(env, viewer, { id }) {
+  if (!canLibrary(viewer)) throw noLibrary();
+  const t = (await library(env, { all: true })).find((x) => x.id === String(id));
+  if (!t) return { ok: true };
+  const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM doc_items WHERE doc_type = ?').bind(t.id).first();
+  const { needed } = await env.DB.prepare('SELECT COUNT(*) AS needed FROM doc_needs WHERE doc_type = ?').bind(t.id).first();
+  if (t.custom && !n) {
+    await env.DB.batch([env.DB.prepare('DELETE FROM doc_types WHERE id = ?').bind(t.id), env.DB.prepare('DELETE FROM doc_needs WHERE doc_type = ?').bind(t.id)]);
+  } else {
+    await upsertType(env, viewer, { ...t, template: null, active: false, deleted: true }, new Date().toISOString());
+    await env.DB.prepare('DELETE FROM doc_needs WHERE doc_type = ?').bind(t.id).run();
+  }
+  await record(env, viewer, { area: 'Jobs', action: 'Deleted a kind of job document', subjectType: 'doc-type', subjectId: t.id, label: t.name,
+    changes: needed ? [{ label: 'Jobs it was needed on', before: String(needed), after: '0' }] : [] }).catch(() => {});
+  return { ok: true, gone: t.custom && !n, written: n, needed };
+}
+
+export async function restoreType(env, viewer, { id }) {
+  if (!canLibrary(viewer)) throw noLibrary();
+  const t = (await library(env, { all: true })).find((x) => x.id === String(id));
+  if (!t?.deleted) return { ok: true };
+  await upsertType(env, viewer, { ...t, template: null, active: true, deleted: false }, new Date().toISOString());
+  await record(env, viewer, { area: 'Jobs', action: 'Brought back a kind of job document', subjectType: 'doc-type', subjectId: t.id, label: t.name }).catch(() => {});
+  return { ok: true };
+}
+
+// What a document laid out in the builder will look like, before anyone fills it in.
+export async function previewType(env, viewer, { name, template }) {
+  if (!canLibrary(viewer)) throw noLibrary();
+  const t = cleanTemplate(template, clip(name, 80) || 'New document');
+  const { buildDocPdf } = await import('./docs-pdf.js');
+  const bytes = await buildDocPdf({ type: { id: 'preview', name: name || t.title, template: t }, header: {}, data: {}, photos: [], files: [], draft: false, blank: true,
+    version: 1, versions: [], category: { key: 'ABC-2', epicKey: 'ABC-1', summary: '', order: 'The order', customer: 'The customer' }, engineers: [], finished: [], date: londonDate() });
+  return { bytes, filename: `${clip(name, 80) || 'New document'} (template).pdf` };
+}
+
+export const BUILDER = { kinds: FIELD_KINDS, header: HEADER_FIELDS, disciplines: DISCIPLINE_NAMES };
 
 // ---------- the categories, from the Jobs tile ----------
 

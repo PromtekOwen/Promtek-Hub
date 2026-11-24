@@ -1121,15 +1121,20 @@ async function route(request, env, url, user) {
       if (sub === '/mine') return json(await D.mine(env, user));
       if (sub === '/library') return json(await D.libraryView(env, user));
       if (sub === '/drive') return json(await D.driveView(env, user));
+      if (sub === '/type') return json(await D.typeDef(env, user, q('id')));
       if (sub === '/photo') return new Response(await D.photo(env, user, q('id')), { headers: { 'content-type': 'image/jpeg', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' } });
       if (sub === '/preview') {
         const { bytes, filename } = await D.preview(env, user, q('id'));
         return new Response(bytes, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${filename.replace(/[^\w .()-]+/g, '_')}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
       }
     }
+    if (method === 'POST' && sub === '/type-preview') {
+      const { bytes, filename } = await D.previewType(env, user, await request.json().catch(() => ({})));
+      return new Response(bytes, { headers: { 'content-type': 'application/pdf', 'content-disposition': `inline; filename="${filename.replace(/[^\w .()-]+/g, '_')}"`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' } });
+    }
     if (method === 'POST' && sub === '/photo') return json(await D.addPhoto(env, user, { id: q('id'), field: q('field'), caption: q('caption') }, request));
     if (method === 'POST' && sub === '/file') return json(await D.addFile(env, user, { id: q('id'), field: q('field'), name: q('name') }, request));
-    const post = { '/needs': D.setNeeds, '/save': D.save, '/finish': D.finish, '/reopen': D.reopen, '/log': D.logTime, '/photo-change': D.photoChange, '/file-remove': D.removeFile, '/type': D.saveType, '/drive': D.driveSet, '/drive-retry': D.driveRetry, '/drive-check': D.driveCheck };
+    const post = { '/needs': D.setNeeds, '/save': D.save, '/finish': D.finish, '/reopen': D.reopen, '/log': D.logTime, '/photo-change': D.photoChange, '/file-remove': D.removeFile, '/type': D.saveType, '/usual': D.saveUsual, '/type-remove': D.removeType, '/type-restore': D.restoreType, '/drive': D.driveSet, '/drive-retry': D.driveRetry, '/drive-check': D.driveCheck };
     if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
   }
 

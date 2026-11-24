@@ -2881,3 +2881,32 @@ p .cust-shield { width: 18px; height: 18px; }
 .docs-feed .docs-cat-key { color: #fff; }
 .doc-drive { display: inline-flex; gap: .4rem; flex-wrap: wrap; }
 .docs-drive .row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+.docs-lib-go { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.js-table th.js-c, .js-table td.js-c { text-align: center; vertical-align: middle; width: 5.5rem; }
+.js-table th.js-c { font-size: .8rem; line-height: 1.2; }
+.js-table td.js-c input[type="checkbox"] { width: 20px; height: 20px; margin: 0; }
+.js-table td.js-c input[type="number"] { width: 4.5rem; margin: 0; padding: .3rem .4rem; }
+.js-table tr.js-group th { background: transparent; color: var(--blue-deep); font-size: .85rem; padding-top: 1rem; text-transform: uppercase; letter-spacing: .03em; }
+.js-table td.js-act { white-space: nowrap; text-align: right; }
+.js-table td.js-act .linklike { margin-left: .6rem; }
+.js-bar { display: flex; flex-wrap: wrap; gap: .5rem; margin: 1rem 0; }
+.js-sec { margin-top: 1rem; border-left: 4px solid #008DC6; }
+.js-sec-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem; }
+.js-sec-no { flex: none; width: 1.8rem; height: 1.8rem; border-radius: 50%; background: var(--blue-deep); color: #fff; display: grid; place-items: center; font-weight: 700; }
+.js-sec-title { flex: 1; font-size: 1.15rem; font-weight: 700; margin: 0; }
+.js-tools { display: inline-flex; gap: .3rem; margin-left: auto; }
+.js-tools .icon-btn { width: 30px; height: 30px; border-radius: 8px; }
+.js-field { border: 1px solid var(--line); border-radius: 10px; margin: .5rem 0; background: var(--card, #fff); }
+.js-field.open { border-color: #008DC6; box-shadow: 0 0 0 2px rgba(0, 141, 198, .12); }
+.js-field-head { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
+.js-kind { flex: none; font-size: .75rem; font-weight: 700; color: var(--blue-deep); background: var(--tint); border-radius: 999px; padding: .12rem .55rem; }
+.js-field-body { padding: 0 .8rem .8rem; }
+.js-sub { display: block; font-weight: 700; margin: .4rem 0; }
+.js-col { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin-bottom: .4rem; }
+.js-col input, .js-col select { margin: 0; width: auto; flex: 1 1 8rem; }
+.js-col select { flex: 0 1 8rem; }
+.js-inner { border-left: 3px solid var(--line); padding-left: .75rem; }
+.js-add { margin-top: .6rem; }
+.js-add-sel { display: inline-flex; flex-direction: column; max-width: 18rem; }
+.js-deleted { margin-top: 1rem; }
+.js-deleted summary { cursor: pointer; font-weight: 600; color: var(--muted); }

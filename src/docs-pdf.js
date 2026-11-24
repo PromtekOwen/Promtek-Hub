@@ -221,7 +221,11 @@ class Layout {
     this.y -= 6;
   }
 
-  none(text = 'N/A') { this.para(text, { italic: true, colour: GREY }); }
+  none(text = 'N/A') {
+    // A template shown before anyone fills it in: a line to write on.
+    if (this.input.blank) { this.need(22); this.y -= 8; this.pdf.line(this.L, this.y, this.R, this.y, { colour: RULE, lineWidth: 0.6 }); this.y -= 14; return; }
+    this.para(text, { italic: true, colour: GREY });
+  }
 
   // A table headed in Promtek blue, its header repeated on each page, optionally grouped.
   table(columns, rows, { width = this.cw, minRows = 0, group = null, groupNames = {}, sub = null, subLabel = '', tone = null, numbered = false } = {}) {
@@ -248,6 +252,7 @@ class Layout {
       this.y -= hh;
     };
     const filled = rows.filter((r) => r && cols.some((c) => c.id !== '#' && !blank(r[c.id])));
+    if (!filled.length && !minRows && this.input.blank) minRows = 3;
     if (!filled.length && !minRows) { this.none('None.'); return; }
     this.need(lead * 3 + 20);
     head();
@@ -386,6 +391,13 @@ class Layout {
         if (label) {
           const lw = Math.min(170, widthOf(`${label}: `, 10, true));
           const empty = blank(shown);
+          if (empty && this.input.blank) {
+            this.need(20);
+            this.pdf.text(`${label}:`, this.L, this.y, { size: 10, bold: true, colour: INK });
+            this.pdf.line(this.L + lw + 4, this.y - 2, this.R, this.y - 2, { colour: RULE, lineWidth: 0.6 });
+            this.y -= 20;
+            return;
+          }
           const lines = empty ? [f.blank || 'N/A'] : wrap(String(shown), 10, this.cw - lw - 4);
           this.need(lines.length * 14 + 4);
           this.pdf.text(`${label}:`, this.L, this.y, { size: 10, bold: true, colour: INK });
@@ -407,7 +419,8 @@ class Layout {
         const cols = [{ id: 'action', label: 'Test', w: f.columns ? 30 : 48 }, ...(f.columns || []).filter((c) => c.id !== 'test').map((c) => ({ ...c, w: 24 })),
           { id: 'result', label: 'Result', w: 11 }, { id: 'date', label: 'Date', w: 10, type: 'date' }, { id: 'initials', label: 'Initial', w: 8 },
           ...(f.witness ? [{ id: 'witness', label: 'Witness', w: 9 }] : []), { id: 'note', label: 'Comments', w: 16 }];
-        this.table(cols, (Array.isArray(v) ? v : []).filter((r) => !blank(r?.action)), { numbered: true, tone: 'result' });
+        const tests = (Array.isArray(v) ? v : []).filter((r) => !blank(r?.action));
+        this.table(cols, tests.length || !this.input.blank ? tests : (f.rows || []).map((action) => ({ action })), { numbered: true, tone: 'result' });
         return;
       }
       case 'checklist': {
@@ -421,6 +434,7 @@ class Layout {
       case 'steps': {
         if (label) this.sub(label);
         const list = (Array.isArray(v) ? v : []).filter((s) => !blank(s));
+        if (!list.length && this.input.blank) list.push(' ', ' ', ' ');
         if (!list.length) { this.none(f.blank); return; }
         list.forEach((s, i) => {
           const lines = wrap(String(s), 10, this.cw - 24);
@@ -434,6 +448,14 @@ class Layout {
         return;
       }
       case 'photos':
+        if (!(this.photos.get(p) || []).length && this.input.blank) {
+          if (label) this.sub(label);
+          this.need(90);
+          this.pdf.rect(this.L, this.y - 80, this.cw, 80, { stroke: RULE, lineWidth: 0.6, fill: ZEBRA });
+          this.pdf.text('Pictures, each with its caption', this.L, this.y - 44, { size: 9, italic: true, colour: GREY, align: 'center', width: this.cw });
+          this.y -= 94;
+          return;
+        }
         if (!(this.photos.get(p) || []).length) { if (f.blank && label) { this.sub(label); this.none(f.blank); } return; }
         if (label) this.sub(label);
         this.photosOf(p);
@@ -453,7 +475,7 @@ class Layout {
           this.input.finished || []);
         return;
       case 'chapters': {
-        const list = Array.isArray(v) ? v : [];
+        const list = Array.isArray(v) && v.length ? v : this.input.blank ? [{ title: `${f.label} 1` }] : [];
         if (!list.length) { this.none(); return; }
         list.forEach((ch, i) => {
           this.need(70);
@@ -465,7 +487,7 @@ class Layout {
             const base = `${p}.${ch?._k || i}`;
             const ip = `${base}.${inner.id}`;
             const has = inner.type === 'photos' ? (this.photos.get(ip) || []).length : inner.type === 'files' ? (this.input.files || []).some((x) => x.field === ip) : !blank(iv) && !(Array.isArray(iv) && !iv.some((r) => r && Object.values(r).some((x) => !blank(x))));
-            if (!has) continue;
+            if (!has && !this.input.blank) continue;
             this.field(inner, ch, base);
           }
           this.y -= 6;

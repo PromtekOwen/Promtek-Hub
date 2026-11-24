@@ -402,3 +402,91 @@ export function customTemplate(t) {
 export function fieldsOf(template) {
   return (template.sections || []).flatMap((s) => s.fields || []);
 }
+
+// ---------- documents made up in the hub ----------
+
+// The kinds of field someone can put in a document of their own, as the builder offers them.
+export const FIELD_KINDS = {
+  text: 'Short answer', textarea: 'Paragraph', date: 'Date', number: 'Number', select: 'Dropdown', table: 'Table', tests: 'Tests',
+  checklist: 'Checklist', steps: 'Numbered steps', photos: 'Pictures', files: 'Files', signoff: 'Signatures', chapters: 'Repeating part', note: 'Guidance note',
+};
+const COLUMN_KINDS = ['text', 'date', 'select'];
+const WIDTHS = { narrow: 6, normal: 12, wide: 24 };
+
+const s = (v, n) => String(v ?? '').replace(/\s+$/g, '').slice(0, n);
+const lines = (v, n = 60, len = 200) => (Array.isArray(v) ? v : String(v ?? '').split('\n')).map((x) => s(x, len).trim()).filter(Boolean).slice(0, n);
+const slug = (v) => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 30) || 'field';
+
+function uniqueId(want, used) {
+  let id = slug(want);
+  if (!/^[a-z]/.test(id)) id = `f_${id}`;
+  let n = 2;
+  const base = id;
+  while (used.has(id)) id = `${base}_${n++}`;
+  used.add(id);
+  return id;
+}
+
+function cleanColumns(cols, used) {
+  return (Array.isArray(cols) ? cols : []).slice(0, 16).map((c) => {
+    const label = s(c?.label, 40).trim();
+    if (!label) return null;
+    const type = COLUMN_KINDS.includes(c?.type) ? c.type : 'text';
+    const col = { id: uniqueId(c?.id || label, used), label, w: WIDTHS[c?.width] || Number(c?.w) || 12, width: WIDTHS[c?.width] ? c.width : 'normal' };
+    if (type !== 'text') col.type = type;
+    if (type === 'select') col.options = lines(c?.options, 30, 60);
+    return col;
+  }).filter(Boolean);
+}
+
+function cleanField(f, used, { inner = false } = {}) {
+  const type = Object.hasOwn(FIELD_KINDS, f?.type) && !(inner && f.type === 'chapters') ? f.type : 'text';
+  const label = s(f?.label, 120).trim() || FIELD_KINDS[type];
+  const out = { id: uniqueId(f?.id || label, used), type, label };
+  if (f?.help) out.help = s(f.help, 300);
+  if (f?.blank && ['text', 'textarea', 'date', 'number', 'select', 'steps', 'photos', 'files'].includes(type)) out.blank = s(f.blank, 60);
+  if (type === 'textarea') { if (f?.start) out.start = s(f.start, 4000); out.rows = Math.min(12, Math.max(2, Number(f?.rows) || 4)); }
+  if (type === 'select') out.options = lines(f?.options, 40, 80);
+  if (type === 'note') { out.text = s(f?.text, 1000); if (f?.pdf === false) out.pdf = false; }
+  if (type === 'table') {
+    const colIds = new Set();
+    out.columns = cleanColumns(f?.columns, colIds);
+    if (!out.columns.length) out.columns = [{ id: 'item', label: 'Item', w: 24, width: 'wide' }, { id: 'notes', label: 'Notes', w: 12, width: 'normal' }];
+    if (f?.group && out.columns.some((c) => c.id === f.group)) out.group = f.group;
+    if (out.group && f?.groupNames && typeof f.groupNames === 'object') {
+      out.groupNames = Object.fromEntries(Object.entries(f.groupNames).slice(0, 30).map(([k, v]) => [s(k, 40), s(v, 60)]));
+    }
+  }
+  if (type === 'tests') {
+    out.rows = lines(f?.rows, 100, 400);
+    if (f?.expected) out.columns = [{ id: 'expected', label: 'Expected result', w: 30 }];
+    if (f?.witness) out.witness = true;
+  }
+  if (type === 'checklist') { out.items = lines(f?.items, 80, 200); out.answers = f?.answers === 'pass' ? ['Pass', 'Fail', 'Not applicable'] : ['Yes', 'No', 'Not applicable']; }
+  if (type === 'signoff') { out.who = lines(f?.who, 6, 40); if (!out.who.length) out.who = ['Signed']; }
+  if (type === 'chapters') {
+    const innerUsed = new Set(['title', '_k']);
+    out.fields = (Array.isArray(f?.fields) ? f.fields : []).slice(0, 15).map((x) => cleanField(x, innerUsed, { inner: true }));
+    if (!out.fields.length) out.fields = [{ id: 'details', type: 'textarea', label: 'Details' }];
+  }
+  return out;
+}
+
+// A document someone has laid out in the builder, kept to what the hub knows how to lay out.
+export function cleanTemplate(t, name) {
+  const used = new Set();
+  const sections = (Array.isArray(t?.sections) ? t.sections : []).slice(0, 30).map((sec, i) => ({
+    title: s(sec?.title, 80).trim() || `Section ${i + 1}`,
+    fields: (Array.isArray(sec?.fields) ? sec.fields : []).slice(0, 30).map((f) => cleanField(f, used)),
+  })).filter((sec) => sec.fields.length);
+  if (!sections.length) throw Object.assign(new Error('Add at least one section with a field in it.'), { status: 400 });
+  const hasTable = sections.some((sec) => sec.fields.some((f) => f.type === 'table'));
+  return {
+    title: s(t?.title, 80).trim() || s(name, 80),
+    intro: s(t?.intro, 300),
+    header: (Array.isArray(t?.header) ? t.header : []).filter((h) => Object.hasOwn(HEADER_FIELDS, h)),
+    sections,
+    landscape: Boolean(t?.landscape),
+    spreadsheet: Boolean(t?.spreadsheet) && hasTable,
+  };
+}

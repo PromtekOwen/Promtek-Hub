@@ -2330,6 +2330,7 @@ async function renderSettings(route) {
   if (route === '#/wip') settingsData.wip = await api('/api/wip/settings').catch((err) => ({ error: err.message }));
   if (route === '#/invoicing') { settingsData.invoicing = await api(`/api/invoicing?region=${invRegion}`).catch((err) => ({ error: err.message })); invTerms = null; }
   if (route === '#/feedback') settingsData.feedback = await api('/api/feedback/settings').catch((err) => ({ error: err.message }));
+  if (route === '#/jobs' && !jsData) await jobsSettingsLoad();
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   if (me.user.isAdmin) await loadAccess().catch(() => null);
   return back + TILE_SETTINGS[route].render() + accessCardHtml(route);
@@ -16567,6 +16568,7 @@ view.addEventListener('click', async (event) => {
   const settingsBtn = event.target.closest('[data-settings]');
   if (settingsBtn) {
     settingsOpen = settingsBtn.dataset.settings === 'close' ? null : settingsBtn.dataset.settings;
+    jsData = null; jsBuild = null; jsOpenField = null;
     return render();
   }
 
@@ -16813,7 +16815,8 @@ view.addEventListener('click', async (event) => {
   if (currentRoute() === '#/eotq' && await eotqClick(event) !== false) return;
   if (currentRoute() === '#/wip' && settingsOpen !== '#/wip' && await wipClick(event) !== false) return;
   if (currentRoute() === '#/capacity' && await capTileClick(event) !== false) return;
-  if (currentRoute() === '#/jobs' && await jobsClick(event) !== false) return;
+  if (settingsOpen === '#/jobs' && currentRoute() === '#/jobs' && await jobsSettingsClick(event)) return;
+  if (currentRoute() === '#/jobs' && !settingsOpen && await jobsClick(event) !== false) return;
   if (currentRoute() === '#/docs' && await docsClick(event) !== false) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
@@ -16959,6 +16962,7 @@ const TILE_SETTINGS = {
   '#/feedback': { label: 'Feedback settings', render: () => settingsFeedbackHtml() },
   '#/invoicing': { label: 'Invoicing settings', render: () => settingsInvoicingHtml(), who: 'Admins and management.', can: 'wip' },
   '#/wip': { label: 'WIP settings', render: () => settingsWipHtml(), who: 'Management and admins.', can: 'wip' },
+  '#/jobs': { label: 'Jobs settings', render: () => settingsJobsHtml(), who: 'Admins, team leads, Management and developers.', can: 'jobDocs' },
 };
 let settingsOpen = null;
 let settingsData = null;
@@ -16991,6 +16995,8 @@ function pageLoader(label) {
 
 async function render() {
   if (tabletPicking) return tabletDraw();
+  // A link straight to the Jobs settings, however the page was reached.
+  if (location.hash === '#/jobs?settings') { settingsOpen = '#/jobs'; history.replaceState(history.state, '', '#/jobs'); }
   const token = ++renderToken;
   const route = currentRoute();
   const viewKey = `${route}|${settingsOpen || ''}|${notifyOpen || ''}`;
@@ -17065,6 +17071,7 @@ view.addEventListener('keydown', (event) => {
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/docs' && docsInput(event)) return;
+  if (settingsOpen === '#/jobs' && jsInput(event)) return;
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/nearmiss' && nmInput(event)) return;
   if (currentRoute() === '#/feedback' && feedbackInput(event)) return;
@@ -17184,6 +17191,7 @@ view.addEventListener('change', async (event) => {
   if (currentRoute() === '#/contracts' && !settingsOpen && await conFlagOrgChange(event)) return;
   if (currentRoute() === '#/wip' && !settingsOpen && wipChange2(event)) return;
   if (currentRoute() === '#/docs' && await docsChange(event)) return;
+  if (settingsOpen === '#/jobs' && await jsChange(event)) return;
   if (currentRoute() === '#/invoicing' && !settingsOpen && invoicingChange(event)) return;
   if (currentRoute() === '#/quotes' && !settingsOpen && await quotesChange(event)) return;
   if (currentRoute() === '#/nearmiss' && !settingsOpen && nmChange(event)) return;
@@ -17406,6 +17414,9 @@ window.addEventListener('hashchange', () => {
   if (!tour?.practice) endTour(false);     // a walkthrough can lead from one page to the next
   setTimeout(trackerBar, 0);
   settingsOpen = null;
+  jsData = null; jsBuild = null; jsOpenField = null;
+  // A link straight to a tile's settings.
+  if (location.hash === '#/jobs?settings') settingsOpen = '#/jobs';
   if (currentRoute() !== '#/time') weekOffset = 0;
   if (currentRoute() !== '#/reports') reportAccount = null;
   if (currentRoute() !== '#/') arrangeMode = false;
@@ -18736,11 +18747,7 @@ async function docsRender() {
     band.innerHTML = docsBand();
     return docsCatHtml();
   }
-  if (q.library) {
-    docsLib = await api('/api/docs/library');
-    docsDrive = docsLib.canEdit ? await api('/api/docs/drive').catch(() => null) : null;
-    return docsLibHtml();
-  }
+  if (q.library) { docsLib = await api('/api/docs/library'); return docsLibHtml(); }
   docsMine = await api('/api/docs/mine');
   return docsMineHtml();
 }
@@ -19051,7 +19058,6 @@ function docsInput(event) {
 async function docsClick(event) {
   const q = docsQuery();
   if (q.cat && !q.doc && docsCat) return docsCatClick(event);
-  if (q.library) return docsLibClick(event);
   if (!docEdit) return false;
   const t = (s) => event.target.closest(s);
   const e = docEdit;
@@ -19179,34 +19185,322 @@ function docSigs() {
 
 // ---------- the list of documents ----------
 
+const docsAvg = (sec) => (sec ? duration(sec) : '—');
+
 function docsLibHtml() {
   const L = docsLib;
   const disc = L.disciplines;
-  const editing = docsPanel?.libEdit;
-  const form = (x) => `<tr class="docs-lib-edit"><td colspan="7"><div class="doc-grid">
-      <label>Name<input data-lib="name" value="${esc(x?.name || '')}"></label>
-      <label>Group<input data-lib="group" value="${esc(x?.group || '')}" placeholder="Design, Software, Site…"></label>
-      <label>Who it's for<select data-lib="audience"><option value="customer"${x?.audience !== 'internal' ? ' selected' : ''}>For the customer</option><option value="internal"${x?.audience === 'internal' ? ' selected' : ''}>Internal</option></select></label>
-      <label>XP rate on its time<input type="number" min="1" max="3" step="0.05" data-lib="multiplier" value="${x?.multiplier ?? 1.5}"></label></div>
-      <fieldset class="docs-lib-disc"><legend>Ticked to start with on</legend>${Object.entries(disc).map(([k, v]) => `<label class="inline-check"><input type="checkbox" data-lib-disc="${k}"${x?.disciplines?.includes(k) ? ' checked' : ''}> ${esc(v)} categories</label>`).join('')}</fieldset>
-      ${!x || x.custom ? `<label>Its sections, one to a line<textarea rows="5" data-lib="sections" placeholder="Equipment used&#10;Results&#10;Comments">${esc((x?.sections || []).join('\n'))}</textarea></label>` : ''}
-      ${x ? `<label class="inline-check"><input type="checkbox" data-lib="active"${x.active ? ' checked' : ''}> In use</label>` : ''}
-      <div class="row"><button class="btn" data-lib-save="${esc(x?.id || '')}">${x ? 'Save' : 'Add it'}</button><button class="btn secondary" data-lib-cancel="1">Cancel</button></div></td></tr>`;
-  const avg = (s) => (s ? duration(s) : '—');
-  const rows = L.types.map((x) => (editing === x.id ? form(x) : `<tr class="${x.active ? '' : 'off'}">
-      <td><strong>${esc(x.name)}</strong>${x.active ? '' : ' <span class="muted">(not in use)</span>'}<div class="muted docs-lib-secs">${esc(x.sections.join(', '))}</div></td>
+  const rows = L.types.filter((x) => x.active).map((x) => `<tr>
+      <td><strong>${esc(x.name)}</strong><div class="muted docs-lib-secs">${esc(x.sections.join(', '))}</div></td>
       <td>${esc(x.group)}</td><td>${esc(DOC_AUDIENCE[x.audience])}</td><td>${esc(x.disciplines.map((d) => disc[d]).join(', ') || '—')}</td>
-      <td class="num">${esc(String(x.multiplier))}×</td><td class="num">${n(x.finished)}</td><td class="num">${avg(x.avgSeconds)}${L.canEdit ? ` <button class="linklike" data-lib-edit="${esc(x.id)}">Change</button>` : ''}</td></tr>`)).join('');
+      <td class="num">${esc(String(x.multiplier))}×</td><td class="num">${n(x.finished)}</td><td class="num">${docsAvg(x.avgSeconds)}</td></tr>`).join('');
   return `<section class="card"><h2>Every kind of job document</h2>
-    <p class="muted">Team leads choose which a category needs. Categories made${L.from ? ` since ${esc(fullDate(L.from))}` : ''} start with those ticked for their kind. Average time is what's been logged against each, for quoting.</p>
+    <p class="muted">Team leads choose which a category needs. Categories made${L.from ? ` since ${esc(fullDate(L.from))}` : ''} start with those usual for their kind. Average time is what's been logged against each, for quoting.</p>
     <div class="doc-tw"><table class="doc-lib"><thead><tr><th>Document</th><th>Group</th><th>For</th><th>Usual on</th><th class="num">XP rate</th><th class="num">Issued</th><th class="num">Average time</th></tr></thead>
-    <tbody>${rows}${editing === 'new' ? form(null) : ''}</tbody></table></div>
-    ${L.canEdit && editing !== 'new' ? '<div class="row"><button class="btn secondary" data-lib-edit="new">Add a document</button></div>' : ''}</section>
-    ${docsDriveHtml()}`;
+    <tbody>${rows}</tbody></table></div>
+    ${L.canEdit ? '<div class="row docs-lib-go"><a class="btn secondary" href="#/jobs?settings">Change these in the Jobs settings</a></div>' : ''}</section>`;
 }
 
+// ---------- the Jobs settings: kinds of document, and the builder ----------
+
+let jsBuild = null;        // the document being laid out: { id, custom, used, name, ..., template }
+let jsOpenField = null;    // the field open for changing, as "section.field"
+
+let jsData = null;         // the kinds of document and Drive filing, while the settings are open
+
+async function jobsSettingsLoad() {
+  jsData = { docs: await api('/api/docs/library').catch((err) => ({ error: err.message })), drive: await api('/api/docs/drive').catch(() => null) };
+}
+
+function settingsJobsHtml() {
+  const L = jsData.docs;
+  if (!L || L.error) return `<section class="card"><p class="bad">${esc(L?.error || 'The documents could not be loaded.')}</p></section>`;
+  if (jsBuild) return jsBuilderHtml();
+  const disc = L.disciplines;
+  const groups = [...new Set(L.types.map((t) => t.group))];
+  const row = (t) => `<tr class="${t.active ? '' : 'off'}" data-js-row="${esc(t.id)}">
+      <td><strong>${esc(t.name)}</strong> ${t.custom ? '<span class="docs-aud">Made here</span>' : ''}<div class="muted docs-lib-secs">${esc(DOC_AUDIENCE[t.audience])} · ${n(t.finished)} issued · ${docsAvg(t.avgSeconds)} on average</div></td>
+      <td class="js-c"><input type="checkbox" data-js-active${t.active ? ' checked' : ''} aria-label="${esc(t.name)} in use"></td>
+      ${Object.keys(disc).map((d) => `<td class="js-c"><input type="checkbox" data-js-disc="${d}"${t.disciplines.includes(d) ? ' checked' : ''}${t.active ? '' : ' disabled'} aria-label="${esc(t.name)} usual on ${esc(disc[d])}"></td>`).join('')}
+      <td class="js-c"><input type="number" min="1" max="3" step="0.05" value="${esc(String(t.multiplier))}" data-js-mult aria-label="${esc(t.name)} XP rate"></td>
+      <td class="js-act"><button class="linklike" data-js-edit="${esc(t.id)}">${t.custom ? 'Change' : 'Details'}</button>
+        <button class="linklike" data-js-copy="${esc(t.id)}">Copy</button>
+        <button class="linklike danger" data-js-remove="${esc(t.id)}">Delete</button></td></tr>`;
+  return `<section class="card"><h2>Job documents</h2>
+      <p class="muted">Which documents there are, and which are ticked to start with on each kind of category (team leads can still change them on each job). Untick <strong>In use</strong> to take one off the list.
+        Time logged against a document earns its XP rate.</p>
+      <div class="doc-tw"><table class="doc-lib js-table"><thead><tr><th>Document</th><th class="js-c">In use</th>
+        ${Object.values(disc).map((d) => `<th class="js-c">Usual on<br>${esc(d)}</th>`).join('')}<th class="js-c">XP rate</th><th></th></tr></thead>
+        ${groups.map((g) => `<tbody><tr class="js-group"><th colspan="${Object.keys(disc).length + 4}">${esc(g)}</th></tr>${L.types.filter((t) => t.group === g).map(row).join('')}</tbody>`).join('')}</table></div>
+      <div class="row docs-lib-go"><button class="btn" data-js-save-usual="1">Save</button><button class="btn secondary" data-js-new="1">Make a new document</button></div>
+      ${L.deleted?.length ? `<details class="js-deleted"><summary>Deleted (${n(L.deleted.length)})</summary><ul class="doc-files">${L.deleted.map((d) => `<li>${esc(d.name)}
+        <button class="linklike" data-js-restore="${esc(d.id)}">Bring back</button></li>`).join('')}</ul></details>` : ''}
+    </section>${docsDriveHtml()}`;
+}
+
+// ---------- the builder ----------
+
+const JS_COL_WIDTH = (w) => (w <= 8 ? 'narrow' : w <= 16 ? 'normal' : 'wide');
+
+// A built-in document's layout, as the builder edits it.
+function jsFromTemplate(t) {
+  const field = (f) => {
+    const out = { ...f };
+    if (f.columns && f.type === 'table') out.columns = f.columns.map((c) => ({ id: c.id, label: c.label, type: c.type || 'text', options: (c.options || []).join('\n'), width: c.width || JS_COL_WIDTH(c.w || 12) }));
+    if (f.type === 'tests') { out.rows = (f.rows || []).join('\n'); out.expected = Boolean(f.columns?.length); delete out.columns; }
+    if (f.type === 'checklist') { out.items = (f.items || []).join('\n'); out.answers = (f.answers || [])[0] === 'Pass' ? 'pass' : 'yes'; }
+    if (f.type === 'select') out.options = (f.options || []).join('\n');
+    if (f.type === 'signoff') out.who = (f.who || []).join('\n');
+    if (f.type === 'chapters') out.fields = (f.fields || []).map(field);
+    if (f.type === 'docs') { out.type = 'note'; out.text = 'The documents issued on the order are listed here.'; }
+    if (f.type === 'note' && f.pdf === false) out.pdfOff = true;
+    return out;
+  };
+  return { title: t.title, intro: t.intro || '', header: [...(t.header || [])], landscape: Boolean(t.landscape), spreadsheet: Boolean(t.spreadsheet),
+    sections: t.sections.map((sec) => ({ title: sec.title, fields: sec.fields.map(field) })) };
+}
+
+function jsNewField(type = 'text') {
+  const f = { type, label: '' };
+  if (type === 'table') f.columns = [{ label: 'Item', type: 'text', width: 'wide' }, { label: 'Notes', type: 'text', width: 'normal' }];
+  if (type === 'chapters') { f.label = 'Area'; f.fields = [{ type: 'textarea', label: 'Overview' }]; }
+  if (type === 'signoff') { f.label = 'Signed'; f.who = 'Signed by'; }
+  if (type === 'checklist') f.answers = 'yes';
+  return f;
+}
+
+function jsBuilderHtml() {
+  const b = jsBuild;
+  const B = jsData.docs.builder;
+  const fixed = !b.custom && b.id;
+  const t = b.template;
+  const v = (path, label, { type = 'text', placeholder = '', rows = 2, cls = '' } = {}) => {
+    const val = docGet(b, path) ?? '';
+    const ctl = type === 'textarea' ? `<textarea rows="${rows}" data-jsb="${esc(path)}" placeholder="${esc(placeholder)}">${esc(val)}</textarea>`
+      : `<input type="${type}" data-jsb="${esc(path)}" value="${esc(val)}" placeholder="${esc(placeholder)}"${type === 'number' ? ' min="1" max="3" step="0.05"' : ''}>`;
+    return `<label class="${cls}">${esc(label)}${ctl}</label>`;
+  };
+  const check = (path, label) => `<label class="inline-check"><input type="checkbox" data-jsb="${esc(path)}"${docGet(b, path) ? ' checked' : ''}> ${esc(label)}</label>`;
+  const details = `<section class="card"><h2>${b.id ? (fixed ? esc(b.name) : `Change ${esc(b.name)}`) : 'A new document'}</h2>
+      ${fixed ? '<p class="muted">The hub\'s own documents keep their fields. To change those, make a copy and change that instead.</p>' : ''}
+      <div class="doc-grid">${v('name', 'Name')}${v('group', 'Group', { placeholder: 'Design, Software, Site…' })}
+        <label>Who it's for<select data-jsb="audience"><option value="customer"${b.audience !== 'internal' ? ' selected' : ''}>For the customer</option><option value="internal"${b.audience === 'internal' ? ' selected' : ''}>Internal</option></select></label>
+        ${v('multiplier', 'XP rate on its time', { type: 'number' })}</div>
+      <fieldset class="docs-lib-disc"><legend>Usual on</legend>${Object.entries(B.disciplines).map(([k, d]) => `<label class="inline-check"><input type="checkbox" data-jsb-disc="${k}"${b.disciplines.includes(k) ? ' checked' : ''}> ${esc(d)} categories</label>`).join('')}</fieldset>
+      ${fixed ? '' : `<div class="doc-grid">${v('template.title', 'Title on the document', { placeholder: b.name || 'The name' })}${v('template.intro', 'Line under the title', { placeholder: 'What the document is for', cls: 'wide' })}</div>
+      <fieldset class="docs-lib-disc"><legend>Details at the top</legend><span class="muted">Always: the date, Promtek's order number, the order and the customer.</span>
+        ${Object.entries(B.header).map(([k, h]) => `<label class="inline-check"><input type="checkbox" data-jsb-head="${k}"${t.header.includes(k) ? ' checked' : ''}> ${esc(h.label)}</label>`).join('')}</fieldset>
+      <fieldset class="docs-lib-disc"><legend>Layout</legend>${check('template.landscape', 'Landscape pages, for wide tables')}${check('template.spreadsheet', 'Its tables as a spreadsheet too')}</fieldset>`}
+    </section>`;
+  if (fixed) return `${details}<div class="row js-bar"><button class="btn" data-jsb-save="1">Save</button><button class="btn secondary" data-jsb-preview="1">See the template</button>
+      <button class="btn secondary" data-js-copy="${esc(b.id)}">Make a copy to change its fields</button><button class="btn secondary" data-jsb-cancel="1">Back</button></div>`;
+  const sections = t.sections.map((sec, si) => `<section class="card js-sec">
+      <div class="js-sec-head"><span class="js-sec-no">${si + 1}</span><input class="js-sec-title" data-jsb="template.sections.${si}.title" value="${esc(sec.title)}" placeholder="Section heading">
+        <span class="js-tools">${si ? `<button class="icon-btn" data-jsb-move="template.sections" data-i="${si}" data-d="-1" aria-label="Move up">↑</button>` : ''}${si < t.sections.length - 1 ? `<button class="icon-btn" data-jsb-move="template.sections" data-i="${si}" data-d="1" aria-label="Move down">↓</button>` : ''}
+        <button class="icon-btn" data-jsb-del="template.sections" data-i="${si}" aria-label="Remove this section">✕</button></span></div>
+      ${sec.fields.map((f, fi) => jsFieldHtml(f, `template.sections.${si}.fields`, fi, sec.fields.length)).join('')}
+      <div class="js-add">${jsAddButtons(`template.sections.${si}.fields`)}</div></section>`).join('');
+  return `${details}${sections}
+    <div class="row js-bar"><button class="btn secondary" data-jsb-addsec="1">Add a section</button></div>
+    <div class="row js-bar"><button class="btn" data-jsb-save="1">${b.id ? 'Save' : 'Add it'}</button><button class="btn secondary" data-jsb-preview="1">See the template</button><button class="btn secondary" data-jsb-cancel="1">Cancel</button></div>`;
+}
+
+function jsAddButtons(path, { inner = false } = {}) {
+  const kinds = jsData.docs.builder.kinds;
+  return `<label class="js-add-sel">Add a field<select data-jsb-add="${esc(path)}"><option value="">Choose a kind…</option>
+    ${Object.entries(kinds).filter(([k]) => !(inner && k === 'chapters')).map(([k, l]) => `<option value="${k}">${esc(l)}</option>`).join('')}</select></label>`;
+}
+
+function jsFieldHtml(f, listPath, i, count, { inner = false } = {}) {
+  const kinds = jsData.docs.builder.kinds;
+  const p = `${listPath}.${i}`;
+  const open = jsOpenField === p;
+  const tools = `<span class="js-tools">${i ? `<button class="icon-btn" data-jsb-move="${esc(listPath)}" data-i="${i}" data-d="-1" aria-label="Move up">↑</button>` : ''}${i < count - 1 ? `<button class="icon-btn" data-jsb-move="${esc(listPath)}" data-i="${i}" data-d="1" aria-label="Move down">↓</button>` : ''}
+    <button class="icon-btn" data-jsb-del="${esc(listPath)}" data-i="${i}" aria-label="Remove this field">✕</button></span>`;
+  const head = `<div class="js-field-head" data-jsb-open="${esc(p)}"><span class="js-kind">${esc(kinds[f.type] || f.type)}</span><strong>${esc(f.label || (f.type === 'note' ? (f.text || '').slice(0, 60) : 'No question yet'))}</strong>${tools}</div>`;
+  if (!open) return `<div class="js-field">${head}</div>`;
+  const v = (k, label, opts = {}) => {
+    const path = `${p}.${k}`;
+    const val = docGet(jsBuild, path) ?? '';
+    return opts.area ? `<label class="wide">${esc(label)}<textarea rows="${opts.rows || 3}" data-jsb="${esc(path)}" placeholder="${esc(opts.placeholder || '')}">${esc(val)}</textarea></label>`
+      : `<label>${esc(label)}<input data-jsb="${esc(path)}" value="${esc(val)}" placeholder="${esc(opts.placeholder || '')}"></label>`;
+  };
+  const check = (k, label) => `<label class="inline-check"><input type="checkbox" data-jsb="${esc(`${p}.${k}`)}"${f[k] ? ' checked' : ''}> ${esc(label)}</label>`;
+  const typeSel = `<label>Kind<select data-jsb-type="${esc(p)}">${Object.entries(kinds).filter(([k]) => !(inner && k === 'chapters')).map(([k, l]) => `<option value="${k}"${k === f.type ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+  let extra = '';
+  if (f.type === 'note') extra = v('text', 'The guidance', { area: true }) + check('pdfOff', 'Only on screen, not in the document');
+  if (f.type === 'textarea') extra = v('start', 'Wording it starts with', { area: true, placeholder: 'Optional' });
+  if (f.type === 'select') extra = v('options', 'Choices, one to a line', { area: true, rows: 4 });
+  if (f.type === 'tests') extra = v('rows', 'The tests it starts with, one to a line', { area: true, rows: 6, placeholder: 'Optional' }) + check('expected', 'An expected result for each') + check('witness', 'Witnessed (a column for their initials)');
+  if (f.type === 'checklist') extra = v('items', 'The checks, one to a line', { area: true, rows: 6 })
+    + `<label>Answers<select data-jsb="${esc(`${p}.answers`)}"><option value="yes"${f.answers !== 'pass' ? ' selected' : ''}>Yes, No, Not applicable</option><option value="pass"${f.answers === 'pass' ? ' selected' : ''}>Pass, Fail, Not applicable</option></select></label>`;
+  if (f.type === 'signoff') extra = v('who', 'Who signs, one to a line', { area: true, placeholder: 'For Promtek\nFor the customer' });
+  if (f.type === 'table') {
+    const cols = f.columns || [];
+    extra = `<div class="wide"><span class="js-sub">Columns</span>${cols.map((c, ci) => `<div class="js-col">
+        <input data-jsb="${esc(`${p}.columns.${ci}.label`)}" value="${esc(c.label)}" placeholder="Heading">
+        <select data-jsb="${esc(`${p}.columns.${ci}.type`)}" aria-label="What goes in it">${[['text', 'Text'], ['date', 'Date'], ['select', 'Dropdown']].map(([k, l]) => `<option value="${k}"${(c.type || 'text') === k ? ' selected' : ''}>${l}</option>`).join('')}</select>
+        <select data-jsb="${esc(`${p}.columns.${ci}.width`)}" aria-label="Width">${['narrow', 'normal', 'wide'].map((w) => `<option value="${w}"${(c.width || 'normal') === w ? ' selected' : ''}>${w[0].toUpperCase()}${w.slice(1)}</option>`).join('')}</select>
+        ${c.type === 'select' ? `<input data-jsb="${esc(`${p}.columns.${ci}.options`)}" value="${esc(String(c.options || '').split('\n').join(', '))}" data-jsb-commas="1" placeholder="Choices, with commas">` : ''}
+        <span class="js-tools">${ci ? `<button class="icon-btn" data-jsb-move="${esc(`${p}.columns`)}" data-i="${ci}" data-d="-1" aria-label="Move left">←</button>` : ''}<button class="icon-btn" data-jsb-del="${esc(`${p}.columns`)}" data-i="${ci}" aria-label="Remove column">✕</button></span></div>`).join('')}
+      <button class="chip-btn" data-jsb-addcol="${esc(p)}">Add a column</button>
+      <label>Group rows by<select data-jsb="${esc(`${p}.group`)}"><option value="">Not grouped</option>${cols.filter((c) => c.id).map((c) => `<option value="${esc(c.id)}"${f.group === c.id ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}</select></label></div>`;
+  }
+  if (f.type === 'chapters') {
+    const inners = f.fields || [];
+    extra = `<div class="wide js-inner"><span class="js-sub">Each ${esc((f.label || 'part').toLowerCase())} has</span>
+      ${inners.map((x, xi) => jsFieldHtml(x, `${p}.fields`, xi, inners.length, { inner: true })).join('')}${jsAddButtons(`${p}.fields`, { inner: true })}</div>`;
+  }
+  const blankable = ['text', 'textarea', 'date', 'number', 'select', 'steps'].includes(f.type);
+  return `<div class="js-field open">${head}<div class="doc-grid js-field-body">${typeSel}
+      ${f.type === 'note' ? '' : v('label', f.type === 'chapters' ? 'What each part is called' : 'Question or heading')}
+      ${f.type === 'note' ? '' : v('help', 'Help for whoever fills it in', { placeholder: 'Optional' })}
+      ${blankable ? v('blank', 'Printed when it\'s left empty', { placeholder: 'N/A' }) : ''}${extra}</div></div>`;
+}
+
+// What the builder holds, as the server takes it.
+function jsTemplateOut() {
+  const field = (f) => {
+    const out = { ...f };
+    if (f.type === 'note') out.pdf = f.pdfOff ? false : undefined;
+    if (f.type === 'table') { out.columns = (f.columns || []).map((c) => ({ ...c, options: String(c.options || '').split(/\n|,/).map((x) => x.trim()).filter(Boolean) })); }
+    if (f.type === 'chapters') out.fields = (f.fields || []).map(field);
+    return out;
+  };
+  const t = jsBuild.template;
+  return { ...t, sections: t.sections.map((sec) => ({ title: sec.title, fields: sec.fields.map(field) })) };
+}
+
+function jsInput(event) {
+  const el = event.target;
+  if (!jsBuild) return false;
+  if (el.dataset.jsbDisc !== undefined) {
+    const d = el.dataset.jsbDisc;
+    jsBuild.disciplines = el.checked ? [...new Set([...jsBuild.disciplines, d])] : jsBuild.disciplines.filter((x) => x !== d);
+    return true;
+  }
+  if (el.dataset.jsbHead !== undefined) {
+    const h = el.dataset.jsbHead;
+    jsBuild.template.header = el.checked ? [...new Set([...jsBuild.template.header, h])] : jsBuild.template.header.filter((x) => x !== h);
+    return true;
+  }
+  const path = el.dataset.jsb;
+  if (!path) return false;
+  let value = el.type === 'checkbox' ? el.checked : el.value;
+  if (el.dataset.jsbCommas) value = String(value).split(',').map((x) => x.trim()).filter(Boolean).join('\n');
+  docSet(jsBuild, path, value);
+  // The field's name shows in its heading as it's typed.
+  if (/\.label$/.test(path) && !/\.columns\./.test(path)) {
+    const head = el.closest('.js-field')?.querySelector(':scope > .js-field-head strong');
+    if (head) head.textContent = value || 'No question yet';
+  }
+  return true;
+}
+
+async function jsChange(event) {
+  if (!jsBuild) return false;
+  const el = event.target;
+  if (el.dataset.jsbAdd !== undefined) {
+    if (!el.value) return true;
+    const list = docGet(jsBuild, el.dataset.jsbAdd);
+    list.push(jsNewField(el.value));
+    jsOpenField = `${el.dataset.jsbAdd}.${list.length - 1}`;
+    render(); return true;
+  }
+  if (el.dataset.jsbType !== undefined) {
+    const old = docGet(jsBuild, el.dataset.jsbType);
+    docSet(jsBuild, el.dataset.jsbType, { ...jsNewField(el.value), label: old.label, help: old.help });
+    render(); return true;
+  }
+  if (el.dataset.jsb && (/\.type$/.test(el.dataset.jsb) || /landscape|spreadsheet/.test(el.dataset.jsb))) { render(); return true; }
+  return false;
+}
+
+async function jobsSettingsClick(event) {
+  const t = (s) => event.target.closest(s);
+  let b;
+  const L = jsData?.docs;
+  if (!L) return false;
+  // The table of kinds.
+  if (t('[data-js-save-usual]')) {
+    const types = [...view.querySelectorAll('[data-js-row]')].map((r) => ({ id: r.dataset.jsRow, active: r.querySelector('[data-js-active]').checked,
+      multiplier: Number(r.querySelector('[data-js-mult]').value), disciplines: [...r.querySelectorAll('[data-js-disc]:checked')].map((x) => x.dataset.jsDisc) }));
+    try { const r = await api('/api/docs/usual', { method: 'POST', body: JSON.stringify({ types }) }); toast(r.changed ? 'Saved' : 'Nothing had changed'); await jobsSettingsLoad(); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  if (t('[data-js-active]')) { const row = t('[data-js-row]'); row.querySelectorAll('[data-js-disc]').forEach((x) => { x.disabled = !t('[data-js-active]').checked; }); row.classList.toggle('off', !t('[data-js-active]').checked); return false; }
+  if (t('[data-js-new]')) {
+    jsBuild = { id: null, custom: true, name: '', group: '', audience: 'customer', disciplines: [], multiplier: 1.5, active: true,
+      template: { title: '', intro: '', header: ['customer_order'], landscape: false, spreadsheet: false, sections: [{ title: 'Details', fields: [jsNewField('textarea')] }] } };
+    jsOpenField = 'template.sections.0.fields.0';
+    render(); return true;
+  }
+  if ((b = t('[data-js-edit]')) || (b = t('[data-js-copy]'))) {
+    try {
+      const d = await api(`/api/docs/type?id=${encodeURIComponent(b.dataset.jsEdit || b.dataset.jsCopy)}`);
+      const copy = Boolean(b.dataset.jsCopy);
+      jsBuild = { ...d, template: jsFromTemplate(d.template), ...(copy ? { id: null, custom: true, name: `${d.name} (copy)`, used: 0, disciplines: [] } : {}) };
+      jsOpenField = null;
+      window.scrollTo(0, 0); render();
+    } catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-js-remove]'))) {
+    const row = L.types.find((x) => x.id === b.dataset.jsRemove);
+    const jobs = row?.onJobs ? ` It's chosen on ${n(row.onJobs)} ${row.onJobs === 1 ? 'job' : 'jobs'}, and will no longer be needed on ${row.onJobs === 1 ? 'it' : 'them'}.` : '';
+    if (!confirm(`Delete ${row?.name}?${jobs} Any already written stay as they are.`)) return true;
+    try { await api('/api/docs/type-remove', { method: 'POST', body: JSON.stringify({ id: b.dataset.jsRemove }) }); toast(`${row?.name || 'It'} is deleted`); await jobsSettingsLoad(); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
+  if ((b = t('[data-js-restore]'))) {
+    try { await api('/api/docs/type-restore', { method: 'POST', body: JSON.stringify({ id: b.dataset.jsRestore }) }); await jobsSettingsLoad(); render(); } catch (err) { toast(err.message); }
+    return true;
+  }
+  const drive = await docsDriveClick(event);
+  if (drive) return true;
+  if (!jsBuild) return false;
+  // The builder.
+  const list = (path) => docGet(jsBuild, path);
+  if ((b = t('[data-jsb-open]')) && !t('.js-tools')) { jsOpenField = jsOpenField === b.dataset.jsbOpen ? null : b.dataset.jsbOpen; render(); return true; }
+  if ((b = t('[data-jsb-move]'))) {
+    const l = list(b.dataset.jsbMove); const i = Number(b.dataset.i); const j = i + Number(b.dataset.d);
+    if (j >= 0 && j < l.length) { [l[i], l[j]] = [l[j], l[i]]; jsOpenField = null; render(); }
+    return true;
+  }
+  if ((b = t('[data-jsb-del]'))) { list(b.dataset.jsbDel).splice(Number(b.dataset.i), 1); jsOpenField = null; render(); return true; }
+  if ((b = t('[data-jsb-addcol]'))) { const f = list(b.dataset.jsbAddcol); f.columns = [...(f.columns || []), { label: '', type: 'text', width: 'normal' }]; render(); return true; }
+  if (t('[data-jsb-addsec]')) { jsBuild.template.sections.push({ title: '', fields: [] }); render(); return true; }
+  if (t('[data-jsb-cancel]')) { jsBuild = null; jsOpenField = null; render(); return true; }
+  if ((b = t('[data-jsb-preview]'))) {
+    b.disabled = true;
+    try {
+      const res = await fetch('/api/docs/type-preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: jsBuild.name, template: jsBuild.custom || !jsBuild.id ? jsTemplateOut() : jsBuild.template }) });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'The template could not be laid out.');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      if (!window.open(url, '_blank')) await saveFile(blob, `${jsBuild.name || 'New document'} (template).pdf`);
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err) { toast(err.message); }
+    b.disabled = false;
+    return true;
+  }
+  if ((b = t('[data-jsb-save]'))) {
+    b.disabled = true;
+    const x = jsBuild;
+    const body = { id: x.id, name: x.name, group: x.group, audience: x.audience, disciplines: x.disciplines, multiplier: Number(x.multiplier), active: x.active,
+      ...(x.custom ? { template: jsTemplateOut() } : {}) };
+    try { await api('/api/docs/type', { method: 'POST', body: JSON.stringify(body) }); toast('Saved'); jsBuild = null; jsOpenField = null; await jobsSettingsLoad(); window.scrollTo(0, 0); render(); }
+    catch (err) { toast(err.message); b.disabled = false; }
+    return true;
+  }
+  return false;
+}
+
+// ---------- filing in Google Drive (in the Jobs settings) ----------
+
 function docsDriveHtml() {
-  const v = docsDrive;
+  const v = jsData?.drive;
   if (!v) return '';
   const problems = v.problems.length ? `<ul class="doc-files">${v.problems.map((p) => `<li><strong>${esc(p.filename)}</strong> on ${esc(p.issue_key)}
       <span class="${p.status === 'failed' ? 'bad' : 'muted'}">${p.status === 'failed' ? 'Gave up' : `Trying again (${n(p.tries)})`}: ${esc(p.error || '')}</span>
@@ -19221,12 +19515,12 @@ function docsDriveHtml() {
       <button class="btn secondary" data-drive-check="1">Check the hub can reach the drive</button>${v.failed ? '<button class="btn secondary" data-drive-retry="">Retry all</button>' : ''}</div></section>`;
 }
 
-async function docsLibClick(event) {
+async function docsDriveClick(event) {
   const t = (s) => event.target.closest(s);
   let b;
   if ((b = t('[data-drive-set]'))) {
     b.disabled = true;
-    try { docsDrive = await api('/api/docs/drive', { method: 'POST', body: JSON.stringify({ on: b.dataset.driveSet === 'on' }) }); toast(docsDrive.on ? 'Drive filing is on' : 'Drive filing is off'); render(); }
+    try { jsData.drive = await api('/api/docs/drive', { method: 'POST', body: JSON.stringify({ on: b.dataset.driveSet === 'on' }) }); toast(jsData.drive.on ? 'Drive filing is on' : 'Drive filing is off'); render(); }
     catch (err) { toast(err.message); b.disabled = false; }
     return true;
   }
@@ -19235,17 +19529,7 @@ async function docsLibClick(event) {
     return true;
   }
   if ((b = t('[data-drive-retry]'))) {
-    try { docsDrive = await api('/api/docs/drive-retry', { method: 'POST', body: JSON.stringify({ id: b.dataset.driveRetry || null }) }); render(); } catch (err) { toast(err.message); }
-    return true;
-  }
-  if ((b = t('[data-lib-edit]'))) { docsPanel = { libEdit: b.dataset.libEdit }; render(); return true; }
-  if (t('[data-lib-cancel]')) { docsPanel = null; render(); return true; }
-  if ((b = t('[data-lib-save]'))) {
-    const v = (k) => view.querySelector(`[data-lib="${k}"]`);
-    const body = { id: b.dataset.libSave || null, name: v('name').value, group: v('group').value, audience: v('audience').value, multiplier: Number(v('multiplier').value),
-      disciplines: [...view.querySelectorAll('[data-lib-disc]:checked')].map((x) => x.dataset.libDisc), active: v('active') ? v('active').checked : true,
-      ...(v('sections') ? { sections: v('sections').value.split('\n').map((x) => x.trim()).filter(Boolean) } : {}) };
-    try { await api('/api/docs/type', { method: 'POST', body: JSON.stringify(body) }); docsPanel = null; toast('Saved'); render(); } catch (err) { toast(err.message); }
+    try { jsData.drive = await api('/api/docs/drive-retry', { method: 'POST', body: JSON.stringify({ id: b.dataset.driveRetry || null }) }); render(); } catch (err) { toast(err.message); }
     return true;
   }
   return false;

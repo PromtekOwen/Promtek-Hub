@@ -53,6 +53,7 @@ export const PERMISSIONS = {
   customerStats: { name: 'Customer statistics', about: 'The Statistics tab on each customer: money and time by month, open work, how long things take and who knows them best', groups: ['management'], tile: 'customers' },
   coshhManage: { name: 'Manage COSHH', about: 'Hear when COSHH assessments are due their yearly review, bring them in from Confluence and remove them', groups: ['management'], tile: 'coshh' },
   trainingManage: { name: 'Manage training and policies', about: 'Arrange tool box talks, publish policies, keep the training matrix and see who has acknowledged each', groups: ['management'], tile: 'training' },
+  jobDocs: { name: 'Job document settings', about: 'The Jobs settings cog: the kinds of job document, which are usual on each kind of category, and making new ones', groups: ['management', 'lead', 'developer'], tile: 'jobs' },
   developer: { name: 'Developer tools', about: 'Sync and Bitbucket status, connection tests, error details and viewing the hub as someone else', groups: ['developer'] },
   admin: { name: 'Admin', about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [], fixed: true },
 };
