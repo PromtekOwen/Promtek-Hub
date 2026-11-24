@@ -17672,7 +17672,7 @@ function trTalkHtml(t, manage) {
       ${t.about ? `<div class="jv-rich"><p>${esc(t.about).replace(/\n/g, '<br>')}</p></div>` : ''}
       ${trDocsHtml(t, manage)}
       ${t.forMe ? `<div class="jv-note">${t.acknowledged ? `<p style="margin:0">You acknowledged this talk ${esc(agoText(t.acknowledged))}.</p>`
-        : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I attended this tool box talk and understood it</label>
+        : ackable ? `<label class="inline-check"><input type="checkbox" id="tr-ack-ok"> I understand the toolbox talk provided to me on ${esc(new Date(t.startsAt).toLocaleDateString('en-GB', { timeZone: 'Europe/London' }))}.</label>
           <div class="tr-faces-wrap"><p class="tr-faces-q">Please select how you found this tool box talk</p>
             <div class="tr-faces" role="group" aria-label="How you found it">${TR_FACES.map(([k, f, l]) => `<button type="button" class="tr-face${trFace === k ? ' on' : ''}" data-tr-face="${k}" aria-pressed="${trFace === k}"><span aria-hidden="true">${f}</span>${l}</button>`).join('')}</div>
             <label>Feedback <small class="muted">(optional)</small><textarea id="tr-ack-comment" rows="3" maxlength="2000" placeholder="Anything that was good, or could be better"></textarea></label></div>

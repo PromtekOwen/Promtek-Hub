@@ -852,7 +852,7 @@ Anywhere, choosing a person's course opens it to record training. **＋ Course**
 
 **Reminding.** On a tool box talk (once it has started) and a policy, management see **Email the N people who haven't acknowledged it**. Each person still to acknowledge it gets an email straight away (whatever their notification settings), with a link that opens it ready to acknowledge, and the same in the hub's notifications. The page shows when everyone was last reminded. It can be sent once every 10 minutes, and each one is in the audit log.
 
-**Acknowledging.** Under "I attended this tool box talk and understood it", everyone chooses how they found it (good, OK or poor) and can leave feedback. Management see the totals and the comments on the talk, and each person's face beside their name.
+**Acknowledging.** Under "I understand the toolbox talk provided to me on" and the date it was held, everyone chooses how they found it (good, OK or poor) and can leave feedback. Management see the totals and the comments on the talk, and each person's face beside their name.
 
 **Who's had each one.** Under Training, **Tool box talks**, **Who's had each one**: every topic across the top, everyone on the hub down the side, and the date and time each last acknowledged it. A topic is due again a year after it was last acknowledged: amber in the month before, red once it's a year or more. A cross is someone asked to a talk on it who hasn't acknowledged it; a dash, someone never asked. The Overview shows the same totals. A talk's **Topic** (on the new talk form, suggested from earlier ones) is what groups repeats of the same talk; left blank it's the title.
 
