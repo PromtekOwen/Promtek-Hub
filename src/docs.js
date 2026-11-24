@@ -382,7 +382,8 @@ async function docView(env, viewer, d, c, t) {
   const { results: files } = await env.DB.prepare('SELECT id, field, name, size, created_at, created_by FROM doc_files WHERE doc_id = ? ORDER BY id').bind(d.id).all();
   const { results: time } = await env.DB.prepare('SELECT SUM(seconds) AS seconds FROM doc_worklogs WHERE doc_id = ?').bind(d.id).all();
   return {
-    doc: { id: d.id, type: t.id, name: t.name, audience: t.audience, status: d.status, version: d.version, versions: json(d.versions, []), header: json(d.header, {}), data: json(d.data, {}),
+    doc: { id: d.id, type: t.id, name: t.name, audience: t.audience, status: d.status, version: d.version, rev: d.rev || 0, startedBy: d.started_by,
+      canDelete: !d.version && (d.started_by === nameOf(viewer) || canNeeds(viewer)), versions: json(d.versions, []), header: json(d.header, {}), data: json(d.data, {}),
       updatedAt: d.updated_at, updatedBy: d.updated_by, finishedAt: d.finished_at, finishedBy: d.finished_by, file: d.file_name, error: d.error, seconds: time[0]?.seconds || 0, multiplier: t.multiplier },
     template: t.template, headerFields: Object.fromEntries((t.template.header || []).map((h) => [h, HEADER_FIELDS[h]])),
     category: { id: c.category_id, key: c.category_key, summary: c.summary, epicKey: c.epic_key, order: c.order_summary, customer: c.customer, done: Boolean(c.done) },
@@ -424,16 +425,110 @@ function cleanValue(v, depth = 0) {
   return null;
 }
 
-export async function save(env, viewer, { id, header, data }) {
+// Everyone on the job works on the same document at once. Each change is sent as the one
+// answer (or the one list) that changed, applied to the document as it stands, and numbered,
+// so everyone else's screen can pick up what's changed since it last looked.
+const SAFE_KEY = /^[A-Za-z0-9_]{1,60}$/;
+const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+function setPath(obj, path, value) {
+  const keys = String(path).split('.');
+  if (!keys.length || keys.length > 7 || keys.some((k) => !SAFE_KEY.test(k) || BAD_KEYS.has(k))) return false;
+  let o = obj;
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = keys[i];
+    if (o[k] == null || typeof o[k] !== 'object') o[k] = /^\d+$/.test(keys[i + 1]) ? [] : {};
+    o = o[k];
+  }
+  const last = keys[keys.length - 1];
+  if (Array.isArray(o) && /^\d+$/.test(last) && Number(last) > 5000) return false;
+  o[last] = value;
+  return true;
+}
+
+export async function save(env, viewer, { id, session = null, patches = null, header, data }) {
+  mustSee(viewer);
+  const d0 = await docRow(env, id);
+  await categoryRow(env, viewer, d0.category_id);
+  // The whole document at once, as the hub sent it before (kept for any screen still open on the old page).
+  const list = Array.isArray(patches) ? patches.slice(0, 500)
+    : [...Object.entries(header || {}).map(([k, v]) => ({ path: `h:${k}`, value: v })), ...Object.entries(data || {}).map(([k, v]) => ({ path: k, value: v }))];
+  if (!list.length) return { ok: true, rev: d0.rev || 0 };
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const d = attempt ? await docRow(env, id) : d0;
+    const h = json(d.header, {});
+    const body = json(d.data, {});
+    const applied = [];
+    for (const p of list) {
+      const value = cleanValue(p?.value);
+      const path = String(p?.path || '');
+      if (path.startsWith('h:')) {
+        const k = path.slice(2);
+        if (!Object.hasOwn(HEADER_FIELDS, k)) continue;
+        h[k] = typeof value === 'string' ? value : value == null ? '' : String(value);
+      } else if (!setPath(body, path, value)) continue;
+      applied.push({ path, value });
+    }
+    if (!applied.length) return { ok: true, rev: d.rev || 0 };
+    const text = JSON.stringify(body);
+    if (text.length > 1_500_000) throw refuse('That document has grown too big to keep. Split the longest list into a document of its own.');
+    const now = new Date().toISOString();
+    const rev = (d.rev || 0) + 1;
+    const res = await env.DB.prepare('UPDATE doc_items SET header = ?, data = ?, rev = ?, updated_at = ?, updated_by = ? WHERE id = ? AND rev = ?')
+      .bind(JSON.stringify(h), text, rev, now, nameOf(viewer), d.id, d.rev || 0).run();
+    if (!res.meta?.changes) continue;
+    await env.DB.batch(applied.map((p) => env.DB.prepare('INSERT INTO doc_edits (doc_id, rev, session, path, value, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(d.id, rev, clip(session, 40) || null, p.path, JSON.stringify(p.value), now)));
+    if (rev % 25 === 0) await env.DB.prepare('DELETE FROM doc_edits WHERE doc_id = ? AND rev <= ?').bind(d.id, rev - 300).run();
+    return { ok: true, rev, updatedAt: now };
+  }
+  throw refuse('Lots of people are changing this at once. Try again in a moment.', 409);
+}
+
+// What's changed since this screen last looked, and who else has the document open.
+export async function changes(env, viewer, { id, since, session, field }) {
   mustSee(viewer);
   const d = await docRow(env, id);
   await categoryRow(env, viewer, d.category_id);
-  const h = JSON.stringify(cleanValue(header || {}));
-  const body = JSON.stringify(cleanValue(data || {}));
-  if (body.length > 1_500_000) throw refuse('That document has grown too big to keep. Split the longest list into a document of its own.');
-  const now = new Date().toISOString();
-  await env.DB.prepare('UPDATE doc_items SET header = ?, data = ?, updated_at = ?, updated_by = ? WHERE id = ?').bind(h, body, now, nameOf(viewer), d.id).run();
-  return { ok: true, updatedAt: now };
+  const now = new Date();
+  if (viewer.accountId) {
+    await env.DB.prepare(`INSERT INTO doc_presence (doc_id, account_id, name, session, field, seen_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(doc_id, account_id) DO UPDATE SET name = excluded.name, session = excluded.session, field = excluded.field, seen_at = excluded.seen_at`)
+      .bind(d.id, viewer.accountId, nameOf(viewer), clip(session, 40) || null, clip(field, 200) || null, now.toISOString()).run();
+  }
+  const { results: people } = await env.DB.prepare('SELECT account_id, name, field FROM doc_presence WHERE doc_id = ? AND seen_at >= ? AND account_id != ?')
+    .bind(d.id, new Date(now - 30_000).toISOString(), viewer.accountId || '').all();
+  const out = { rev: d.rev || 0, status: d.status, version: d.version, updatedBy: d.updated_by, people: people.map((p) => ({ name: p.name, field: p.field })) };
+  const from = Number(since) || 0;
+  if (out.rev > from) {
+    const { results } = await env.DB.prepare('SELECT rev, session, path, value FROM doc_edits WHERE doc_id = ? AND rev > ? ORDER BY id').bind(d.id, from).all();
+    const revs = new Set(results.map((r) => r.rev));
+    // Too far behind (or the changes have been tidied away): the whole document instead.
+    if (revs.size < out.rev - from) { out.full = { header: json(d.header, {}), data: json(d.data, {}) }; }
+    else out.edits = results.map((r) => ({ session: r.session, path: r.path, value: json(r.value, null) }));
+  }
+  const { results: photos } = await env.DB.prepare('SELECT id, field, width, height, caption FROM doc_photos WHERE doc_id = ? ORDER BY id').bind(d.id).all();
+  const { results: files } = await env.DB.prepare('SELECT id, field, name, size, created_at, created_by FROM doc_files WHERE doc_id = ? ORDER BY id').bind(d.id).all();
+  return { ...out, photos, files };
+}
+
+// A document that's never been issued, deleted: by whoever started it, or a team lead.
+export async function removeDoc(env, viewer, { id }) {
+  mustSee(viewer);
+  const d = await docRow(env, id);
+  const c = await categoryRow(env, viewer, d.category_id);
+  if (d.version) throw refuse('It has been issued, so it stays. Change it and issue the next version instead.');
+  if (d.started_by !== nameOf(viewer) && !canNeeds(viewer)) throw refuse('Only whoever started it, or a team lead, can delete it.', 403);
+  const t = (await library(env, { all: true })).find((x) => x.id === d.doc_type);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM doc_photos WHERE doc_id = ?').bind(d.id),
+    env.DB.prepare('DELETE FROM doc_files WHERE doc_id = ?').bind(d.id),
+    env.DB.prepare('DELETE FROM doc_edits WHERE doc_id = ?').bind(d.id),
+    env.DB.prepare('DELETE FROM doc_presence WHERE doc_id = ?').bind(d.id),
+    env.DB.prepare('DELETE FROM doc_items WHERE id = ?').bind(d.id),
+  ]);
+  await record(env, viewer, { area: 'Jobs', action: 'Deleted a draft document', subjectType: 'jira', subjectId: c.category_key, label: `${c.category_key}: ${t?.name || d.doc_type}` }).catch(() => {});
+  return { ok: true, categoryId: c.category_id };
 }
 
 // ---------- pictures and files ----------

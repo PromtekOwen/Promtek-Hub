@@ -734,6 +734,11 @@ const pages = {
     render: () => invoicingHtml(),
   },
 
+  '#/custfeedback': {
+    band: () => '<h1>Customer Feedback</h1><p>What customers say at the end of a visit, before they sign off the point of work assessment.</p>',
+    render: () => cfRender(),
+  },
+
   '#/feedback': {
     band: () => '<h1>Feedback</h1><p>Share feedback or an idea, anonymously. Nobody can see who sent it.</p>',
     render: () => feedbackHtml(),
@@ -4706,7 +4711,7 @@ async function customersClick(event) {
 
 // ---------- point of work ----------
 
-const POW_STEPS = ['job', 'details', 'before', 'ppe', 'hazards', 'significant', 'ras', 'review', 'signoff'];
+const POW_STEPS = ['job', 'details', 'before', 'ppe', 'hazards', 'significant', 'ras', 'review', 'feedback', 'signoff'];
 let powSchema = null;
 let powStep = 'home';
 let powForm = null;
@@ -4739,7 +4744,7 @@ function newPowForm() {
       date: new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
       jobNo: '',
     },
-    before: {}, ppe: [], hazards: [], significant: [], ras: [], review: {}, signoff: {},
+    before: {}, ppe: [], hazards: [], significant: [], ras: [], review: {}, feedback: {}, signoff: {},
   };
 }
 
@@ -4920,19 +4925,72 @@ function powReviewHtml() {
     </div>${powNav()}`;
 }
 
+// The customer's feedback, handed to them before they sign. It goes to Customer Feedback,
+// not into the assessment.
+function powFeedbackHtml() {
+  const f = (powForm.feedback ||= {});
+  const qs = powSchema.feedback || [];
+  const q = (x) => {
+    const opts = x.scale || x.choices;
+    const answer = x.long
+      ? `<textarea id="pow-fb-${x.id}" rows="3" placeholder="Optional">${esc(f[x.id] || '')}</textarea>`
+      : x.scale ? `<div class="chips stack pow-scale">${opts.map(([k, l]) => `<button class="chip${String(f[x.id]) === String(k) ? ' on' : ''}" data-set="fb.${x.id}" data-value="${k}"><b>${k}</b> ${esc(l)}</button>`).join('')}</div>`
+        : segment(`fb.${x.id}`, f[x.id], opts);
+    return `<div class="pow-fb-q"><p><strong>${esc(x.text)}</strong>${x.required ? ' <span class="req" title="Needed">*</span>' : ''}</p>${answer}</div>`;
+  };
+  const first = qs.filter((x) => !x.part);
+  const rest = qs.filter((x) => x.part);
+  return `<div class="card pow-fb">
+      <h2 style="margin-top:0">Customer feedback</h2>
+      <p>We would love to hear your thoughts or feedback on how we can improve your experience!</p>
+      <p class="muted">Hand this to the customer. Their answers go to Promtek, not into this assessment. Their name and email are taken from the sign off next.</p>
+      <button class="chip${f.declined ? ' on' : ''}" data-set="fb.declined" data-value="${f.declined ? '' : 'yes'}">The customer would rather not</button>
+      ${f.declined ? '' : `${first.map(q).join('')}<h3>Feedback</h3>${rest.map(q).join('')}<p class="muted"><span class="req">*</span> Needed</p>`}
+    </div>${powNav()}`;
+}
+
 function powSignoffHtml() {
   const s = powForm.signoff;
+  const fb = powForm.feedback && !powForm.feedback.declined;
   return `<div class="card">
       <h2 style="margin-top:0">Sign off</h2>
       <p class="muted">Yours</p>
       ${field('Name', 'pow-pname', s.promtekName || powForm.details.engineer)}
       ${field('Position', 'pow-prole', s.promtekPosition || 'Engineer')}
+      ${sigPadHtml('promtekSig', 'Your signature')}
       <p class="muted" style="margin-top:1.25rem">Customer</p>
       ${field('Name', 'pow-cname', s.customerName)}
       ${field('Position', 'pow-crole', s.customerPosition)}
-      ${field('Email', 'pow-cemail', s.customerEmail || powForm.details.contactEmail, { type: 'email', placeholder: 'For the feedback form afterwards' })}
+      ${field(`Email${fb ? ' (needed for their feedback)' : ''}`, 'pow-cemail', s.customerEmail || powForm.details.contactEmail, { type: 'email' })}
+      ${sigPadHtml('customerSig', 'Customer signature')}
       <div class="result" id="pow-result" role="status"></div>
     </div>${powNav('Back', 'Finish and send')}`;
+}
+
+// A box to sign in with a finger, pen or mouse, kept as a small picture.
+function sigPadHtml(key, label) {
+  return `<div class="sig-pad"><span class="sig-label">${esc(label)}</span>
+      <canvas class="doc-sig" width="480" height="140" data-pow-sig="${key}" aria-label="${esc(label)}"></canvas>
+      <button class="linklike" data-pow-sigclear="${key}">Clear</button></div>`;
+}
+
+function sigPadInit(cv, saved, done) {
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (saved) { const img = new Image(); img.onload = () => ctx.drawImage(img, 0, 0, cv.width, cv.height); img.src = saved; }
+  let drawing = false;
+  const at = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * (cv.width / r.width), (ev.clientY - r.top) * (cv.height / r.height)]; };
+  cv.addEventListener('pointerdown', (ev) => { drawing = true; cv.setPointerCapture(ev.pointerId); ctx.beginPath(); ctx.moveTo(...at(ev)); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.strokeStyle = '#14213d'; });
+  cv.addEventListener('pointermove', (ev) => { if (!drawing) return; ctx.lineTo(...at(ev)); ctx.stroke(); });
+  const end = () => { if (!drawing) return; drawing = false; done(cv.toDataURL('image/jpeg', 0.7)); };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+}
+
+function powSigs() {
+  view.querySelectorAll('canvas[data-pow-sig]').forEach((cv) => sigPadInit(cv, powForm.signoff[cv.dataset.powSig], (url) => {
+    powForm.signoff[cv.dataset.powSig] = url;
+    powSaveDraft();
+  }));
 }
 
 function powDoneHtml() {
@@ -5027,6 +5085,7 @@ function powSet(name, value) {
   }
   if (group === 'before') powForm.before[key] = value;
   if (group === 'review') powForm.review[key] = value;
+  if (group === 'fb') { powCollect(); (powForm.feedback ||= {})[key] = value; }
   if (group === 'sig') {
     powCollect();
     if (value === 'yes' && !powForm.significant.some((e) => e.hazard === key)) {
@@ -5058,6 +5117,7 @@ async function powRender() {
     : powStep === 'significant' ? powSignificantHtml()
     : powStep === 'ras' ? powRasHtml()
     : powStep === 'review' ? powReviewHtml()
+    : powStep === 'feedback' ? powFeedbackHtml()
     : powSignoffHtml();
   return `${powProgress()}<div style="height:1rem"></div>${body}`;
 }
@@ -5078,6 +5138,7 @@ function powCollect() {
     });
   }
   if (powStep === 'review') powForm.review.note = value('pow-note') || '';
+  if (powStep === 'feedback' && document.getElementById('pow-fb-suggestions')) (powForm.feedback ||= {}).suggestions = document.getElementById('pow-fb-suggestions').value.trim();
   if (powStep === 'signoff') {
     Object.assign(powForm.signoff, {
       promtekName: value('pow-pname'), promtekPosition: value('pow-prole'),
@@ -5092,7 +5153,14 @@ function powProblem() {
   if (powStep === 'before' && powSchema.before.some((q) => !powForm.before[q.id])) return 'Answer every question before moving on.';
   if (powStep === 'significant' && powForm.significant.some((e) => !e.control)) return 'Say what you did about each significant hazard.';
   if (powStep === 'review' && powSchema.review.some((q) => !powForm.review[q.id])) return 'Answer all three.';
+  if (powStep === 'feedback' && !powForm.feedback?.declined && (powSchema.feedback || []).some((q) => q.required && !powForm.feedback?.[q.id])) {
+    return 'The customer needs to answer the questions marked *, or tap that they would rather not.';
+  }
   if (powStep === 'signoff' && !document.getElementById('pow-pname')?.value?.trim()) return 'Your name is needed.';
+  if (powStep === 'signoff' && powForm.feedback && !powForm.feedback.declined && Object.keys(powForm.feedback).length) {
+    if (!document.getElementById('pow-cname')?.value?.trim()) return 'The customer\'s name is needed, for their feedback.';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(document.getElementById('pow-cemail')?.value?.trim() || '')) return 'The customer\'s email is needed, for their feedback.';
+  }
   return null;
 }
 
@@ -16776,6 +16844,8 @@ view.addEventListener('click', async (event) => {
   const fPick = event.target.closest('[data-folder-pick]');
   if (fPick) return folderPick(fPick.dataset.folderPick);
 
+  const powSigClear = event.target.closest('[data-pow-sigclear]');
+  if (powSigClear && powForm) { powCollect(); delete powForm.signoff[powSigClear.dataset.powSigclear]; powSaveDraft(); return render(); }
   const powBtn = event.target.closest('[data-pow]');
   if (powBtn) return powControl(powBtn.dataset.pow);
   if (event.target.closest('[data-pow-crumb]')) { powNode = 'root'; powTrail = []; return render(); }
@@ -16818,6 +16888,7 @@ view.addEventListener('click', async (event) => {
   if (settingsOpen === '#/jobs' && currentRoute() === '#/jobs' && await jobsSettingsClick(event)) return;
   if (currentRoute() === '#/jobs' && !settingsOpen && await jobsClick(event) !== false) return;
   if (currentRoute() === '#/docs' && await docsClick(event) !== false) return;
+  if (currentRoute() === '#/custfeedback' && await cfClick(event)) return;
   const stageGroupBtn = event.target.closest('[data-stage-group]');
   if (stageGroupBtn) { stageGroup = stageGroupBtn.dataset.stageGroup; return render(); }
   const teamChip = event.target.closest('[data-person-team]');
@@ -16924,6 +16995,7 @@ const sectionLoading = (label = 'Loading') => `<div class="card loading-card sma
 const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/docs': () => 'Loading the documents',
+  '#/custfeedback': () => 'Loading customer feedback',
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : quotesOpenRefresh ? 'Reading quotes from Jira' : 'Loading'),
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
@@ -17042,7 +17114,8 @@ async function render() {
       logFab();
       if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
-      if (route === '#/docs' && docEdit) docSigs();
+      if (route === '#/docs' && docEdit) { docSigs(); docPeopleShow(); }
+      if (route === '#/pow' && powStep === 'signoff' && powForm) powSigs();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
       if (route !== '#/jobs') { jobsView = null; jobsDraft = null; }
@@ -17071,6 +17144,7 @@ view.addEventListener('keydown', (event) => {
 let searchTimer = null;
 view.addEventListener('input', (event) => {
   if (currentRoute() === '#/docs' && docsInput(event)) return;
+  if (currentRoute() === '#/custfeedback' && cfInput(event)) return;
   if (settingsOpen === '#/jobs' && jsInput(event)) return;
   if (currentRoute() === '#/quotes' && quotesInput(event)) return;
   if (currentRoute() === '#/nearmiss' && nmInput(event)) return;
@@ -18752,8 +18826,11 @@ async function docsRender() {
   return docsMineHtml();
 }
 
+// This screen, so the changes it sent can be told from everyone else's.
+const DOC_SESSION = Math.random().toString(36).slice(2, 12);
+
 function docEditSet(r) {
-  docEdit = { ...r, dirty: false, timer: null, state: 'saved' };
+  docEdit = { ...r, dirty: false, timer: null, state: 'saved', rev: r.doc.rev || 0, pending: new Set(), people: [] };
   docsPanel = null; docsShow = {};
 }
 
@@ -18861,6 +18938,7 @@ function docEditorHtml() {
       <div class="doc-bar-state">${done ? `<span class="docs-state done">Issued, version ${n(d.version)}</span>` : `<span class="docs-state draft">${d.version ? `Changing version ${n(d.version)}` : 'Draft'}</span>`}
         <span class="muted" id="doc-saved">${done ? `${esc(d.finishedBy || '')} ${esc(fullDate(String(d.finishedAt || '').slice(0, 10)))}` : 'Saved as you go'}</span>
         <span class="muted">${d.seconds ? `${esc(duration(d.seconds))} logged` : ''}</span>
+        <span class="doc-people" id="doc-people"></span>
         ${done && e.drive ? `<span class="doc-drive">${e.drive.map((x) => (x.link ? `<a href="${esc(x.link)}" target="_blank" rel="noopener">${esc(/\.xlsx$/i.test(x.name) ? 'Spreadsheet' : 'PDF')} in Drive</a>`
           : x.status === 'waiting' ? `<span class="muted">Going into Drive${x.error ? `: ${esc(x.error)}` : ''}</span>` : `<span class="bad">Not in Drive${x.error ? `: ${esc(x.error)}` : ''}</span>`)).join(' · ')}</span>` : ''}</div>
       <div class="row">
@@ -18868,6 +18946,7 @@ function docEditorHtml() {
         <button class="btn secondary small" data-doc-panel="log">Log time</button>
         ${done ? '<button class="btn small" data-doc-reopen="1">Change it</button>' : `<button class="btn small" data-doc-panel="finish">Issue it</button>`}
         <a class="btn secondary small" href="#/docs?cat=${encodeURIComponent(e.category.id)}">All for ${esc(e.category.key)}</a>
+        ${d.canDelete ? '<button class="btn small danger-outline" data-doc-delete="1">Delete this draft</button>' : ''}
       </div>
       ${docsPanel === 'log' ? `<div class="doc-panel"><h3>Log time on this document</h3>
         <p class="muted">It goes to ${esc(e.category.key)} in Tempo like any time on the job, and earns ${esc(String(d.multiplier))}× the XP.</p>
@@ -19020,38 +19099,126 @@ function docParsePaste(text, cols) {
   }).filter((r) => Object.keys(r).length);
 }
 
-function docSaveSoon() {
-  if (!docEdit) return;
+// Only the answers (or lists) that changed are sent, so people working on the same document at
+// once don't undo each other's work.
+function docSaveSoon(path) {
+  if (!docEdit || !path) return;
+  docEdit.pending.add(String(path));
   docEdit.dirty = true;
   const s = document.getElementById('doc-saved');
   if (s) s.textContent = 'Saving…';
   clearTimeout(docEdit.timer);
-  docEdit.timer = setTimeout(docSaveNow, 1200);
+  docEdit.timer = setTimeout(docSaveNow, 700);
 }
+
+function docPatches(e) {
+  const paths = [...e.pending];
+  // A whole list that changed covers anything inside it.
+  const keep = paths.filter((p) => !paths.some((q) => q !== p && p.startsWith(`${q}.`)));
+  return keep.map((path) => ({ path, value: path.startsWith('h:') ? e.doc.header[path.slice(2)] ?? '' : docGet(e.doc.data, path) ?? null }));
+}
+
 async function docSaveNow() {
   const e = docEdit;
-  if (!e?.dirty) return;
+  if (!e?.dirty || e.saving) return;
   clearTimeout(e.timer);
+  const patches = docPatches(e);
+  e.pending = new Set();
   e.dirty = false;
+  e.saving = true;
   try {
-    await api('/api/docs/save', { method: 'POST', body: JSON.stringify({ id: e.doc.id, header: e.doc.header, data: e.doc.data }) });
+    await api('/api/docs/save', { method: 'POST', body: JSON.stringify({ id: e.doc.id, session: DOC_SESSION, patches }) });
     const s = document.getElementById('doc-saved');
-    if (s && docEdit === e) s.textContent = 'Saved';
+    if (s && docEdit === e && !e.dirty) s.textContent = 'Saved';
   } catch (err) {
+    patches.forEach((p) => e.pending.add(p.path));
     e.dirty = true;
     const s = document.getElementById('doc-saved');
     if (s) s.textContent = `Not saved: ${err.message}`;
+  } finally {
+    e.saving = false;
+    if (e.dirty && docEdit === e) e.timer = setTimeout(docSaveNow, 2000);
   }
 }
 addEventListener('hashchange', () => { if (docEdit?.dirty) docSaveNow(); if (!location.hash.startsWith('#/docs')) { docEdit = null; docsCat = null; } });
-addEventListener('pagehide', () => { if (docEdit?.dirty) navigator.sendBeacon?.('/api/docs/save', new Blob([JSON.stringify({ id: docEdit.doc.id, header: docEdit.doc.header, data: docEdit.doc.data })], { type: 'application/json' })); });
+addEventListener('pagehide', () => {
+  if (docEdit?.dirty) navigator.sendBeacon?.('/api/docs/save', new Blob([JSON.stringify({ id: docEdit.doc.id, session: DOC_SESSION, patches: docPatches(docEdit) })], { type: 'application/json' }));
+});
+
+// Everyone else's changes, every few seconds while the document is open: put straight into
+// the boxes they belong to, unless that's where someone is typing here.
+async function docPoll() {
+  const e = docEdit;
+  if (!e || document.visibilityState !== 'visible' || !location.hash.startsWith('#/docs?doc=') || e.polling) return;
+  e.polling = true;
+  try {
+    const focus = document.activeElement?.closest?.('[data-dp]')?.dataset.dp || '';
+    const r = await api(`/api/docs/changes?id=${e.doc.id}&since=${e.rev}&session=${DOC_SESSION}&field=${encodeURIComponent(focus)}`);
+    if (docEdit !== e) return;
+    if (r.status !== e.doc.status || r.version !== e.doc.version) {
+      docEditSet(await api(`/api/docs/open?id=${e.doc.id}`));
+      toast(r.status === 'done' ? `${r.updatedBy || 'Someone'} issued version ${r.version}` : `${r.updatedBy || 'Someone'} opened it to change it`);
+      return render();
+    }
+    let redraw = false;
+    const mine = (path) => [...e.pending].some((p) => p === path || path.startsWith(`${p}.`) || p.startsWith(`${path}.`));
+    if (r.full) {
+      const keep = docPatches(e);
+      e.doc.header = r.full.header; e.doc.data = r.full.data;
+      keep.forEach((p) => (p.path.startsWith('h:') ? (e.doc.header[p.path.slice(2)] = p.value) : docSet(e.doc.data, p.path, p.value)));
+      redraw = true;
+    }
+    for (const x of r.edits || []) {
+      if (x.session === DOC_SESSION || mine(x.path)) continue;
+      if (x.path.startsWith('h:')) e.doc.header[x.path.slice(2)] = x.value ?? ''; else docSet(e.doc.data, x.path, x.value);
+      const el = view.querySelector(`[data-dp="${CSS.escape(x.path)}"]`);
+      if (el && (typeof x.value !== 'object' || x.value === null)) { if (el !== document.activeElement) el.value = x.value ?? ''; }
+      else redraw = true;
+    }
+    e.rev = r.rev;
+    const media = (list) => JSON.stringify(list.map((m) => [m.id, m.caption || '', m.name || '']));
+    if (media(r.photos) !== media(e.photos) || media(r.files) !== media(e.files)) { e.photos = r.photos; e.files = r.files; redraw = true; }
+    e.people = r.people;
+    docPeopleShow();
+    if (redraw) docRedraw();
+  } catch { /* tried again shortly */ } finally { e.polling = false; }
+}
+setInterval(docPoll, 4000);
+
+// Redrawn with someone else's change, keeping whoever's typing here in the box they're in.
+async function docRedraw() {
+  const el = document.activeElement;
+  const path = el?.closest?.('.doc-ed') ? el.dataset?.dp : null;
+  const sel = path && typeof el.selectionStart === 'number' ? [el.selectionStart, el.selectionEnd] : null;
+  const y = window.scrollY;
+  await render();
+  window.scrollTo(0, y);
+  if (!path) return;
+  const again = view.querySelector(`[data-dp="${CSS.escape(path)}"]`);
+  if (!again) return;
+  again.focus({ preventScroll: true });
+  if (sel) try { again.setSelectionRange(...sel); } catch { /* not a text box */ }
+}
+
+// Who else has it open, and the box each is in.
+function docPeopleShow() {
+  const e = docEdit;
+  const box = document.getElementById('doc-people');
+  if (!e || !box) return;
+  box.innerHTML = e.people.length ? `Also here: ${e.people.map((p) => `<span class="doc-person">${esc(p.name)}</span>`).join(' ')}` : '';
+  view.querySelectorAll('.doc-other').forEach((el) => { el.classList.remove('doc-other'); el.removeAttribute('data-other'); });
+  for (const p of e.people) {
+    const el = p.field && view.querySelector(`[data-dp="${CSS.escape(p.field)}"]`);
+    if (el) { el.classList.add('doc-other'); el.closest('label, td, li, .doc-f')?.setAttribute('data-other', p.name); }
+  }
+}
 
 function docsInput(event) {
   const el = event.target.closest('[data-dp]');
   if (!el || !docEdit) return false;
   const p = el.dataset.dp;
   if (p.startsWith('h:')) docEdit.doc.header[p.slice(2)] = el.value; else docSet(docEdit.doc.data, p, el.value);
-  docSaveSoon();
+  docSaveSoon(p);
   return true;
 }
 
@@ -19073,7 +19240,7 @@ async function docsClick(event) {
     else if (b.dataset.kind === 'chapter') list.push({ _k: docKey(), title: '' });
     else list.push(b.dataset.initials ? { date: todayIso(), initials: initials() } : {});
     docSet(data, path, list);
-    docSaveSoon(); render(); return true;
+    docSaveSoon(path); render(); return true;
   }
   if ((b = t('[data-doc-rowdel]'))) {
     const path = b.dataset.docRowdel;
@@ -19083,7 +19250,7 @@ async function docsClick(event) {
     const row = list[i];
     if (row && typeof row === 'object' && row._k && e.photos.some((p) => p.field.startsWith(`${path}.${row._k}.`))) { toast('Remove its pictures first.'); return true; }
     list.splice(i, 1);
-    docSaveSoon(); render(); return true;
+    docSaveSoon(path); render(); return true;
   }
   if ((b = t('[data-doc-paste-go]'))) {
     const path = b.dataset.docPasteGo;
@@ -19094,7 +19261,7 @@ async function docsClick(event) {
     const list = Array.isArray(docGet(data, path)) ? docGet(data, path) : [];
     docSet(data, path, [...list.filter((r) => r && Object.values(r).some((x) => String(x ?? '').trim())), ...rows]);
     docsPanel = null;
-    docSaveSoon(); render(); toast(`${n(rows.length)} ${rows.length === 1 ? 'row' : 'rows'} added`); return true;
+    docSaveSoon(path); render(); toast(`${n(rows.length)} ${rows.length === 1 ? 'row' : 'rows'} added`); return true;
   }
   if ((b = t('[data-doc-photodel]'))) {
     await api('/api/docs/photo-change', { method: 'POST', body: JSON.stringify({ photoId: Number(b.dataset.docPhotodel), remove: true }) }).catch((err) => toast(err.message));
@@ -19105,7 +19272,7 @@ async function docsClick(event) {
     catch (err) { toast(err.message); }
     return true;
   }
-  if ((b = t('[data-doc-sigclear]'))) { docSet(data, b.dataset.docSigclear, ''); docSaveSoon(); render(); return true; }
+  if ((b = t('[data-doc-sigclear]'))) { docSet(data, b.dataset.docSigclear, ''); docSaveSoon(b.dataset.docSigclear); render(); return true; }
   if (t('[data-doc-preview]')) { await docSaveNow(); return false; }
   if (t('[data-doc-log-go]')) {
     const v = (k) => view.querySelector(`[data-doc-log="${k}"]`)?.value;
@@ -19124,6 +19291,17 @@ async function docsClick(event) {
       docEditSet(await api(`/api/docs/open?id=${e.doc.id}`));
       toast(`Version ${r.version} is on ${e.category.key} in Jira`); render();
     } catch (err) { toast(err.message); b.disabled = false; b.textContent = 'Issue it'; }
+    return true;
+  }
+  if (t('[data-doc-delete]')) {
+    if (!confirm(`Delete this draft of the ${e.doc.name}? Everything written in it goes, for everyone. Files already put on ${e.category.key} stay there.`)) return true;
+    try {
+      clearTimeout(e.timer); e.pending = new Set(); e.dirty = false;
+      await api('/api/docs/remove', { method: 'POST', body: JSON.stringify({ id: e.doc.id }) });
+      toast('Draft deleted');
+      docEdit = null;
+      location.hash = `#/docs?cat=${encodeURIComponent(e.category.id)}`;
+    } catch (err) { toast(err.message); }
     return true;
   }
   if (t('[data-doc-reopen]')) {
@@ -19178,7 +19356,7 @@ function docSigs() {
     const at = (ev) => { const r = cv.getBoundingClientRect(); return [(ev.clientX - r.left) * (cv.width / r.width), (ev.clientY - r.top) * (cv.height / r.height)]; };
     cv.addEventListener('pointerdown', (ev) => { drawing = true; cv.setPointerCapture(ev.pointerId); ctx.beginPath(); ctx.moveTo(...at(ev)); ctx.lineWidth = 2.4; ctx.lineCap = 'round'; ctx.strokeStyle = '#14213d'; });
     cv.addEventListener('pointermove', (ev) => { if (!drawing) return; ctx.lineTo(...at(ev)); ctx.stroke(); });
-    const end = () => { if (!drawing) return; drawing = false; docSet(docEdit.doc.data, cv.dataset.docSig, cv.toDataURL('image/jpeg', 0.7)); docSaveSoon(); };
+    const end = () => { if (!drawing) return; drawing = false; docSet(docEdit.doc.data, cv.dataset.docSig, cv.toDataURL('image/jpeg', 0.7)); docSaveSoon(cv.dataset.docSig); };
     cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
   });
 }
@@ -19533,4 +19711,73 @@ async function docsDriveClick(event) {
     return true;
   }
   return false;
+}
+
+// ---------- Customer Feedback ----------
+
+let cfData = null;
+let cfFilter = 'all';
+let cfQuery = '';
+
+async function cfRender() {
+  cfData = await api('/api/custfeedback');
+  return cfHtml();
+}
+
+function cfHtml() {
+  const d = cfData;
+  const s = d.summary;
+  const label = (id, v) => { const q = d.questions.find((x) => x.id === id); return (q?.scale || q?.choices || []).find(([k]) => String(k) === String(v))?.[1] || null; };
+  const bubble = (value, text, filter) => (filter ? `<button class="cf-bubble${cfFilter === filter ? ' on' : ''}" data-cf-filter="${filter}"><strong>${value ?? '—'}</strong><span>${text}</span></button>`
+    : `<div class="cf-bubble plain"><strong>${value ?? '—'}</strong><span>${text}</span></div>`);
+  const q = cfQuery.toLowerCase();
+  const rows = d.rows.filter((r) => (cfFilter === 'all' || (cfFilter === 'sales' && r.salesVisit === 1 && !r.salesDone) || (cfFilter === 'testimonial' && r.testimonial === 1 && !r.testimonialDone)
+      || (cfFilter === 'poor' && ((r.satisfied && r.satisfied <= 2) || r.resolved === 'no' || (r.recommend && r.recommend <= 2))))
+    && (!q || [r.customer, r.name, r.email, r.engineer, r.issueKey, r.suggestions].some((x) => String(x || '').toLowerCase().includes(q))));
+  const stars = (v) => (v ? `<span class="cf-score s${v}">${v}/5</span>` : '<span class="muted">—</span>');
+  const follow = (r, what, wanted, done, text) => (wanted !== 1 ? '' : `<div class="cf-follow${done ? ' done' : ''}"><strong>${text}</strong>
+      ${done ? `<span class="muted">Contacted by ${esc(done.by)}, ${esc(fullDate(done.at.slice(0, 10)))}</span> <button class="linklike" data-cf-done="${r.id}" data-what="${what}" data-undo="1">Undo</button>`
+        : `<button class="btn small" data-cf-done="${r.id}" data-what="${what}">Mark as contacted</button>`}</div>`);
+  const card = (r) => `<li class="card cf-card">
+      <div class="cf-head"><div><strong>${esc(r.customer || 'Unknown customer')}</strong>${r.issueKey ? ` <a href="${esc(me.jiraBaseUrl)}/browse/${esc(r.issueKey)}" target="_blank" rel="noopener">${esc(r.issueKey)}</a>` : ''}
+        <div class="muted">${esc(r.name || 'No name')}${r.position ? `, ${esc(r.position)}` : ''}${r.email ? ` · <a href="mailto:${esc(r.email)}">${esc(r.email)}</a>` : ''}</div></div>
+        <div class="muted cf-when">${esc(fullDate(r.createdAt.slice(0, 10)))}<br>Visit by ${esc(r.engineer || 'someone')}</div></div>
+      <dl class="cf-answers">
+        <div><dt>Satisfied with the work</dt><dd>${stars(r.satisfied)} ${esc(label('satisfied', r.satisfied) || '')}</dd></div>
+        <div><dt>Issue resolved</dt><dd>${r.resolved ? `<span class="cf-yn ${r.resolved}">${r.resolved === 'yes' ? 'Yes' : 'No'}</span>` : '<span class="muted">—</span>'}</dd></div>
+        <div><dt>Would recommend Promtek</dt><dd>${stars(r.recommend)} ${esc(label('recommend', r.recommend) || '')}</dd></div>
+        <div><dt>Confident their data is protected</dt><dd>${stars(r.dataConfidence)} ${esc(label('dataConfidence', r.dataConfidence) || '')}</dd></div>
+      </dl>
+      ${r.suggestions ? `<p class="cf-sugg"><strong>Suggestions:</strong> ${esc(r.suggestions)}</p>` : ''}
+      ${follow(r, 'sales', r.salesVisit, r.salesDone, 'Would like Sales to arrange a visit')}${follow(r, 'testimonial', r.testimonial, r.testimonialDone, 'Would like to give a testimonial')}
+    </li>`;
+  return `<div class="cf-bubbles">
+      ${bubble(n(s.count), 'responses', 'all')}${bubble(s.satisfied, 'average satisfaction /5')}${bubble(s.resolved != null ? `${s.resolved}%` : null, 'issues resolved')}
+      ${bubble(s.recommend, 'would recommend /5')}${bubble(n(s.salesOpen), 'sales visits to arrange', 'sales')}${bubble(n(s.testimonialOpen), 'testimonials to collect', 'testimonial')}
+    </div>
+    <div class="row cf-tools"><span class="segment">${[['all', 'All'], ['sales', 'Wants a visit'], ['testimonial', 'Testimonial'], ['poor', 'Poor scores']].map(([k, l]) => `<button class="seg${cfFilter === k ? ' on' : ''}" data-cf-filter="${k}">${l}</button>`).join('')}</span>
+      <input type="search" id="cf-search" placeholder="Search customer, name, engineer, job" value="${esc(cfQuery)}"></div>
+    ${rows.length ? `<ul class="cf-list">${rows.map(card).join('')}</ul>` : `<section class="card"><p class="muted">${d.rows.length ? 'Nothing matches.' : 'No feedback yet. It arrives here as customers give it at the end of a visit.'}</p></section>`}`;
+}
+
+async function cfClick(event) {
+  const t = (x) => event.target.closest(x);
+  let b;
+  if ((b = t('[data-cf-filter]'))) { cfFilter = b.dataset.cfFilter; view.innerHTML = cfHtml(); return true; }
+  if ((b = t('[data-cf-done]'))) {
+    try { await api('/api/custfeedback/done', { method: 'POST', body: JSON.stringify({ id: Number(b.dataset.cfDone), what: b.dataset.what, undo: Boolean(b.dataset.undo) }) }); render(); }
+    catch (err) { toast(err.message); }
+    return true;
+  }
+  return false;
+}
+
+function cfInput(event) {
+  if (event.target.id !== 'cf-search' || !cfData) return false;
+  cfQuery = event.target.value;
+  const pos = event.target.selectionStart;
+  view.innerHTML = cfHtml();
+  const box = document.getElementById('cf-search');
+  box.focus(); box.setSelectionRange(pos, pos);
+  return true;
 }

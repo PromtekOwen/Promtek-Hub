@@ -41,7 +41,7 @@ const blank = (v) => v == null || (typeof v === 'string' && !v.trim()) || (Array
 const size = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 const cellText = (col, v) => (col.type === 'date' ? shortDate(v) : String(v ?? ''));
 const fromDataUrl = (url) => { const m = /^data:image\/jpeg;base64,(.+)$/.exec(String(url || '')); return m ? m[1] : null; };
-function jpegDims(b64) {
+export function jpegDims(b64) {
   try {
     const s = atob(b64.slice(0, 40000));
     let i = 2;

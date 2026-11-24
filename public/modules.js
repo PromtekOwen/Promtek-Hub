@@ -76,6 +76,13 @@ export const MODULES = [
     detail: () => 'Every customer: what\'s open, their contract and who to call',
   },
   {
+    id: 'custfeedback',
+    name: 'Customer Feedback',
+    route: '#/custfeedback',
+    icon: icon('<path d="M12 20.5s-7.5-4.6-7.5-10.2A4.3 4.3 0 0112 7.6a4.3 4.3 0 017.5 2.7c0 5.6-7.5 10.2-7.5 10.2z"/>'),
+    detail: () => 'What customers say after a visit',
+  },
+  {
     id: 'coshh',
     name: 'COSHH',
     route: '#/coshh',

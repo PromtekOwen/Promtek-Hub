@@ -1,5 +1,6 @@
 // Lays out the point of work risk assessment as a PDF.
 import { Pdf, A4, wrap, widthOf } from './pdf.js';
+import { jpegDims } from './docs-pdf.js';
 import { LOGO } from './logo.js';
 import { BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, labelOf } from './pow-data.js';
 
@@ -201,19 +202,22 @@ function reviewBlock(doc, form) {
   }
 }
 
+const sigOf = (url) => { const m = /^data:image\/jpeg;base64,(.+)$/.exec(String(url || '')); return m ? m[1] : null; };
+
 function signBlock(doc, form) {
   const sign = form.signoff || {};
   const gap = 12;
   const cardWidth = (doc.contentWidth - gap) / 2;
   const cards = [
-    ['Promtek', sign.promtekName || form.details.engineer, sign.promtekPosition || 'Engineer', 'Completed', form.completedAt],
-    ['Customer', sign.customerName, sign.customerPosition, 'Email', sign.customerEmail],
+    ['Promtek', sign.promtekName || form.details.engineer, sign.promtekPosition || 'Engineer', 'Completed', form.completedAt, sign.promtekSig],
+    ['Customer', sign.customerName, sign.customerPosition, 'Email', sign.customerEmail, sign.customerSig],
   ];
-  doc.space(124, () => header(doc, form));
+  const H = 168;
+  doc.space(H + 20, () => header(doc, form));
   cards.forEach((card, i) => {
     const x = doc.margin + i * (cardWidth + gap);
     const y = doc.y;
-    doc.roundRect(x, y - 104, cardWidth, 104, 9, { fill: i === 0 ? TINT : WHITE, stroke: i === 0 ? null : LINE });
+    doc.roundRect(x, y - H, cardWidth, H, 9, { fill: i === 0 ? TINT : WHITE, stroke: i === 0 ? null : LINE });
     doc.pill(card[0], x + 12, y - 27, { fill: i === 0 ? BLUE : MUTED, size: 8.5, height: 15 });
     doc.text('Name', x + 12, y - 46, { size: 8, colour: MUTED });
     doc.text(wrap(card[1] || 'Not given', 11, cardWidth - 24, true)[0], x + 12, y - 60, { size: 11, bold: true });
@@ -222,8 +226,19 @@ function signBlock(doc, form) {
     doc.text(card[3], x + 12, y - 98, { size: 8, colour: MUTED });
     doc.text(wrap(card[4] || 'Not given', 9, cardWidth - 24 - widthOf(card[3], 8) - 8)[0],
       x + 16 + widthOf(card[3], 8), y - 98, { size: 9 });
+    // The signature, drawn on the phone, or a line to sign on paper.
+    doc.text('Signature', x + 12, y - 114, { size: 8, colour: MUTED });
+    const b64 = sigOf(card[5]);
+    const dims = b64 && jpegDims(b64);
+    if (dims) {
+      const name = `Sig${i}`;
+      doc.addJpeg(name, { base64: b64, ...dims });
+      const sc = Math.min((cardWidth - 24) / dims.width, 40 / dims.height);
+      doc.image(name, x + 12, y - 160, dims.width * sc, dims.height * sc);
+    }
+    doc.line(x + 12, y - 160, x + cardWidth - 12, y - 160, { colour: LINE });
   });
-  doc.y -= 112;
+  doc.y -= H + 8;
 }
 
 export async function buildPowPdf(form) {

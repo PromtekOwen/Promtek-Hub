@@ -71,6 +71,7 @@ export const TILES = {
   pow: { name: 'Point of work' },
   coshh: { name: 'COSHH' },
   customers: { name: 'Customers' },
+  custfeedback: { name: 'Customer Feedback', groups: ['management', 'lead'], teams: ['Sales', 'Marketing'] },
   psc: { name: 'PSC', groups: ['management', 'lead'], teams: ['Service'] },
   ims: { name: 'IMS', groups: ['management'] },
   training: { name: 'Training & Policy' },
@@ -205,7 +206,7 @@ export function access(emp, { fallbackAdmin = false, config = null } = {}) {
 export const countryOf = (emp) => (Number(emp?.chart_sa) ? 'sa' : 'uk');
 export const COUNTRY_NAMES = { uk: 'UK', sa: 'SA' };
 // The tiles split between the UK and South Africa.
-export const COUNTRY_TILES = ['jobs', 'quotes', 'contracts', 'psc', 'capacity', 'invoicing', 'vehicles', 'calls', 'customers'];
+export const COUNTRY_TILES = ['jobs', 'quotes', 'contracts', 'psc', 'capacity', 'invoicing', 'vehicles', 'calls', 'customers', 'custfeedback'];
 
 // Tile admins as saved: { tileId: [accountId, ...] }.
 export function tileAdminsOf(config, accountId) {

@@ -75,3 +75,15 @@ export const ON_SITE_STATUS = {
 };
 
 export const labelOf = (list, id) => (list.find(([key]) => key === id) || [null, id])[1];
+
+// The customer feedback form, asked at the end of a visit before the customer signs. The
+// answers go to the Customer Feedback tile, not into the assessment.
+export const FEEDBACK_QUESTIONS = [
+  { id: 'satisfied', text: 'How satisfied were you with the work completed by Promtek?', scale: [[5, 'Very satisfied'], [4, 'Satisfied'], [3, 'Neither'], [2, 'Dissatisfied'], [1, 'Very dissatisfied']] },
+  { id: 'resolved', text: 'Did Promtek successfully resolve your issue?', choices: [['yes', 'Yes'], ['no', 'No']] },
+  { id: 'recommend', text: 'How likely are you to recommend Promtek?', scale: [[5, 'Very likely'], [4, 'Likely'], [3, 'Maybe'], [2, 'Unlikely'], [1, 'Very unlikely']] },
+  { id: 'dataConfidence', text: 'How confident are you that Promtek adequately protects your sensitive data and information assets?', scale: [[5, 'Very confident'], [4, 'Confident'], [3, 'Maybe'], [2, 'Unconfident'], [1, 'Very unconfident']] },
+  { id: 'salesVisit', text: "Would you like a member of Promtek's Sales Team to contact you to arrange a visit?", choices: [['yes', 'Yes'], ['no', 'No']], required: true, part: 'Feedback' },
+  { id: 'testimonial', text: 'Would you like to provide a testimonial for Promtek? (If so a member of our marketing team will contact you)', choices: [['yes', 'Yes'], ['no', 'No']], required: true, part: 'Feedback' },
+  { id: 'suggestions', text: 'Suggestions for improvement', long: true, part: 'Feedback' },
+];

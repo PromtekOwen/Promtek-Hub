@@ -3,7 +3,7 @@
 import { jira, jiraFetch, searchJql, customerProjects, issueKeyOf, projectKeyOf, mustBeHubIssue } from './jira.js';
 import { raiseAlert, londonDate } from './sync.js';
 import { buildPowPdf } from './pow-pdf.js';
-import { SITE_VISIT_TYPES, DEFAULT_RA_LIBRARY, BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, RISK_LEVELS } from './pow-data.js';
+import { SITE_VISIT_TYPES, DEFAULT_RA_LIBRARY, BEFORE_QUESTIONS, PPE_ITEMS, HAZARDS, REVIEW_QUESTIONS, RISK_LEVELS, FEEDBACK_QUESTIONS } from './pow-data.js';
 
 const TEAM_FIELD = 'customfield_14562';
 const CONTACT_FIELD = 'customfield_14261';
@@ -29,6 +29,7 @@ const cleanAddress = (value) => plainText(value).replace(/\s*,\s*/g, ', ').repla
 export function formSchema() {
   return {
     before: BEFORE_QUESTIONS.map(([id, text]) => ({ id, text })),
+    feedback: FEEDBACK_QUESTIONS,
     ppe: PPE_ITEMS.map(([id, label]) => ({ id, label })),
     hazards: HAZARDS.map(([id, label]) => ({ id, label })),
     review: REVIEW_QUESTIONS.map(([id, text]) => ({ id, text })),
@@ -240,8 +241,10 @@ export async function submitForm(env, viewer, form) {
     timeZone: 'Europe/London', day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
   }).format(now).replace(' at ', ', ');
 
+  // The customer's feedback goes to the Customer Feedback tile, not into the assessment.
+  const { feedback, ...rest } = form;
   const record = {
-    ...form,
+    ...rest,
     id,
     completedAt,
     details: {
@@ -286,6 +289,11 @@ export async function submitForm(env, viewer, form) {
     record.details.customer || null, record.details.site || null, record.jobMissing ? 1 : 0,
     JSON.stringify(record), filename, attached, driveFileId, notes.join(' | ') || null,
     now.toISOString(), now.toISOString(), now.toISOString()).run();
+
+  if (feedback && !feedback.declined) {
+    try { await (await import('./custfeedback.js')).fromPow(env, viewer, record, feedback); }
+    catch (err) { console.warn('Customer feedback not kept:', err.message); }
+  }
 
   if (record.jobMissing) {
     await raiseAlert(env, {

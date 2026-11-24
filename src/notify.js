@@ -7,6 +7,11 @@ import { access, loadAccessConfig, forService } from './permissions.js';
 // What each tile can tell you about. app and email are the starting choices; scope is
 // whether it's about every item or only those assigned to you, where that applies.
 export const EVENTS = {
+  custfeedback: [
+    { id: 'feedback-sales', label: 'Wants a sales visit', about: 'A customer asks, in their feedback after a visit, for Sales to contact them (the Sales team)', app: true, email: true },
+    { id: 'feedback-testimonial', label: 'Wants to give a testimonial', about: 'A customer offers a testimonial in their feedback (the Marketing team)', app: true, email: true },
+    { id: 'feedback-poor', label: 'Poor feedback', about: 'A customer scores a visit poorly or says their issue wasn\'t resolved (Management)', app: true, email: true },
+  ],
   psc: [
     { id: 'psc-new', label: 'New PSC', about: 'A PSC is raised for a customer', app: true, email: false, scope: 'all', scopes: ['all'] },
     { id: 'psc-assigned', label: 'Assigned to me', about: 'A PSC is given to you', app: true, email: true },

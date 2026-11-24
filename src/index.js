@@ -1110,6 +1110,9 @@ async function route(request, env, url, user) {
     if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
   }
 
+  if (pathname === '/api/custfeedback' && method === 'GET') return json(await (await import('./custfeedback.js')).list(env, user));
+  if (pathname === '/api/custfeedback/done' && method === 'POST') return json(await (await import('./custfeedback.js')).markDone(env, user, await request.json().catch(() => ({}))));
+
   // Job documents: chosen per category, filled in on the job, laid out by the hub and put on the category in Jira.
   if (pathname.startsWith('/api/docs')) {
     const D = await import('./docs.js');
@@ -1119,6 +1122,7 @@ async function route(request, env, url, user) {
       if (sub === '/category') return json(await D.forCategory(env, user, q('id')));
       if (sub === '/open') return json(await D.open(env, user, { id: q('id'), categoryId: q('category'), type: q('type') }));
       if (sub === '/mine') return json(await D.mine(env, user));
+      if (sub === '/changes') return json(await D.changes(env, user, { id: q('id'), since: q('since'), session: q('session'), field: q('field') }));
       if (sub === '/library') return json(await D.libraryView(env, user));
       if (sub === '/drive') return json(await D.driveView(env, user));
       if (sub === '/type') return json(await D.typeDef(env, user, q('id')));
@@ -1134,7 +1138,7 @@ async function route(request, env, url, user) {
     }
     if (method === 'POST' && sub === '/photo') return json(await D.addPhoto(env, user, { id: q('id'), field: q('field'), caption: q('caption') }, request));
     if (method === 'POST' && sub === '/file') return json(await D.addFile(env, user, { id: q('id'), field: q('field'), name: q('name') }, request));
-    const post = { '/needs': D.setNeeds, '/save': D.save, '/finish': D.finish, '/reopen': D.reopen, '/log': D.logTime, '/photo-change': D.photoChange, '/file-remove': D.removeFile, '/type': D.saveType, '/usual': D.saveUsual, '/type-remove': D.removeType, '/type-restore': D.restoreType, '/drive': D.driveSet, '/drive-retry': D.driveRetry, '/drive-check': D.driveCheck };
+    const post = { '/needs': D.setNeeds, '/save': D.save, '/remove': D.removeDoc, '/finish': D.finish, '/reopen': D.reopen, '/log': D.logTime, '/photo-change': D.photoChange, '/file-remove': D.removeFile, '/type': D.saveType, '/usual': D.saveUsual, '/type-remove': D.removeType, '/type-restore': D.restoreType, '/drive': D.driveSet, '/drive-retry': D.driveRetry, '/drive-check': D.driveCheck };
     if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
   }
 
