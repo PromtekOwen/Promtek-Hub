@@ -2896,7 +2896,7 @@ p .cust-shield { width: 18px; height: 18px; }
 .js-sec-title { flex: 1; font-size: 1.15rem; font-weight: 700; margin: 0; }
 .js-tools { display: inline-flex; gap: .3rem; margin-left: auto; }
 .js-tools .icon-btn { width: 30px; height: 30px; border-radius: 8px; }
-.js-field { border: 1px solid var(--line); border-radius: 10px; margin: .5rem 0; background: var(--card, #fff); }
+.js-field { border: 1px solid var(--line); border-radius: 10px; margin: .5rem 0; background: var(--surface); }
 .js-field.open { border-color: #008DC6; box-shadow: 0 0 0 2px rgba(0, 141, 198, .12); }
 .js-field-head { display: flex; align-items: center; gap: .6rem; padding: .55rem .7rem; cursor: pointer; }
 .js-kind { flex: none; font-size: .75rem; font-weight: 700; color: var(--blue-deep); background: var(--tint); border-radius: 999px; padding: .12rem .55rem; }
@@ -2918,7 +2918,7 @@ p .cust-shield { width: 18px; height: 18px; }
 
 /* Customer Feedback */
 .cf-bubbles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
-.cf-bubble { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: .8rem 1rem; text-align: left; display: flex; flex-direction: column; gap: .15rem; cursor: pointer; font: inherit; color: inherit; }
+.cf-bubble { background: var(--surface); box-shadow: var(--shadow); border: 1px solid var(--line); border-radius: 14px; padding: .8rem 1rem; text-align: left; display: flex; flex-direction: column; gap: .15rem; cursor: pointer; font: inherit; color: inherit; }
 .cf-bubble strong { font-size: 1.6rem; color: var(--blue-deep); }
 .cf-bubble span { font-size: .85rem; color: var(--muted); }
 .cf-bubble.on { border-color: #008DC6; box-shadow: 0 0 0 2px rgba(0, 141, 198, .15); }
@@ -2949,3 +2949,5 @@ p .cust-shield { width: 18px; height: 18px; }
 .sig-pad { margin-top: .9rem; }
 .sig-label { display: block; font-weight: 600; font-size: .95rem; }
 .cf-bubble.plain { cursor: default; }
+:root[data-theme="dark"] .cf-follow { background: rgba(240, 180, 60, .14); }
+:root[data-theme="dark"] .cf-follow.done { background: var(--tint); }
