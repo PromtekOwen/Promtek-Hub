@@ -258,7 +258,9 @@ The hub raises an alert when someone logs time in Tempo but isn't in the employe
 
 **When emails go:**
 - **After someone does something:** an email that their action raises (a reminder sent by management, a new tool box talk or policy, a request for an estimate and so on) goes straight away, just after the hub answers them.
-- **From the background job:** emails it raises (PSC and IMS notifications, say) go at the end of the same run, so within a couple of minutes.
+- **From the background job:** emails it raises (PSC and IMS notifications, say) go once no more have been raised for that person for a minute and a half (never more than ten minutes), so usually within a few minutes.
+- **Nobody outside, and nobody who's left:** emails for someone marked as left, or for an address outside `ALLOWED_EMAIL_DOMAIN`, aren't sent (Admin's list of recent alerts says so). The relay itself only sends to the domains in its `ALLOWED_DOMAINS` (promtek.com and promtek.co.za) and drops anything else, rather than sending it to whoever runs it. It sends from the no-reply address as "Promtek Hub", so anything that can't be delivered isn't bounced back to whoever runs it. After the relay script changes, paste it in again (keeping your secret), then **Deploy, Manage deployments**, the pencil, **Version: New version**, **Deploy**; the URL stays the same.
+- **One email per person at a time:** everything waiting for one person goes together. A single alert is emailed as it is; several go as one email ("12 PSC alerts from the hub"), listing them all at the top and then each in full (up to sixty, then how many more).
 - **Never twice:** each email is claimed before it's sent, so two runs at once never send one twice.
 - **When the relay refuses one:** it's kept and tried again on the next run.
 

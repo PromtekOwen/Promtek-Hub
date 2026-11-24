@@ -77,7 +77,7 @@ export const EVENTS = {
   ],
 };
 export const TILE_NAMES = { hub: 'Everything else' };
-const KIND_TILE = Object.fromEntries(Object.entries(EVENTS).flatMap(([tile, list]) => list.map((e) => [e.id, tile])));
+export const KIND_TILE = Object.fromEntries(Object.entries(EVENTS).flatMap(([tile, list]) => list.map((e) => [e.id, tile])));
 const eventOf = (tile, kind) => EVENTS[tile]?.find((e) => e.id === kind);
 // The tiles a choice for PSC applies to: which customers and priorities.
 const FILTERED = { psc: ['customers', 'priorities'], ims: ['areas'] };

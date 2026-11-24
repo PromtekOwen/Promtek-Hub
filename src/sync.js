@@ -490,33 +490,104 @@ async function raiseUnmatchedAlert(env, accountIds) {
   });
 }
 
-// Hands unsent alerts to the mail relay, if one is configured.
-// Emails waiting to go, a few at once so a batch goes quickly. Each is claimed before it's sent,
-// so two runs at the same moment never send the same one twice. Stops at the first the relay refuses.
-export async function sendAlerts(env, { limit = 15 } = {}) {
+// Hands unsent alerts to the mail relay, if one is configured. Everything waiting for one
+// person goes as one email: a single alert as it is, several together in one, so a run that
+// raises a lot at once doesn't fill anyone's inbox. In the background, someone's alerts wait
+// until none has been added for them for a minute and a half (up to ten minutes), so a batch
+// being raised over a few runs still arrives together. Each is claimed before it's sent, so two
+// runs at the same moment never send the same one twice. Stops at the first the relay refuses.
+const MAX_IN_ONE = 60;
+
+async function bundle(alerts) {
+  if (alerts.length === 1) return { subject: alerts[0].subject, body: alerts[0].body };
+  let tiles = {};
+  let names = {};
+  try {
+    const N = await import('./notify.js');
+    const P = await import('./permissions.js');
+    tiles = N.KIND_TILE || {};
+    names = Object.fromEntries(Object.entries(P.TILES || {}).map(([k, v]) => [k, v.name]));
+  } catch { /* named plainly instead */ }
+  const tileSet = [...new Set(alerts.map((x) => tiles[x.kind] || 'hub'))];
+  const area = tileSet.length === 1 && tileSet[0] !== 'hub' && names[tileSet[0]] ? `${names[tileSet[0]]} ` : '';
+  const shown = alerts.slice(0, MAX_IN_ONE);
+  const rule = '-'.repeat(48);
+  const body = [
+    `${alerts.length} ${area}alerts from the hub:`,
+    '',
+    ...shown.map((x, i) => `${i + 1}. ${x.subject}`),
+    alerts.length > shown.length ? `...and ${alerts.length - shown.length} more. Open the hub to see them all.` : null,
+    '',
+    ...shown.flatMap((x, i) => [rule, `${i + 1}. ${x.subject}`, '', String(x.body || '').trim(), '']),
+  ].filter((l) => l !== null).join('\n');
+  return { subject: `${alerts.length} ${area}alerts from the hub`, body };
+}
+
+export async function sendAlerts(env, { limit = 15, settle = 0 } = {}) {
   if (!env.ALERT_WEBHOOK_URL) return { skipped: 'No mail relay configured' };
   const n = Math.max(1, Math.min(45, Number(limit) || 15));
   const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
   const claim = `claim:${nowMs}:${Math.random().toString(36).slice(2, 10)}`;
   // A claim left by a run that stopped part-way is let go after five minutes.
   await env.DB.prepare("UPDATE alerts SET sent_at = NULL WHERE sent_at LIKE 'claim:%' AND sent_at < ?").bind(`claim:${nowMs - 300_000}`).run().catch(() => {});
-  await env.DB.prepare(`UPDATE alerts SET sent_at = ? WHERE id IN (SELECT id FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) ORDER BY id LIMIT ${n}) AND sent_at IS NULL`)
-    .bind(claim, new Date(nowMs).toISOString()).run();
-  const { results } = await env.DB.prepare('SELECT id, subject, body, recipient FROM alerts WHERE sent_at = ? ORDER BY id').bind(claim).all();
+  // Whose alerts go now: a few people (or emails) at a time, oldest first.
+  const { results: who } = await env.DB.prepare(`SELECT COALESCE(recipient, '') AS r, MIN(id) AS first, MAX(created_at) AS newest, MIN(created_at) AS oldest
+      FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) GROUP BY COALESCE(recipient, '')
+      HAVING MAX(created_at) <= ? OR MIN(created_at) <= ? ORDER BY first LIMIT ?`)
+    .bind(now, new Date(nowMs - settle).toISOString(), new Date(nowMs - 600_000).toISOString(), n).all();
+  if (!who.length) return { sent: 0 };
+  const people = who.map((w) => w.r);
+  await env.DB.prepare(`UPDATE alerts SET sent_at = ? WHERE id IN (SELECT id FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?)
+      AND COALESCE(recipient, '') IN (${people.map(() => '?').join(',')}) ORDER BY id LIMIT 500) AND sent_at IS NULL`)
+    .bind(claim, now, ...people).run();
+  const { results } = await env.DB.prepare('SELECT id, kind, subject, body, recipient FROM alerts WHERE sent_at = ? ORDER BY id').bind(claim).all();
   if (!results.length) return { sent: 0 };
+  const groups = new Map();
+  for (const a of results) {
+    const k = a.recipient || '';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  // Nothing goes to someone who has left, or outside Promtek: the relay would only send it back.
+  const { allowedDomains } = await import('./auth.js');
+  const domains = allowedDomains(env);
+  const { results: left } = await env.DB.prepare('SELECT LOWER(email) AS email FROM employees WHERE active = 0 AND email IS NOT NULL').all().catch(() => ({ results: [] }));
+  const gone = new Set(left.map((x) => x.email));
+  const { results: here } = await env.DB.prepare('SELECT LOWER(email) AS email FROM employees WHERE active = 1 AND email IS NOT NULL').all().catch(() => ({ results: [] }));
+  const current = new Set(here.map((x) => x.email));
+  let skipped = 0;
+  for (const [to, list] of [...groups]) {
+    const addr = to.toLowerCase();
+    if (!addr) continue;
+    const outside = !current.has(addr) && domains.length && !domains.some((d) => addr.endsWith(`@${d}`));
+    if (outside || (gone.has(addr) && !current.has(addr))) {
+      const at = `skipped:${new Date().toISOString()}`;
+      for (let j = 0; j < list.length; j += 90) {
+        const ids = list.slice(j, j + 90).map((x) => x.id);
+        await env.DB.prepare(`UPDATE alerts SET sent_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`).bind(at, ...ids).run();
+      }
+      skipped += list.length;
+      groups.delete(to);
+    }
+  }
+  const emails = [...groups.values()];
   let sent = 0;
+  let mails = 0;
   let stopped = false;
   let problem = null;
-  for (let i = 0; i < results.length; i += 5) {
-    const part = results.slice(i, i + 5);
-    if (stopped) { await env.DB.prepare(`UPDATE alerts SET sent_at = NULL WHERE id IN (${part.map(() => '?').join(',')})`).bind(...part.map((x) => x.id)).run(); continue; }
-    const done = await Promise.all(part.map(async (alert) => {
+  const release = (list) => env.DB.prepare(`UPDATE alerts SET sent_at = NULL WHERE id IN (${list.map(() => '?').join(',')})`).bind(...list.map((x) => x.id)).run();
+  for (let i = 0; i < emails.length; i += 5) {
+    const part = emails.slice(i, i + 5);
+    if (stopped) { for (const list of part) await release(list); continue; }
+    const done = await Promise.all(part.map(async (list) => {
       let ok = false;
       try {
+        const mail = await bundle(list);
         const res = await fetch(env.ALERT_WEBHOOK_URL, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: alert.recipient || env.ALERT_EMAIL || '', subject: alert.subject, body: alert.body }),
+          body: JSON.stringify({ secret: env.ALERT_WEBHOOK_SECRET || '', to: list[0].recipient || env.ALERT_EMAIL || '', subject: mail.subject, body: mail.body }),
         });
         // The relay answers in words: Sent, Rejected (the secret doesn't match) or Error: and why.
         const said = (await res.text().catch(() => '')).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -525,15 +596,22 @@ export async function sendAlerts(env, { limit = 15 } = {}) {
           : /^rejected/i.test(said) ? 'The mail relay rejected the hub: ALERT_WEBHOOK_SECRET doesn\'t match SHARED_SECRET in the relay script.'
             : `The mail relay couldn't send it: ${said.slice(0, 200)}`;
       } catch (err) { problem = `The mail relay couldn't be reached: ${String(err.message).slice(0, 160)}`; }
-      await env.DB.prepare('UPDATE alerts SET sent_at = ? WHERE id = ?').bind(ok ? new Date().toISOString() : null, alert.id).run();
-      return ok;
+      if (ok) {
+        const at = new Date().toISOString();
+        for (let j = 0; j < list.length; j += 90) {
+          const ids = list.slice(j, j + 90).map((x) => x.id);
+          await env.DB.prepare(`UPDATE alerts SET sent_at = ? WHERE id IN (${ids.map(() => '?').join(',')})`).bind(at, ...ids).run();
+        }
+      } else await release(list);
+      return ok ? list.length : 0;
     }));
-    sent += done.filter(Boolean).length;
-    if (done.includes(false)) stopped = true;
+    sent += done.reduce((t, x) => t + x, 0);
+    mails += done.filter(Boolean).length;
+    if (done.includes(0)) stopped = true;
   }
   // How the last go went, for Admin.
-  await setState(env, 'alert_send_last', JSON.stringify({ at: new Date().toISOString(), sent, tried: results.length, error: problem })).catch(() => {});
-  return { sent, tried: results.length, error: problem };
+  await setState(env, 'alert_send_last', JSON.stringify({ at: new Date().toISOString(), sent, emails: mails, skipped, tried: results.length, error: problem })).catch(() => {});
+  return { sent, emails: mails, skipped, tried: results.length, error: problem };
 }
 
 // Emails someone's action has just raised go straight away, after the reply, rather than
@@ -780,7 +858,7 @@ export async function runScheduled(rawEnv) {
   // Waiting emails go first thing every run, whatever else the run does or doesn't get to.
   if (env.ALERT_WEBHOOK_URL) {
     const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) LIMIT 1').bind(new Date().toISOString()).first().catch(() => null);
-    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6 }));
+    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6, settle: 90_000 }));
   }
   if (overBudget(month) && !allowed) {
     await attempt('Tempo sync', () => pollRecent(env, { force: true }));
@@ -794,7 +872,7 @@ export async function runScheduled(rawEnv) {
           + `Background jobs stop at ${Math.round(BACKGROUND_SHARE * 100)}% of either, so they are paused until the month ends to keep the rest for people using the hub. Tempo time still syncs.`
           + '\n\nAdmin, Database use shows the detail, and can let them carry on.',
       });
-      await attempt('Alert email', () => sendAlerts(env));
+      await attempt('Alert email', () => sendAlerts(env, { settle: 90_000 }));
     }
     return finish();
   }
@@ -960,7 +1038,7 @@ export async function runScheduled(rawEnv) {
       if (!env.ALERT_WEBHOOK_URL) return { idle: true };
       const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL LIMIT 1').first();
       if (!waiting?.n) return { idle: true };
-      await attempt('Alert email', () => sendAlerts(env));
+      await attempt('Alert email', () => sendAlerts(env, { settle: 90_000 }));
     },
   };
 
@@ -978,7 +1056,7 @@ export async function runScheduled(rawEnv) {
   // this run, a PSC change say, goes within minutes rather than waiting for its turn.
   if (env.ALERT_WEBHOOK_URL) {
     const waiting = await env.DB.prepare('SELECT 1 AS n FROM alerts WHERE sent_at IS NULL AND (not_before IS NULL OR not_before <= ?) LIMIT 1').bind(new Date().toISOString()).first().catch(() => null);
-    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6 }));
+    if (waiting?.n) await attempt('Alert email', () => sendAlerts(env, { limit: 6, settle: 90_000 }));
   }
   await finish();
 }

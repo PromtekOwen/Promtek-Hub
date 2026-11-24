@@ -879,7 +879,7 @@ const pages = {
             ${data.mailWaiting ? `<div class="row" style="margin:.4rem 0 .8rem"><button class="btn secondary" data-admin-send-alerts="1">Send the ${data.mailWaiting} waiting now</button></div>` : ''}` : ''}
           ${data.alerts.length ? `<ul class="list" style="box-shadow:none">${data.alerts.map((a) => `<li>
               <span class="title">${esc(a.subject)}</span>
-              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
+              <span class="sub">${new Date(a.created_at).toLocaleString('en-GB')}. ${String(a.sent_at || '').startsWith('claim:') ? 'Sending' : String(a.sent_at || '').startsWith('skipped:') ? 'Not emailed (they\'ve left, or not a Promtek address)' : a.sent_at ? 'Emailed' : a.not_before && Date.parse(a.not_before) > Date.now() ? `Held until ${new Date(a.not_before).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })} (their working hours)` : 'Not emailed yet'}.</span>
               <span class="xp"></span>
             </li>`).join('')}</ul>` : '<p class="muted">Nothing to report.</p>'}
         </div>
