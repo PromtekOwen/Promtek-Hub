@@ -26,6 +26,13 @@ export function init(helpers) {
   view.addEventListener('input', (e) => { if (here()) onInput(e); });
   view.addEventListener('change', (e) => { if (here()) onChange(e); });
   window.addEventListener('online', () => flushQueue());
+  // A scanner ends each scan with Enter: in the scan-each box that's one more, not the whole form sent.
+  view.addEventListener('keydown', (e) => {
+    if (!here() || e.key !== 'Enter' || e.target.id !== 'st-each-scan') return;
+    e.preventDefault();
+    const v = e.target.value.trim(); e.target.value = '';
+    if (v) addEach(v);
+  });
   // Tables become stacked cards on a phone: each cell is labelled with its column.
   new MutationObserver(() => { if (here()) labelTables(); }).observe(view, { childList: true, subtree: true });
 }
@@ -56,20 +63,31 @@ const ACTIONS = { receive: 'Taken in', reserve: 'Held for a job', pick: 'Picked'
   'return-override': 'Brought back after Hardware complete', ordered: 'Ordered', priority: 'Priority', complete: 'Hardware complete', reopen: 'Reopened', 'order-status': 'Work order status' };
 const STATUS = { available: 'Free', reserved: 'Held', picked: 'Picked', consumed: 'Used', quarantine: 'Quarantine', gone: 'Gone' };
 
-const TABS = [['orders', 'Work orders'], ['intake', 'Intake'], ['stock', 'Stock'], ['checks', 'Checks'], ['trace', 'Trace'], ['dash', 'Dashboard'], ['setup', 'Setup']];
+const TABS = [['orders', 'Work orders'], ['intake', 'Intake'], ['stock', 'Stock'], ['checks', 'Checks'], ['trace', 'Trace'], ['dash', 'Dashboard']];
 
 // ---------- drawing ----------
 
 export async function render() {
+  if (S.inSettings) { S.inSettings = false; S.tab = S.tabBefore || 'orders'; }
   const p = new URLSearchParams(location.hash.split('?')[1] || '');
   if (p.get('tab') && TABS.some(([k]) => k === p.get('tab'))) { S.tab = p.get('tab'); history.replaceState(null, '', '#/stock'); }
   await load();
   return html();
 }
 
+// The tile's settings (the cog): items, locations, panel defaults, labels, deleted lines and Jira/Xero.
+export async function settingsRender() {
+  if (!S.inSettings) S.tabBefore = S.tab;
+  S.inSettings = true;
+  S.tab = 'setup';
+  await load();
+  return `<div id="st-settings-root">${html()}</div>`;
+}
+
 async function load() {
   const t = S.tab;
   try {
+    if (!S.me) S.me = await get('settings').catch(() => ({}));
     if (t === 'orders') {
       if (S.orderId) S.order = await get(`order?id=${S.orderId}`);
       else S.orders = await get(`orders?status=${S.orderFilter}`);
@@ -86,6 +104,7 @@ async function load() {
     if (t === 'setup') {
       [S.settings, S.locations, S.panels] = await Promise.all([get('settings'), get('locations'), get('panels')]);
       if (S.setupSub === 'items' || S.setupSub === 'panels') S.items = await get('items');
+      if (S.setupSub === 'deleted') S.deleted = await get('needs-deleted');
     }
   } catch (err) { S.error = err.message; }
 }
@@ -94,6 +113,7 @@ function html() {
   const err = S.error ? `<div class="card notice"><p style="margin:0">${esc(S.error)}</p></div>` : '';
   S.error = null;
   const q = queue();
+  if (S.inSettings) return `<div class="st">${err}${setupHtml()}</div>`;
   return `<div class="st">
     <nav class="st-tabs" aria-label="Stock">${TABS.map(([k, l]) => `<button class="st-tab${S.tab === k ? ' on' : ''}" data-st-tab="${k}">${l}</button>`).join('')}</nav>
     ${q.length ? `<div class="card notice st-queue"><p style="margin:0"><strong>${q.length} scan${q.length === 1 ? '' : 's'} waiting to send.</strong> They go as soon as there's signal. <button class="linklike" data-st-flush>Send now</button></p></div>` : ''}
@@ -105,7 +125,9 @@ function html() {
 function redraw() {
   const focus = document.activeElement?.id;
   const pos = document.activeElement?.selectionStart;
-  view.innerHTML = html();
+  const root = S.inSettings ? document.getElementById('st-settings-root') : view;
+  if (!root) return;
+  root.innerHTML = html();
   if (focus) { const el = document.getElementById(focus); if (el) { el.focus(); try { if (pos != null) el.setSelectionRange(pos, pos); } catch { /* not text */ } } }
   else focusScan();
 }
@@ -131,11 +153,16 @@ function ordersHtml() {
   const d = S.orders;
   if (!d) return '<p class="muted">Loading…</p>';
   const q = S.orderQuery.toLowerCase();
-  const list = d.orders.filter((o) => !q || [o.key, o.summary, o.orderSummary, o.customer, o.epicKey].some((x) => String(x || '').toLowerCase().includes(q)));
+  const customers = [...new Set(d.orders.map((o) => o.customer).filter(Boolean))].sort();
+  const teamOf = (o) => (o.team === 'Condor' ? 'Projecting' : o.team);
+  const list = d.orders.filter((o) => (!q || [o.key, o.summary, o.orderSummary, o.customer, o.epicKey].some((x) => String(x || '').toLowerCase().includes(q)))
+    && (!S.orderCustomer || o.customer === S.orderCustomer) && (!S.orderTeam || teamOf(o) === S.orderTeam));
   const counts = { order: d.orders.filter((o) => o.state === 'order').length, transit: d.orders.filter((o) => o.state === 'transit').length, in: d.orders.filter((o) => o.state === 'in').length };
   return `<div class="row st-tools">
       <span class="segment">${[['open', 'Open'], ['done', 'Finished']].map(([k, l]) => `<button class="seg${S.orderFilter === k ? ' on' : ''}" data-st-ofilter="${k}">${l}</button>`).join('')}</span>
-      <input type="search" id="st-oq" placeholder="Search job, customer or key" value="${esc(S.orderQuery)}">
+      <input type="search" id="st-oq" placeholder="Search job or key" value="${esc(S.orderQuery)}">
+      <select data-st-ocust aria-label="Customer"><option value="">Every customer</option>${customers.map((c) => `<option${S.orderCustomer === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select>
+      <select data-st-oteam aria-label="Team"><option value="">Both teams</option>${['Projecting', 'Service'].map((t) => `<option${S.orderTeam === t ? ' selected' : ''}>${t}</option>`).join('')}</select>
       <button class="btn secondary small" data-st-sync>Refresh from Jira</button>
     </div>
     <p class="muted st-sub">${d.synced?.error ? `Couldn't read Jira just now: ${esc(d.synced.error)}` : `Read from Jira ${d.lastSync ? when(d.lastSync) : 'not yet'}`} · ${counts.order} need ordering · ${counts.transit} waiting on deliveries · ${counts.in} all in house</p>
@@ -158,8 +185,9 @@ function orderHtml() {
   const locked = o.status === 'complete';
   const lineRow = (l) => {
     if (!l.item) return `<tr class="st-unknown"><td colspan="3"><strong>${esc(l.text)}</strong><br><span class="muted small">From ${esc(sourceName(l.source))} · not a stock item yet</span>
-        ${locked ? '' : `<div class="st-link"><input data-st-linkq="${l.needId}" placeholder="Find the stock item it is" autocomplete="off"><div class="st-sugg" id="st-link-${l.needId}"></div></div>`}</td>
-      <td>${qty(l.qty)}</td><td></td><td>${stateTag('unknown')}</td><td>${locked ? '' : `<button class="linklike" data-st-needdel="${l.needId}">Remove</button>`}</td></tr>`;
+        ${locked ? '' : `<div class="st-link"><input data-st-linkq="${l.needId}" placeholder="Find the stock item it is" autocomplete="off"><div class="st-sugg" id="st-link-${l.needId}"></div></div>
+        <button class="linklike" data-st-newfor="${l.needId}" data-text="${esc(l.text)}">Not in stock yet? Make it a new stock item</button>`}</td>
+      <td>${qty(l.qty)}</td><td></td><td>${stateTag('unknown')}</td><td>${locked ? '' : `<button class="linklike danger" data-st-needdel="${l.needId}">Delete</button>`}</td></tr>`;
     if (l.merged) return '';
     const marks = `${l.expired ? ' <span class="st-flag bad">Out of date</span>' : l.expiring ? ' <span class="st-flag warn">Expiring soon</span>' : ''}`;
     const status = l.state === 'in' ? stateTag('in') : `${stateTag(l.state)}<br><span class="small">${l.toOrder > 0 ? `${qty(l.toOrder)} to order` : ''}${l.toOrder > 0 && l.onWay > 0 ? ' · ' : ''}${l.onWay > 0 ? `${qty(l.onWay)} on the way` : ''}</span>`;
@@ -167,7 +195,7 @@ function orderHtml() {
     return `<tr><td><strong>${esc(l.item.name)}</strong>${marks}<br><span class="muted small">${esc(l.item.code || '')}${l.item.mode === 'bin' ? ' · bin' : ''} · from ${esc(sourceName(l.source))}</span></td>
       <td>${avl}</td><td>${qty(l.picked)} <span class="muted small">out</span><br>${qty(l.consumed)} <span class="muted small">used</span></td>
       <td>${locked ? '' : `<input class="st-qty" type="number" min="0" step="any" value="${l.qty}" data-st-needqty="${l.needId}" aria-label="Quantity needed">`}</td>
-      <td>${locked ? qty(l.qty) : esc(l.item.unit || '')}</td><td>${status}</td><td>${locked ? '' : `<button class="linklike" data-st-needdel="${l.needId}">Remove</button>`}</td></tr>`;
+      <td>${locked ? qty(l.qty) : esc(l.item.unit || '')}</td><td>${status}</td><td>${locked ? '' : `<button class="linklike danger" data-st-needdel="${l.needId}">Delete</button>`}</td></tr>`;
   };
   const subs = o.subtasks || [];
   return `<button class="linklike" data-st-back>‹ All work orders</button>
@@ -177,7 +205,7 @@ function orderHtml() {
         <div class="st-head-prio">${prio(o.priority)}${d.canLead && !locked ? `<select data-st-prio aria-label="Priority"><option value="">From the dates (${esc(o.auto)})</option>${['Emergency', 'High', 'Standard', 'Low'].map((p) => `<option${o.override === p ? ' selected' : ''}>${p}</option>`).join('')}</select>` : ''}
           ${o.override ? `<span class="muted small">Set by ${esc(o.overrideBy || 'a lead')}</span>` : ''}</div></div>
       <dl class="st-facts"><div><dt>Status</dt><dd>${stateTag(o.state)}</dd></div><div><dt>Needed by</dt><dd>${day(o.neededBy)}</dd></div><div><dt>Start</dt><dd>${day(o.start)}</dd></div><div><dt>End</dt><dd>${day(o.end)}</dd></div>
-        <div><dt>Parts cost so far</dt><dd>${money(o.cost)}</dd></div><div><dt>Work order</dt><dd>${esc({ open: 'Open', paused: 'Paused', cancelled: 'Cancelled', complete: 'Hardware complete', closed: 'Closed in Jira' }[o.status] || o.status)}</dd></div></dl>
+        ${o.cost !== undefined ? `<div><dt>Parts cost so far</dt><dd>${money(o.cost)}</dd></div>` : ''}<div><dt>Work order</dt><dd>${esc({ open: 'Open', paused: 'Paused', cancelled: 'Cancelled', complete: 'Hardware complete', closed: 'Closed in Jira' }[o.status] || o.status)}</dd></div></dl>
       ${subs.length ? `<div class="st-subs">${subs.map((s) => `<span class="st-sub-item ${s.cat || ''}">${jiraLink(s.key)} ${esc(s.summary)} <em>${esc(s.status)}</em></span>`).join('')}</div>` : ''}
       ${o.priority === 'Emergency' && d.canLead && !locked ? '<p style="margin:.75rem 0 0"><button class="btn small" data-st-takefrom>Take stock from lower-priority jobs</button></p>' : ''}
     </section>
@@ -215,7 +243,7 @@ function orderHtml() {
       ${locked ? `<p style="margin:0"><strong>Hardware complete</strong> ${when(o.completedAt)} by ${esc(o.completedBy || '')}.${o.note ? ` ${esc(o.note)}` : ''}</p>
           ${d.canLead ? '<p style="margin:.6rem 0 0"><button class="btn secondary small" data-st-reopen>Reopen</button></p>' : ''}`
         : `<button class="btn" data-st-complete ${o.ready ? '' : 'disabled'}>Hardware complete</button>
-          <p class="muted small">${o.ready ? 'Locks what\'s out as used by this job.' : 'Once everything needed is scanned out.'} ${d.jiraMoves ? 'It also closes the Purchase Order and Build items in Jira and starts Testing & Configuration.' : 'Jira items stay as they are (Jira moves are off in Setup).'}</p>
+          <p class="muted small">${o.ready ? 'Locks what\'s out as used by this job.' : 'Once everything needed is scanned out.'} ${d.jiraMoves ? 'It also closes the Purchase Order and Build items in Jira and starts Testing & Configuration.' : 'Jira items stay as they are (Jira moves are off in the Stock settings).'}</p>
           ${d.canLead ? `<details><summary class="small">More</summary><div class="row" style="margin-top:.5rem">
             ${!o.ready ? '<button class="btn secondary small" data-st-force>Hardware complete anyway</button>' : ''}
             ${o.status === 'open' ? '<button class="btn secondary small" data-st-ostatus="paused">Pause</button>' : '<button class="btn secondary small" data-st-ostatus="open">Carry on</button>'}
@@ -264,7 +292,7 @@ function expectedTable(list, receive = false) {
 
 function lastIntakeHtml() {
   const r = S.lastIntake;
-  return `<section class="card st-done"><p style="margin:0"><strong>${qty(r.units.reduce((s, u) => s + u.qty, 0))} ${esc(r.item.unit)} of ${esc(r.item.name)}</strong> into ${esc(r.location)}.
+  return `<section class="card st-done"><p style="margin:0"><strong>${qty(r.units.reduce((s, u) => s + u.qty, 0))} ${esc(r.item.unit)} of ${esc(r.item.name)}</strong> into ${esc(r.location)}${r.lot ? `, batch <strong>${esc(r.lot)}</strong>` : ''}${r.poRef ? ` from ${esc(r.poRef)}` : ''}.
     ${[...new Set(r.units.filter((u) => u.orderKey).map((u) => u.orderKey))].map((k) => `Held for ${esc(k)}.`).join(' ')}</p>
     <p style="margin:.5rem 0 0"><button class="btn secondary small" data-st-printunits="${r.units.map((u) => u.id).join(',')}">Print ${r.units.length === 1 ? 'its label' : `${r.units.length} labels`}</button>
     <button class="linklike" data-st-dismiss>Done</button></p></section>`;
@@ -274,7 +302,7 @@ const itemFields = (i = {}, { compact = false } = {}) => `
   <div class="st-grid">
     <label>Name <input name="name" value="${esc(i.name || '')}" required></label>
     <label>Our code <input name="code" value="${esc(i.code || '')}" placeholder="Made for you if left blank"></label>
-    <label>Kind <select name="mode">${[['batch', 'Batch or lot (quantity)'], ['serial', 'Serial numbered (one each)'], ['bin', 'Bin (screws and the like, quantity only)']].map(([k, l]) => `<option value="${k}"${(i.mode || 'batch') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label>Kind <select name="mode">${[['serial', 'One at a time (each scanned and labelled)'], ['batch', 'By quantity (boxes and packs)'], ['bin', 'Bin (screws and the like, quantity only)']].map(([k, l]) => `<option value="${k}"${(i.mode || 'batch') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label>Unit <input name="unit" value="${esc(i.unit || 'each')}" placeholder="each, m, box"></label>
     <label>Weight <select name="weight">${[['light', 'Light'], ['moderate', 'Moderate'], ['heavy', 'Heavy']].map(([k, l]) => `<option value="${k}"${(i.weight || 'light') === k ? ' selected' : ''}>${l}</option>`).join('')}</select></label>
     <label>Category <input name="category" value="${esc(i.category || '')}" placeholder="Contactors, cable, PLCs" list="st-cats"></label>
@@ -282,7 +310,7 @@ const itemFields = (i = {}, { compact = false } = {}) => `
     <label>Supplier part no. <input name="supplier_part" value="${esc(i.supplier_part || '')}"></label>
     <label>Manufacturer <input name="manufacturer" value="${esc(i.manufacturer || '')}"></label>
     <label>Manufacturer part no. <input name="mpn" value="${esc(i.mpn || '')}"></label>
-    <label>Unit cost (£) <input name="unit_cost" type="number" min="0" step="0.01" value="${i.unit_cost ?? ''}"></label>
+    ${S.me?.canManage ? `<label>Unit cost (£) <input name="unit_cost" type="number" min="0" step="0.01" value="${i.unit_cost ?? ''}"></label>` : ''}
     <label>Days to arrive <input name="lead_days" type="number" min="0" value="${i.lead_days ?? ''}"></label>
     <label>Shelf life (days) <input name="shelf_life_days" type="number" min="0" value="${i.shelf_life_days ?? ''}" placeholder="Leave blank if it doesn't expire"></label>
     <label>Keep at least <input name="min_qty" type="number" min="0" step="any" value="${i.min_qty ?? ''}"></label>
@@ -343,25 +371,62 @@ function receiveHtml(st) {
   const exp = st.expected || [];
   const sugg = st.putaway?.suggestions || [];
   const L = st.label || {};
+  const chosen = exp.find((e) => e.id === st.expectedId);
+  const po = L.po || chosen?.po_ref || null;
+  const each = st.each || [];
   return `<button class="linklike" data-st-cancel>‹ Back</button>
     <form class="card" data-st-form="receive"><h3>${esc(i.name)}</h3>
       ${st.label ? `<p class="st-read small">Read from the label: ${labelSummary(L)}</p>` : ''}
-      <p class="muted">${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)}` : ''} · ${esc({ batch: 'Batch or lot', serial: 'Serial numbered', bin: 'Bin item' }[i.mode])} · ${esc(i.weight)}</p>
-      ${exp.length ? `<label>Which delivery is it? <select name="expectedId">${exp.map((e) => `<option value="${e.id}"${st.expectedId === e.id ? ' selected' : ''}>${qty(e.qty - e.received_qty - (e.issue_qty || 0))} due${e.order_key ? ` for ${esc(e.order_key)}` : ''}${e.po_ref ? ` · ${esc(e.po_ref)}` : ''}${e.expected_date ? ` · ${day(e.expected_date)}` : ''}</option>`).join('')}<option value="">Not one of these</option></select></label>`
+      <p class="muted">${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)}` : ''} · ${esc({ batch: 'By quantity', serial: 'One at a time', bin: 'Bin item' }[i.mode])}</p>
+      ${exp.length ? `<label>Which delivery is it? <select name="expectedId" data-st-expsel>${exp.map((e) => `<option value="${e.id}"${st.expectedId === e.id ? ' selected' : ''}>${qty(e.qty - e.received_qty - (e.issue_qty || 0))} due${e.order_key ? ` for ${esc(e.order_key)}` : ''}${e.po_ref ? ` · ${esc(e.po_ref)}` : ''}${e.expected_date ? ` · ${day(e.expected_date)}` : ''}</option>`).join('')}<option value="">Not one of these</option></select></label>`
         : '<p class="muted small">Not expected: it goes into free stock, or to a job that needs it.</p>'}
-      <div class="st-grid">
-        ${i.mode === 'serial' ? `<label class="st-wide">Serial numbers (scan each one) <textarea name="serials" rows="3" placeholder="One per line">${esc(L.serial || '')}</textarea></label>` : `<label>Quantity <input name="qty" type="number" min="0" step="any" required inputmode="decimal" value="${st.qty ?? L.qty ?? ''}"> <span class="muted small">${esc(i.unit)}</span></label>`}
-        ${i.mode !== 'bin' ? `<label>Lot or batch <input name="lot" autocomplete="off" value="${esc(L.lot || L.dateCode || '')}"></label>` : ''}
-        <label>Use by <input name="expiry" type="date" value="${esc(L.expiry || '')}"></label>
-        <label>Unit cost (£) <input name="unitCost" type="number" min="0" step="0.01" value="${i.unit_cost ?? ''}"></label>
-        <label>PO or delivery note <input name="poRef" autocomplete="off" value="${esc(L.po || '')}"></label>
-      </div>
+      ${po ? `<p class="small">PO <strong>${esc(po)}</strong></p>` : ''}
+      ${i.mode === 'serial' ? `<div class="st-each">
+          <p style="margin:.3rem 0"><strong>Scan each one</strong> <span class="muted small">its barcode, or its serial number label if it has one</span></p>
+          <div class="st-scan"><input id="st-each-scan" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Scan the next one" data-st-scanbox>
+            <button class="btn secondary st-cam" type="button" data-st-cam="each" aria-label="Scan with the camera">${CAM_ICON}</button></div>
+          ${each.length ? `<ol class="st-eachlist">${each.map((u, k) => `<li><span>${u.serial ? `Serial <strong>${esc(u.serial)}</strong>` : '<span class="muted">No serial number</span>'}</span><button type="button" class="linklike danger" data-st-eachdel="${k}">Take off</button></li>`).join('')}</ol>` : ''}
+          <p class="row small"><strong>${each.length}</strong>&nbsp;scanned${chosen ? ` of ${qty(chosen.qty - chosen.received_qty - (chosen.issue_qty || 0))} due` : ''} <button type="button" class="linklike" data-st-eachadd>Add one with no barcode</button></p>
+        </div>`
+        : `<label>Quantity <input name="qty" type="number" min="0" step="any" required inputmode="decimal" value="${st.qty ?? L.qty ?? ''}"> <span class="muted small">${esc(i.unit)}</span></label>`}
       <h4>Where it goes</h4>
-      ${sugg.length ? `<div class="st-putaway">${sugg.map((s, k) => `<button type="button" class="st-chip${st.location === s.code || (!st.location && k === 0) ? ' on' : ''}" data-st-loc="${esc(s.code)}"><strong>${esc(s.code)}</strong><span>${esc(s.why)}</span></button>`).join('')}</div>` : '<p class="muted small">No locations set up yet. Add them in Setup.</p>'}
-      <label>Scan the location <input name="location" id="st-recv-loc" value="${esc(st.location || sugg[0]?.code || '')}" autocomplete="off" autocapitalize="characters" data-st-scanbox></label>
+      ${sugg.length ? `<div class="st-putaway">${sugg.map((s, k) => `<button type="button" class="st-chip${st.location === s.code || (!st.location && k === 0) ? ' on' : ''}" data-st-loc="${esc(s.code)}"><strong>${esc(s.code)}</strong><span>${esc(s.why)}</span></button>`).join('')}</div>` : '<p class="muted small">No locations yet. They\'re added in the Stock settings.</p>'}
+      <label for="st-recv-loc">Scan the location</label>
+      <div class="st-scan"><input name="location" id="st-recv-loc" value="${esc(st.location || sugg[0]?.code || '')}" autocomplete="off" autocapitalize="characters">
+        <button class="btn secondary st-cam" type="button" data-st-cam="loc" aria-label="Scan the location with the camera">${CAM_ICON}</button></div>
       <label class="st-check"><input type="checkbox" name="makeUsual" ${i.usual_location ? '' : 'checked'}> Make this where it usually goes</label>
       <div class="row"><button class="btn" type="submit">Confirm</button><button class="btn secondary" type="button" data-st-issue="${st.expectedId || ''}" data-item="${i.id}">Problem with it</button></div>
     </form>`;
+}
+
+// One more of a one-at-a-time item: its serial number if what was scanned was one, otherwise just counted.
+function addEach(code) {
+  const st = S.intakeStep;
+  if (!st || st.kind !== 'item') return;
+  const c = String(code || '').trim();
+  st.each ||= [];
+  let serial = null;
+  if (c) {
+    const label = parseLabelLite(c);
+    const i = st.item;
+    const known = [st.code, i.code, i.mpn, i.supplier_part, ...(i.aliases || [])].filter(Boolean).map((x) => String(x).toUpperCase());
+    if (label) serial = label.serial || null;
+    else if (!known.includes(c.toUpperCase()) && !/^\d{8}$|^\d{12,14}$/.test(c)) serial = c;
+  }
+  if (serial && st.each.some((u) => u.serial && u.serial.toUpperCase() === serial.toUpperCase())) { H.toast(`Serial ${serial} is already scanned.`); return; }
+  st.each.push({ serial });
+  beep(true);
+  redraw();
+  document.getElementById('st-each-scan')?.focus();
+}
+
+// Just enough of a supplier label to find a serial number in it (the server reads the rest).
+function parseLabelLite(c) {
+  if (/^\[\)>/.test(c)) { const m = c.split(/[\x1d\x1e]/).find((f) => /^1?S/.test(f) && !/^1?S\s*$/.test(f)); return { serial: m ? m.replace(/^1?S/, '') : null }; }
+  const g = c.replace(/^\][A-Za-z]\d/, '').replace(/^\x1d/, '');
+  if (/^\(01\)/.test(g)) { const m = g.match(/\(21\)([^(]+)/); return { serial: m ? m[1].trim() : null }; }
+  if (/^01\d{14}/.test(g)) { const m = g.match(/(?:^01\d{14}|\x1d)21([^\x1d]+)/); return { serial: m ? m[1] : null }; }
+  return null;
 }
 
 function issueHtml(st) {
@@ -409,7 +474,7 @@ function itemsHtml() {
     ${d.items.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Item</th><th>Total</th><th>Available</th><th>Held</th><th>Picked</th><th>On the way</th><th>To order</th></tr></thead><tbody>
       ${d.items.map((i) => `<tr class="st-click" data-st-item="${i.id}"><td><strong>${esc(i.name)}</strong>${i.low ? ' <span class="st-flag warn">Low</span>' : ''}<br><span class="muted small">${esc(i.code || '')}${i.mode === 'bin' ? ' · bin' : i.mode === 'serial' ? ' · serial' : ''}${i.supplier ? ` · ${esc(i.supplier)}` : ''}</span></td>
         <td>${qty(i.total)}</td><td>${qty(i.available)}</td><td>${qty(i.reserved)}</td><td>${qty(i.picked)}</td><td>${qty(i.transit)}</td><td>${i.toOrder ? `<strong>${qty(i.toOrder)}</strong>` : '0'}</td></tr>`).join('')}
-    </tbody></table></div>` : '<section class="card"><p class="muted">No stock items yet. Add them in Setup, or as they arrive at Intake.</p></section>'}`;
+    </tbody></table></div>` : '<section class="card"><p class="muted">No stock items yet. They\'re added as they arrive at Intake, or from Quoter in the Stock settings.</p></section>'}`;
 }
 
 async function itemDetail(id) {
@@ -423,7 +488,7 @@ function itemDetailHtml() {
   const i = S.item;
   if (!i) return '';
   return `<button class="linklike" data-st-itemback>‹ All items</button>
-    <section class="card"><h3 style="margin-top:0">${esc(i.name)}</h3><p class="muted">${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)} ${esc(i.supplier_part || '')}` : ''}${i.unit_cost != null ? ` · ${money(i.unit_cost)} each` : ''}</p>
+    <section class="card"><h3 style="margin-top:0">${esc(i.name)}</h3><p class="muted">${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)} ${esc(i.supplier_part || '')}` : ''}${S.me?.canManage && i.unit_cost != null ? ` · ${money(i.unit_cost)} each` : ''}</p>
       <dl class="st-facts"><div><dt>Total</dt><dd>${qty(i.total)}</dd></div><div><dt>Available</dt><dd>${qty(i.available)}</dd></div><div><dt>Held for jobs</dt><dd>${qty(i.reserved)}</dd></div>
         <div><dt>Picked</dt><dd>${qty(i.picked)}</dd></div><div><dt>Quarantine</dt><dd>${qty(i.quarantine)}</dd></div><div><dt>On the way</dt><dd>${qty(i.transit)}</dd></div><div><dt>To order</dt><dd>${qty(i.toOrder)}</dd></div></dl>
       ${i.units.length ? unitTable(i.units, { actions: true }) : '<p class="muted">None in stock.</p>'}
@@ -451,7 +516,7 @@ function deliveriesHtml() {
   const exp = S.expected?.expected || [];
   return `<section class="card"><h3 style="margin-top:0">On the way</h3>${expectedTable(exp)}</section>
     <section class="card"><h3 style="margin-top:0">Stock orders</h3><p class="muted">Purchase orders come from Xero once it's linked. Until then, mark things as ordered from To buy, or from an item.</p>
-      ${S.items?.canManage || S.settings?.canManage ? '<button class="btn secondary small" data-st-recheck>Re-check stock orders</button>' : ''}</section>`;
+      ${S.me?.canManage ? '<button class="btn secondary small" data-st-recheck>Re-check stock orders</button>' : ''}</section>`;
 }
 
 function expectedFormHtml(item) {
@@ -475,7 +540,7 @@ function checksHtml() {
       <span class="st-bar"><span style="width:${c.locations ? Math.round((c.done / c.locations) * 100) : 0}%"></span></span><span class="muted small">${c.done} of ${c.locations} places · started by ${esc(c.started_by)} ${when(c.started_at)}</span></li>`).join('')}</ul></section>` : ''}
     <section class="card"><h3 style="margin-top:0">Schedules</h3>
       ${d.plans.length ? `<ul class="st-list">${d.plans.map((p) => `<li><strong>${esc(p.name)}</strong> ${p.due ? '<span class="st-flag warn">Due</span>' : ''}<br><span class="muted small">${p.areas.length ? esc(p.areas.join(', ')) : 'Every area'} · every ${p.every_days} days · next ${day(p.next_due)}</span>
-        <span class="row"><button class="btn small" data-st-startplan="${p.id}">Start counting</button>${S.checks && (S.settings?.canManage ?? true) ? `<button class="linklike" data-st-plandel="${p.id}">Remove</button>` : ''}</span></li>`).join('')}</ul>` : '<p class="muted">No schedules yet.</p>'}
+        <span class="row"><button class="btn small" data-st-startplan="${p.id}">Start counting</button>${S.checks && S.me?.canManage ? `<button class="linklike" data-st-plandel="${p.id}">Remove</button>` : ''}</span></li>`).join('')}</ul>` : '<p class="muted">No schedules yet.</p>'}
       <details><summary>New schedule</summary><form data-st-form="plan" class="st-grid" style="margin-top:.6rem">
         <label>Name <input name="name" placeholder="Shelves A, monthly" required></label><label>Areas <input name="areas" placeholder="Separate with commas; blank for every area"></label>
         <label>Every (days) <input name="every_days" type="number" min="1" value="30"></label><label>First due <input name="next_due" type="date"></label>
@@ -497,9 +562,9 @@ function checkHtml() {
       ${c.status === 'open' ? `<p class="row"><button class="btn" data-st-finish ${done ? '' : 'disabled'}>Finish counting</button><span class="muted small">Places not counted are left as they are.</span></p>` : ''}
     </section>
     ${d.revealed ? `<section class="card"><h3 style="margin-top:0">Variance</h3>
-      <dl class="st-facts"><div><dt>Lines counted</dt><dd>${d.totals.lines}</dd></div><div><dt>Lines off</dt><dd>${d.totals.off}</dd></div><div><dt>Units</dt><dd>${d.totals.units > 0 ? '+' : ''}${qty(d.totals.units)}</dd></div><div><dt>Value</dt><dd>${money(d.totals.value)}</dd></div></dl>
-      ${d.counts.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Location</th><th>Item</th><th>Expected</th><th>Counted</th><th>Variance</th><th>Value</th></tr></thead><tbody>
-        ${d.counts.map((r) => `<tr class="${Math.abs(r.variance) > 1e-9 ? 'st-off' : ''}"><td>${esc(d.locations.find((l) => l.id === r.locationId)?.code || '')}</td><td>${esc(r.name)}</td><td>${qty(r.expected)}</td><td>${qty(r.counted)}</td><td>${r.variance > 0 ? '+' : ''}${qty(r.variance)}</td><td>${money(r.value)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      <dl class="st-facts"><div><dt>Lines counted</dt><dd>${d.totals.lines}</dd></div><div><dt>Lines off</dt><dd>${d.totals.off}</dd></div><div><dt>Units</dt><dd>${d.totals.units > 0 ? '+' : ''}${qty(d.totals.units)}</dd></div>${d.totals.value !== undefined ? `<div><dt>Value</dt><dd>${money(d.totals.value)}</dd></div>` : ''}</dl>
+      ${d.counts.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Location</th><th>Item</th><th>Expected</th><th>Counted</th><th>Variance</th>${S.me?.canManage ? '<th>Value</th>' : ''}</tr></thead><tbody>
+        ${d.counts.map((r) => `<tr class="${Math.abs(r.variance) > 1e-9 ? 'st-off' : ''}"><td>${esc(d.locations.find((l) => l.id === r.locationId)?.code || '')}</td><td>${esc(r.name)}</td><td>${qty(r.expected)}</td><td>${qty(r.counted)}</td><td>${r.variance > 0 ? '+' : ''}${qty(r.variance)}</td>${S.me?.canManage ? `<td>${money(r.value)}</td>` : ''}</tr>`).join('')}</tbody></table></div>` : ''}
       <p class="row"><button class="btn secondary small" data-st-export>Download as Excel</button>
         ${c.status === 'finished' && d.canManage ? '<button class="btn small" data-st-apply>Make these the stock records</button>' : c.status === 'applied' ? `<span class="muted small">Applied by ${esc(c.applied_by)} ${when(c.applied_at)}</span>` : ''}</p></section>` : ''}`;
 }
@@ -544,7 +609,7 @@ function unitHtml() {
       <dl class="st-facts"><div><dt>Status</dt><dd>${esc(STATUS[u.status] || u.status)}</dd></div><div><dt>Qty</dt><dd>${qty(u.qty)} ${esc(u.item.unit || '')}</dd></div><div><dt>Where</dt><dd>${esc(u.location?.code || '—')}</dd></div>
         <div><dt>Lot</dt><dd>${esc(u.lot || '—')}</dd></div><div><dt>Serial</dt><dd>${esc(u.serial || '—')}</dd></div><div><dt>Use by</dt><dd>${day(u.expiry)}</dd></div>
         <div><dt>Supplier</dt><dd>${esc(u.supplier || '—')}</dd></div><div><dt>PO</dt><dd>${esc(u.poRef || '—')} ${u.poDate ? day(u.poDate) : ''}</dd></div><div><dt>Taken in</dt><dd>${when(u.receivedAt)}<br><span class="muted small">${esc(u.receivedBy || '')}</span></dd></div>
-        <div><dt>Cost</dt><dd>${money(u.unitCost)}</dd></div><div><dt>Jobs</dt><dd>${orders.map((o) => `${jiraLink(o.key)} <span class="muted small">${esc(o.customer || '')}</span>`).join('<br>') || '—'}</dd></div></dl>
+        ${u.unitCost !== undefined ? `<div><dt>Cost</dt><dd>${money(u.unitCost)}</dd></div>` : ''}<div><dt>Jobs</dt><dd>${orders.map((o) => `${jiraLink(o.key)} <span class="muted small">${esc(o.customer || '')}</span>`).join('<br>') || '—'}</dd></div></dl>
       <p><button class="btn secondary small" data-st-printunits="${u.id}">Print label</button></p></section>
     <section class="card"><h3 style="margin-top:0">History</h3><ol class="st-history">${moves.map((m) => `<li><strong>${esc(ACTIONS[m.action] || m.action)}</strong>${m.qty != null ? ` · ${qty(m.qty)}` : ''}${m.orderKey ? ` · ${esc(m.orderKey)}` : ''}${m.to ? ` · ${m.from && m.from !== m.to ? `${esc(m.from)} → ` : ''}${esc(m.to)}` : ''}
       <br><span class="muted small">${when(m.at)} · ${esc(m.who || '')}${m.note ? ` · ${esc(m.note)}` : ''}</span></li>`).join('')}</ol></section>`;
@@ -559,7 +624,7 @@ function dashHtml() {
   const t = S.time?.suggestions || [];
   return `<div class="st-dash">
     <div class="st-bubbles"><div class="st-bubble"><strong>${d.openCount}</strong><span>open work orders</span></div><div class="st-bubble${d.toOrder.length ? ' warn' : ''}"><strong>${d.toOrder.length}</strong><span>need stock ordering</span></div>
-      <div class="st-bubble"><strong>${d.deliveries.length}</strong><span>deliveries due</span></div><div class="st-bubble${d.stuck.length ? ' warn' : ''}"><strong>${d.stuck.length}</strong><span>picked, not used for ${4}+ hours</span></div><div class="st-bubble"><strong>${money(d.stockValue)}</strong><span>stock value</span></div></div>
+      <div class="st-bubble"><strong>${d.deliveries.length}</strong><span>deliveries due</span></div><div class="st-bubble${d.stuck.length ? ' warn' : ''}"><strong>${d.stuck.length}</strong><span>picked, not used for ${4}+ hours</span></div>${d.stockValue !== undefined ? `<div class="st-bubble"><strong>${money(d.stockValue)}</strong><span>stock value</span></div>` : ''}</div>
     ${t.length ? `<section class="card"><h3 style="margin-top:0">Your time from stock scans today</h3><p class="muted">Rough times from when you scanned. Correct them as you log.</p>
       <ul class="st-list">${t.map((s, k) => `<li><strong>${esc(s.start)}–${esc(s.end)}</strong> · ${esc(s.orderKey)} <span class="muted">${esc(s.orderSummary)}</span><br><span class="small">${s.target ? `Logs to ${esc(s.target.key)} ${esc(s.target.summary)}` : 'No Build or Testing & Configuration item to log to'}</span>
         <span class="row">${s.target?.option ? `<button class="btn small" data-st-logtime="${k}">Log ${s.minutes} min</button>` : ''}<button class="linklike" data-st-timehide="${esc(s.orderKey)}">Not this</button></span></li>`).join('')}</ul></section>` : ''}
@@ -572,18 +637,16 @@ function dashHtml() {
       <section class="card"><h3 style="margin-top:0">Expiring, not on a job</h3>${d.expiring.length ? `<ul class="st-list">${d.expiring.map((u) => `<li><strong>${esc(u.item.name)}</strong> · ${qty(u.qty)} <span class="muted">${esc(u.location?.code || '')} · use by ${day(u.expiry)}</span></li>`).join('')}</ul>` : '<p class="muted">Nothing.</p>'}</section>
       <section class="card"><h3 style="margin-top:0">Bins running low</h3>${d.binsLow.length ? `<ul class="st-list">${d.binsLow.map((i) => `<li><strong>${esc(i.name)}</strong> · ${qty(i.qty)} left <span class="muted">(keep ${qty(i.min)})</span></li>`).join('')}</ul>` : '<p class="muted">All topped up.</p>'}</section>
       <section class="card"><h3 style="margin-top:0">Checks due</h3>${d.checksDue.length ? `<ul class="st-list">${d.checksDue.map((p) => `<li><strong>${esc(p.name)}</strong> <span class="muted">due ${day(p.next_due)}</span></li>`).join('')}</ul>` : '<p class="muted">None.</p>'}</section>
-      <section class="card st-wide"><h3 style="margin-top:0">Used in the last 30 days</h3>${d.use.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Item</th><th>Used</th><th>Value</th></tr></thead><tbody>${d.use.map((u) => `<tr><td>${esc(u.name)}</td><td>${qty(u.qty)} ${esc(u.unit || '')}</td><td>${money(u.value)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nothing used yet.</p>'}</section>
+      <section class="card st-wide"><h3 style="margin-top:0">Used in the last 30 days</h3>${d.use.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Item</th><th>Used</th>${S.me?.canManage ? '<th>Value</th>' : ''}</tr></thead><tbody>${d.use.map((u) => `<tr><td>${esc(u.name)}</td><td>${qty(u.qty)} ${esc(u.unit || '')}</td>${S.me?.canManage ? `<td>${money(u.value)}</td>` : ''}</tr>`).join('')}</tbody></table></div>` : '<p class="muted">Nothing used yet.</p>'}</section>
     </div></div>`;
 }
 
 // ---------- setup ----------
 
 function setupHtml() {
-  const subs = [['items', 'Items'], ['locations', 'Locations'], ['panels', 'Panel defaults'], ['labels', 'Labels'], ['settings', 'Settings']];
-  const manage = S.settings?.canManage;
+  const subs = [['items', 'Items'], ['locations', 'Locations'], ['panels', 'Panel defaults'], ['labels', 'Labels'], ['deleted', 'Deleted lines'], ['settings', 'Jira and Xero']];
   return `<div class="row st-tools"><span class="segment">${subs.map(([k, l]) => `<button class="seg${S.setupSub === k ? ' on' : ''}" data-st-setsub="${k}">${l}</button>`).join('')}</span></div>
-    ${manage ? '' : '<section class="card notice"><p style="margin:0">Team leads, management and developers change these.</p></section>'}
-    ${({ items: setupItemsHtml, locations: setupLocationsHtml, panels: setupPanelsHtml, labels: setupLabelsHtml, settings: setupSettingsHtml })[S.setupSub]()}`;
+    ${({ items: setupItemsHtml, locations: setupLocationsHtml, panels: setupPanelsHtml, labels: setupLabelsHtml, deleted: setupDeletedHtml, settings: setupSettingsHtml })[S.setupSub]()}`;
 }
 
 function setupItemsHtml() {
@@ -594,11 +657,11 @@ function setupItemsHtml() {
     ${e ? `<form class="card" data-st-form="item"><h3 style="margin-top:0">${e.id ? `Edit ${esc(e.name)}` : 'New stock item'}</h3><input type="hidden" name="id" value="${e.id || ''}">${itemFields(e)}
       <label>Usual location <select name="usual_location"><option value="">None</option>${(S.locations?.locations || []).map((l) => `<option value="${l.id}"${e.usual_location === l.id ? ' selected' : ''}>${esc(l.code)}</option>`).join('')}</select></label>
       <div class="row"><button class="btn" type="submit">Save</button><button class="linklike" type="button" data-st-cancelform>Cancel</button>${e.id ? `<button class="linklike danger" type="button" data-st-itemdel="${e.id}">Remove item</button>` : ''}</div></form>`
-      : `<p class="row"><button class="btn" data-st-itemnew>New stock item</button>${S.settings?.canManage ? '<label class="btn secondary st-file">Import from Quoter<input type="file" accept=".csv,text/csv" data-st-quoter hidden></label>' : ''}</p>`}
+      : `<p class="row"><button class="btn" data-st-itemnew>New stock item</button>${S.me?.canManage ? '<label class="btn secondary st-file">Import from Quoter<input type="file" accept=".csv,text/csv" data-st-quoter hidden></label>' : ''}</p>`}
     ${S.quoter ? quoterHtml() : ''}
     <div class="st-table-wrap"><table class="st-table"><thead><tr><th>Item</th><th>Kind</th><th>Weight</th><th>Supplier</th><th>Cost</th><th></th></tr></thead><tbody>
-      ${items.map((i) => `<tr><td><strong>${esc(i.name)}</strong><br><span class="muted small">${esc(i.code || '')}${i.aliases.length ? ` · ${esc(i.aliases.join(', '))}` : ''}</span></td><td>${esc(i.mode)}${i.two_bin ? ' · two-bin' : ''}</td><td>${esc(i.weight)}</td>
-        <td>${esc(i.supplier || '')}<br><span class="muted small">${esc(i.supplier_part || '')}</span></td><td>${money(i.unit_cost)}</td><td>${S.settings?.canManage ? `<button class="linklike" data-st-itemedit="${i.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
+      ${items.map((i) => `<tr><td><strong>${esc(i.name)}</strong><br><span class="muted small">${esc(i.code || '')}${i.aliases.length ? ` · ${esc(i.aliases.join(', '))}` : ''}</span></td><td>${esc({ serial: 'One at a time', batch: 'By quantity', bin: 'Bin' }[i.mode] || i.mode)}${i.two_bin ? ' · two-bin' : ''}</td><td>${esc(i.weight)}</td>
+        <td>${esc(i.supplier || '')}<br><span class="muted small">${esc(i.supplier_part || '')}</span></td><td>${money(i.unit_cost)}</td><td>${S.me?.canManage ? `<button class="linklike" data-st-itemedit="${i.id}">Edit</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
     </tbody></table></div>`;
 }
 
@@ -618,7 +681,7 @@ function quoterHtml() {
 function setupLocationsHtml() {
   const locs = S.locations?.locations || [];
   const areas = [...new Set(locs.map((l) => l.area).filter(Boolean))];
-  return `${S.settings?.canManage ? `<form class="card" data-st-form="locrange"><h3 style="margin-top:0">Add locations</h3>
+  return `${S.me?.canManage ? `<form class="card" data-st-form="locrange"><h3 style="margin-top:0">Add locations</h3>
       <div class="st-grid"><label>Area <input name="area" placeholder="Racking A" list="st-areas" required></label><label>Code start <input name="prefix" placeholder="A-" required></label>
         <label>How many <input name="count" type="number" min="1" max="200" value="1"></label><label>Numbered from <input name="start" type="number" min="0" value="1"></label>
         <label>Shelf <select name="level"><option value="low">Low (heavy is fine)</option><option value="mid" selected>Middle</option><option value="high">High (light only)</option></select></label>
@@ -627,8 +690,8 @@ function setupLocationsHtml() {
       <button class="btn" type="submit">Add</button></form><datalist id="st-areas">${areas.map((a) => `<option value="${esc(a)}">`).join('')}</datalist>` : ''}
     <div class="st-table-wrap"><table class="st-table"><thead><tr><th></th><th>Code</th><th>Area</th><th>Shelf</th><th>Items</th><th></th></tr></thead><tbody>
       ${locs.map((l) => `<tr><td><input type="checkbox" data-st-lpick="locations" value="${l.id}" ${S.labelPick.locations.includes(l.id) ? 'checked' : ''} aria-label="Label for ${esc(l.code)}"></td><td><strong>${esc(l.code)}</strong>${l.quarantine ? ' <span class="st-flag bad">Quarantine</span>' : ''}</td><td>${esc(l.area || '')}</td>
-        <td>${S.settings?.canManage ? `<select data-st-loclevel="${l.id}">${['low', 'mid', 'high'].map((v) => `<option value="${v}"${l.level === v ? ' selected' : ''}>${v}</option>`).join('')}</select>` : esc(l.level)}</td><td>${l.items}</td>
-        <td>${S.settings?.canManage && !l.items ? `<button class="linklike" data-st-locdel="${l.id}">Remove</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
+        <td>${S.me?.canManage ? `<select data-st-loclevel="${l.id}">${['low', 'mid', 'high'].map((v) => `<option value="${v}"${l.level === v ? ' selected' : ''}>${v}</option>`).join('')}</select>` : esc(l.level)}</td><td>${l.items}</td>
+        <td>${S.me?.canManage && !l.items ? `<button class="linklike" data-st-locdel="${l.id}">Remove</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">None yet.</td></tr>'}
     </tbody></table></div>
     ${locs.length ? `<p class="row"><button class="btn secondary small" data-st-printpicked>Print labels for the ticked ones</button><button class="linklike" data-st-pickall>Tick all</button></p>` : ''}`;
 }
@@ -646,8 +709,8 @@ function setupPanelsHtml() {
       <div class="row"><button class="btn" type="submit">Save</button><button class="linklike" type="button" data-st-cancelform>Cancel</button>${e.id ? `<button class="linklike danger" type="button" data-st-panelremove="${e.id}">Remove panel type</button>` : ''}</div></form>`;
   }
   return `<p class="muted">The stock that usually goes into each kind of panel. Added to a work order, it can then be changed for that build.</p>
-    ${S.settings?.canManage ? '<p><button class="btn" data-st-panelnew>New panel type</button></p>' : ''}
-    ${list.length ? `<ul class="st-list">${list.map((p) => `<li${S.settings?.canManage ? ` class="st-click" data-st-paneledit="${p.id}"` : ''}><strong>${esc(p.name)}</strong> <span class="muted small">${p.items.length} item${p.items.length === 1 ? '' : 's'}${p.updated_by ? ` · ${esc(p.updated_by)}` : ''}</span><br><span class="small">${p.items.slice(0, 6).map((i) => `${qty(i.qty)} × ${esc(i.name)}`).join(', ')}${p.items.length > 6 ? '…' : ''}</span></li>`).join('')}</ul>` : '<section class="card"><p class="muted">No panel types yet.</p></section>'}`;
+    ${S.me?.canManage ? '<p><button class="btn" data-st-panelnew>New panel type</button></p>' : ''}
+    ${list.length ? `<ul class="st-list">${list.map((p) => `<li${S.me?.canManage ? ` class="st-click" data-st-paneledit="${p.id}"` : ''}><strong>${esc(p.name)}</strong> <span class="muted small">${p.items.length} item${p.items.length === 1 ? '' : 's'}${p.updated_by ? ` · ${esc(p.updated_by)}` : ''}</span><br><span class="small">${p.items.slice(0, 6).map((i) => `${qty(i.qty)} × ${esc(i.name)}`).join(', ')}${p.items.length > 6 ? '…' : ''}</span></li>`).join('')}</ul>` : '<section class="card"><p class="muted">No panel types yet.</p></section>'}`;
 }
 
 function setupLabelsHtml() {
@@ -657,6 +720,15 @@ function setupLabelsHtml() {
       <button class="btn secondary small" data-st-printpicked>Print the ticked labels</button>` : '<p class="muted">No items yet.</p>'}</section>`;
 }
 
+function setupDeletedHtml() {
+  const list = S.deleted?.deleted || [];
+  return `<p class="muted">Required stock deleted from work orders. Restoring a line puts it back on its work order.</p>
+    ${list.length ? `<div class="st-table-wrap"><table class="st-table"><thead><tr><th>Work order</th><th>Item</th><th>Qty</th><th>Deleted</th><th>Why</th><th></th></tr></thead><tbody>
+      ${list.map((d) => `<tr><td><strong>${esc(d.orderKey)}</strong><br><span class="muted small">${esc(d.customer || '')}</span></td><td>${esc(d.item || '')}</td><td>${qty(d.qty)}</td>
+        <td>${d.at ? when(d.at) : '—'}<br><span class="muted small">${esc(d.by || '')}</span></td><td>${esc(d.reason || '')}</td><td><button class="btn secondary small" data-st-restore="${d.id}">Restore</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<section class="card"><p class="muted">Nothing deleted.</p></section>'}`;
+}
+
 function setupSettingsHtml() {
   const s = S.settings || {};
   return `<section class="card"><h3 style="margin-top:0">Jira</h3>
@@ -664,6 +736,21 @@ function setupSettingsHtml() {
       <p class="muted small">Work orders were last read from Jira ${s.lastSync ? when(s.lastSync) : 'never'}. <button class="linklike" data-st-sync>Read them now</button></p></section>
     <section class="card"><h3 style="margin-top:0">Xero</h3><p class="muted">Not linked. Once it is, stock orders are read from Xero every hour.</p>
       ${s.canManage ? '<button class="btn secondary small" data-st-recheck>Re-check stock orders</button>' : ''}</section>`;
+}
+
+// A question with a text box, in a dialog. Resolves to the answer, or null if cancelled.
+function ask(question, { placeholder = '', confirm = 'OK', danger = false, value = '' } = {}) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.className = 'st-dialog';
+    d.innerHTML = `<form method="dialog"><p><strong>${esc(question)}</strong></p><textarea rows="3" placeholder="${esc(placeholder)}" required>${esc(value)}</textarea>
+      <div class="row"><button class="btn${danger ? ' danger' : ''}" value="ok">${esc(confirm)}</button><button class="btn secondary" value="cancel" formnovalidate>Cancel</button></div></form>`;
+    document.body.appendChild(d);
+    const box = d.querySelector('textarea');
+    d.addEventListener('close', () => { const v = d.returnValue === 'ok' ? box.value.trim() : ''; d.remove(); resolve(v || null); });
+    d.showModal();
+    box.focus();
+  });
 }
 
 // ---------- events ----------
@@ -678,8 +765,13 @@ async function onClick(e) {
   if ((b = t('[data-st-back]'))) { S.orderId = null; S.order = null; S.binAsk = null; return refresh(); }
   if ((b = t('[data-st-ofilter]'))) { S.orderFilter = b.dataset.stOfilter; return refresh(); }
   if ((b = t('[data-st-sync]'))) return act(b, async () => { const r = await post('sync'); H.toast(r.error ? r.error : `Read ${r.orders} hardware categories from Jira`); await refresh(); });
-  if ((b = t('[data-st-needdel]'))) return act(b, async () => { await post('need-set', { id: Number(b.dataset.stNeeddel), remove: true }); await refresh(); });
+  if ((b = t('[data-st-needdel]'))) {
+    const reason = await ask('Why is this stock no longer required for the order?', { placeholder: 'For example: customer supplying their own, swapped for another part', confirm: 'Delete', danger: true });
+    if (!reason) return;
+    return act(b, async () => { await post('need-set', { id: Number(b.dataset.stNeeddel), remove: true, reason }); H.toast('Deleted. It can be restored from the Stock settings.'); await refresh(); });
+  }
   if ((b = t('[data-st-pickitem]'))) return pickedSuggestion(b);
+  if ((b = t('[data-st-newfor]'))) return newItemFor(Number(b.dataset.stNewfor), b.dataset.text);
   if ((b = t('[data-st-takefrom]'))) return takeFromFlow(S.orderId);
   if ((b = t('[data-st-binact]'))) { S.binAsk = { ...S.binAsk, again: false, action: b.dataset.stBinact }; return redraw(); }
   if ((b = t('[data-st-bincancel]'))) { S.binAsk = null; return redraw(); }
@@ -729,6 +821,8 @@ async function onClick(e) {
   if ((b = t('[data-st-dismiss]'))) { S.lastIntake = null; return redraw(); }
   if ((b = t('[data-st-recv]'))) return startReceive(Number(b.dataset.item), Number(b.dataset.stRecv));
   if ((b = t('[data-st-issue]'))) { S.intakeStep = { kind: 'issue', expectedId: Number(b.dataset.stIssue) || null, itemId: Number(b.dataset.item) || null, back: S.intakeStep }; S.tab = 'intake'; return redraw(); }
+  if ((b = t('[data-st-eachdel]'))) { S.intakeStep.each.splice(Number(b.dataset.stEachdel), 1); return redraw(); }
+  if ((b = t('[data-st-eachadd]'))) return addEach('');
   if ((b = t('[data-st-loc]'))) { S.intakeStep.location = b.dataset.stLoc; const box = document.getElementById('st-recv-loc'); if (box) box.value = b.dataset.stLoc; view.querySelectorAll('[data-st-loc]').forEach((x) => x.classList.toggle('on', x === b)); return; }
   if ((b = t('[data-st-useitem]'))) return useItem(Number(b.dataset.stUseitem));
   if ((b = t('[data-st-bcretry]'))) { S.intakeStep.barcode = null; redraw(); return loadBarcode(S.intakeStep.code); }
@@ -769,6 +863,7 @@ async function onClick(e) {
   if ((b = t('[data-st-logtime]'))) return logTime(S.time.suggestions[Number(b.dataset.stLogtime)]);
   if ((b = t('[data-st-timehide]'))) return act(b, async () => { await post('time-hide', { orderKey: b.dataset.stTimehide }); S.time = await get('time'); redraw(); });
   // Setup
+  if ((b = t('[data-st-restore]'))) return act(b, async () => { await post('need-restore', { id: Number(b.dataset.stRestore) }); H.toast('Restored'); await refresh(); });
   if ((b = t('[data-st-setsub]'))) { S.setupSub = b.dataset.stSetsub; S.editItem = null; S.editPanel = null; return refresh(); }
   if ((b = t('[data-st-itemnew]'))) { S.editItem = {}; return redraw(); }
   if ((b = t('[data-st-quoterapply]'))) return act(b, async () => { S.quoter = await post('import-quoter', { csv: S.quoterCsv, apply: true }); S.quoterCsv = null; await refresh(); });
@@ -808,7 +903,12 @@ async function onSubmit(e) {
   }
   if (kind === 'receive') return act(btn, async () => {
     const st = S.intakeStep;
-    const r = await post('intake', { ...fd, itemId: st.item.id, expectedId: fd.expectedId ? Number(fd.expectedId) : null, barcode: st.code || null, makeUsual: f.querySelector('[name=makeUsual]')?.checked, serials: fd.serials });
+    const L = st.label || {};
+    const each = st.item.mode === 'serial' ? (st.each || []) : null;
+    if (each && !each.length) throw new Error('Scan each one in first.');
+    const r = await post('intake', { itemId: st.item.id, location: fd.location, qty: each ? each.length : fd.qty, serials: each ? each.map((u) => u.serial).filter(Boolean) : [],
+      expectedId: fd.expectedId ? Number(fd.expectedId) : null, barcode: st.code || null, makeUsual: f.querySelector('[name=makeUsual]')?.checked,
+      lot: L.lot || L.dateCode || null, expiry: L.expiry || null, poRef: L.po || null });
     S.lastIntake = r; S.intakeStep = null; await refresh();
   });
   if (kind === 'issue') return act(btn, async () => {
@@ -865,6 +965,10 @@ function onInput(e) {
 
 async function onChange(e) {
   const el = e.target;
+  if (el.matches('[data-st-expsel]') && S.intakeStep) { S.intakeStep.expectedId = el.value ? Number(el.value) : null; return redraw(); }
+  if (el.id === 'st-recv-loc' && S.intakeStep) S.intakeStep.location = el.value;
+  if (el.matches('[data-st-ocust]')) { S.orderCustomer = el.value; return redraw(); }
+  if (el.matches('[data-st-oteam]')) { S.orderTeam = el.value; return redraw(); }
   if (el.dataset.stNeedqty) return act(null, async () => { await post('need-set', { id: Number(el.dataset.stNeedqty), qty: Number(el.value) }); await refresh(); });
   if (el.matches('[data-st-prio]')) {
     return act(null, async () => {
@@ -918,6 +1022,28 @@ async function pickedSuggestion(b) {
   if (target === 'st-countq') { if (!S.countRows.some((r) => r.id === id)) S.countRows.push({ id, name: b.dataset.name, code: b.dataset.code, unit: b.dataset.unit, counted: null }); return redraw(); }
   // Linking a line read from Jira to the stock item it means.
   return act(null, async () => { await post('need-set', { id: Number(target), itemId: id }); await refresh(); });
+}
+
+// A line on a work order that isn't a stock item yet becomes one, and is linked to it.
+function newItemFor(needId, textIn) {
+  const d = document.createElement('dialog');
+  d.className = 'st-dialog wide';
+  d.innerHTML = `<form method="dialog" class="st"><h3 style="margin-top:0">New stock item</h3>${itemFields({ name: textIn }, { compact: true })}
+    <div class="row"><button class="btn" value="ok">Add it to stock items</button><button class="btn secondary" value="cancel" formnovalidate>Cancel</button></div></form>`;
+  document.body.appendChild(d);
+  const f = d.querySelector('form');
+  f.addEventListener('submit', async (e) => {
+    if (e.submitter?.value !== 'ok') return;
+    e.preventDefault();
+    const body = { ...Object.fromEntries(new FormData(f)), two_bin: f.querySelector('[name=two_bin]')?.checked };
+    try {
+      const r = await post('item', body);
+      await post('need-set', { id: needId, itemId: r.id });
+      d.close(); H.toast('Added, and linked to this line'); await refresh();
+    } catch (err) { H.toast(err.message); }
+  });
+  d.addEventListener('close', () => d.remove());
+  d.showModal();
 }
 
 async function scanPick(code, form) {
@@ -1010,7 +1136,8 @@ async function startReceive(itemId, expectedId, extra = {}) {
   const item = extra.item || items.items.find((i) => i.id === itemId);
   const expected = extra.expected || exp.expected.filter((e) => e.item_id === itemId);
   S.tab = 'intake';
-  S.intakeStep = { kind: 'item', item, expected, expectedId, putaway: put, code: extra.code || null, label: extra.label || null, location: null };
+  S.intakeStep = { kind: 'item', item, expected, expectedId, putaway: put, code: extra.code || null, label: extra.label || null, location: null,
+    each: item.mode === 'serial' && (extra.code || extra.label) ? [{ serial: extra.label?.serial || null }] : [] };
   redraw();
 }
 
@@ -1121,8 +1248,15 @@ async function camera(target) {
         const found = await detector.detect(video);
         if (found.length) {
           close();
-          const box = document.getElementById(`st-scan-${target}`) || document.getElementById('st-recv-loc');
-          if (box) { box.value = found[0].rawValue; const f = box.closest('form'); if (f && box.id.startsWith('st-scan-')) f.requestSubmit(); }
+          const value = found[0].rawValue;
+          if (target === 'each') { addEach(value); return; }
+          if (target === 'loc') {
+            const box = document.getElementById('st-recv-loc');
+            if (box) { box.value = value; if (S.intakeStep) S.intakeStep.location = value; view.querySelectorAll('[data-st-loc]').forEach((x) => x.classList.toggle('on', x.dataset.stLoc === value.toUpperCase())); }
+            return;
+          }
+          const box = document.getElementById(`st-scan-${target}`);
+          if (box) { box.value = value; box.closest('form')?.requestSubmit(); }
           return;
         }
       } catch { /* try the next frame */ }

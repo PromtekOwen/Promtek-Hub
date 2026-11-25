@@ -3096,3 +3096,15 @@ p .cust-shield { width: 18px; height: 18px; }
 .st-bc-item img { width: 56px; height: 56px; object-fit: contain; border-radius: 8px; background: #fff; flex: none; }
 @media (max-width: 640px) { .st-bc-item { flex-wrap: wrap; } .st-bc-item .btn { width: 100%; } }
 .st-read { background: var(--tint); border-radius: 8px; padding: .45rem .7rem; margin: .2rem 0 .8rem; }
+.st-dialog { border: 0; border-radius: 14px; padding: 1.2rem; max-width: min(480px, 92vw); width: 100%; background: var(--surface); color: inherit; box-shadow: var(--shadow); }
+.st-dialog.wide { max-width: min(720px, 94vw); max-height: 90vh; overflow: auto; }
+.st-dialog::backdrop { background: rgba(10, 20, 30, .45); }
+.st-dialog textarea { width: 100%; box-sizing: border-box; margin-bottom: .8rem; }
+.st-dialog p { margin-top: 0; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.st .linklike.danger, .st-dialog .linklike.danger { color: var(--danger); }
+.st-each { border: 1px solid var(--line); border-radius: 10px; padding: .6rem .8rem; margin: .5rem 0 .8rem; }
+.st-eachlist { margin: .3rem 0; padding-left: 1.4rem; }
+.st-eachlist li { padding: .2rem 0; }
+.st-eachlist li > span { margin-right: .6rem; }
+.st-tools select { max-width: 100%; }

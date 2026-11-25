@@ -1143,9 +1143,10 @@ async function route(request, env, url, user) {
         dashboard: () => S.dashboard(env, user),
         time: () => S.timeSuggest(env, user, q('date')),
         settings: () => S.settings(env, user),
+        'needs-deleted': () => S.needsDeleted(env, user),
         labels: () => S.labels(env, user, { units: q('units'), locations: q('locations'), items: q('items') }),
       };
-      if (get[sub]) return json(await get[sub]());
+      if (get[sub]) return json(S.forViewer(user, await get[sub]()));
     }
     if (method === 'POST') {
       const post = {
@@ -1155,11 +1156,11 @@ async function route(request, env, url, user) {
         priority: S.setPriority, 'take-from': S.takeFrom, reassign: S.reassign, hold: S.hold, 'order-status': S.setOrderStatus,
         pick: S.pick, return: S.giveBack, quarantine: S.quarantine, 'quarantine-release': S.releaseQuarantine, relocate: S.relocate,
         complete: S.complete, reopen: S.reopen, plan: S.planSave, 'plan-remove': S.planRemove, 'check-start': S.checkStart, 'check-count': S.checkCount,
-        'check-finish': S.checkFinish, 'import-quoter': S.importQuoter, 'check-apply': S.checkApply, 'time-hide': S.timeHide, settings: S.setSettings, recheck: S.recheckOrders,
+        'check-finish': S.checkFinish, 'import-quoter': S.importQuoter, 'need-restore': S.needRestore, 'check-apply': S.checkApply, 'time-hide': S.timeHide, settings: S.setSettings, recheck: S.recheckOrders,
       };
       if (post[sub]) {
         const body = await request.json().catch(() => ({}));
-        try { return json(await (sub === 'sync' ? post[sub](body) : post[sub](env, user, body))); }
+        try { return json(S.forViewer(user, await (sub === 'sync' ? post[sub](body) : post[sub](env, user, body)))); }
         catch (err) { if (err.confirm) return json({ error: err.message, confirm: err.confirm, fromKey: err.fromKey || null }, err.status || 409); throw err; }
       }
     }

@@ -2344,6 +2344,7 @@ async function renderSettings(route) {
   if (route === '#/invoicing') { settingsData.invoicing = await api(`/api/invoicing?region=${invRegion}`).catch((err) => ({ error: err.message })); invTerms = null; }
   if (route === '#/feedback') settingsData.feedback = await api('/api/feedback/settings').catch((err) => ({ error: err.message }));
   if (route === '#/jobs' && !jsData) await jobsSettingsLoad();
+  if (route === '#/stock') settingsData.stock = await (await stockUi()).settingsRender();
   const back = `<div class="row" style="margin-bottom:1rem"><button class="btn secondary" data-settings="close">Back to the app</button></div>`;
   if (me.user.isAdmin) await loadAccess().catch(() => null);
   return back + TILE_SETTINGS[route].render() + accessCardHtml(route);
@@ -17119,6 +17120,7 @@ const TILE_SETTINGS = {
   '#/invoicing': { label: 'Invoicing settings', render: () => settingsInvoicingHtml(), who: 'Admins and management.', can: 'wip' },
   '#/wip': { label: 'WIP settings', render: () => settingsWipHtml(), who: 'Management and admins.', can: 'wip' },
   '#/jobs': { label: 'Jobs settings', render: () => settingsJobsHtml(), who: 'Admins, team leads, Management and developers.', can: 'jobDocs' },
+  '#/stock': { label: 'Stock settings', render: () => settingsData.stock || '', who: 'Admins, team leads, management and developers.', can: 'stockManage' },
 };
 let settingsOpen = null;
 let settingsData = null;

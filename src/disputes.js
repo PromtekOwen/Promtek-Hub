@@ -62,7 +62,7 @@ export async function activeJobs(env) {
       const f = item.fields || {};
       if (LEGACY_ADMIN_TYPES.includes(String(f.issuetype?.name || '').toLowerCase())) continue;
       legacy.push({
-        issue_id: String(item.id), issue_key: item.key, summary: f.summary || '', status: f.status?.name || null, done: isDone(item),
+        issue_id: String(item.id), issue_key: item.key, summary: f.summary || '', type: f.issuetype?.name || null, status: f.status?.name || null, done: isDone(item),
         assignee: f.assignee?.accountId || null, staff: staffOf(item), epic_assignee: ef.assignee?.accountId || null, epic_staff: staffOf(epic),
         epic_key: epic.key, order_summary: ef.summary || '',
         project_name: ef.project?.name || null, team: teamOf(epic),

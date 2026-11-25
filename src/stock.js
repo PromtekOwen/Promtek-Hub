@@ -46,7 +46,7 @@ function move(env, viewer, m) {
     VALUES (?, ?, ?, ?, ?, ${unitSql}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(...binds);
 }
 
-const UNIT_COLS = ['code', 'item_id', 'lot', 'serial', 'qty', 'location_id', 'status', 'order_id', 'team', 'received_at', 'received_by', 'expiry', 'supplier', 'po_ref', 'po_date', 'unit_cost', 'expected_id', 'picked_at', 'picked_by', 'consumed_at', 'note'];
+const UNIT_COLS = ['code', 'item_id', 'lot', 'supplier_lot', 'serial', 'qty', 'location_id', 'status', 'order_id', 'team', 'received_at', 'received_by', 'expiry', 'supplier', 'po_ref', 'po_date', 'unit_cost', 'expected_id', 'picked_at', 'picked_by', 'consumed_at', 'note'];
 function insertUnit(env, u) {
   return env.DB.prepare(`INSERT INTO stock_units (${UNIT_COLS.join(', ')}) VALUES (${UNIT_COLS.map(() => '?').join(', ')})`).bind(...UNIT_COLS.map((c) => u[c] ?? null));
 }
@@ -136,6 +136,9 @@ export function parsePartsList(raw) {
   const out = [];
   for (let line of String(raw || '').split(/\n/)) {
     line = line.replace(/^\s*(?:[-*•·▪]|\d+[.)])\s+/, '').trim();
+    // The paperwork the order needs comes after the parts, and isn't hardware.
+    if (/^documents?\s+required\b/i.test(line)) break;
+    if (/^(order acknowledg(e)?ment|delivery note)s?\.?$/i.test(line)) continue;
     if (!line || line.length < 2) continue;
     if (/^(configuration options?|options?|notes?)\s*:/i.test(line) || /\.(pdf|docx?|xlsx?)\b/i.test(line)) continue;
     let qty = null; let what = null;
@@ -187,7 +190,7 @@ export async function syncOrders(env, { force = false } = {}) {
   const last = await getState(env, 'stock_sync_at');
   if (!force && last && Date.now() - new Date(last).getTime() < 10 * 60000) return { skipped: true, at: last };
   const { activeJobs } = await import('./disputes.js');
-  const { categories } = await activeJobs(env);
+  const { categories, legacy = [] } = await activeJobs(env);
   const hardware = categories.filter((c) => c.discipline === 'hardware' && !c.done);
   const sf = await startField(env);
   const fields = ['summary', 'issuetype', 'status', 'parent', 'description', 'duedate', ...(sf ? [sf] : [])];
@@ -199,6 +202,26 @@ export async function syncOrders(env, { force = false } = {}) {
       if (byCat.has(i.key)) { byCat.get(i.key).self = i; continue; }
       const parentKey = i.fields?.parent?.key;
       if (byCat.has(parentKey)) byCat.get(parentKey).subs.push(i);
+    }
+  }
+  // Orders from before categories: the Purchase Order Phase item sits straight under the order,
+  // with its Build and Testing items beside it. Each open one is a work order of its own.
+  const isPoRow = (x) => /purchase order/i.test(`${x.type || ''} ${x.summary || ''}`);
+  const legacyPo = legacy.filter((l) => !l.done && isPoRow(l));
+  if (legacyPo.length) {
+    const want = new Set();
+    const groups = legacyPo.map((p) => {
+      const sib = legacy.filter((x) => x.epic_key === p.epic_key && x.issue_key !== p.issue_key && !isPoRow(x));
+      [p, ...sib].forEach((x) => want.add(x.issue_key));
+      return { p, sib };
+    });
+    const got = new Map();
+    for (const part of chunk([...want], 40)) for (const i of await searchJql(env, `key in (${part.join(',')})`, fields, { limit: 1000 })) got.set(i.key, i);
+    for (const { p, sib } of groups) {
+      const poIssue = got.get(p.issue_key);
+      if (!poIssue) continue;
+      byCat.set(p.issue_key, { cat: { epic_key: p.epic_key, summary: p.summary, order_summary: p.order_summary, project_name: p.project_name, team: p.team },
+        self: poIssue, subs: [poIssue, ...sib.map((x) => got.get(x.issue_key)).filter(Boolean)] });
     }
   }
   const existing = new Map(((await env.DB.prepare("SELECT * FROM stock_orders WHERE kind = 'job'").all()).results || []).map((o) => [o.key, o]));
@@ -264,7 +287,7 @@ async function importNeeds(env, orderId, poText) {
 async function loadAll(env) {
   const [orders, needs, units, expected, items] = await Promise.all([
     env.DB.prepare("SELECT * FROM stock_orders WHERE status IN ('open', 'paused', 'complete', 'closed', 'cancelled')").all(),
-    env.DB.prepare('SELECT * FROM stock_needs').all(),
+    env.DB.prepare('SELECT * FROM stock_needs WHERE deleted_at IS NULL').all(),
     env.DB.prepare("SELECT * FROM stock_units WHERE status IN ('available', 'reserved', 'picked', 'consumed', 'quarantine')").all(),
     env.DB.prepare("SELECT * FROM stock_expected WHERE status = 'open'").all(),
     env.DB.prepare('SELECT * FROM stock_items').all(),
@@ -379,7 +402,7 @@ async function locationMap(env) {
 function unitBrief(u, items, locs) {
   const i = items.get(u.item_id) || {};
   const l = locs.get(u.location_id);
-  return { id: u.id, code: u.code, item: { id: i.id, name: i.name, code: i.code, mode: i.mode, unit: i.unit }, lot: u.lot, serial: u.serial, qty: u.qty, status: u.status,
+  return { id: u.id, code: u.code, item: { id: i.id, name: i.name, code: i.code, mode: i.mode, unit: i.unit }, lot: u.lot, supplierLot: u.supplier_lot || null, serial: u.serial, qty: u.qty, status: u.status,
     location: l ? { id: l.id, code: l.code, area: l.area, level: l.level } : null, orderId: u.order_id, team: u.team, expiry: u.expiry,
     receivedAt: u.received_at, pickedAt: u.picked_at, pickedBy: u.picked_by, unitCost: u.unit_cost ?? i.unit_cost ?? null, supplier: u.supplier, poRef: u.po_ref };
 }
@@ -609,7 +632,7 @@ export async function itemSave(env, viewer, input) {
     const was = await itemById(env, id);
     if (!v.code) v.code = was.code;
     if (await env.DB.prepare('SELECT id FROM stock_items WHERE UPPER(code) = UPPER(?) AND id != ?').bind(v.code, id).first()) throw bad(`An item already has the code ${v.code}.`);
-    await env.DB.prepare(`UPDATE stock_items SET ${ITEM_FIELDS.map((f) => `${f} = ?`).join(', ')} WHERE id = ?`).bind(...ITEM_FIELDS.map((f) => v[f]), id).run();
+    await env.DB.prepare(`UPDATE stock_items SET ${ITEM_FIELDS.map((f) => `${f} = ?`).join(', ')}, edited_at = ? WHERE id = ?`).bind(...ITEM_FIELDS.map((f) => v[f]), nowIso(), id).run();
   } else {
     if (v.code && await env.DB.prepare('SELECT id FROM stock_items WHERE UPPER(code) = UPPER(?)').bind(v.code).first()) throw bad(`An item already has the code ${v.code}.`);
     id = (await env.DB.prepare(`INSERT INTO stock_items (${ITEM_FIELDS.join(', ')}, active, created_at, created_by) VALUES (${ITEM_FIELDS.map(() => '?').join(', ')}, 1, ?, ?) RETURNING id`)
@@ -742,15 +765,19 @@ export async function intake(env, viewer, input) {
   if (!loc) throw bad('Scan the location it\'s going into.');
   const exp = num(input.expectedId) ? await env.DB.prepare('SELECT * FROM stock_expected WHERE id = ?').bind(num(input.expectedId)).first() : null;
   if (exp && exp.item_id !== item.id) throw bad('That delivery was for a different item.');
-  const serials = item.mode === 'serial' ? [...new Set((Array.isArray(input.serials) ? input.serials : String(input.serials || '').split(/[\n,]/)).map((s) => String(s).trim()).filter(Boolean))] : [];
-  const qty = item.mode === 'serial' ? (serials.length || qtyOf(input.qty)) : qtyOf(input.qty);
-  if (item.mode === 'serial' && serials.length && serials.length !== Math.round(qty)) throw bad('Scan one serial number for each one.');
+  const serials = item.mode === 'serial' ? [...new Set((Array.isArray(input.serials) ? input.serials : String(input.serials || '').split(/[\n,]/)).map((s) => String(s ?? '').trim()).filter(Boolean))] : [];
+  // One-at-a-time items: each one scanned is a unit, with its serial number if it has one.
+  const qty = item.mode === 'serial' ? Math.max(serials.length, Math.round(num(input.qty, 0))) : qtyOf(input.qty);
+  if (qty <= 0) throw bad(item.mode === 'serial' ? 'Scan each one in.' : 'Enter a quantity above zero.');
+  if (item.mode === 'serial' && qty > 500) throw bad('That\'s more than 500 at once.');
   const at = nowIso();
+  // Every delivery line gets our own batch number, so it can be traced whatever the supplier printed.
+  const lot = item.mode === 'bin' ? null : await nextBatch(env);
   const expiry = isoDay(input.expiry) || (item.shelf_life_days ? addDays(today(), item.shelf_life_days) : null);
   const base = {
-    item_id: item.id, lot: text(input.lot, 80), location_id: loc.id, status: 'available', order_id: null, team: text(input.team, 40) || exp?.team || null,
+    item_id: item.id, lot, supplier_lot: text(input.lot, 80), location_id: loc.id, status: 'available', order_id: null, team: text(input.team, 40) || exp?.team || null,
     received_at: at, received_by: whoOf(viewer).name, expiry, supplier: text(input.supplier, 120) || exp?.supplier || item.supplier, po_ref: text(input.poRef, 80) || exp?.po_ref || null,
-    po_date: exp?.po_date || isoDay(input.poDate), unit_cost: num(input.unitCost) ?? exp?.unit_cost ?? item.unit_cost, expected_id: exp?.id || null, note: text(input.note, 300),
+    po_date: exp?.po_date || isoDay(input.poDate), unit_cost: (canManage(viewer) ? num(input.unitCost) : null) ?? exp?.unit_cost ?? item.unit_cost, expected_id: exp?.id || null, note: text(input.note, 300),
   };
   const stmts = [];
   // Bins hold one running quantity per place: topping one up adds to it.
@@ -764,7 +791,7 @@ export async function intake(env, viewer, input) {
       stmts.push(move(env, viewer, { action: 'receive', itemId: item.id, unitId: 'last', qty, to: loc.id, toStatus: 'available', note: base.po_ref }));
     }
   } else if (item.mode === 'serial') {
-    const list = serials.length ? serials : Array.from({ length: Math.round(qty) }, () => null);
+    const list = [...serials, ...Array.from({ length: Math.round(qty) - serials.length }, () => null)];
     for (const s of list) {
       if (s && await env.DB.prepare("SELECT id FROM stock_units WHERE item_id = ? AND UPPER(serial) = UPPER(?) AND status != 'gone'").bind(item.id, s).first()) throw bad(`Serial ${s} is already in stock.`);
       stmts.push(insertUnit(env, { ...base, serial: s, qty: 1 }));
@@ -781,14 +808,23 @@ export async function intake(env, viewer, input) {
     stmts.push(env.DB.prepare('INSERT OR IGNORE INTO stock_aliases (code, item_id, kind) VALUES (?, ?, ?)').bind(String(input.barcode).trim().slice(0, 120), item.id, 'barcode'));
   }
   if (input.makeUsual && !item.usual_location) stmts.push(env.DB.prepare('UPDATE stock_items SET usual_location = ? WHERE id = ?').bind(loc.id, item.id));
-  if (num(input.unitCost) != null) stmts.push(env.DB.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').bind(num(input.unitCost), item.id));
+  if (num(input.unitCost) != null && canManage(viewer)) stmts.push(env.DB.prepare('UPDATE stock_items SET unit_cost = ? WHERE id = ?').bind(num(input.unitCost), item.id));
   await env.DB.batch(stmts);
   const made = (await env.DB.prepare('SELECT * FROM stock_units WHERE item_id = ? AND received_at = ? ORDER BY id').bind(item.id, at).all()).results || [];
   // Held for the job it was bought for first, then the rest by priority within the team.
   if (exp?.order_id && item.mode !== 'bin') await allocate(env, { orderIds: [exp.order_id], itemIds: [item.id], viewer: SYSTEM });
   await allocate(env, { itemIds: [item.id], viewer: SYSTEM });
   const after = made.length ? (await env.DB.prepare(`SELECT u.*, o.key AS order_key FROM stock_units u LEFT JOIN stock_orders o ON o.id = u.order_id WHERE u.item_id = ? AND u.received_at = ? ORDER BY u.id`).bind(item.id, at).all()).results : [];
-  return { ok: true, units: after.map((u) => ({ id: u.id, code: u.code, qty: u.qty, serial: u.serial, lot: u.lot, orderKey: u.order_key || null, status: u.status })), item: itemBrief(item), location: loc.code };
+  return { ok: true, lot, poRef: base.po_ref, units: after.map((u) => ({ id: u.id, code: u.code, qty: u.qty, serial: u.serial, lot: u.lot, orderKey: u.order_key || null, status: u.status })), item: itemBrief(item), location: loc.code };
+}
+
+// Our batch numbers: B, the date, and a running number for the day (B251125-03).
+async function nextBatch(env) {
+  const d = londonDate().replace(/-/g, '').slice(2);
+  const key = `stock_batch_${d}`;
+  const n = (Number(await getState(env, key)) || 0) + 1;
+  await setState(env, key, String(n));
+  return `B${d}-${String(n).padStart(2, '0')}`;
 }
 
 // A delivery that's damaged, wrong or not coming: taken off what's expected (and out of stock,
@@ -942,12 +978,18 @@ export async function needAdd(env, viewer, input) {
 }
 
 export async function needSet(env, viewer, input) {
-  const n = await env.DB.prepare('SELECT * FROM stock_needs WHERE id = ?').bind(num(input.id)).first();
+  const n = await env.DB.prepare('SELECT * FROM stock_needs WHERE id = ? AND deleted_at IS NULL').bind(num(input.id)).first();
   if (!n) throw bad('That line isn\'t on record.', 404);
   const o = await openOrder(env, n.order_id);
-  // A line read from Jira is kept as removed, so reading Jira again doesn't bring it back.
-  if (input.remove && String(n.source).startsWith('jira')) await env.DB.prepare("UPDATE stock_needs SET source = 'jira-removed', qty = 0 WHERE id = ?").bind(n.id).run();
-  else if (input.remove) await env.DB.prepare('DELETE FROM stock_needs WHERE id = ?').bind(n.id).run();
+  // Deleting keeps the line, with who, when and why, so it can be put back. A line read from Jira
+  // stays deleted when Jira is read again.
+  if (input.remove) {
+    const reason = text(input.reason, 500);
+    if (!reason) throw bad('Say why this stock is no longer required for the order.');
+    await env.DB.batch([env.DB.prepare("UPDATE stock_needs SET deleted_at = ?, deleted_by = ?, delete_reason = ?, source = CASE WHEN source = 'jira' THEN 'jira-edited' ELSE source END WHERE id = ?")
+      .bind(nowIso(), whoOf(viewer).name, reason, n.id),
+      move(env, viewer, { action: 'need-deleted', itemId: n.item_id, qty: n.qty, orderId: o.id, orderKey: o.key, note: `${n.text || ''}: ${reason}` })]);
+  }
   else {
     const itemId = input.itemId === undefined ? n.item_id : num(input.itemId);
     if (itemId) await itemById(env, itemId);
@@ -956,6 +998,25 @@ export async function needSet(env, viewer, input) {
       .bind(input.qty === undefined ? n.qty : qtyOf(input.qty), itemId, n.id).run();
   }
   if (n.item_id) await releaseExcess(env, o, n.item_id);
+  if (o.status === 'open') await allocate(env, { orderIds: [o.id], viewer });
+  return { ok: true };
+}
+
+// Requirements deleted from work orders, newest first, to put back if deleted by mistake.
+export async function needsDeleted(env, viewer) {
+  needManage(viewer);
+  const rows = (await env.DB.prepare(`SELECT n.*, o.key AS order_key, o.summary AS order_summary, o.customer, i.name AS item_name FROM stock_needs n JOIN stock_orders o ON o.id = n.order_id
+    LEFT JOIN stock_items i ON i.id = n.item_id WHERE n.deleted_at IS NOT NULL OR n.source = 'jira-removed' ORDER BY COALESCE(n.deleted_at, n.created_at) DESC LIMIT 200`).all()).results || [];
+  return { deleted: rows.map((r) => ({ id: r.id, orderKey: r.order_key, orderSummary: r.order_summary, customer: r.customer, item: r.item_name || r.text, qty: r.qty, by: r.deleted_by, at: r.deleted_at, reason: r.delete_reason })) };
+}
+
+export async function needRestore(env, viewer, { id }) {
+  needManage(viewer);
+  const n = await env.DB.prepare('SELECT * FROM stock_needs WHERE id = ?').bind(Number(id)).first();
+  if (!n || (!n.deleted_at && n.source !== 'jira-removed')) throw bad('That line isn\'t deleted.');
+  const o = await orderById(env, n.order_id);
+  await env.DB.batch([env.DB.prepare("UPDATE stock_needs SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL, source = CASE WHEN source = 'jira-removed' THEN 'jira-edited' ELSE source END, qty = CASE WHEN qty = 0 THEN 1 ELSE qty END WHERE id = ?").bind(n.id),
+    move(env, viewer, { action: 'need-restored', itemId: n.item_id, qty: n.qty, orderId: o.id, orderKey: o.key, note: n.text })]);
   if (o.status === 'open') await allocate(env, { orderIds: [o.id], viewer });
   return { ok: true };
 }
@@ -1105,7 +1166,7 @@ export async function hold(env, viewer, { orderId, itemId, qty }) {
   }
   if (!stmts.length) throw bad('There\'s none of that free to hold.');
   await env.DB.batch(stmts);
-  const have = (await env.DB.prepare('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_needs WHERE order_id = ? AND item_id = ?').bind(o.id, item.id).first()).q;
+  const have = (await env.DB.prepare('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_needs WHERE order_id = ? AND item_id = ? AND deleted_at IS NULL').bind(o.id, item.id).first()).q;
   const held = (await env.DB.prepare("SELECT COALESCE(SUM(qty), 0) AS q FROM stock_units WHERE order_id = ? AND item_id = ? AND status IN ('reserved', 'picked', 'consumed')").bind(o.id, item.id).first()).q;
   if (held > have) await env.DB.prepare("INSERT INTO stock_needs (order_id, item_id, text, qty, source, created_at, created_by) VALUES (?, ?, ?, ?, 'manual', ?, ?)").bind(o.id, item.id, item.name, held - have, nowIso(), whoOf(viewer).name).run();
   return { ok: true, short: left > 0 ? left : 0 };
@@ -1204,7 +1265,7 @@ export async function pick(env, viewer, input) {
 }
 
 async function releaseExcess(env, o, itemId) {
-  const need = (await env.DB.prepare('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_needs WHERE order_id = ? AND item_id = ?').bind(o.id, itemId).first()).q;
+  const need = (await env.DB.prepare('SELECT COALESCE(SUM(qty), 0) AS q FROM stock_needs WHERE order_id = ? AND item_id = ? AND deleted_at IS NULL').bind(o.id, itemId).first()).q;
   const units = (await env.DB.prepare("SELECT * FROM stock_units WHERE order_id = ? AND item_id = ? AND status IN ('reserved', 'picked', 'consumed') ORDER BY CASE status WHEN 'reserved' THEN 1 ELSE 0 END, id").bind(o.id, itemId).all()).results || [];
   let extra = units.reduce((s, u) => s + u.qty, 0) - need;
   const stmts = [];
@@ -1578,12 +1639,12 @@ export async function trace(env, viewer, input = {}) {
   const q = String(input.q || '').trim();
   if (q) {
     const like = `%${likeTerm(q)}%`;
-    where.push(`(LOWER(COALESCE(u.code, '')) LIKE ? OR LOWER(COALESCE(u.serial, '')) LIKE ? OR LOWER(COALESCE(u.lot, '')) LIKE ? OR LOWER(i.name) LIKE ? OR LOWER(COALESCE(i.code, '')) LIKE ? OR LOWER(COALESCE(u.po_ref, '')) LIKE ?
+    where.push(`(LOWER(COALESCE(u.code, '')) LIKE ? OR LOWER(COALESCE(u.serial, '')) LIKE ? OR LOWER(COALESCE(u.lot, '')) LIKE ? OR LOWER(COALESCE(u.supplier_lot, '')) LIKE ? OR LOWER(i.name) LIKE ? OR LOWER(COALESCE(i.code, '')) LIKE ? OR LOWER(COALESCE(u.po_ref, '')) LIKE ?
       OR u.id IN (SELECT m.unit_id FROM stock_moves m WHERE LOWER(COALESCE(m.order_key, '')) LIKE ?))`);
-    binds.push(like, like, like, like, like, like, like);
+    binds.push(like, like, like, like, like, like, like, like);
   }
   if (num(input.itemId)) { where.push('u.item_id = ?'); binds.push(num(input.itemId)); }
-  if (input.lot) { where.push('LOWER(COALESCE(u.lot, \'\')) = LOWER(?)'); binds.push(String(input.lot)); }
+  if (input.lot) { where.push('(LOWER(COALESCE(u.lot, \'\')) = LOWER(?) OR LOWER(COALESCE(u.supplier_lot, \'\')) = LOWER(?))'); binds.push(String(input.lot), String(input.lot)); }
   if (input.status) { where.push('u.status = ?'); binds.push(String(input.status)); }
   if (input.supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${likeTerm(input.supplier)}%`); }
   if (input.customer) { where.push('u.id IN (SELECT m.unit_id FROM stock_moves m JOIN stock_orders o ON o.id = m.order_id WHERE LOWER(COALESCE(o.customer, \'\')) LIKE ?)'); binds.push(`%${likeTerm(input.customer)}%`); }
@@ -1612,7 +1673,7 @@ export async function unitHistory(env, viewer, id) {
 export async function recall(env, viewer, { lot, itemId, supplier }) {
   if (!lot && !num(itemId)) throw bad('Enter the lot or batch, or choose the item.');
   const where = []; const binds = [];
-  if (lot) { where.push('LOWER(COALESCE(u.lot, \'\')) = LOWER(?)'); binds.push(String(lot)); }
+  if (lot) { where.push('(LOWER(COALESCE(u.lot, \'\')) = LOWER(?) OR LOWER(COALESCE(u.supplier_lot, \'\')) = LOWER(?))'); binds.push(String(lot), String(lot)); }
   if (num(itemId)) { where.push('u.item_id = ?'); binds.push(num(itemId)); }
   if (supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${likeTerm(supplier)}%`); }
   const units = (await env.DB.prepare(`SELECT u.* FROM stock_units u WHERE ${where.join(' AND ')}`).bind(...binds).all()).results || [];
@@ -1813,6 +1874,9 @@ export async function importQuoter(env, viewer, { csv, apply = false }) {
     sku: col(/^supplier sku/), cost: col(/^gbp cost \(/), level: col(/^item level/) };
   if (C.name < 0 || C.cat < 0) throw bad('That doesn\'t look like a Quoter item export (no Item Name or Category column).');
   const existing = (await env.DB.prepare('SELECT * FROM stock_items').all()).results || [];
+  // Items the import added that have never had stock and haven't been edited by hand can still take the import's view of them.
+  const everStocked = new Set(((await env.DB.prepare('SELECT DISTINCT item_id FROM stock_units').all()).results || []).map((r) => r.item_id));
+  const freshQuoter = (i) => /\(Quoter\)$/.test(i.created_by || '') && !everStocked.has(i.id) && !i.edited_at;
   const byName = new Map(existing.map((i) => [i.name.toLowerCase(), i]));
   const byCode = new Map(existing.filter((i) => i.code).map((i) => [i.code.toUpperCase(), i]));
   const aliasOwner = new Map(((await env.DB.prepare('SELECT code, item_id FROM stock_aliases').all()).results || []).map((a) => [a.code.toUpperCase(), a.item_id]));
@@ -1840,17 +1904,18 @@ export async function importQuoter(env, viewer, { csv, apply = false }) {
     const supplier = /\bteam$/i.test(item.supplier) ? null : item.supplier || null;
     const values = {
       name: item.name, code, description: item.desc ? item.desc.slice(0, 600) : null, category: was?.category || CATEGORY_WORDS.find(([re]) => re.test(item.name))?.[1] || (/critical spares/i.test(item.sub) ? 'Critical spares' : null),
-      mode: was?.mode || 'batch', unit: was?.unit || 'each', weight: was?.weight || (/uninterrupt|\bups\b.*battery|battery/i.test(item.name) ? 'heavy' : LIGHT.test(item.name) ? 'light' : HEAVY.test(item.name) ? 'heavy' : MODERATE.test(item.name) ? 'moderate' : 'light'),
+      // Things worth £20 or more usually come one to a box, so each is scanned and labelled; cheaper parts come by the box or bag.
+      mode: was && !freshQuoter(was) ? was.mode : (item.cost ?? 0) >= 20 ? 'serial' : 'batch', unit: was?.unit || 'each', weight: was?.weight || (/uninterrupt|\bups\b.*battery|battery/i.test(item.name) ? 'heavy' : LIGHT.test(item.name) ? 'light' : HEAVY.test(item.name) ? 'heavy' : MODERATE.test(item.name) ? 'moderate' : 'light'),
       supplier, supplier_part: quoterCodes(item.sku)[0] || (item.sku && !/^(SCE|n\/a)$/i.test(item.sku) ? item.sku.slice(0, 80) : null), manufacturer: /^(OEM)$/i.test(item.maker) ? null : item.maker || null,
       mpn: quoterCodes(item.code)[0] || null, unit_cost: item.cost ?? was?.unit_cost ?? null,
     };
     const aliases = codes.filter((c) => c.toUpperCase() !== String(code || '').toUpperCase());
-    (was ? out.updated : out.added).push({ name: item.name, code, supplier, cost: values.unit_cost, weight: values.weight, category: values.category });
+    (was ? out.updated : out.added).push({ name: item.name, code, supplier, cost: values.unit_cost, weight: values.weight, category: values.category, mode: values.mode });
     if (!apply) continue;
     let id = was?.id;
     if (was) {
-      await env.DB.prepare('UPDATE stock_items SET description = COALESCE(?, description), category = ?, supplier = ?, supplier_part = ?, manufacturer = ?, mpn = COALESCE(?, mpn), unit_cost = ?, active = 1 WHERE id = ?')
-        .bind(values.description, values.category, values.supplier, values.supplier_part, values.manufacturer, values.mpn, values.unit_cost, id).run();
+      await env.DB.prepare('UPDATE stock_items SET description = COALESCE(?, description), category = ?, supplier = ?, supplier_part = ?, manufacturer = ?, mpn = COALESCE(?, mpn), unit_cost = ?, mode = ?, active = 1 WHERE id = ?')
+        .bind(values.description, values.category, values.supplier, values.supplier_part, values.manufacturer, values.mpn, values.unit_cost, values.mode, id).run();
     } else {
       id = (await env.DB.prepare(`INSERT INTO stock_items (code, name, description, category, mode, unit, weight, supplier, supplier_part, manufacturer, mpn, unit_cost, two_bin, active, created_at, created_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?) RETURNING id`).bind(values.code, values.name, values.description, values.category, values.mode, values.unit, values.weight, values.supplier,
@@ -1933,4 +1998,16 @@ export async function barcodeLookup(env, viewer, code) {
     }
   }
   return { code: c, checked: !reason, reason, items, existing: existing.slice(0, 5), cached: Boolean(fresh) };
+}
+
+// What things cost is for managers: everyone else gets the same answers without the money in them.
+const MONEY_KEYS = new Set(['cost', 'unit_cost', 'unitCost', 'value', 'stockValue']);
+export function forViewer(viewer, data) {
+  if (canManage(viewer)) return data;
+  const strip = (v) => {
+    if (Array.isArray(v)) return v.map(strip);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).filter(([k]) => !MONEY_KEYS.has(k)).map(([k, x]) => [k, strip(x)]));
+    return v;
+  };
+  return strip(data);
 }
