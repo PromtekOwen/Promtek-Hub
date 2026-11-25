@@ -14290,6 +14290,7 @@ async function imsStatsHtml() {
       ${kpi('rootMissing', 'Root cause still needed', t.rootMissing, '', true)}
     </div>
     ${imsSinceHtml(s.latest)}
+    ${s.marketing ? imsMarketingHtml(s, { period, at, kpi }) : ''}
     <section class="card ims-trend">
       <div class="ims-card-head"><h3>${{ flow: 'Raised and closed each month', nc: 'Non-conformities each month', open: 'Open at the end of each month' }[imsTrend]}</h3>
         ${imsSwitch('trend', imsTrend, [['flow', 'Raised and closed'], ['nc', 'Non-conformities'], ['open', 'Open']])}</div>
@@ -14310,6 +14311,30 @@ async function imsStatsHtml() {
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by sub-type</h3>${imsDonut(s.subTypes, 'subTypes')}</section>
       <section class="card"><h3 style="margin-top:0">Open ${esc(at)} by assignee</h3>${imsBars(s.openByAssignee, 'openByAssignee', { limit: 12 })}</section>
     </div>`;
+}
+
+// Marketing's own work (branding, events and the like), counted on its own and left out of the IMS figures.
+function imsMarketingHtml(s, { period, at, kpi }) {
+  const m = s.marketing;
+  const t = m.totals;
+  const cell = (rows, id, name, n, title) => (n ? `<button class="linklike" data-ims-drill="${esc(`${id}:${name}`)}" data-title="${esc(title)}">${n}</button>` : '<span class="muted">0</span>');
+  return `<section class="card ims-mkt"><h3 style="margin-top:0">Marketing work</h3>
+      <p class="help" style="margin-top:0">${m.types.map((x) => esc(x.name)).join(', ')}. Counted here on their own, and not in any of the IMS figures.</p>
+      <div class="ims-kpis">
+        ${kpi('mktOpen', `Open ${at}`, t.open, `${t.overdue} past their target`)}
+        ${kpi('mktRaised', `Raised in ${period}`, t.raised)}
+        ${kpi('mktClosed', `Closed in ${period}`, t.closed)}
+        ${kpi('mktOverdue', `Past their target ${at}`, t.overdue, '', true)}
+      </div>
+      <div class="table-wrap"><table class="ims-area-table"><thead><tr><th>Type</th><th class="num">Open ${esc(at)}</th><th class="num">Raised</th><th class="num">Closed</th></tr></thead><tbody>
+        ${m.types.map((x) => `<tr><td>${esc(x.name)}</td><td class="num">${cell(s.mktOpenByType, 'mktOpenByType', x.name, x.open, `${x.name}: open ${at}`)}</td>
+          <td class="num">${cell(s.mktRaisedByType, 'mktRaisedByType', x.name, x.raised, `${x.name}: raised in ${period}`)}</td>
+          <td class="num">${cell(s.mktClosedByType, 'mktClosedByType', x.name, x.closed, `${x.name}: closed in ${period}`)}</td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="ims-grid ims-wide" style="margin-top:1rem">
+        <div><h4 style="margin:0 0 .5rem">Raised and closed each month</h4>${imsMonthBars(m.months, 'raised', 'closed', { labels: ['Raised', 'Closed'] })}</div>
+        <div><h4 style="margin:0 0 .5rem">Open ${esc(at)} by assignee</h4>${imsBars(s.mktOpenByAssignee, 'mktOpenByAssignee', { limit: 10 })}</div>
+      </div></section>`;
 }
 
 let imsTrend = 'flow';
@@ -15061,7 +15086,7 @@ async function imsClick(event) {
     const [kind, ...rest] = id.split(':');
     const name = rest.join(':');
     const titles = { openByType: `Open by IMS Task Type: ${name}`, raisedByType: `Raised by type: ${name}`, rootCauses: `Root cause, raised: ${name}`,
-      rootCausesOpen: `Root cause, open: ${name}`, subTypes: `Sub-type: ${name}`, openByAssignee: `Open, ${name}` };
+      rootCausesOpen: `Root cause, open: ${name}`, subTypes: `Sub-type: ${name}`, openByAssignee: `Open, ${name}`, mktOpenByAssignee: `Marketing work open, ${name}` };
     imsDrill = { id, title: drill.dataset.title || titles[kind] || name };
     return render();
   }

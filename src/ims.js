@@ -933,8 +933,19 @@ const NOT_SET = 'Not set';
 const rootNeeded = (i) => /^yes$/i.test(i.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
 const rootCounts = (i) => !/^no$/i.test(i.rootRequired || '') || ['Incident', '8D Report'].includes(i.type);
 
+// Marketing's own work: not IMS tasks, so left out of the IMS statistics, and shown on its own
+// when Marketing is chosen.
+export const MARKETING_WORK = ['Awards & Recognition', 'Branding', 'Customer Relations', 'Digital Marketing Content', 'Events & Exhibitions', 'Marketing OPS', 'Physical Marketing Content'];
+const workName = (v) => String(v || '').toLowerCase().replace(/\band\b/g, '&').replace(/\s+/g, ' ').trim();
+const MARKETING_NAMES = new Map(MARKETING_WORK.map((n) => [workName(n), n]));
+// A sub-task of one is part of it, so counts with it.
+export const marketingWork = (i) => MARKETING_NAMES.get(workName(i.type))
+  || (i.subtask && i.parentType ? MARKETING_NAMES.get(workName(i.parentType)) : null) || null;
+
 export function statsOf(allItems, { area = null, month = null, now = new Date() } = {}) {
-  let work = mergeCopies(allItems.filter(counted));
+  const everything = mergeCopies(allItems.filter(counted));
+  const mkt = everything.filter((i) => marketingWork(i));
+  let work = everything.filter((i) => !marketingWork(i));
   if (area) work = work.filter((i) => i.areas.includes(area));
   const months = lastMonths(24, now);
   const shown = months.slice(-12);
@@ -997,7 +1008,29 @@ export function statsOf(allItems, { area = null, month = null, now = new Date() 
     })),
   };
   out.openByArea.forEach((a) => a.keys.forEach((k) => used.add(k)));
-  const byKey = new Map(work.map((i) => [i.key, i]));
+  if (area === 'MARKETING') {
+    const mOpen = mkt.filter((i) => openAt(i, end));
+    const mRaised = mkt.filter((i) => inPeriod(i.created));
+    const mClosed = mkt.filter((i) => i.done && inPeriod(i.resolved));
+    const mOverdue = mOpen.filter((i) => i.target && i.target < endDay);
+    Object.assign(out.sets, { mktOpen: keys(mOpen), mktRaised: keys(mRaised), mktClosed: keys(mClosed), mktOverdue: keys(mOverdue) });
+    [mOpen, mRaised, mClosed].flat().forEach((i) => used.add(i.key));
+    const byType = (xs) => tally(xs.map((i) => [marketingWork(i), i.key]));
+    out.mktOpenByType = byType(mOpen);
+    out.mktRaisedByType = byType(mRaised);
+    out.mktClosedByType = byType(mClosed);
+    out.mktOpenByAssignee = breakdown(mOpen, (i) => (i.assignee ? [i.assignee] : [])).map((e) => (e.name === NOT_SET ? { ...e, name: 'Unassigned' } : e));
+    const count = (rows, name) => rows.find((r) => r.name === name)?.n || 0;
+    out.marketing = {
+      types: MARKETING_WORK.map((name) => ({ name, open: count(out.mktOpenByType, name), raised: count(out.mktRaisedByType, name), closed: count(out.mktClosedByType, name) })),
+      totals: { open: mOpen.length, raised: mRaised.length, closed: mClosed.length, overdue: mOverdue.length },
+      months: shown.map((m) => {
+        const t = Math.min(endOf(m), +now);
+        return { month: m, raised: mkt.filter((i) => monthOf(i.created) === m).length, closed: mkt.filter((i) => i.done && monthOf(i.resolved) === m).length, open: mkt.filter((i) => openAt(i, t)).length };
+      }),
+    };
+  }
+  const byKey = new Map([...work, ...mkt].map((i) => [i.key, i]));
   out.items = Object.fromEntries([...used].map((k) => byKey.get(k)).filter(Boolean).map((i) => [i.key, {
     key: i.key, summary: i.summary, type: i.type, imsType: i.imsType, status: i.status, done: i.done, areas: i.areas, assignee: i.assignee, assigneeId: i.assigneeId,
     rootCause: i.rootCause, rootRequired: i.rootRequired, whys: Boolean(i.whys), subTypes: i.subTypes, created: i.created, resolved: i.resolved, target: i.target, alsoKeys: i.alsoKeys || [],
