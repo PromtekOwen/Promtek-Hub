@@ -1751,3 +1751,63 @@ export async function importQuoter(env, viewer, { csv, apply = false }) {
   }
   return { ok: true, applied: apply, ...out };
 }
+
+// ---------- looking up product barcodes ----------
+
+// Shop barcodes (EAN-13, UPC-A, EAN-8, GTIN-14) are only a number; what the product is comes from
+// a lookup service. UPCitemdb's free plan needs no sign-up and allows 100 lookups a day, a few a
+// minute; with a UPCITEMDB_KEY secret the paid plan is used instead. Answers are kept, so each
+// barcode is only looked up once (ones not found are tried again after 30 days).
+const UPC_DAILY = 95;
+export function isGtin(code) {
+  const c = String(code || '').trim();
+  if (!/^\d{8}$|^\d{12,14}$/.test(c)) return false;
+  const digits = [...c].map(Number);
+  const check = digits.pop();
+  const sum = digits.reverse().reduce((s, d, i) => s + d * (i % 2 === 0 ? 3 : 1), 0);
+  return (10 - (sum % 10)) % 10 === check;
+}
+
+export async function barcodeLookup(env, viewer, code) {
+  const c = String(code || '').trim();
+  if (!isGtin(c)) return { code: c, checked: false, reason: 'not-a-product-barcode', items: [], existing: [] };
+  const cached = await env.DB.prepare('SELECT * FROM stock_barcode_cache WHERE code = ?').bind(c).first();
+  const fresh = cached && (cached.found || Date.now() - new Date(cached.looked_at).getTime() < 30 * 86400000);
+  let items = [];
+  let reason = null;
+  if (fresh) items = JSON.parse(cached.data || '[]');
+  else {
+    const day = today();
+    const used = Number(await getState(env, `stock_upc_${day}`)) || 0;
+    if (!env.UPCITEMDB_KEY && used >= UPC_DAILY) reason = 'limit';
+    else {
+      await setState(env, `stock_upc_${day}`, String(used + 1));
+      try {
+        const paid = Boolean(env.UPCITEMDB_KEY);
+        const res = await fetch(`https://api.upcitemdb.com/prod/${paid ? 'v1' : 'trial'}/lookup?upc=${encodeURIComponent(c)}`, {
+          headers: { Accept: 'application/json', ...(paid ? { user_key: env.UPCITEMDB_KEY, key_type: '3scale' } : {}) },
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 429 || /TOO_FAST|EXCEED_LIMIT/i.test(data.code || '')) reason = /EXCEED/i.test(data.code || '') ? 'limit' : 'busy';
+        else if (!res.ok && res.status !== 404 && data.code !== 'INVALID_UPC') reason = 'error';
+        else {
+          items = (data.items || []).slice(0, 5).map((i) => ({
+            title: text(i.title, 160), brand: text(i.brand, 120), model: text(i.model, 80), description: text(plainText(i.description), 600),
+            category: text(String(i.category || '').split('>').pop(), 80), image: (i.images || []).find((u) => /^https:\/\//.test(u)) || null, ean: i.ean || c,
+          })).filter((i) => i.title);
+          await env.DB.prepare('INSERT OR REPLACE INTO stock_barcode_cache (code, found, data, looked_at) VALUES (?, ?, ?, ?)').bind(c, items.length ? 1 : 0, JSON.stringify(items), nowIso()).run();
+        }
+      } catch { reason = 'error'; }
+    }
+  }
+  // Stock items that might be the same thing under another name (as Quoter names it, say).
+  const existing = [];
+  for (const i of items) {
+    for (const q of [i.model, i.brand && i.model ? `${i.brand} ${i.model}` : null, i.title?.split(/\s+/).slice(0, 3).join(' ')].filter((x) => x && x.length >= 3)) {
+      for (const hit of await suggest(env, q)) if (!existing.some((e) => e.id === hit.id)) existing.push(hit);
+      if (existing.length >= 5) break;
+    }
+  }
+  return { code: c, checked: !reason, reason, items, existing: existing.slice(0, 5), cached: Boolean(fresh) };
+}

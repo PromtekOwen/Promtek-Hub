@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS stock_barcode_cache (code TEXT PRIMARY KEY, found INTEGER NOT NULL DEFAULT 0, data TEXT, looked_at TEXT NOT NULL);

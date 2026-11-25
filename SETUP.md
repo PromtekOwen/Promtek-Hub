@@ -1109,7 +1109,8 @@ The Stock tile is open to developers only to begin with. Open it to more people 
    - **Settings**: Jira moves are off to begin with, so Hardware complete only says what it would move in Jira. Turn them on when you want it to close Purchase Order and Build and start Testing & Configuration.
 4. Work orders are the open Hardware categories on customer orders, read from Jira when the tile is opened (at most every 10 minutes, or straight away with **Refresh from Jira**). The parts list comes from the description of the category's Purchase Order item, a line at a time ("2 x …", "… x2", "Qty 2 - …", or a table row with a number in it).
 5. Scanning: on an Android phone or the tablet, the camera button reads barcodes in Chrome. A Bluetooth or USB scanner that types like a keyboard works in any scan box.
-6. Xero isn't linked yet: deliveries are entered by hand from **Stock → To buy** (Mark as ordered).
+6. Run every line of `schema-084.sql` too. A scanned shop barcode (EAN or UPC) that isn't a stock item yet is looked up on UPCitemdb, and what it finds can fill in the new item. The free plan needs no sign-up and allows 100 lookups a day; each barcode is only looked up once. For more, take a paid plan and add its key as the secret `UPCITEMDB_KEY`.
+7. Xero isn't linked yet: deliveries are entered by hand from **Stock → To buy** (Mark as ordered).
 
 ## Part 21: Sales (prospects and quotes)
 

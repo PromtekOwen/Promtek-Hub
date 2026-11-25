@@ -280,8 +280,8 @@ const itemFields = (i = {}, { compact = false } = {}) => `
     <label>Category <input name="category" value="${esc(i.category || '')}" placeholder="Contactors, cable, PLCs" list="st-cats"></label>
     <label>Supplier <input name="supplier" value="${esc(i.supplier || '')}"></label>
     <label>Supplier part no. <input name="supplier_part" value="${esc(i.supplier_part || '')}"></label>
-    ${compact ? '' : `<label>Manufacturer <input name="manufacturer" value="${esc(i.manufacturer || '')}"></label>
-    <label>Manufacturer part no. <input name="mpn" value="${esc(i.mpn || '')}"></label>`}
+    <label>Manufacturer <input name="manufacturer" value="${esc(i.manufacturer || '')}"></label>
+    <label>Manufacturer part no. <input name="mpn" value="${esc(i.mpn || '')}"></label>
     <label>Unit cost (£) <input name="unit_cost" type="number" min="0" step="0.01" value="${i.unit_cost ?? ''}"></label>
     <label>Days to arrive <input name="lead_days" type="number" min="0" value="${i.lead_days ?? ''}"></label>
     <label>Shelf life (days) <input name="shelf_life_days" type="number" min="0" value="${i.shelf_life_days ?? ''}" placeholder="Leave blank if it doesn't expire"></label>
@@ -289,8 +289,8 @@ const itemFields = (i = {}, { compact = false } = {}) => `
     <label>Usually order <input name="reorder_qty" type="number" min="0" step="any" value="${i.reorder_qty ?? ''}"></label>
     <label class="st-check"><input type="checkbox" name="two_bin" ${i.two_bin ? 'checked' : ''}> Two-bin: reorder when the first bin empties</label>
   </div>
-  ${compact ? '' : `<label>Description <input name="description" value="${esc(i.description || '')}"></label>
-  <label>Barcodes and other codes <input name="aliases" value="${esc((i.aliases || []).join(', '))}" placeholder="Separate with commas"></label>`}`;
+  <label>Description <input name="description" value="${esc(i.description || '')}"></label>
+  ${compact ? '' : `<label>Barcodes and other codes <input name="aliases" value="${esc((i.aliases || []).join(', '))}" placeholder="Separate with commas"></label>`}`;
 
 function manualHtml(st) {
   return `<button class="linklike" data-st-cancel>‹ Back</button>
@@ -298,9 +298,36 @@ function manualHtml(st) {
       <p class="muted">Start typing: if it's already a stock item, choose it${st.code ? ' and the barcode is added to it' : ''}.</p>
       <div class="st-link"><input id="st-manq" placeholder="Name, part number or supplier code" autocomplete="off" value="${esc(st.q || '')}"><div class="st-sugg" id="st-man-sugg"></div></div>
     </section>
+    ${st.code ? barcodeHtml(st) : ''}
     <form class="card" data-st-form="newitem"><h3>Or make it a new stock item</h3>${itemFields({ name: st.q || '', aliases: st.code ? [st.code] : [] }, { compact: true })}
       <input type="hidden" name="aliases" value="${esc(st.code || '')}">
       <button class="btn" type="submit">Add it and take it in</button></form>`;
+}
+
+// What a shop barcode says the product is, from the lookup service.
+function barcodeHtml(st) {
+  const b = st.barcode;
+  if (!b) return '<section class="card st-bc"><p class="muted" style="margin:0">Looking the barcode up…</p></section>';
+  if (!b.checked && b.reason === 'not-a-product-barcode') return '';
+  const why = { limit: 'Today\'s barcode lookups have run out (the free plan allows 100 a day).', busy: 'The barcode lookup is busy. Try again in a minute.', error: 'The barcode lookup couldn\'t be reached.' }[b.reason];
+  return `<section class="card st-bc"><h3 style="margin-top:0">This might be</h3>
+    ${why ? `<p class="muted">${why} <button class="linklike" data-st-bcretry>Try again</button></p>` : ''}
+    ${b.existing.length ? `<p class="small muted" style="margin-bottom:.3rem">Already a stock item?</p><div class="st-bc-list">${b.existing.map((i) => `<button type="button" class="st-chip" data-st-useitem="${i.id}"><strong>${esc(i.name)}</strong><span>${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)}` : ''}</span></button>`).join('')}</div>` : ''}
+    ${b.items.length ? `<p class="small muted" style="margin-bottom:.3rem">From the barcode${b.existing.length ? ', as a new item' : ''}</p>${b.items.map((i, k) => `<div class="st-bc-item">${i.image ? `<img src="${esc(i.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+        <div><strong>${esc(i.title)}</strong><br><span class="muted small">${[i.brand, i.model, i.category].filter(Boolean).map(esc).join(' · ')}</span></div>
+        <button type="button" class="btn secondary small" data-st-bcuse="${k}">Use these details</button></div>`).join('')}`
+      : !why ? '<p class="muted" style="margin:0">The barcode isn\'t in the lookup service. Enter the details below.</p>' : ''}
+  </section>`;
+}
+
+async function loadBarcode(code) {
+  try { S.intakeStep.barcode = await get(`barcode?code=${encodeURIComponent(code)}`); }
+  catch { S.intakeStep.barcode = { checked: false, reason: 'error', items: [], existing: [] }; }
+  // Only the suggestions are redrawn, so anything already typed into the form stays.
+  if (S.intakeStep?.code !== code) return;
+  const box = view.querySelector('.st-bc');
+  if (box) box.outerHTML = barcodeHtml(S.intakeStep) || '';
+  else redraw();
 }
 
 function receiveHtml(st) {
@@ -694,6 +721,16 @@ async function onClick(e) {
   if ((b = t('[data-st-issue]'))) { S.intakeStep = { kind: 'issue', expectedId: Number(b.dataset.stIssue) || null, itemId: Number(b.dataset.item) || null, back: S.intakeStep }; S.tab = 'intake'; return redraw(); }
   if ((b = t('[data-st-loc]'))) { S.intakeStep.location = b.dataset.stLoc; const box = document.getElementById('st-recv-loc'); if (box) box.value = b.dataset.stLoc; view.querySelectorAll('[data-st-loc]').forEach((x) => x.classList.toggle('on', x === b)); return; }
   if ((b = t('[data-st-useitem]'))) return useItem(Number(b.dataset.stUseitem));
+  if ((b = t('[data-st-bcretry]'))) { S.intakeStep.barcode = null; redraw(); return loadBarcode(S.intakeStep.code); }
+  if ((b = t('[data-st-bcuse]'))) {
+    const i = S.intakeStep.barcode.items[Number(b.dataset.stBcuse)];
+    const f = view.querySelector('form[data-st-form="newitem"]');
+    const set = (n, v) => { const el = f?.querySelector(`[name="${n}"]`); if (el && v) el.value = v; };
+    set('name', i.title); set('manufacturer', i.brand); set('mpn', i.model); set('description', i.description); set('category', i.category);
+    f?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    f?.querySelector('[name=name]')?.focus();
+    return H.toast('Filled in from the barcode. Check them, then add supplier and cost.');
+  }
   if ((b = t('[data-st-printunits]'))) return printLabels({ units: b.dataset.stPrintunits });
   if ((b = t('[data-st-printitem]'))) return printLabels({ items: b.dataset.stPrintitem });
   if ((b = t('[data-st-totrace]'))) { S.tab = 'trace'; S.unit = await get(`unit?id=${b.dataset.stTotrace}`); S.intakeStep = null; return redraw(); }
@@ -943,7 +980,7 @@ async function scanIntake(code, form) {
   form.reset();
   try {
     const r = await get(`lookup?code=${encodeURIComponent(code)}`);
-    if (r.type === 'unknown') S.intakeStep = { kind: 'manual', code, q: '' };
+    if (r.type === 'unknown') { S.intakeStep = { kind: 'manual', code, q: '', barcode: null }; redraw(); return loadBarcode(code); }
     else if (r.type === 'item') return startReceive(r.item.id, r.expected[0]?.id || null, { code, expected: r.expected, item: r.item });
     else S.intakeStep = { kind: r.type, ...r };
     redraw();

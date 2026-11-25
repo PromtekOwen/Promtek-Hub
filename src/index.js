@@ -1126,6 +1126,7 @@ async function route(request, env, url, user) {
         order: () => S.orderDetail(env, user, q('id')),
         lookup: () => S.lookup(env, user, q('code')),
         suggest: async () => ({ items: await S.suggest(env, q('q')) }),
+        barcode: () => S.barcodeLookup(env, user, q('code')),
         items: () => S.itemsList(env, user, { q: q('q') || '' }),
         locations: () => S.locations(env),
         putaway: () => S.putaway(env, user, q('item')),

@@ -3090,3 +3090,8 @@ p .cust-shield { width: 18px; height: 18px; }
 }
 .st-tools .segment { max-width: 100%; overflow-x: auto; }
 .st-file { cursor: pointer; }
+.st-bc-list { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: .8rem; }
+.st-bc-item { display: flex; align-items: center; gap: .8rem; padding: .6rem 0; border-top: 1px solid var(--line); }
+.st-bc-item > div { flex: 1; min-width: 0; }
+.st-bc-item img { width: 56px; height: 56px; object-fit: contain; border-radius: 8px; background: #fff; flex: none; }
+@media (max-width: 640px) { .st-bc-item { flex-wrap: wrap; } .st-bc-item .btn { width: 100%; } }
