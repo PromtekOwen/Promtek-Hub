@@ -161,7 +161,7 @@ async function serverApi(path, options = {}) {
     if (me?.tablet && !me.tablet.locked) { tabletResume(); throw new Error('Enter your PIN to carry on, then try that again.'); }
     tabletPicker(); throw new Error(data.error);
   }
-  if (!res.ok) throw new Error(data.error || `Something went wrong (${res.status}).`);
+  if (!res.ok) { const err = new Error(data.error || `Something went wrong (${res.status}).`); err.data = data; err.status = res.status; throw err; }
   return data;
 }
 
@@ -732,6 +732,14 @@ const pages = {
   '#/invoicing': {
     band: () => '<h1>Invoicing</h1><p>Every order and service contract invoice, where each has got to, the money expected each month, and how invoicing and payment have gone.</p>',
     render: () => invoicingHtml(),
+  },
+
+  '#/stock': {
+    band: () => '<h1>Stock</h1><p>Parts for each job: what\'s needed, what\'s in, what\'s on its way, and where everything went.</p>',
+    async render() {
+      const ui = await stockUi();
+      return ui.render();
+    },
   },
 
   '#/custfeedback': {
@@ -5334,6 +5342,7 @@ async function logPickerHtml() {
   const { recent = [], assigned = [] } = logShortcuts;
   const onScreen = await screenItemsHtml();
   const bonus = await bonusItemsHtml();
+  const fromStock = await stockTimeHtml();
   const group = (title, options, empty) => `<h2>${title}</h2>
     <div class="options">${options.length ? options.map(logOptionRow).join('') : `<div class="card"><p class="muted">${empty}</p></div>`}</div>`;
 
@@ -5353,6 +5362,7 @@ async function logPickerHtml() {
       <span class="option-main"><strong>Find it step by step</strong><span class="muted">Internal or customer, then down to the stage</span></span>
       <span class="chev">›</span>
     </button></div>
+    ${fromStock}
     ${group('Logged recently', recent, 'Nothing yet. Your last few jobs appear here once you have logged some time.')}
     <div class="log-favs-inline"><h2>Favourites</h2><div class="options log-fav-list">${favListHtml()}</div></div>
     ${group('Assigned to you', assigned, 'Nothing assigned to you in Jira right now.')}`);
@@ -5368,7 +5378,7 @@ function xpPreview(minutes) {
 
 function logFormHtml() {
   const today = todayIso();
-  const prefill = pendingCall;
+  const prefill = pendingCall || logPrefill;
   const part = logChosen.rate != null && logChosen.rate !== 1 && logChosen.rate !== 0;
   return `
     <div class="card">
@@ -5390,7 +5400,7 @@ function logFormHtml() {
     <div class="card" style="margin-top:1rem">
       <div class="row">
         <label>Date <input id="log-date" type="date" value="${today}" max="${today}"></label>
-        <label>Started <input id="log-start" type="time" value="09:00"></label>
+        <label>Started <input id="log-start" type="time" value="${esc(prefill?.start || '09:00')}"${prefill?.start ? ' data-touched="1"' : ''}></label>
       </div>
       <div id="log-day" class="log-day"></div>
       <p class="muted" style="margin:1rem 0 .35rem">How long?</p>
@@ -16373,7 +16383,7 @@ async function logAction(action, button) {
   };
   button.disabled = true;
   try {
-    if (action === 'cancel-log') { logChosen = null; logMode = null; return render(); }
+    if (action === 'cancel-log') { logChosen = null; logMode = null; logPrefill = null; return render(); }
     if (action === 'cancel-psc') {
       logPscProject = null;
       // Coming from a call, step back to the list it came from rather than
@@ -16413,6 +16423,7 @@ async function logAction(action, button) {
         callsData = null;
       }
       logChosen = null;
+      logPrefill = null;
       logNode = null;
       logTrail = [];
       me = await api('/api/me');
@@ -16673,8 +16684,9 @@ view.addEventListener('click', async (event) => {
       }
     }
     logChosen = picked;
-    // Logging a call's time goes straight to the form; otherwise ask which way first.
-    logMode = pendingCall ? 'manual' : null;
+    logPrefill = picked.stockPrefill || null;
+    // Logging a call's time (or stock scans) goes straight to the form; otherwise ask which way first.
+    logMode = pendingCall || logPrefill ? 'manual' : null;
     await contractCheck();
     await render();
     if (logMode && !logChosen.contractCheck) { updateXpPreview(); return loadStageHint(); }
@@ -17067,6 +17079,7 @@ const WAITING_FOR = {
   '#/jobs': () => (jobsView ? 'Loading the job from Jira' : 'Fetching open jobs from Jira'),
   '#/docs': () => 'Loading the documents',
   '#/custfeedback': () => 'Loading customer feedback',
+  '#/stock': () => 'Loading stock',
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : quotesOpenRefresh ? 'Reading quotes from Jira' : 'Loading'),
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
@@ -17570,6 +17583,7 @@ window.addEventListener('hashchange', () => {
   if (currentRoute() !== '#/shop') shopSimulation = null;
   if (currentRoute() !== '#/obs') { obsSurvey = null; obsSection = 0; obsReading = null; obsView = null; }
   if (currentRoute() !== '#/calls' && currentRoute() !== '#/log') { callFlow = null; pendingCall = null; }
+  if (currentRoute() !== '#/log') logPrefill = null;
   if (currentRoute() !== '#/it') { itForm = null; itAssets = []; }
   if (currentRoute() !== '#/contracts') conOpen = null;
   if (currentRoute() !== '#/psc') { pscOpen = null; pscNew = null; }
@@ -18516,7 +18530,7 @@ async function trChange(event) {
 // ---------- Notifications: the bell, and what each tile tells you about ----------
 
 // Tiles with something to tell you about, by page. Home holds "everything else".
-const NOTIFY_TILES = { '#/': 'hub', '#/psc': 'psc', '#/ims': 'ims', '#/quotes': 'quotes', '#/jobs': 'jobs', '#/xp': 'xp', '#/time': 'time',
+const NOTIFY_TILES = { '#/stock': 'stock', '#/': 'hub', '#/psc': 'psc', '#/ims': 'ims', '#/quotes': 'quotes', '#/jobs': 'jobs', '#/xp': 'xp', '#/time': 'time',
   '#/condor': 'condor', '#/contracts': 'contracts', '#/training': 'training', '#/nearmiss': 'nearmiss', '#/feedback': 'feedback', '#/vehicles': 'vehicles', '#/requests': 'requests' };
 const NOTIFY_ROUTE = Object.fromEntries(Object.entries(NOTIFY_TILES).map(([r, t]) => [t, r]));
 const notifyTileName = (tile) => (tile === 'hub' ? 'Everything else' : MODULES.find((m) => m.id === tile)?.name || tile.toUpperCase());
@@ -19790,6 +19804,31 @@ async function docsDriveClick(event) {
 let cfData = null;
 let cfFilter = 'all';
 let cfQuery = '';
+
+// The Stock tile lives in its own module, loaded when it's first opened.
+let stockMod = null;
+async function stockUi() {
+  stockMod ||= await import('./stock-ui.js');
+  stockMod.init({ api, esc, toast, saveFile, me: () => me, logFromStock });
+  return stockMod;
+}
+
+// Time suggested from someone's stock scans, opened in Log time ready to correct and save.
+let logPrefill = null;
+function logFromStock({ option, minutes, start, description }) {
+  logChosen = { ...option, skipChildren: true };
+  logMode = 'manual';
+  logPrefill = { seconds: minutes * 60, description, start };
+  location.hash = '#/log';
+}
+
+async function stockTimeHtml() {
+  if (!(me.user?.isAdmin || me.user?.tiles?.stock)) return '';
+  const t = await api('/api/stock/time').catch(() => null);
+  const opts = (t?.suggestions || []).filter((s) => s.target?.option).map((s) => ({ ...s.target.option, skipChildren: true,
+    sublabel: `${s.start}–${s.end} from your stock scans on ${s.orderKey}`, stockPrefill: { seconds: s.minutes * 60, start: s.start, description: `Hardware for ${s.orderKey} (from stock scans)` } }));
+  return opts.length ? `<h2>From your stock scans today</h2><div class="options">${opts.map(optionRow).join('')}</div>` : '';
+}
 
 async function cfRender() {
   cfData = await api('/api/custfeedback');

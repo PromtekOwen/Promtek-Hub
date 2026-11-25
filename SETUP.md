@@ -1095,6 +1095,22 @@ The answers aren't in the assessment. They go to the **Customer Feedback** tile 
 
 **Setting it up:** `schema-081.sql` (with Part 20b).
 
+## Part 20d: Stock (demo)
+
+The Stock tile is open to developers only to begin with. Open it to more people in Admin → Permissions (the **Stock** tile, plus **Manage stock** and **Stock overrides**) when it's ready.
+
+1. In the D1 console, run every line of `schema-083.sql`.
+2. Deploy. Nothing else needs setting up: there are no new secrets.
+3. Open **Stock → Setup**:
+   - **Locations**: add the shelves and bins. A code start and a count makes several at once (A- and 12 gives A-01 to A-12). Mark each shelf Low, Middle or High: heavy items are only suggested for low shelves, moderate ones for low or middle.
+   - **Items**: **Import from Quoter** takes Quoter's item export (CSV) and adds its hardware and critical spares, with codes, supplier SKUs and costs; it shows what it'll do before anything changes, and can be run again to update costs. Items can also be added by hand, or at Intake as they arrive. Bins (screws and the like) are the "Bin" kind: quantity only.
+   - **Panel defaults**: the stock usually in each kind of panel.
+   - **Labels**: tick locations or items and print. Labels are 50 × 25 mm Code 128; any label printer that prints from the browser works, or plain paper.
+   - **Settings**: Jira moves are off to begin with, so Hardware complete only says what it would move in Jira. Turn them on when you want it to close Purchase Order and Build and start Testing & Configuration.
+4. Work orders are the open Hardware categories on customer orders, read from Jira when the tile is opened (at most every 10 minutes, or straight away with **Refresh from Jira**). The parts list comes from the description of the category's Purchase Order item, a line at a time ("2 x …", "… x2", "Qty 2 - …", or a table row with a number in it).
+5. Scanning: on an Android phone or the tablet, the camera button reads barcodes in Chrome. A Bluetooth or USB scanner that types like a keyboard works in any scan box.
+6. Xero isn't linked yet: deliveries are entered by hand from **Stock → To buy** (Mark as ordered).
+
 ## Part 21: Sales (prospects and quotes)
 
 **Prospects.** New potential customers, with no project in Jira yet, are kept in the **Prospects** tab rather than as quotes. Each one records:

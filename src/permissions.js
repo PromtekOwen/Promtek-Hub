@@ -53,6 +53,8 @@ export const PERMISSIONS = {
   customerStats: { name: 'Customer statistics', about: 'The Statistics tab on each customer: money and time by month, open work, how long things take and who knows them best', groups: ['management'], tile: 'customers' },
   coshhManage: { name: 'Manage COSHH', about: 'Hear when COSHH assessments are due their yearly review, bring them in from Confluence and remove them', groups: ['management'], tile: 'coshh' },
   trainingManage: { name: 'Manage training and policies', about: 'Arrange tool box talks, publish policies, keep the training matrix and see who has acknowledged each', groups: ['management'], tile: 'training' },
+  stockManage: { name: 'Manage stock', about: 'Stock items, locations, panel defaults and labels, and applying stock check counts', groups: ['developer', 'management', 'lead'], tile: 'stock' },
+  stockLead: { name: 'Stock overrides', about: 'Set a work order\'s priority, move stock between work orders, and take stock back after Hardware complete', groups: ['developer', 'management', 'lead'], tile: 'stock' },
   jobDocs: { name: 'Job document settings', about: 'The Jobs settings cog: the kinds of job document, which are usual on each kind of category, and making new ones', groups: ['management', 'lead', 'developer'], tile: 'jobs' },
   developer: { name: 'Developer tools', about: 'Sync and Bitbucket status, connection tests, error details and viewing the hub as someone else', groups: ['developer'] },
   admin: { name: 'Admin', about: 'Admin, settings cogs, the audit log, employees, vehicles and the company chart', groups: [], fixed: true },
@@ -89,6 +91,7 @@ export const TILES = {
   shop: { name: 'XP shop', groups: ['management', 'lead'] },
   org: { name: 'Company chart' },
   reports: { name: 'Reports', groups: ['management', 'lead'] },
+  stock: { name: 'Stock', groups: ['developer'] },
 };
 
 // A rule: open to everyone, or to the roles, teams and leads of teams listed.

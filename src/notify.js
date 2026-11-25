@@ -7,6 +7,9 @@ import { access, loadAccessConfig, forService } from './permissions.js';
 // What each tile can tell you about. app and email are the starting choices; scope is
 // whether it's about every item or only those assigned to you, where that applies.
 export const EVENTS = {
+  stock: [
+    { id: 'stock-check', label: 'Stock check due', about: 'A scheduled stock count is due (developers, while Stock is a demo)', app: true, email: true },
+  ],
   custfeedback: [
     { id: 'feedback-sales', label: 'Wants a sales visit', about: 'A customer asks, in their feedback after a visit, for Sales to contact them (the Sales team)', app: true, email: true },
     { id: 'feedback-testimonial', label: 'Wants to give a testimonial', about: 'A customer offers a testimonial in their feedback (the Marketing team)', app: true, email: true },

@@ -83,6 +83,13 @@ export const MODULES = [
     detail: () => 'What customers say after a visit',
   },
   {
+    id: 'stock',
+    name: 'Stock',
+    route: '#/stock',
+    icon: icon('<path d="M3.5 8l8.5-4.5L20.5 8v8.5L12 21l-8.5-4.5z"/><path d="M3.5 8L12 12.5 20.5 8M12 12.5V21"/>'),
+    detail: () => 'Parts for each job, intake, picking and stock checks',
+  },
+  {
     id: 'coshh',
     name: 'COSHH',
     route: '#/coshh',

@@ -960,6 +960,7 @@ export async function runScheduled(rawEnv) {
       await attempt('COSHH page', async () => (await import('./coshh.js')).hourly(env));
       await attempt('Tool box talks finished', async () => (await import('./training.js')).concludeTalks(env));
       await attempt('Birthdays', async () => (await import('./eotq.js')).birthdayAlerts(env));
+      if (new Date().getUTCHours() === 7) await attempt('Stock check reminders', async () => (await import('./stock.js')).checkReminders(env));
     }),
     'hourly-jobs': () => onceAnHour('hourly-jobs', () => attempt('Estimates and disputes', async () => (await import('./disputes.js')).hourly(env))),
     'hourly-quotes': () => onceAnHour('hourly-quotes', async () => {

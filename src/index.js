@@ -302,7 +302,7 @@ async function devRoute(request, env, url, real) {
 // The requests that belong to one tile alone.
 const TILE_APIS = {
   condor: ['/api/mes/'], jobs: ['/api/jobs', '/api/approvals'], obsolescence: ['/api/obs/'], pow: ['/api/pow/'], coshh: ['/api/coshh'], customers: ['/api/customers'], it: ['/api/it/'],
-  requests: ['/api/requests'], feedback: ['/api/feedback'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'], nearmiss: ['/api/nearmiss'],
+  requests: ['/api/requests'], feedback: ['/api/feedback'], stock: ['/api/stock'], vehicles: ['/api/vehicles'], eotq: ['/api/eotq'], nearmiss: ['/api/nearmiss'],
 };
 
 // Developers can reach the hub's technical side of Admin, and nothing else there.
@@ -1114,6 +1114,55 @@ async function route(request, env, url, user) {
 
   if (pathname === '/api/custfeedback' && method === 'GET') return json(await (await import('./custfeedback.js')).list(env, user));
   if (pathname === '/api/custfeedback/done' && method === 'POST') return json(await (await import('./custfeedback.js')).markDone(env, user, await request.json().catch(() => ({}))));
+
+  // Stock: the workshop's parts, held for work orders and traced from delivery to job.
+  if (pathname.startsWith('/api/stock')) {
+    const S = await import('./stock.js');
+    const q = (k) => url.searchParams.get(k);
+    const sub = pathname.slice('/api/stock/'.length);
+    if (method === 'GET') {
+      const get = {
+        orders: () => S.orders(env, user, { status: q('status') || 'open', sync: q('sync') !== '0' }),
+        order: () => S.orderDetail(env, user, q('id')),
+        lookup: () => S.lookup(env, user, q('code')),
+        suggest: async () => ({ items: await S.suggest(env, q('q')) }),
+        items: () => S.itemsList(env, user, { q: q('q') || '' }),
+        locations: () => S.locations(env),
+        putaway: () => S.putaway(env, user, q('item')),
+        expected: () => S.expectedList(env),
+        buy: () => S.buyList(env, user),
+        panels: () => S.panels(env),
+        'take-from': () => S.takeFromPreview(env, q('id')),
+        checks: () => S.checks(env),
+        check: () => S.checkView(env, user, q('id')),
+        'check-location': () => S.checkLocation(env, user, { checkId: q('id'), location: q('code') }),
+        trace: () => S.trace(env, user, Object.fromEntries(url.searchParams)),
+        unit: () => S.unitHistory(env, user, q('id')),
+        recall: () => S.recall(env, user, { lot: q('lot'), itemId: q('item'), supplier: q('supplier') }),
+        dashboard: () => S.dashboard(env, user),
+        time: () => S.timeSuggest(env, user, q('date')),
+        settings: () => S.settings(env, user),
+        labels: () => S.labels(env, user, { units: q('units'), locations: q('locations'), items: q('items') }),
+      };
+      if (get[sub]) return json(await get[sub]());
+    }
+    if (method === 'POST') {
+      const post = {
+        sync: (b) => S.syncOrders(env, { force: true }), item: S.itemSave, 'item-remove': S.itemRemove, alias: S.addAlias, location: S.locationSave, 'location-remove': S.locationRemove,
+        intake: S.intake, 'intake-issue': S.intakeIssue, expected: S.expectedSave, 'expected-remove': S.expectedRemove, ordered: S.markOrdered,
+        need: S.needAdd, 'need-set': S.needSet, manual: S.addManualOrder, panel: S.panelSave, 'panel-remove': S.panelRemove, 'panel-apply': S.panelApply,
+        priority: S.setPriority, 'take-from': S.takeFrom, reassign: S.reassign, hold: S.hold, 'order-status': S.setOrderStatus,
+        pick: S.pick, return: S.giveBack, quarantine: S.quarantine, 'quarantine-release': S.releaseQuarantine, relocate: S.relocate,
+        complete: S.complete, reopen: S.reopen, plan: S.planSave, 'plan-remove': S.planRemove, 'check-start': S.checkStart, 'check-count': S.checkCount,
+        'check-finish': S.checkFinish, 'import-quoter': S.importQuoter, 'check-apply': S.checkApply, 'time-hide': S.timeHide, settings: S.setSettings, recheck: S.recheckOrders,
+      };
+      if (post[sub]) {
+        const body = await request.json().catch(() => ({}));
+        try { return json(await (sub === 'sync' ? post[sub](body) : post[sub](env, user, body))); }
+        catch (err) { if (err.confirm) return json({ error: err.message, confirm: err.confirm, fromKey: err.fromKey || null }, err.status || 409); throw err; }
+      }
+    }
+  }
 
   // Job documents: chosen per category, filled in on the job, laid out by the hub and put on the category in Jira.
   if (pathname.startsWith('/api/docs')) {
