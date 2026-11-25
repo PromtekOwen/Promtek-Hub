@@ -2951,3 +2951,8 @@ p .cust-shield { width: 18px; height: 18px; }
 .cf-bubble.plain { cursor: default; }
 :root[data-theme="dark"] .cf-follow { background: rgba(240, 180, 60, .14); }
 :root[data-theme="dark"] .cf-follow.done { background: var(--tint); }
+.req-talk { margin-top: .5rem; }
+.req-thread .fb-messages { max-height: 28rem; overflow-y: auto; }
+.req-list > li.unread { border-left: 4px solid var(--gold); }
+:root[data-theme="dark"] .fb-messages li { background: var(--surface); }
+:root[data-theme="dark"] .fb-messages li.writer { background: var(--tint); }

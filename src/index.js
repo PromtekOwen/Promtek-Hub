@@ -905,6 +905,8 @@ async function route(request, env, url, user) {
     if (method === 'GET' && pathname === '/api/requests') return json(await Req.list(env, user, { status: url.searchParams.get('status') || '' }));
     if (method === 'POST' && pathname === '/api/requests') return json(await Req.create(env, user, body));
     if (method === 'POST' && pathname === '/api/requests/update') return json(await Req.update(env, user, body));
+    if (method === 'GET' && pathname === '/api/requests/thread') return json(await Req.thread(env, user, url.searchParams.get('id')));
+    if (method === 'POST' && pathname === '/api/requests/message') return json(await Req.message(env, user, body));
   }
 
   if (pathname.startsWith('/api/tracker')) {
@@ -1543,6 +1545,7 @@ async function getMe(env, user) {
     jiraConnect: user.tablet || user.viewingAs ? null : await JiraAuth.status(env, user).then((s) => (s.available && !s.connected ? { needed: true, problem: s.problem } : null)).catch(() => null),
     // Replies waiting on the viewer's own anonymous feedback, worked out without anyone else knowing which posts are theirs.
     feedbackUnread: user.viewingAs ? 0 : await (await import('./feedback.js')).unreadFor(env, user).catch(() => 0),
+    requestsUnread: user.viewingAs ? 0 : await (await import('./requests.js')).unreadFor(env, user).catch(() => 0),
   };
   const emp = user.employee;
   if (!emp) return { ...base, linked: false };

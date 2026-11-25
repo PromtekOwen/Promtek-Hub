@@ -498,9 +498,13 @@ Everyone can choose **Light**, **Dark** or **Device** (follow the phone or compu
 
 ## Part 14c: Requests
 
-The **Requests** tile lets anyone ask for a new tile or a change to one, or report something that isn't working: what kind it is, which part of the hub, a title and the details. People see their own requests with their status and any reply.
+The **Requests** tile lets anyone ask for a new tile or a change to one, or report something that isn't working: what kind it is, which part of the hub, a title and the details. People see their own requests with their status and their messages.
 
-Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead, with an optional reply. Developers are emailed about each new request, and the person who sent one is emailed when its status changes. Emails go through the alert relay.
+Anyone in the **Developer** group, and admins, see every request, filtered by status, and can mark each one New, Working on it, Complete or Not going ahead. Developers are alerted about each new request, and the person who sent one when its status changes.
+
+**Messages.** Each request has a conversation between whoever sent it and the developers, whatever its status (New included): **Message** under the request, then **Send**. Each message alerts the other side straight away (whoever sent it, or every developer), by email through the alert relay and in the hub; a request with a message not yet read is marked **New**, and the tile counts them. Replies written before this are shown as the first message.
+
+**Setting it up:** run `schema-082.sql` in the D1 console.
 
 ## Part 14c2: Anonymous feedback
 

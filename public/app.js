@@ -10044,6 +10044,7 @@ function logFab() {
 let reqFilter = 'open';
 let reqDraft = { kind: '', tile: '', title: '', details: '' };
 let reqFormOpen = false;
+let reqOpen = null;          // the request whose conversation is open
 const REQ_STATUS_CLASS = { new: '', working: 'working', complete: 'good', rejected: 'muted' };
 
 function reqFormHtml(data) {
@@ -10065,12 +10066,12 @@ function reqItemHtml(r, data) {
   const head = `<div class="req-head"><span class="title">${esc(r.title)}</span>${status}</div>
     <span class="sub">${esc(data.kinds[r.kind] || r.kind)}${r.tile ? `, ${esc(r.tile)}` : ''}. ${data.developer ? `${esc(r.name || r.email)}, ` : ''}${when}.</span>`;
   const details = `<p class="pre-wrap req-details">${esc(r.details)}</p>`;
-  if (!data.developer) {
-    return `<li>${head}${details}${r.reply ? `<blockquote class="dispute-words"><strong>${esc(r.updated_by || 'Reply')}:</strong> ${esc(r.reply)}</blockquote>` : ''}</li>`;
-  }
-  return `<li data-req-id="${r.id}">${head}${details}
-      <label class="req-reply">Reply to ${esc((r.name || 'them').split(' ')[0])}, optional<textarea rows="2" data-req-reply maxlength="2000" placeholder="They'll see this with the status">${esc(r.reply || '')}</textarea></label>
-      <div class="row req-actions">${Object.entries(data.statuses).map(([k, l]) => `<button class="btn${k === r.status ? '' : ' secondary'}" data-req-status="${k}">${esc(l)}</button>`).join('')}</div></li>`;
+  const open = reqOpen === r.id;
+  const other = r.mine ? 'the developers' : (r.name || 'them').split(' ')[0];
+  const talk = `<div class="req-talk"><button class="linklike" data-req-thread="${r.id}">${open ? 'Hide the messages' : r.messages ? `Messages (${n(r.messages)})` : `Message ${esc(other)}`}</button>${r.unread ? ' <span class="fb-new">New</span>' : ''}</div>
+    ${open ? `<div class="fb-thread req-thread" id="req-thread-${r.id}">Loading the messages</div>` : ''}`;
+  const actions = data.developer ? `<div class="row req-actions">${Object.entries(data.statuses).map(([k, l]) => `<button class="btn${k === r.status ? '' : ' secondary'}" data-req-status="${k}">${esc(l)}</button>`).join('')}</div>` : '';
+  return `<li data-req-id="${r.id}" class="${r.unread ? 'unread' : ''}">${head}${details}${talk}${actions}</li>`;
 }
 
 async function requestsHtml() {
@@ -10088,6 +10089,33 @@ async function requestsHtml() {
     ${reqFormOpen ? reqFormHtml(data) : ''}
     ${data.requests.length ? `<ul class="list req-list">${data.requests.map((r) => reqItemHtml(r, data)).join('')}</ul>`
       : '<div class="card"><p style="margin:0">Nothing here.</p></div>'}`;
+}
+
+// The messages on a request, in the order sent, and a box to send another.
+async function reqLoadThread(id) {
+  const box = document.getElementById(`req-thread-${id}`);
+  if (!box) return;
+  try {
+    const t = await api(`/api/requests/thread?id=${id}`);
+    const when = (iso) => new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    const theirs = t.asRequester ? 'the developers' : (t.requester || 'them').split(' ')[0];
+    box.innerHTML = `${t.messages.length ? `<ul class="fb-messages">${t.messages.map((m) => {
+        // Your side on the right; the other side's on the left.
+        const ours = t.asRequester ? !m.fromDev : m.fromDev;
+        const you = t.asRequester ? !m.fromDev : m.fromDev && m.by === me.employee?.name;
+        return `<li class="${ours ? 'writer' : 'admin'}"><span class="sub"><strong>${esc(you ? 'You' : m.by || 'Someone')}</strong>${!you && m.fromDev ? ', developer' : ''}, ${esc(when(m.at))}</span>
+          <p class="pre-wrap">${esc(m.body)}</p></li>`;
+      }).join('')}</ul>` : `<p class="muted">No messages yet. ${t.asRequester ? 'Anything you send goes to the developers.' : `${esc(theirs)} is alerted as soon as you send.`}</p>`}
+      <label>Message ${esc(theirs)}<textarea rows="3" maxlength="4000" data-req-msg="${id}" placeholder="${t.asRequester ? 'A question, more detail, or an answer' : 'A question, an update, or an answer'}"></textarea></label>
+      <div class="row"><button class="btn" data-req-send-msg="${id}">Send</button></div>`;
+    const li = view.querySelector(`[data-req-id="${id}"]`);
+    if (li?.classList.contains('unread')) {
+      li.classList.remove('unread'); li.querySelector('.fb-new')?.remove();
+      if (me.requestsUnread) me.requestsUnread = Math.max(0, me.requestsUnread - 1);
+    }
+    const list = box.querySelector('.fb-messages');
+    if (list) list.scrollTop = list.scrollHeight;
+  } catch (err) { box.textContent = err.message; }
 }
 
 function reqReadDraft() {
@@ -10116,13 +10144,31 @@ async function requestsClick(event) {
     } catch (err) { document.getElementById('req-result').textContent = err.message; send.disabled = false; }
     return true;
   }
+  const th = t('[data-req-thread]');
+  if (th) {
+    const id = Number(th.dataset.reqThread);
+    reqOpen = reqOpen === id ? null : id;
+    return render();
+  }
+  const sm = t('[data-req-send-msg]');
+  if (sm) {
+    const id = Number(sm.dataset.reqSendMsg);
+    const box = view.querySelector(`[data-req-msg="${id}"]`);
+    if (!box.value.trim()) { toast('Write a message first.'); return true; }
+    sm.disabled = true;
+    try {
+      await api('/api/requests/message', { method: 'POST', body: JSON.stringify({ id, body: box.value }) });
+      toast('Sent');
+      await reqLoadThread(id);
+    } catch (err) { toast(err.message); sm.disabled = false; }
+    return true;
+  }
   const st = t('[data-req-status]');
   if (st) {
     const item = st.closest('[data-req-id]');
     st.disabled = true;
     try {
-      await api('/api/requests/update', { method: 'POST', body: JSON.stringify({ id: item.dataset.reqId, status: st.dataset.reqStatus,
-        reply: item.querySelector('[data-req-reply]').value }) });
+      await api('/api/requests/update', { method: 'POST', body: JSON.stringify({ id: item.dataset.reqId, status: st.dataset.reqStatus }) });
       toast('Updated'); return render();
     } catch (err) { toast(err.message); st.disabled = false; }
     return true;
@@ -17140,6 +17186,7 @@ async function render() {
       if (route !== '#/time') timeEdit = null;
       if (route === '#/') loadHomeFeed();
       if (route === '#/docs' && docEdit) { docSigs(); docPeopleShow(); }
+      if (route === '#/requests' && reqOpen) reqLoadThread(reqOpen);
       if (route === '#/pow' && powStep === 'signoff' && powForm) powSigs();
       if (route !== '#/condor') mesEst = null;
       if (route === '#/reports' && reportAccount) loadEloHistory(reportAccount);
