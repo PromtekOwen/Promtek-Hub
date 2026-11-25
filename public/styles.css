@@ -3095,3 +3095,4 @@ p .cust-shield { width: 18px; height: 18px; }
 .st-bc-item > div { flex: 1; min-width: 0; }
 .st-bc-item img { width: 56px; height: 56px; object-fit: contain; border-radius: 8px; background: #fff; flex: none; }
 @media (max-width: 640px) { .st-bc-item { flex-wrap: wrap; } .st-bc-item .btn { width: 100%; } }
+.st-read { background: var(--tint); border-radius: 8px; padding: .45rem .7rem; margin: .2rem 0 .8rem; }

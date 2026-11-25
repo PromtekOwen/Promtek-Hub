@@ -292,14 +292,22 @@ const itemFields = (i = {}, { compact = false } = {}) => `
   <label>Description <input name="description" value="${esc(i.description || '')}"></label>
   ${compact ? '' : `<label>Barcodes and other codes <input name="aliases" value="${esc((i.aliases || []).join(', '))}" placeholder="Separate with commas"></label>`}`;
 
+const labelSummary = (L) => [L.mpn && `part ${esc(L.mpn)}`, L.supplierPart && L.supplierPart !== L.mpn && `supplier part ${esc(L.supplierPart)}`, L.manufacturer && esc(L.manufacturer), L.qty && `qty ${qty(L.qty)}`,
+  L.lot && `lot ${esc(L.lot)}`, L.dateCode && `date code ${esc(L.dateCode)}`, L.expiry && `use by ${day(L.expiry)}`, L.serial && `serial ${esc(L.serial)}`, L.po && `PO ${esc(L.po)}`, L.gtin && `barcode ${esc(L.gtin)}`].filter(Boolean).join(' · ');
+
 function manualHtml(st) {
+  const L = st.label || {};
+  // A plain code that isn't a shop barcode is usually the maker's part number (as on RS and Farnell bags).
+  const plainPart = !st.label && st.code && !/^\d{8}$|^\d{12,14}$/.test(st.code) ? st.code : null;
+  const prefill = { name: st.q || [L.manufacturer, L.mpn].filter(Boolean).join(' '), mpn: L.mpn || plainPart || '', supplier_part: L.supplierPart || '', manufacturer: L.manufacturer || '' };
   return `<button class="linklike" data-st-cancel>‹ Back</button>
-    <section class="card"><h3>${st.code ? `${esc(st.code)} isn't on record` : 'Enter the item by hand'}</h3>
+    <section class="card"><h3>${st.label ? `${esc(L.mpn || L.supplierPart || L.gtin)} isn't a stock item yet` : st.code ? `${esc(st.code)} isn't on record` : 'Enter the item by hand'}</h3>
+      ${st.label ? `<p class="st-read small">Read from the label: ${labelSummary(L)}</p>` : ''}
       <p class="muted">Start typing: if it's already a stock item, choose it${st.code ? ' and the barcode is added to it' : ''}.</p>
       <div class="st-link"><input id="st-manq" placeholder="Name, part number or supplier code" autocomplete="off" value="${esc(st.q || '')}"><div class="st-sugg" id="st-man-sugg"></div></div>
     </section>
     ${st.code ? barcodeHtml(st) : ''}
-    <form class="card" data-st-form="newitem"><h3>Or make it a new stock item</h3>${itemFields({ name: st.q || '', aliases: st.code ? [st.code] : [] }, { compact: true })}
+    <form class="card" data-st-form="newitem"><h3>Or make it a new stock item</h3>${itemFields(prefill, { compact: true })}
       <input type="hidden" name="aliases" value="${esc(st.code || '')}">
       <button class="btn" type="submit">Add it and take it in</button></form>`;
 }
@@ -334,17 +342,19 @@ function receiveHtml(st) {
   const i = st.item;
   const exp = st.expected || [];
   const sugg = st.putaway?.suggestions || [];
+  const L = st.label || {};
   return `<button class="linklike" data-st-cancel>‹ Back</button>
     <form class="card" data-st-form="receive"><h3>${esc(i.name)}</h3>
+      ${st.label ? `<p class="st-read small">Read from the label: ${labelSummary(L)}</p>` : ''}
       <p class="muted">${esc(i.code || '')}${i.supplier ? ` · ${esc(i.supplier)}` : ''} · ${esc({ batch: 'Batch or lot', serial: 'Serial numbered', bin: 'Bin item' }[i.mode])} · ${esc(i.weight)}</p>
       ${exp.length ? `<label>Which delivery is it? <select name="expectedId">${exp.map((e) => `<option value="${e.id}"${st.expectedId === e.id ? ' selected' : ''}>${qty(e.qty - e.received_qty - (e.issue_qty || 0))} due${e.order_key ? ` for ${esc(e.order_key)}` : ''}${e.po_ref ? ` · ${esc(e.po_ref)}` : ''}${e.expected_date ? ` · ${day(e.expected_date)}` : ''}</option>`).join('')}<option value="">Not one of these</option></select></label>`
         : '<p class="muted small">Not expected: it goes into free stock, or to a job that needs it.</p>'}
       <div class="st-grid">
-        ${i.mode === 'serial' ? `<label class="st-wide">Serial numbers (scan each one) <textarea name="serials" rows="3" placeholder="One per line"></textarea></label>` : `<label>Quantity <input name="qty" type="number" min="0" step="any" required inputmode="decimal" value="${st.qty ?? ''}"> <span class="muted small">${esc(i.unit)}</span></label>`}
-        ${i.mode !== 'bin' ? '<label>Lot or batch <input name="lot" autocomplete="off"></label>' : ''}
-        <label>Use by <input name="expiry" type="date"></label>
+        ${i.mode === 'serial' ? `<label class="st-wide">Serial numbers (scan each one) <textarea name="serials" rows="3" placeholder="One per line">${esc(L.serial || '')}</textarea></label>` : `<label>Quantity <input name="qty" type="number" min="0" step="any" required inputmode="decimal" value="${st.qty ?? L.qty ?? ''}"> <span class="muted small">${esc(i.unit)}</span></label>`}
+        ${i.mode !== 'bin' ? `<label>Lot or batch <input name="lot" autocomplete="off" value="${esc(L.lot || L.dateCode || '')}"></label>` : ''}
+        <label>Use by <input name="expiry" type="date" value="${esc(L.expiry || '')}"></label>
         <label>Unit cost (£) <input name="unitCost" type="number" min="0" step="0.01" value="${i.unit_cost ?? ''}"></label>
-        <label>PO or delivery note <input name="poRef" autocomplete="off"></label>
+        <label>PO or delivery note <input name="poRef" autocomplete="off" value="${esc(L.po || '')}"></label>
       </div>
       <h4>Where it goes</h4>
       ${sugg.length ? `<div class="st-putaway">${sugg.map((s, k) => `<button type="button" class="st-chip${st.location === s.code || (!st.location && k === 0) ? ' on' : ''}" data-st-loc="${esc(s.code)}"><strong>${esc(s.code)}</strong><span>${esc(s.why)}</span></button>`).join('')}</div>` : '<p class="muted small">No locations set up yet. Add them in Setup.</p>'}
@@ -980,8 +990,8 @@ async function scanIntake(code, form) {
   form.reset();
   try {
     const r = await get(`lookup?code=${encodeURIComponent(code)}`);
-    if (r.type === 'unknown') { S.intakeStep = { kind: 'manual', code, q: '', barcode: null }; redraw(); return loadBarcode(code); }
-    else if (r.type === 'item') return startReceive(r.item.id, r.expected[0]?.id || null, { code, expected: r.expected, item: r.item });
+    if (r.type === 'unknown') { S.intakeStep = { kind: 'manual', code: r.code, label: r.label || null, q: '', barcode: null }; redraw(); return r.code ? loadBarcode(r.code) : null; }
+    else if (r.type === 'item') return startReceive(r.item.id, r.expected[0]?.id || null, { code: r.label ? r.label.gtin || null : code, expected: r.expected, item: r.item, label: r.label || null });
     else S.intakeStep = { kind: r.type, ...r };
     redraw();
   } catch (err) { H.toast(err.message); }
@@ -989,10 +999,10 @@ async function scanIntake(code, form) {
 
 async function useItem(id) {
   const code = S.intakeStep?.code || null;
+  const label = S.intakeStep?.label || null;
   if (code) await post('alias', { itemId: id, code }).catch((err) => H.toast(err.message));
-  const r = await get(`lookup?code=${encodeURIComponent(code || '')}`).catch(() => null);
-  const expected = r?.type === 'item' && r.item.id === id ? r.expected : (await get('expected')).expected.filter((e) => e.item_id === id);
-  return startReceive(id, expected[0]?.id || null, { code, expected });
+  const expected = (await get('expected')).expected.filter((e) => e.item_id === id);
+  return startReceive(id, expected[0]?.id || null, { code, expected, label });
 }
 
 async function startReceive(itemId, expectedId, extra = {}) {
@@ -1000,7 +1010,7 @@ async function startReceive(itemId, expectedId, extra = {}) {
   const item = extra.item || items.items.find((i) => i.id === itemId);
   const expected = extra.expected || exp.expected.filter((e) => e.item_id === itemId);
   S.tab = 'intake';
-  S.intakeStep = { kind: 'item', item, expected, expectedId, putaway: put, code: extra.code || null, location: null };
+  S.intakeStep = { kind: 'item', item, expected, expectedId, putaway: put, code: extra.code || null, label: extra.label || null, location: null };
   redraw();
 }
 

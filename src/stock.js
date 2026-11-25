@@ -25,6 +25,8 @@ const teamKey = (t) => (t === 'Condor' ? 'Projecting' : t || null);
 const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
 export const unitLabel = (id) => `S${String(id).padStart(6, '0')}`;
 
+// D1 refuses LIKE patterns over 50 bytes, so what's searched for is kept well under that.
+const likeTerm = (v) => String(v ?? '').toLowerCase().replace(/[%_\\]/g, '').trim().slice(0, 40);
 function bad(message, status = 400, extra = {}) { const e = new Error(message); e.status = status; Object.assign(e, extra); return e; }
 export const canManage = (v) => Boolean(v?.isAdmin || v?.can?.stockManage);
 export const canLead = (v) => Boolean(v?.isAdmin || v?.can?.stockLead);
@@ -172,7 +174,10 @@ async function matchItem(env, line) {
   const byName = await env.DB.prepare('SELECT id FROM stock_items WHERE active = 1 AND LOWER(name) = LOWER(?) LIMIT 1').bind(String(line || '').trim()).first();
   if (byName) return byName.id;
   // A quote line that starts with an item's name and adds to it ("Moxa DE-311 Configured"): the longest such name.
-  const within = await env.DB.prepare("SELECT id FROM stock_items WHERE active = 1 AND LENGTH(name) >= 4 AND LOWER(?) LIKE LOWER(name) || '%' ORDER BY LENGTH(name) DESC LIMIT 1").bind(String(line || '').trim()).first();
+  // Compared here rather than in SQL: D1 refuses LIKE patterns longer than 50 bytes, and item names can be longer.
+  const l = String(line || '').trim().toLowerCase();
+  const names = (await env.DB.prepare('SELECT id, name FROM stock_items WHERE active = 1').all()).results || [];
+  const within = names.filter((n) => n.name.length >= 4 && l.startsWith(n.name.toLowerCase())).sort((a, b) => b.name.length - a.name.length)[0];
   return within?.id || null;
 }
 
@@ -424,6 +429,119 @@ async function assignExpected(env, itemId, team) {
   return null;
 }
 
+
+// ---------- reading what's on a supplier's label ----------
+
+// 2D codes on component labels carry the details themselves, in one of two standard layouts:
+//  - ISO/IEC 15434 with ANSI MH10.8.2 data identifiers ("[)>" RS "06" GS ... ), used by DigiKey,
+//    Mouser, Würth, TME and component makers: 1P manufacturer part, P/30P distributor part, Q
+//    quantity, 1T lot, 9D/10D date code, 14D expiry, S serial, K purchase order, 1V maker.
+//  - GS1 application identifiers, used on many manufacturer labels: (01) GTIN, (10) lot,
+//    (17) expiry, (21) serial, (30)/(37) count, (240) part number, (400) purchase order.
+// Group separators can come through as the control character, or as the text "<GS>" or "~029".
+const GS = '\x1d'; const RS = '\x1e';
+const GS1_FIXED = { '00': 18, '01': 14, '02': 14, '11': 6, '12': 6, '13': 6, '15': 6, '16': 6, '17': 6, '20': 2 };
+const GS1_VAR = ['10', '21', '22', '30', '37', '90', '91', '92', '93', '94', '95', '96', '97', '98', '99', '240', '241', '242', '250', '251', '400', '401', '402', '403', '410', '411', '412', '413', '414', '420', '421', '422', '7003', '7240'];
+const ymd = (v) => {
+  const m = String(v || '').match(/^(\d{2})(\d{2})(\d{2})$/);
+  if (!m) return null;
+  const y = 2000 + Number(m[1]); const mo = Number(m[2]);
+  if (mo < 1 || mo > 12) return null;
+  const d = Number(m[3]) || new Date(Date.UTC(y, mo, 0)).getUTCDate();
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+};
+
+export function parseLabel(raw) {
+  let s = String(raw || '').replace(/<GS>|~029|\{GS\}/gi, GS).replace(/<RS>|~030|\{RS\}/gi, RS).replace(/<EOT>|~004/gi, '\x04').replace(/\x1c/g, '');
+  s = s.replace(/^\][A-Za-z]\d/, '');
+  if (s.length < 6) return null;
+  const out = { format: null };
+  const put = (k, v) => { const t = String(v ?? '').trim(); if (t && out[k] == null) out[k] = t.slice(0, 120); };
+
+  // ISO 15434 with data identifiers.
+  if (/^\[\)>/.test(s) || /^\[\)>\s*06/.test(s)) {
+    out.format = 'mh10';
+    const body = s.replace(/^\[\)>\s*\x1e?\s*(06|DD)?\s*\x1d?/, '').replace(/[\x1e\x04]+$/g, '');
+    for (const f of body.split(/[\x1d\x1e]/)) {
+      const m = f.match(/^(\d{0,3})([A-Z])(.*)$/);
+      if (!m) continue;
+      const id = `${m[1]}${m[2]}`; const v = m[3];
+      if (id === '1P') put('mpn', v);
+      else if (id === '30P' || id === 'P') put('supplierPart', v);
+      else if (id === 'Q') { const q = Number(v); if (q > 0) out.qty ??= q; }
+      else if (id === '1T' || id === 'T') put('lot', v);
+      else if (id === '9D' || id === '10D') put('dateCode', v);
+      else if (id === '14D') { const d = v.match(/^(\d{4})(\d{2})(\d{2})$/); if (d) out.expiry ??= `${d[1]}-${d[2]}-${d[3]}`; }
+      else if (id === 'S' || id === '1S') put('serial', v);
+      else if (id === 'K') put('po', v);
+      else if (id === '1V') put('manufacturer', v);
+      else if (id === '4L') put('country', v);
+    }
+    return out.mpn || out.supplierPart ? out : null;
+  }
+
+  // GS1, written with brackets: (01)05012345678900(10)ABC(17)271231
+  if (/^\(\d{2,4}\)/.test(s)) {
+    out.format = 'gs1';
+    for (const m of s.matchAll(/\((\d{2,4})\)([^(]*)/g)) gs1Field(out, put, m[1], m[2].trim());
+    return out.gtin || out.mpn ? out : null;
+  }
+
+  // GS1 as scanned: no brackets, variable fields ended by a group separator.
+  const g = s.replace(/^\x1d+/, '');
+  if (/^(01|02)\d{14}/.test(g) && (g.length > 16 || s.startsWith(GS))) {
+    out.format = 'gs1';
+    let i = 0; let guard = 0;
+    while (i < g.length && guard++ < 30) {
+      if (g[i] === GS) { i++; continue; }
+      const ai2 = g.slice(i, i + 2); const ai3 = g.slice(i, i + 3); const ai4 = g.slice(i, i + 4);
+      let ai; let len = null;
+      if (GS1_FIXED[ai2]) { ai = ai2; len = GS1_FIXED[ai2]; }
+      else if (/^3[1-6]\d\d$/.test(ai4)) { ai = ai4; len = 6; }
+      else if (GS1_VAR.includes(ai4)) ai = ai4;
+      else if (GS1_VAR.includes(ai3)) ai = ai3;
+      else if (GS1_VAR.includes(ai2)) ai = ai2;
+      else break;
+      i += ai.length;
+      let v;
+      if (len) { v = g.slice(i, i + len); i += len; }
+      else { const end = g.indexOf(GS, i); v = g.slice(i, end < 0 ? g.length : end); i = end < 0 ? g.length : end + 1; }
+      gs1Field(out, put, ai, v);
+    }
+    return out.gtin ? out : null;
+  }
+  return null;
+}
+
+function gs1Field(out, put, ai, v) {
+  if (ai === '01' || ai === '02') {
+    // A 14-digit GTIN starting 0 is the same product as the 13-digit barcode on it.
+    if (/^\d{14}$/.test(v)) out.gtin ??= v.startsWith('0') ? v.slice(1) : v;
+  } else if (ai === '10') put('lot', v);
+  else if (ai === '17' || ai === '15') { if (!out.expiry) out.expiry = ymd(v); }
+  else if (ai === '11') put('madeOn', ymd(v));
+  else if (ai === '21') put('serial', v);
+  else if (ai === '30' || ai === '37') { const q = Number(v); if (q > 0) out.qty ??= q; }
+  else if (ai === '240') put('mpn', v);
+  else if (ai === '241') put('supplierPart', v);
+  else if (ai === '400') put('po', v);
+}
+
+// The stock item a label (or any scanned code) is for: by barcode, code, part number or supplier part.
+async function itemForCodes(env, codes) {
+  for (const raw of codes.filter(Boolean)) {
+    const up = String(raw).toUpperCase();
+    const variants = [up, ...(/^\d{13}$/.test(up) ? [`0${up}`] : /^0\d{13}$/.test(up) ? [up.slice(1)] : [])];
+    for (const v of variants) {
+      const alias = await env.DB.prepare('SELECT a.item_id FROM stock_aliases a JOIN stock_items i ON i.id = a.item_id WHERE i.active = 1 AND UPPER(a.code) = ?').bind(v).first();
+      if (alias) return alias.item_id;
+      const hit = await env.DB.prepare('SELECT id FROM stock_items WHERE active = 1 AND (UPPER(code) = ? OR UPPER(mpn) = ? OR UPPER(supplier_part) = ?)').bind(v, v, v).first();
+      if (hit) return hit.id;
+    }
+  }
+  return null;
+}
+
 // ---------- items, aliases and locations ----------
 
 export async function lookup(env, viewer, code) {
@@ -439,14 +557,15 @@ export async function lookup(env, viewer, code) {
   }
   const units = (await env.DB.prepare("SELECT * FROM stock_units WHERE (UPPER(code) = ? OR UPPER(serial) = ?) AND status != 'gone' ORDER BY id").bind(up, up).all()).results || [];
   if (units.length) return { type: 'unit', units: units.map((u) => unitBrief(u, items, locs)), item: items.get(units[0].item_id) || null };
-  const alias = await env.DB.prepare('SELECT item_id FROM stock_aliases WHERE UPPER(code) = ?').bind(up).first();
-  const itemId = alias?.item_id || (await env.DB.prepare('SELECT id FROM stock_items WHERE UPPER(code) = ? OR UPPER(mpn) = ? OR UPPER(supplier_part) = ?').bind(up, up, up).first())?.id;
+  // A supplier's 2D label: what it says, and the stock item it's for if there is one.
+  const label = parseLabel(c);
+  const itemId = label ? await itemForCodes(env, [label.mpn, label.supplierPart, label.gtin]) : await itemForCodes(env, [c]);
   if (itemId) {
     const item = items.get(itemId);
     const expected = (await env.DB.prepare("SELECT e.*, o.key AS order_key FROM stock_expected e LEFT JOIN stock_orders o ON o.id = e.order_id WHERE e.item_id = ? AND e.status = 'open' ORDER BY e.expected_date").bind(itemId).all()).results || [];
-    return { type: 'item', item, expected, stock: await itemStock(env, itemId, items, locs) };
+    return { type: 'item', item, expected, stock: await itemStock(env, itemId, items, locs), label };
   }
-  return { type: 'unknown', code: c, suggestions: await suggest(env, c) };
+  return { type: 'unknown', code: label ? (label.gtin || null) : c, label, suggestions: await suggest(env, label ? label.mpn || label.supplierPart || '' : c) };
 }
 
 async function itemMap(env) {
@@ -461,10 +580,10 @@ async function itemStock(env, itemId, items, locs) {
 export async function suggest(env, q) {
   const s = String(q || '').trim().toLowerCase();
   if (s.length < 2) return [];
-  const like = `%${s.replace(/[%_]/g, '')}%`;
+  const like = `%${likeTerm(s)}%`;
   const rows = (await env.DB.prepare(`SELECT DISTINCT i.* FROM stock_items i LEFT JOIN stock_aliases a ON a.item_id = i.id
     WHERE i.active = 1 AND (LOWER(i.name) LIKE ? OR LOWER(COALESCE(i.code, '')) LIKE ? OR LOWER(COALESCE(i.mpn, '')) LIKE ? OR LOWER(COALESCE(i.supplier_part, '')) LIKE ? OR LOWER(COALESCE(i.description, '')) LIKE ? OR LOWER(COALESCE(a.code, '')) LIKE ?)
-    ORDER BY CASE WHEN LOWER(i.name) LIKE ? THEN 0 ELSE 1 END, i.name LIMIT 12`).bind(like, like, like, like, like, like, `${s}%`).all()).results || [];
+    ORDER BY CASE WHEN LOWER(i.name) LIKE ? THEN 0 ELSE 1 END, i.name LIMIT 12`).bind(like, like, like, like, like, like, `${likeTerm(s)}%`).all()).results || [];
   return rows.map(itemBrief);
 }
 
@@ -1039,11 +1158,15 @@ export async function pick(env, viewer, input) {
   if (!binItemId) {
     units = (await env.DB.prepare("SELECT * FROM stock_units WHERE (UPPER(code) = ? OR UPPER(serial) = ?) AND status IN ('available', 'reserved', 'picked') ORDER BY id").bind(up, up).all()).results || [];
     if (!units.length) {
-      const alias = await env.DB.prepare('SELECT item_id FROM stock_aliases WHERE UPPER(code) = ?').bind(up).first();
-      const itemId = alias?.item_id || (await env.DB.prepare('SELECT id FROM stock_items WHERE UPPER(code) = ? OR UPPER(mpn) = ?').bind(up, up).first())?.id;
-      if (!itemId) throw bad(`${code} isn't a label, barcode or location on record.`, 404);
+      const label = parseLabel(code);
+      const itemId = label ? await itemForCodes(env, [label.mpn, label.supplierPart, label.gtin]) : await itemForCodes(env, [code]);
+      if (!itemId) throw bad(label ? `${label.mpn || label.supplierPart || label.gtin} isn't a stock item yet.` : `${code} isn't a label, barcode or location on record.`, 404);
+      if (label?.serial && !input.qty) {
+        const bySerial = await env.DB.prepare("SELECT * FROM stock_units WHERE item_id = ? AND UPPER(serial) = UPPER(?) AND status IN ('available', 'reserved', 'picked')").bind(itemId, label.serial).first();
+        if (bySerial) units = [bySerial];
+      }
       if (items.get(itemId)?.mode === 'bin') binItemId = itemId;
-      else {
+      else if (!units.length) {
         units = (await env.DB.prepare("SELECT * FROM stock_units WHERE item_id = ? AND status IN ('available', 'reserved') ORDER BY CASE WHEN order_id = ? THEN 0 WHEN order_id IS NULL THEN 1 ELSE 2 END, COALESCE(expiry, '9999')").bind(itemId, o.id).all()).results || [];
         if (!units.length) throw bad(`There's no ${items.get(itemId)?.name || 'stock of that'} on the shelf.`);
       }
@@ -1454,7 +1577,7 @@ export async function trace(env, viewer, input = {}) {
   const where = ['1 = 1']; const binds = [];
   const q = String(input.q || '').trim();
   if (q) {
-    const like = `%${q.toLowerCase()}%`;
+    const like = `%${likeTerm(q)}%`;
     where.push(`(LOWER(COALESCE(u.code, '')) LIKE ? OR LOWER(COALESCE(u.serial, '')) LIKE ? OR LOWER(COALESCE(u.lot, '')) LIKE ? OR LOWER(i.name) LIKE ? OR LOWER(COALESCE(i.code, '')) LIKE ? OR LOWER(COALESCE(u.po_ref, '')) LIKE ?
       OR u.id IN (SELECT m.unit_id FROM stock_moves m WHERE LOWER(COALESCE(m.order_key, '')) LIKE ?))`);
     binds.push(like, like, like, like, like, like, like);
@@ -1462,8 +1585,8 @@ export async function trace(env, viewer, input = {}) {
   if (num(input.itemId)) { where.push('u.item_id = ?'); binds.push(num(input.itemId)); }
   if (input.lot) { where.push('LOWER(COALESCE(u.lot, \'\')) = LOWER(?)'); binds.push(String(input.lot)); }
   if (input.status) { where.push('u.status = ?'); binds.push(String(input.status)); }
-  if (input.supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${String(input.supplier).toLowerCase()}%`); }
-  if (input.customer) { where.push('u.id IN (SELECT m.unit_id FROM stock_moves m JOIN stock_orders o ON o.id = m.order_id WHERE LOWER(COALESCE(o.customer, \'\')) LIKE ?)'); binds.push(`%${String(input.customer).toLowerCase()}%`); }
+  if (input.supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${likeTerm(input.supplier)}%`); }
+  if (input.customer) { where.push('u.id IN (SELECT m.unit_id FROM stock_moves m JOIN stock_orders o ON o.id = m.order_id WHERE LOWER(COALESCE(o.customer, \'\')) LIKE ?)'); binds.push(`%${likeTerm(input.customer)}%`); }
   if (input.orderKey) { where.push('u.id IN (SELECT m.unit_id FROM stock_moves m WHERE UPPER(m.order_key) = UPPER(?))'); binds.push(String(input.orderKey)); }
   if (isoDay(input.from)) { where.push('u.received_at >= ?'); binds.push(isoDay(input.from)); }
   if (isoDay(input.to)) { where.push('u.received_at <= ?'); binds.push(`${isoDay(input.to)}T23:59:59`); }
@@ -1491,7 +1614,7 @@ export async function recall(env, viewer, { lot, itemId, supplier }) {
   const where = []; const binds = [];
   if (lot) { where.push('LOWER(COALESCE(u.lot, \'\')) = LOWER(?)'); binds.push(String(lot)); }
   if (num(itemId)) { where.push('u.item_id = ?'); binds.push(num(itemId)); }
-  if (supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${String(supplier).toLowerCase()}%`); }
+  if (supplier) { where.push('LOWER(COALESCE(u.supplier, \'\')) LIKE ?'); binds.push(`%${likeTerm(supplier)}%`); }
   const units = (await env.DB.prepare(`SELECT u.* FROM stock_units u WHERE ${where.join(' AND ')}`).bind(...binds).all()).results || [];
   const items = await itemMap(env); const locs = await locationMap(env);
   const ids = units.map((u) => u.id);
