@@ -24,7 +24,7 @@ export const HAZARDS = [
   ['toxic', 'Acute toxicity'], ['harmful', 'Harmful / irritant'], ['health', 'Serious health hazard'], ['environment', 'Hazardous to the environment'],
 ];
 export const PPE = [['gloves', 'Gloves'], ['eyes', 'Safety glasses / goggles'], ['face', 'Face shield'], ['mask', 'Dust mask / respirator'], ['apron', 'Apron / overalls'], ['boots', 'Safety footwear']];
-export const DISPOSAL = [['general', 'General waste (incl. residues)'], ['container', 'General waste (empty container / discharged aerosol)'], ['paper', 'Paper and cardboard'], ['hazardous', 'Hazardous (see QHSE dept.)']];
+export const DISPOSAL = [['general', 'General waste (incl. residues)'], ['container', 'General waste (empty container / discharged aerosol)'], ['paper', 'Paper and cardboard'], ['hazardous', 'Hazardous (see QHSE dept.)'], ['local', 'In accordance with local authority requirements']];
 export const RISKS = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']];
 export const DEFAULT_PRECAUTIONS = 'Read label before use. Keep out of reach of children. If medical advice is needed, have product container or label at hand.';
 

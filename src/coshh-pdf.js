@@ -231,18 +231,23 @@ export async function buildCoshhPdf(item, photos = []) {
   top -= h;
 
   // Disposal.
-  need(14 + 26);
+  const dW = W / DISPOSAL.length;
+  // Each option's name wrapped to its box, every box as tall as the tallest.
+  const boxes = DISPOSAL.map(([k, label]) => {
+    const [main, sub] = label.split(' (');
+    return { k, lines: [...wrapped(main, 7.5, dW - 20 - PAD * 2, true).map((text) => ({ text, bold: true, size: 7.5 })), ...(sub ? wrapped(`(${sub}`, 6, dW - 20 - PAD * 2).map((text) => ({ text, size: 6 })) : [])] };
+  });
+  const dH = Math.max(26, ...boxes.map((b) => b.lines.length * 8.5 * 1.2 + PAD * 2));
+  need(14 + dH);
   cell(doc, L, top, W, 14, { fill: GREY, lines: ['DISPOSAL'], bold: true, size: 9 });
   top -= 14;
-  const dW = W / DISPOSAL.length;
-  DISPOSAL.forEach(([k, label], i) => {
+  boxes.forEach(({ k, lines }, i) => {
     const x = L + i * dW;
-    const [main, sub] = label.split(' (');
-    cell(doc, x, top, dW - 20, 26, { fill: PALE, lines: [{ text: main, bold: true, size: 7.5 }, ...(sub ? [{ text: `(${sub}`, size: 6 }] : [])], align: 'center' });
-    cell(doc, x + dW - 20, top, 20, 26, {});
-    mark(doc, x + dW - 10, top - 13, (d.disposal || []).includes(k));
+    cell(doc, x, top, dW - 20, dH, { fill: PALE, lines, align: 'center' });
+    cell(doc, x + dW - 20, top, 20, dH, {});
+    mark(doc, x + dW - 10, top - dH / 2, (d.disposal || []).includes(k));
   });
-  top -= 30;
+  top -= dH + 4;
 
   // The three questions.
   need(13 * 4);
