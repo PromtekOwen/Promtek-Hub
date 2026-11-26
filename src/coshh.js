@@ -293,7 +293,7 @@ async function file(env, r, data) {
     if (r.confluence_id && was && was !== name && /\.pdf$/i.test(was)) await renameAttachment(env, r.confluence_id, name).catch(() => {});
     const last = data.reviews?.at(-1);
     attachmentId = await toConfluence(env, name, bytes, `COSHH ${r.coshh_no}${last ? `, reviewed ${last.date}` : ''}`);
-  } catch (err) { note = `Not filed in Confluence: ${String(err.message).slice(0, 200)}`; }
+  } catch (err) { note = `Not filed in Confluence: ${String(err.message).slice(0, 400)}`; }
   // Any file of its before this one is remembered, so bringing files in from the page never takes it for another.
   if (attachmentId && r.confluence_id && String(r.confluence_id) !== String(attachmentId)) {
     const kept = json((await env.DB.prepare('SELECT data FROM coshh_items WHERE id = ?').bind(r.id).first())?.data, {});
@@ -439,16 +439,39 @@ function confluence(env, path, init = {}) {
   return fetch(`${env.JIRA_BASE_URL}${path}`, { ...init, headers: { Authorization: `Basic ${btoa(`${env.JIRA_EMAIL}:${env.JIRA_API_TOKEN}`)}`, Accept: 'application/json', ...(init.headers || {}) } });
 }
 
+// What Confluence said went wrong, in its own words rather than the whole reply.
+async function confluenceError(res) {
+  const raw = await res.text().catch(() => '');
+  let said = raw;
+  try { const j = JSON.parse(raw); said = j.message || j.errors?.[0]?.message?.key || j.errors?.[0]?.title || raw; } catch { /* not JSON */ }
+  said = String(said).replace(/^com\.atlassian\.[\w.]+Exception:\s*/, '').trim();
+  return `Confluence ${res.status}: ${said.slice(0, 300)}`;
+}
+
 async function toConfluence(env, name, bytes, comment) {
-  const form = new FormData();
-  form.append('file', new Blob([bytes], { type: 'application/pdf' }), name);
-  form.append('minorEdit', 'true');
-  form.append('comment', comment);
+  const form = () => {
+    const f = new FormData();
+    f.append('file', new Blob([bytes], { type: 'application/pdf' }), name);
+    f.append('minorEdit', 'true');
+    f.append('comment', comment);
+    return f;
+  };
+  const base = `/wiki/rest/api/content/${pageId(env)}/child/attachment`;
+  const idOf = async (res) => { const d = await res.json().catch(() => ({})); return String(d.results?.[0]?.id || d.id || '') || null; };
   // PUT adds it, or a new version of the file of the same name.
-  const res = await confluence(env, `/wiki/rest/api/content/${pageId(env)}/child/attachment`, { method: 'PUT', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form });
-  if (!res.ok) throw new Error(`Confluence ${res.status}: ${(await res.text()).slice(0, 150)}`);
-  const data = await res.json().catch(() => ({}));
-  return String(data.results?.[0]?.id || data.id || '') || null;
+  const res = await confluence(env, base, { method: 'PUT', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() });
+  if (res.ok) return idOf(res);
+  const first = await confluenceError(res);
+  if (res.status !== 400 && res.status !== 409) throw new Error(first);
+  // Sometimes Confluence won't do that in one go. Then: the file of that name, if the page has one,
+  // gets a new version directly; otherwise it's added as a new file.
+  const found = await confluence(env, `${base}?filename=${encodeURIComponent(name)}&limit=5`);
+  const existing = found.ok ? ((await found.json().catch(() => ({}))).results || []).find((a) => a.title === name) : null;
+  const again = existing
+    ? await confluence(env, `${base}/${encodeURIComponent(existing.id)}/data`, { method: 'POST', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() })
+    : await confluence(env, base, { method: 'POST', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() });
+  if (again.ok) return (await idOf(again)) || (existing ? String(existing.id) : null);
+  throw new Error(`${first} (and then ${await confluenceError(again)})`);
 }
 
 // The assessments already on the page: each file not from the hub becomes an item, not in house
@@ -791,19 +814,30 @@ export async function sendRelease(env, n, { limit = SEND_EACH_TIME } = {}) {
   if (rel.status === 'done') return { ok: true, n, ref: rel.ref, done: true, left: 0 };
   const now = () => new Date().toISOString();
   await env.DB.prepare("UPDATE coshh_releases SET status = 'sending', error = NULL, touched_at = ? WHERE n = ?").bind(now(), n).run();
-  const { results: items } = await env.DB.prepare('SELECT * FROM coshh_items WHERE release_n = ? AND pending IS NOT NULL ORDER BY coshh_no LIMIT ?').bind(n, limit).all();
+  // One PDF that won't file doesn't hold up the rest: it's tried again after the others.
+  const failKey = `coshh_release_failed_${n}`;
+  const failed = json((await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(failKey).first())?.value, {});
+  const { results: all } = await env.DB.prepare('SELECT * FROM coshh_items WHERE release_n = ? AND pending IS NOT NULL ORDER BY coshh_no').bind(n).all();
+  const items = [...all.filter((r) => !failed[r.id]), ...all.filter((r) => failed[r.id])].slice(0, limit);
   let sent = 0;
   for (const r of items) {
     const out = await file(env, r, json(r.data, {}));
-    if (!out.filed) {
-      await env.DB.prepare("UPDATE coshh_releases SET status = 'failed', error = ?, touched_at = ? WHERE n = ?").bind(`COSHH ${r.coshh_no}: ${out.fileNote}`.slice(0, 300), now(), n).run();
-      return { ok: false, n, ref: rel.ref, sent, error: `COSHH ${r.coshh_no}: ${out.fileNote}` };
-    }
+    if (!out.filed) { failed[r.id] = `COSHH ${r.coshh_no}: ${out.fileNote}`; continue; }
+    delete failed[r.id];
     await env.DB.prepare('UPDATE coshh_items SET pending = NULL WHERE id = ?').bind(r.id).run();
     sent++;
   }
+  await env.DB.prepare('INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(failKey, JSON.stringify(failed)).run();
   const { left } = await env.DB.prepare('SELECT COUNT(*) AS left FROM coshh_items WHERE release_n = ? AND pending IS NOT NULL').bind(n).first();
+  const problems = Object.values(failed);
+  // Stops when only the ones that won't file are left, saying which and why.
+  if (left && (sent === 0 || left <= problems.length) && problems.length) {
+    const error = `${problems.length} PDF${problems.length === 1 ? '' : 's'} couldn't be filed. ${problems.slice(0, 3).join(' · ')}${problems.length > 3 ? ` · and ${problems.length - 3} more` : ''}`;
+    await env.DB.prepare("UPDATE coshh_releases SET status = 'failed', error = ?, touched_at = ? WHERE n = ?").bind(error.slice(0, 900), now(), n).run();
+    return { ok: false, n, ref: rel.ref, sent, left, error };
+  }
   if (left) return { ok: true, n, ref: rel.ref, sent, left };
+  await env.DB.prepare('DELETE FROM sync_state WHERE key = ?').bind(failKey).run();
   const top = json((await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'coshh_page_top'").first())?.value, {});
   const items2 = await houseItems(env);
   const found = { top: false, history: false };
