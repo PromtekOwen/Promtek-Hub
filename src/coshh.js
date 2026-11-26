@@ -292,7 +292,9 @@ async function file(env, r, data) {
     const was = r.pdf_name || r.file_name;
     if (r.confluence_id && was && was !== name && /\.pdf$/i.test(was)) await renameAttachment(env, r.confluence_id, name).catch(() => {});
     const last = data.reviews?.at(-1);
-    attachmentId = await toConfluence(env, name, bytes, `COSHH ${r.coshh_no}${last ? `, reviewed ${last.date}` : ''}`);
+    attachmentId = await toConfluence(env, name, bytes, `COSHH ${r.coshh_no}${last ? `, reviewed ${last.date}` : ''}`,
+      // The file it went up as last time, when that's this same name (a Word file from before stays as it is).
+      r.confluence_id && (r.pdf_name || r.file_name) === name ? r.confluence_id : null);
   } catch (err) { note = `Not filed in Confluence: ${String(err.message).slice(0, 400)}`; }
   // Any file of its before this one is remembered, so bringing files in from the page never takes it for another.
   if (attachmentId && r.confluence_id && String(r.confluence_id) !== String(attachmentId)) {
@@ -448,30 +450,58 @@ async function confluenceError(res) {
   return `Confluence ${res.status}: ${said.slice(0, 300)}`;
 }
 
-async function toConfluence(env, name, bytes, comment) {
-  const form = () => {
-    const f = new FormData();
-    f.append('file', new Blob([bytes], { type: 'application/pdf' }), name);
-    f.append('minorEdit', 'true');
-    f.append('comment', comment);
-    return f;
-  };
+// A file name Confluence's upload can always read: plain letters, numbers and punctuation.
+// Names with other characters (– ® ™ é and the like) can arrive with no file in them at all,
+// which Confluence reports as "Must be same number of attachment files and comments".
+export const plainName = (name) => String(name || '').replace(/[\u2122\u00ae\u00a9]/g, '').normalize('NFKD').replace(/[̀-ͯ]/g, '')
+  .replace(/[‐-―−]/g, '-').replace(/[‘’‚′]/g, "'").replace(/[“”„″"]/g, '')
+  .replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim() || 'COSHH.pdf';
+
+// The upload written out in full, so the file name goes in a form every server reads: the plain
+// name, and the real one alongside it for servers that take it.
+function upload(name, bytes, comment) {
+  const boundary = `----hub${crypto.randomUUID().replace(/-/g, '')}`;
+  const enc = new TextEncoder();
+  const plain = plainName(name);
+  const head = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${plain}"${plain !== name ? `; filename*=UTF-8''${encodeURIComponent(name)}` : ''}\r\nContent-Type: application/pdf\r\n\r\n`;
+  const tail = `\r\n--${boundary}\r\nContent-Disposition: form-data; name="minorEdit"\r\n\r\ntrue\r\n`
+    + (comment ? `--${boundary}\r\nContent-Disposition: form-data; name="comment"\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n${comment}\r\n` : '')
+    + `--${boundary}--\r\n`;
+  const parts = [enc.encode(head), new Uint8Array(bytes), enc.encode(tail)];
+  const body = new Uint8Array(parts.reduce((n, x) => n + x.length, 0));
+  let at = 0;
+  for (const x of parts) { body.set(x, at); at += x.length; }
+  return { body, headers: { 'X-Atlassian-Token': 'nocheck', 'Content-Type': `multipart/form-data; boundary=${boundary}` } };
+}
+
+async function toConfluence(env, name, bytes, comment, knownId = null) {
   const base = `/wiki/rest/api/content/${pageId(env)}/child/attachment`;
   const idOf = async (res) => { const d = await res.json().catch(() => ({})); return String(d.results?.[0]?.id || d.id || '') || null; };
+  const send = (path, method, withComment = true) => { const u = upload(name, bytes, withComment ? comment : null); return confluence(env, path, { method, headers: u.headers, body: u.body }); };
+  // A name with characters some uploads lose goes straight onto its file as a new version, when
+  // the hub knows which file it is, so it isn't added again under its plain name.
+  if (knownId && plainName(name) !== name) {
+    const direct = await send(`${base}/${encodeURIComponent(knownId)}/data`, 'POST');
+    if (direct.ok) return (await idOf(direct)) || String(knownId);
+  }
   // PUT adds it, or a new version of the file of the same name.
-  const res = await confluence(env, base, { method: 'PUT', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() });
+  let res = await send(base, 'PUT');
   if (res.ok) return idOf(res);
   const first = await confluenceError(res);
-  if (res.status !== 400 && res.status !== 409) throw new Error(first);
-  // Sometimes Confluence won't do that in one go. Then: the file of that name, if the page has one,
-  // gets a new version directly; otherwise it's added as a new file.
-  const found = await confluence(env, `${base}?filename=${encodeURIComponent(name)}&limit=5`);
-  const existing = found.ok ? ((await found.json().catch(() => ({}))).results || []).find((a) => a.title === name) : null;
-  const again = existing
-    ? await confluence(env, `${base}/${encodeURIComponent(existing.id)}/data`, { method: 'POST', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() })
-    : await confluence(env, base, { method: 'POST', headers: { 'X-Atlassian-Token': 'nocheck' }, body: form() });
-  if (again.ok) return (await idOf(again)) || (existing ? String(existing.id) : null);
-  throw new Error(`${first} (and then ${await confluenceError(again)})`);
+  if (res.status !== 400 && res.status !== 409) throw new Error(`${first} [${name}]`);
+  // Otherwise: the file of that name on the page (by its real or plain name) gets a new version
+  // directly; failing that it's added as a new file; and last of all, without the version comment.
+  const found = [];
+  for (const n of [...new Set([name, plainName(name)])]) {
+    const r = await confluence(env, `${base}?filename=${encodeURIComponent(n)}&limit=5`);
+    if (r.ok) found.push(...((await r.json().catch(() => ({}))).results || []).filter((a) => a.title === n));
+  }
+  const existing = found[0] || null;
+  const target = existing ? `${base}/${encodeURIComponent(existing.id)}/data` : base;
+  res = await send(target, 'POST');
+  if (!res.ok && res.status === 400) res = await send(target, 'POST', false);
+  if (res.ok) return (await idOf(res)) || (existing ? String(existing.id) : null);
+  throw new Error(`${first} (and then ${await confluenceError(res)}) [${name}]`);
 }
 
 // The assessments already on the page: each file not from the hub becomes an item, not in house
