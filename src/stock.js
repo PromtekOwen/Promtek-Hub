@@ -132,13 +132,15 @@ async function startField(env) {
 // The parts list in a Purchase Order item's description, a line at a time. Lines that read
 // like "2 x ABC-123 Contactor", "Contactor x2", "Qty 2 - Contactor" or a table row with a number
 // in it are kept; headings and blank lines are left out.
+// Bumped whenever the reading below changes, so parts lists already read are read again.
+const PARSER_VERSION = '2';
 export function parsePartsList(raw) {
   const out = [];
   for (let line of String(raw || '').split(/\n/)) {
     line = line.replace(/^\s*(?:[-*•·▪]|\d+[.)])\s+/, '').trim();
     // The paperwork the order needs comes after the parts, and isn't hardware.
     if (/^documents?\s+required\b/i.test(line)) break;
-    if (/^(order acknowledg(e)?ment|delivery note)s?\.?$/i.test(line)) continue;
+    if (/order\s+acknowledg|delivery\s+notes?\b/i.test(line)) continue;
     if (!line || line.length < 2) continue;
     if (/^(configuration options?|options?|notes?)\s*:/i.test(line) || /\.(pdf|docx?|xlsx?)\b/i.test(line)) continue;
     let qty = null; let what = null;
@@ -225,6 +227,7 @@ export async function syncOrders(env, { force = false } = {}) {
     }
   }
   const existing = new Map(((await env.DB.prepare("SELECT * FROM stock_orders WHERE kind = 'job'").all()).results || []).map((o) => [o.key, o]));
+  const reread = (await getState(env, 'stock_parser_version')) !== PARSER_VERSION;
   const at = nowIso();
   const fresh = [];
   for (const [key, { cat, self, subs }] of byCat) {
@@ -246,7 +249,7 @@ export async function syncOrders(env, { force = false } = {}) {
     if (was) {
       await env.DB.prepare(`UPDATE stock_orders SET epic_key = ?, summary = ?, order_summary = ?, customer = ?, team = ?, start_date = ?, end_date = ?, needed_by = ?, subtasks = ?, po_key = ?, po_text = ?, jira_done = 0,
         status = CASE WHEN status = 'closed' THEN 'open' ELSE status END WHERE id = ?`).bind(...vals, was.id).run();
-      if (poText !== (was.po_text || '')) await importNeeds(env, was.id, poText);
+      if (poText !== (was.po_text || '') || reread) await importNeeds(env, was.id, poText);
     } else {
       const row = await env.DB.prepare(`INSERT INTO stock_orders (kind, key, epic_key, summary, order_summary, customer, team, start_date, end_date, needed_by, subtasks, po_key, po_text, status, created_at, created_by)
         VALUES ('job', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, 'Jira') RETURNING id`).bind(key, ...vals, at).first();
@@ -259,6 +262,7 @@ export async function syncOrders(env, { force = false } = {}) {
     if (!byCat.has(key) && o.status !== 'complete') await env.DB.prepare("UPDATE stock_orders SET jira_done = 1, status = CASE WHEN status IN ('open', 'paused') THEN 'closed' ELSE status END WHERE id = ?").bind(o.id).run();
   }
   await setState(env, 'stock_sync_at', at);
+  if (reread) await setState(env, 'stock_parser_version', PARSER_VERSION);
   if (fresh.length) await allocate(env, { orderIds: fresh, viewer: SYSTEM });
   return { ok: true, at, orders: byCat.size, added: fresh.length };
 }
