@@ -734,6 +734,14 @@ const pages = {
     render: () => invoicingHtml(),
   },
 
+  '#/features': {
+    band: () => '<h1>Features</h1><p>What the hub can do, tile by tile, and what\'s coming next.</p>',
+    async render() {
+      const ui = await featuresUi();
+      return ui.render();
+    },
+  },
+
   '#/stock': {
     band: () => '<h1>Stock</h1><p>Parts for each job: what\'s needed, what\'s in, what\'s on its way, and where everything went.</p>',
     async render() {
@@ -16204,6 +16212,11 @@ function renderAccount() {
             : `<li><a class="danger" href="/cdn-cgi/access/logout">${svgIcon('<path d="M15 4h4a1 1 0 011 1v14a1 1 0 01-1 1h-4M10 16l-4-4 4-4M6 12h10"/>')}Sign out</a></li>`}
         </ul>
       </section>
+      <section class="acct-section">
+        <ul class="menu">
+          <li><a href="#/features" data-account="close">${svgIcon('<path d="M12 3l2.2 4.6 5 .7-3.6 3.5.9 5L12 14.4 7.5 16.8l.9-5L4.8 8.3l5-.7z" transform="translate(0 2)"/><path d="M5 21h14"/>')}Features<span class="value">${featuresNew() ? '<span class="feat-new">New</span>' : ''}</span></a></li>
+        </ul>
+      </section>
     </div>`;
 }
 
@@ -16238,6 +16251,8 @@ document.getElementById('account-btn').addEventListener('click', () => {
   if (!me || tabletPicking) return;
   renderAccount();
   accountDialog.showModal();
+  // Whether the Features page has something new, shown once known.
+  if (featuresLatest == null) api('/api/features/latest').then((r) => { featuresLatest = r.latest || ''; if (accountDialog.open && featuresNew()) renderAccount(); }).catch(() => { featuresLatest = ''; });
   // Whether they've a PIN for the shared tablet, shown once known.
   if (me.linked && !me.tablet && !me.viewingAs && tabletPinSet == null) api('/api/tablet/pin').then((r) => { tabletPinSet = r.set; if (accountDialog.open && !accountDialog.querySelector('.tablet-pin-form')) renderAccount(); }).catch(() => {});
 });
@@ -17081,6 +17096,7 @@ const WAITING_FOR = {
   '#/docs': () => 'Loading the documents',
   '#/custfeedback': () => 'Loading customer feedback',
   '#/stock': () => 'Loading stock',
+  '#/features': () => 'Loading features',
   '#/quotes': () => (quotesView?.kind === 'new' ? 'Fetching customers from Jira' : quotesOpenRefresh ? 'Reading quotes from Jira' : 'Loading'),
   '#/condor': () => (condorTab === 'triage' || condorTab === 'plan' ? 'Fetching releases from Jira' : condorTab === 'notes' && (rn.stale || !rn.data) ? 'Reading the release from Jira' : 'Loading'),
   '#/obs': () => (obsSurvey?.picking ? 'Fetching the client list from Jira' : 'Loading'),
@@ -19806,6 +19822,21 @@ async function docsDriveClick(event) {
 let cfData = null;
 let cfFilter = 'all';
 let cfQuery = '';
+
+// The Features page (account menu), in its own module.
+let featuresMod = null;
+async function featuresUi() {
+  featuresMod ||= await import('./features-ui.js');
+  featuresMod.init({ api, esc, toast });
+  return featuresMod;
+}
+// Whether there are release notes newer than this device has seen, for the account menu.
+let featuresLatest = null;
+function featuresNew() {
+  let seen = '';
+  try { seen = localStorage.getItem('hub.features.seen') || ''; } catch { /* storage off */ }
+  return Boolean(featuresLatest && featuresLatest > seen);
+}
 
 // The Stock tile lives in its own module, loaded when it's first opened.
 let stockMod = null;

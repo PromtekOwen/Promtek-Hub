@@ -3108,3 +3108,29 @@ p .cust-shield { width: 18px; height: 18px; }
 .st-eachlist li { padding: .2rem 0; }
 .st-eachlist li > span { margin-right: .6rem; }
 .st-tools select { max-width: 100%; }
+
+/* Features page */
+.ft-tools { align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.ft-intro { margin: .2rem 0 .9rem; justify-content: space-between; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+.ft-sec { padding: 0; margin-bottom: .7rem; overflow: hidden; }
+.ft-head { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: .8rem; padding: .9rem 1.1rem; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
+.ft-name { font-weight: 700; font-size: 1.02rem; }
+.ft-meta { display: inline-flex; align-items: center; gap: .6rem; font-size: .88rem; }
+.ft-chev { display: inline-block; font-size: 1.3rem; line-height: 1; color: var(--muted); transition: transform .15s; }
+.ft-sec.open .ft-chev { transform: rotate(90deg); }
+.ft-body { padding: 0 1.1rem 1rem; border-top: 1px solid var(--line); }
+.ft-list { list-style: none; margin: 0; padding: 0; }
+.ft-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .8rem; padding: .6rem 0 .6rem 1.1rem; border-bottom: 1px solid var(--line); position: relative; }
+.ft-list li::before { content: ''; position: absolute; left: .15rem; top: 1.05rem; width: 6px; height: 6px; border-radius: 50%; background: var(--blue); }
+.ft-list li.ft-new::before { background: var(--ok); }
+.ft-list li:last-child { border-bottom: 0; }
+.ft-text { flex: 1 1 260px; }
+.ft-when { font-size: .78rem; color: var(--muted); white-space: nowrap; }
+.ft-acts { display: inline-flex; gap: .7rem; font-size: .85rem; }
+.ft-hidden .ft-text { text-decoration: line-through; color: var(--muted); }
+.ft-tag, .ft-count, .feat-new { display: inline-block; font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; background: #E3F5EA; color: var(--ok); border-radius: 6px; padding: .05rem .4rem; margin-right: .35rem; }
+:root[data-theme="dark"] .ft-tag, :root[data-theme="dark"] .ft-count, :root[data-theme="dark"] .feat-new { background: #143825; color: #8fe0b2; }
+.ft-form { margin: .5rem 0; }
+.ft-form textarea { width: 100%; box-sizing: border-box; margin-bottom: .4rem; }
+.ft-body > .linklike { margin-top: .6rem; }
+.ft .linklike.danger { color: var(--danger); }

@@ -1115,6 +1115,16 @@ async function route(request, env, url, user) {
   if (pathname === '/api/custfeedback' && method === 'GET') return json(await (await import('./custfeedback.js')).list(env, user));
   if (pathname === '/api/custfeedback/done' && method === 'POST') return json(await (await import('./custfeedback.js')).markDone(env, user, await request.json().catch(() => ({}))));
 
+  // Features: what each tile does and what's being worked on (account menu → Features).
+  if (pathname.startsWith('/api/features')) {
+    const F = await import('./features-api.js');
+    const sub = pathname.slice('/api/features'.length).replace(/^\//, '');
+    if (method === 'GET' && !sub) return json(await F.list(env, user));
+    if (method === 'GET' && sub === 'latest') return json(await F.latest(env, user));
+    const post = { edit: F.edit, add: F.add, remove: F.removeOwn, plan: F.planSave, 'plan-remove': F.planRemove, 'plan-move': F.planMove };
+    if (method === 'POST' && post[sub]) return json(await post[sub](env, user, await request.json().catch(() => ({}))));
+  }
+
   // Stock: the workshop's parts, held for work orders and traced from delivery to job.
   if (pathname.startsWith('/api/stock')) {
     const S = await import('./stock.js');

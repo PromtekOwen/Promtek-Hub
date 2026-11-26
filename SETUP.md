@@ -1113,6 +1113,16 @@ The Stock tile is open to developers only to begin with. Open it to more people 
 6. Run every line of `schema-084.sql` too. A scanned shop barcode (EAN or UPC) that isn't a stock item yet is looked up on UPCitemdb, and what it finds can fill in the new item. The free plan needs no sign-up and allows 100 lookups a day; each barcode is only looked up once. For more, take a paid plan and add its key as the secret `UPCITEMDB_KEY`.
 7. Xero isn't linked yet: deliveries are entered by hand from **Stock → To buy** (Mark as ordered).
 
+## Part 20e: Features
+
+**Features**, at the bottom of the account menu (tap your initials), has two tabs:
+- **Release notes:** what each tile does, in a section per tile (only the tiles each person can open), plus General for the home screen, alerts and the rest. Newest first, with each line's month. Lines added since someone last looked are marked New, and the account menu shows New until they've looked.
+- **Working on:** ideas planned for each tile, written in the hub.
+
+The release notes come with the code (`src/features.js`), so each update that adds something adds its line and it appears when deployed. Bug fixes and small look-and-feel changes aren't listed. Anyone with **Edit features** (developers to begin with; Admin, Who can use what) can reword any line, hide it, add their own, and write and order the Working on list; those changes are kept in the hub and stay through later updates.
+
+**Setting it up:** run every line of `schema-086.sql` in the D1 console.
+
 ## Part 21: Sales (prospects and quotes)
 
 **Prospects.** New potential customers, with no project in Jira yet, are kept in the **Prospects** tab rather than as quotes. Each one records:
